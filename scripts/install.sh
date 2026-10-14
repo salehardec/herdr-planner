@@ -1,7 +1,7 @@
 #!/bin/sh
 # Installs Herdr Planner for the current user: no sudo, no system package manager.
 #   scripts/install.sh [install] [--no-build] [--no-service] [--no-hypr] [--key "SUPER + ALT + P"]
-#   scripts/install.sh uninstall      removes everything installed; state and config stay
+#   scripts/install.sh uninstall [--no-service] [--no-hypr]   removes everything installed; state and config stay
 #   scripts/install.sh status
 # Running install again updates: it rebuilds, replaces the binary and restarts the service.
 #
@@ -38,7 +38,7 @@ while [ $# -gt 0 ]; do
       key="$2"
       shift
       ;;
-    -h | --help) sed -n '2,13p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h | --help) sed -n '2,14p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "install.sh: unknown argument $1" >&2; exit 2 ;;
   esac
   shift
@@ -225,7 +225,8 @@ do_install() {
 }
 
 do_uninstall() {
-  if have systemctl; then
+  # --no-service leaves the service alone, as it does for install.
+  if [ "$service" -eq 1 ] && have systemctl; then
     systemctl --user disable --now "$unit" >/dev/null 2>&1 || true
     rm -f "$unit_dir/$unit"
     systemctl --user daemon-reload >/dev/null 2>&1 || true
