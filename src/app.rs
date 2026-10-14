@@ -3,8 +3,10 @@
 
 use crate::cards::Cache;
 use crate::config::AppConfig;
+use crate::coordask::AskCache;
 use crate::fresh::FreshRun;
 use crate::model::{Groups, Project};
+use crate::mrstate::MrCache;
 use crate::store::State;
 use crate::suggest::GroupRun;
 use crate::theme::ThemeReport;
@@ -98,6 +100,10 @@ pub struct App {
     pub fresh_run: Mutex<HashMap<String, FreshRun>>,
     /// The group suggestion of the cheap agent.
     pub group_run: Mutex<GroupRun>,
+    /// What each waiting coordinator asks, by project (see `coordask`).
+    pub asks: Mutex<AskCache>,
+    /// The state of the merge requests in finished threads' reports (see `mrstate`).
+    pub mrs: Mutex<MrCache>,
     /// At most this many `git` scripts run at once …
     pub git_gate: Semaphore,
     /// … and at most three of them read finished threads' repositories.
@@ -124,6 +130,8 @@ impl App {
             tasks_read: Mutex::new(HashSet::new()),
             fresh_run: Mutex::new(HashMap::new()),
             group_run: Mutex::new(GroupRun::default()),
+            asks: Mutex::new(AskCache::default()),
+            mrs: Mutex::new(MrCache::default()),
             git_gate: Semaphore::new(6),
             trailer_gate: Semaphore::new(3),
         })

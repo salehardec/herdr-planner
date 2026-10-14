@@ -21,6 +21,16 @@ export function plural(n, one, few, many) {
   return many;
 }
 
+/** A short «how long ago» for a unix-millisecond time: «сейчас», «5 мин», «2 ч», «3 дн». @param {number} ms @param {number} [now] */
+export function ago(ms, now = Date.now()) {
+  if (!ms) return '';
+  const min = Math.floor(Math.max(0, now - ms) / 60000);
+  if (min < 1) return 'сейчас';
+  if (min < 60) return `${min} мин`;
+  if (min < 60 * 24) return `${Math.floor(min / 60)} ч`;
+  return `${Math.floor(min / 1440)} дн`;
+}
+
 /** @param {string} s @param {number} n */
 export const clip = (s, n) => (s.length > n ? s.slice(0, n - 1) + '…' : s);
 

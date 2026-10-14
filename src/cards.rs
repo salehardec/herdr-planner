@@ -7,7 +7,7 @@
 //! a `card` event when something it learned changes the card, so the page
 //! asks again. The previous answer stays on screen until a new one arrives.
 
-use crate::app::Shared;
+use crate::app::{now_ms, Shared};
 use crate::model::Project;
 use crate::poller;
 use crate::sources::git::{self, GitInfo};
@@ -333,7 +333,7 @@ pub async fn build(app: &Shared, slug: &str) -> Value {
         .unwrap_or_default();
 
     let argv = argv_projects(app, &["thread", "list", slug, "--json"]);
-    let (list, error): (Vec<threads::Thread>, Option<String>) =
+    let (mut list, error): (Vec<threads::Thread>, Option<String>) =
         match runner::run(&argv, None, Duration::from_secs(20)).await {
             Ok(out) if out.ok() => match threads::parse_threads(&out.stdout) {
                 Ok(groups) => (groups.into_iter().flat_map(|g| g.threads).collect(), None),
@@ -342,6 +342,19 @@ pub async fn build(app: &Shared, slug: &str) -> Value {
             Ok(out) => (vec![], Some(out.error())),
             Err(e) => (vec![], Some(e)),
         };
+
+    // The same reading as the project list: a finished thread is «ревью», not «ждёт тебя».
+    {
+        let mr = crate::poller::mr_states(app, slug, &list).await;
+        let env = crate::attention::Env {
+            now: now_ms(),
+            stale_ms: app.state.lock().unwrap().settings.review_stale_ms(),
+            mr: &mr,
+        };
+        for t in &mut list {
+            crate::attention::normalize(t, &env);
+        }
+    }
 
     let disk = {
         let (dir, list) = (dir.clone(), list.clone());

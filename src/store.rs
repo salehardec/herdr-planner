@@ -21,7 +21,7 @@ pub struct SettingDef {
 
 const ON_OFF: &[(&str, &str)] = &[("on", "вкл"), ("off", "выкл")];
 
-pub static SETTING_DEFS: [SettingDef; 3] = [
+pub static SETTING_DEFS: [SettingDef; 4] = [
     SettingDef {
         key: "agent",
         label: "Дешёвый агент",
@@ -43,6 +43,21 @@ pub static SETTING_DEFS: [SettingDef; 3] = [
         default: "on",
         options: ON_OFF,
     },
+    SettingDef {
+        key: "review_stale",
+        label: "Забытое ревью",
+        hint: "Тред в ревью, чей отчёт старше этого срока, не считается ревью (значок, окошко): он «забыт» и показан серым на странице. «выкл» — не отсекать.",
+        default: "3",
+        options: &[
+            ("1", "1 день"),
+            ("2", "2 дня"),
+            ("3", "3 дня"),
+            ("5", "5 дней"),
+            ("7", "7 дней"),
+            ("14", "14 дней"),
+            ("0", "выкл"),
+        ],
+    },
 ];
 
 pub fn setting_def(key: &str) -> Option<&'static SettingDef> {
@@ -58,6 +73,8 @@ pub struct Settings {
     /// `on` / `off`.
     pub autocheck: String,
     pub autogroup: String,
+    /// Days after which a thread's unread report stops counting as review; `0` = never.
+    pub review_stale: String,
 }
 
 impl Default for Settings {
@@ -66,6 +83,7 @@ impl Default for Settings {
             agent: "haiku".into(),
             autocheck: "on".into(),
             autogroup: "on".into(),
+            review_stale: "3".into(),
         }
     }
 }
@@ -76,6 +94,7 @@ impl Settings {
             "agent" => Some(&mut self.agent),
             "autocheck" => Some(&mut self.autocheck),
             "autogroup" => Some(&mut self.autogroup),
+            "review_stale" => Some(&mut self.review_stale),
             _ => None,
         }
     }
@@ -85,6 +104,7 @@ impl Settings {
             "agent" => &self.agent,
             "autocheck" => &self.autocheck,
             "autogroup" => &self.autogroup,
+            "review_stale" => &self.review_stale,
             _ => "",
         }
     }
@@ -99,6 +119,11 @@ impl Settings {
             }
             _ => false,
         }
+    }
+
+    /// The review cut-off in milliseconds; 0 when it is off.
+    pub fn review_stale_ms(&self) -> u64 {
+        self.review_stale.parse::<u64>().unwrap_or(3) * 86_400_000
     }
 
     /// Saved values that are no longer valid fall back to the default.

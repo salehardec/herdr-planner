@@ -7,7 +7,7 @@
 // The page keeps only view state: filter, chip, sort, highlight, open project.
 
 /** @typedef {{review:number, working:number, resolved:number, blocked:number, needs:number}} Counts */
-/** @typedef {{slug:string, name:string, status:string, goal:string|null, repos:{path:string, machine:string}[], counts:Counts, inbox:number, activity:number}} Project */
+/** @typedef {{slug:string, name:string, status:string, goal:string|null, repos:{path:string, machine:string}[], counts:Counts, inbox:number, activity:number, waits:{kind:string, thread:string, text:string, since:number}[], attention_since:number, can_close:number, forgotten:number, coordinator_note:string}} Project */
 /** @typedef {{configured:boolean, list:string[], assign:Record<string,{g:string, auto:boolean}>, collapsed:string[], on:boolean|null}} Groups */
 /** @typedef {{label:string|null, slug:string|null, seq:number}} Workspace */
 /** @typedef {{key:string, label:string, hint:string, default:string, options:[string,string][]}} SettingDef */
@@ -15,7 +15,7 @@
 /** @typedef {{is_light:boolean, vars:Record<string,string>}} Side */
 /** @typedef {{name:string, system:boolean, dark:Side, light:Side|null, ui:{family:string|null,size:number}, terminal:{family:string|null,size:number}, error:string|null}} Theme */
 
-import { esc, h, plural, clip, textMatches, post, keyOf } from './util.js';
+import { esc, h, plural, clip, textMatches, post, keyOf, ago } from './util.js';
 import * as Card from './card.js';
 import * as Settings from './settings.js';
 import * as NewProject from './new.js';
@@ -42,9 +42,11 @@ export function chipMatch(p, chip) {
 
 /** @param {Project[]} list @param {'new'|'attention'} mode */
 export function sortProjects(list, mode) {
-  const need = (/** @type {Project} */ p) => (p.counts.review > 0 || p.inbox > 0 ? 1 : 0);
+  const need = (/** @type {Project} */ p) => (p.counts.needs > 0 || p.counts.review > 0 || p.inbox > 0 ? 1 : 0);
   if (mode === 'attention') {
-    list.sort((a, b) => need(b) - need(a) || b.counts.review - a.counts.review || b.inbox - a.inbox
+    // Who needs a look comes first, the newest event on top.
+    list.sort((a, b) => need(b) - need(a) || (b.attention_since || 0) - (a.attention_since || 0)
+      || b.counts.review - a.counts.review || b.inbox - a.inbox
       || (b.status === 'active' ? 1 : 0) - (a.status === 'active' ? 1 : 0) || b.counts.resolved - a.counts.resolved);
   } else {
     list.sort((a, b) => b.activity - a.activity || b.counts.review - a.counts.review || (a.slug < b.slug ? -1 : a.slug > b.slug ? 1 : 0));
@@ -503,8 +505,13 @@ function projectRow(p, hl, opts) {
   if (p.status !== 'active') label += h('span', { class: 'muted' }, `  ${STATUS_LABEL[/** @type {'active'} */ (p.status)] || esc(p.status)}`);
   if (opts.auto) label += h('span', { class: 'dim' }, '  авто');
   let value = '';
-  if (c.needs > 0) value += h('span', { class: 'warning strong' }, `${c.needs} ждут  `);
+  if (c.needs > 0) value += h('span', { class: 'warning strong', title: p.waits.map((w) => w.text).join('; ') }, `${c.needs} ждут  `);
   if (c.review > 0) value += h('span', { class: 'warning' }, `${c.review} ревью  `);
+  // Quiet marks: not counted in the bar or the popup.
+  if (p.forgotten > 0) value += h('span', { class: 'dim', title: 'Отчёт старше срока из настроек: тред забыт и не считается ревью' }, `${p.forgotten} забыто  `);
+  if (p.can_close > 0) value += h('span', { class: 'dim', title: 'PR/MR слит или закрыт: тред можно закрыть' }, `${p.can_close} можно закрыть  `);
+  if (p.coordinator_note) value += h('span', { class: 'dim', title: p.coordinator_note }, 'коорд.: вопрос не распознан  ');
+  if ((c.needs > 0 || c.review > 0) && p.attention_since) value += h('span', { class: 'muted ago', title: 'Когда пришло последнее событие' }, `${ago(p.attention_since)}  `);
   if (p.inbox > 0) value += h('span', { class: 'info' }, `${p.inbox} вход.  `);
   const t = total(c);
   value += t > 0 ? h('span', { class: 'num' }, `${c.resolved}/${t}`) : h('span', { class: 'muted' }, '—');

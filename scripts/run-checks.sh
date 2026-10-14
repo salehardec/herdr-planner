@@ -12,6 +12,7 @@ SHOTS="${1:-}"
 $CARGO test --quiet
 $CARGO build --quiet
 sh scripts/check-install.sh ./target/debug/herdr-planner
+sh scripts/check-open.sh
 FX="$(mktemp -d)"
 STATE="$(mktemp -d)"
 SERVER=
@@ -22,7 +23,7 @@ mkdir -p "$STATE/herdr-planner"
 printf '{"settings":{"autogroup":"off"}}' >"$STATE/herdr-planner/state.json"
 PORT=$((7300 + $$ % 500))
 FIXTURE_DIR="$FX" HERDR_PROJECTS_BIN="$FX/bin/herdr-projects" HERDR_BIN="$FX/bin/herdr" \
-  PATH="$FX/bin:$PATH" XDG_STATE_HOME="$STATE" HERDR_PLANNER_OPEN_WAIT_SECS=10 HERDR_PLANNER_FRESH_DEBOUNCE_SECS=2 \
+  PATH="$FX/bin:$PATH" CLAUDE_CONFIG_DIR="$FX/claude" XDG_STATE_HOME="$STATE" HERDR_PLANNER_OPEN_WAIT_SECS=10 HERDR_PLANNER_FRESH_DEBOUNCE_SECS=2 \
   ./target/debug/herdr-planner --port "$PORT" --root "$FX/root" >"$FX/server.log" 2>&1 &
 SERVER=$!
 for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do

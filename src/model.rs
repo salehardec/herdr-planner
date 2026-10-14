@@ -29,6 +29,32 @@ pub struct Repo {
     pub machine: String,
 }
 
+/// One thing that needs the user in a project: the coordinator's question,
+/// a thread on a prompt, a broken thread. See `attention`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Wait {
+    /// `coordinator`, `blocked`, `failed`, `stuck`, `lost`, `asking` or `unknown`.
+    pub kind: String,
+    /// The thread, empty for the coordinator.
+    pub thread: String,
+    /// In words: «координатор ждёт ответа», «разрешение или вопрос в t-0231».
+    pub text: String,
+    /// When it began, unix milliseconds; 0 when unknown.
+    pub since: u64,
+}
+
+/// The waits in words, for a tooltip.
+pub fn wait_hint(waits: &[Wait]) -> String {
+    let mut seen: Vec<&str> = Vec::new();
+    for w in waits {
+        if !seen.contains(&w.text.as_str()) {
+            seen.push(&w.text);
+        }
+    }
+    seen.join("; ")
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct Project {
     pub slug: String,
@@ -42,11 +68,27 @@ pub struct Project {
     pub inbox: u32,
     /// The highest thread number: the recency signal for the "new" sort.
     pub activity: u32,
+    /// What needs the user (their count is `counts.needs`).
+    #[serde(default)]
+    pub waits: Vec<Wait>,
+    /// When the newest event that needs a look arrived (a coordinator's question, a thread
+    /// that stopped on a prompt or finished), unix milliseconds; 0 when nothing does.
+    #[serde(default)]
+    pub attention_since: u64,
+    /// Threads whose pull/merge request is merged or closed: they can be closed. Quiet.
+    #[serde(default)]
+    pub can_close: u32,
+    /// Threads in review whose report is older than the cut-off: forgotten, not counted as review.
+    #[serde(default)]
+    pub forgotten: u32,
+    /// A quiet note about the coordinator (its status says «waits», the question was not recognized).
+    #[serde(default)]
+    pub coordinator_note: String,
 }
 
 impl Project {
     pub fn needs_attention(&self) -> bool {
-        self.counts.review > 0 || self.inbox > 0
+        self.counts.needs > 0 || self.counts.review > 0 || self.inbox > 0
     }
 }
 
@@ -71,6 +113,7 @@ pub fn sort_projects(projects: &mut [Project], mode: Sort) {
         Sort::Attention => projects.sort_by(|a, b| {
             b.needs_attention()
                 .cmp(&a.needs_attention())
+                .then(b.attention_since.cmp(&a.attention_since))
                 .then(b.counts.review.cmp(&a.counts.review))
                 .then(b.inbox.cmp(&a.inbox))
                 .then((b.status == "active").cmp(&(a.status == "active")))
@@ -525,9 +568,9 @@ pub fn project_for_label(projects: &[Project], label: &str) -> Option<String> {
 }
 
 /// What the shell icon shows: attention totals over the projects that are not archived.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 pub struct Summary {
-    /// Threads waiting on the user.
+    /// Things waiting on the user (see `attention`).
     pub waiting: u32,
     /// Threads ready for review.
     pub review: u32,
@@ -535,16 +578,45 @@ pub struct Summary {
     pub inbox: u32,
     /// Projects counted (not archived).
     pub projects: u32,
+    /// When the newest event that needs a look arrived (ms); 0 when none does.
+    pub attention_since: u64,
+    /// What waits, in words, the newest first: «Alpha: координатор ждёт ответа; …».
+    pub waiting_hint: String,
+}
+
+/// Projects that need something, the newest event first.
+fn by_arrival(a: &Project, b: &Project) -> std::cmp::Ordering {
+    b.attention_since
+        .cmp(&a.attention_since)
+        .then(b.counts.needs.cmp(&a.counts.needs))
+        .then(b.counts.review.cmp(&a.counts.review))
+        .then(b.activity.cmp(&a.activity))
+        .then(a.slug.cmp(&b.slug))
 }
 
 pub fn summarize(projects: &[Project]) -> Summary {
     let mut s = Summary::default();
+    let mut waiting: Vec<&Project> = Vec::new();
     for p in projects.iter().filter(|p| p.status != "archived") {
         s.waiting += p.counts.needs;
         s.review += p.counts.review;
         s.inbox += p.inbox;
         s.projects += 1;
+        s.attention_since = s.attention_since.max(p.attention_since);
+        if p.counts.needs > 0 {
+            waiting.push(p);
+        }
     }
+    waiting.sort_by(|a, b| by_arrival(a, b));
+    let mut lines: Vec<String> = waiting
+        .iter()
+        .take(5)
+        .map(|p| format!("{}: {}", p.name, wait_hint(&p.waits)))
+        .collect();
+    if waiting.len() > 5 {
+        lines.push(format!("…и ещё {}", waiting.len() - 5));
+    }
+    s.waiting_hint = lines.join("\n");
     s
 }
 
@@ -560,6 +632,10 @@ pub struct OverviewProject {
     pub blocked: u32,
     pub resolved: u32,
     pub inbox: u32,
+    /// What waits, in words (empty when nothing does).
+    pub wait_hint: String,
+    /// When the newest event that needs a look arrived (ms); 0 when none does.
+    pub attention_since: u64,
 }
 
 impl OverviewProject {
@@ -574,79 +650,63 @@ impl OverviewProject {
             blocked: p.counts.blocked,
             resolved: p.counts.resolved,
             inbox: p.inbox,
+            wait_hint: wait_hint(&p.waits),
+            attention_since: p.attention_since,
         }
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct OverviewGroup {
-    /// "" when grouping is off: one unnamed group with the rest of the projects.
-    pub name: String,
-    pub other: bool,
-    pub collapsed: bool,
-    pub projects: Vec<OverviewProject>,
-}
-
-/// What the bar popup lists: the projects waiting on the user or to review first, then
-/// the others in the planner's groups (the same order and folds as the page).
+/// What the bar popup lists: who waits on the user (the newest first), who has
+/// something to review (the newest first), who works; the projects where nothing
+/// happens are only counted.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Overview {
     pub summary: Summary,
-    pub attention: Vec<OverviewProject>,
-    pub groups: Vec<OverviewGroup>,
-    pub grouping: bool,
+    pub waiting: Vec<OverviewProject>,
+    pub review: Vec<OverviewProject>,
+    pub working: Vec<OverviewProject>,
+    /// Projects with no waiting, review, working or stuck thread.
+    pub quiet: u32,
 }
 
-pub fn overview(groups: &Groups, projects: &[Project]) -> Overview {
-    let live: Vec<Project> = projects
+pub fn overview(projects: &[Project]) -> Overview {
+    let live: Vec<&Project> = projects.iter().filter(|p| p.status != "archived").collect();
+    let mut waiting: Vec<&Project> = live
         .iter()
-        .filter(|p| p.status != "archived")
-        .cloned()
+        .copied()
+        .filter(|p| p.counts.needs > 0)
         .collect();
-    let (mut attention, mut rest): (Vec<Project>, Vec<Project>) = live
-        .into_iter()
-        .partition(|p| p.counts.needs > 0 || p.counts.review > 0);
-    attention.sort_by(|a, b| {
-        b.counts
-            .needs
-            .cmp(&a.counts.needs)
-            .then(b.counts.review.cmp(&a.counts.review))
-            .then(b.activity.cmp(&a.activity))
-            .then(a.slug.cmp(&b.slug))
-    });
-    rest.sort_by(|a, b| {
+    let mut review: Vec<&Project> = live
+        .iter()
+        .copied()
+        .filter(|p| p.counts.needs == 0 && p.counts.review > 0)
+        .collect();
+    let mut working: Vec<&Project> = live
+        .iter()
+        .copied()
+        .filter(|p| {
+            p.counts.needs == 0
+                && p.counts.review == 0
+                && (p.counts.working > 0 || p.counts.blocked > 0)
+        })
+        .collect();
+    let quiet = live.len() - waiting.len() - review.len() - working.len();
+    waiting.sort_by(|a, b| by_arrival(a, b));
+    review.sort_by(|a, b| by_arrival(a, b));
+    working.sort_by(|a, b| {
         b.counts
             .working
             .cmp(&a.counts.working)
             .then(b.activity.cmp(&a.activity))
             .then(a.slug.cmp(&b.slug))
     });
-    let grouping = groups.grouping_on();
-    let groups_out = if grouping {
-        group_sections(groups, &rest, false)
-            .into_iter()
-            .map(|s| OverviewGroup {
-                name: s.name,
-                other: s.other,
-                collapsed: s.collapsed,
-                projects: s.projects.iter().map(OverviewProject::of).collect(),
-            })
-            .collect()
-    } else if rest.is_empty() {
-        Vec::new()
-    } else {
-        vec![OverviewGroup {
-            name: String::new(),
-            other: false,
-            collapsed: false,
-            projects: rest.iter().map(OverviewProject::of).collect(),
-        }]
-    };
+    let rows = |l: Vec<&Project>| l.into_iter().map(OverviewProject::of).collect();
     Overview {
         summary: summarize(projects),
-        attention: attention.iter().map(OverviewProject::of).collect(),
-        groups: groups_out,
-        grouping,
+        waiting: rows(waiting),
+        review: rows(review),
+        working: rows(working),
+        quiet: quiet as u32,
     }
 }
 
@@ -703,38 +763,78 @@ mod tests {
         assert_eq!(summarize(&[]), Summary::default());
     }
 
+    fn at(mut p: Project, needs: u32, since: u64) -> Project {
+        p.counts.needs = needs;
+        p.attention_since = since;
+        if needs > 0 {
+            p.waits = vec![Wait {
+                kind: "blocked".into(),
+                thread: "t-1".into(),
+                text: format!("запрос в {}", p.slug),
+                since,
+            }];
+        }
+        p
+    }
+
     #[test]
-    fn overview_puts_attention_first_then_groups() {
-        let mut v = vec![
+    fn overview_sorts_by_arrival_and_counts_the_quiet() {
+        let mut busy = p("busy", 0, 0, 7, "active");
+        busy.counts.working = 2;
+        let mut stuck = p("stuck", 0, 0, 2, "active");
+        stuck.counts.blocked = 1;
+        let v = vec![
             p("quiet", 0, 0, 5, "active"),
-            p("rev", 2, 0, 3, "active"),
-            p("wait", 0, 0, 1, "active"),
+            at(p("old-review", 2, 0, 3, "active"), 0, 1000),
+            at(p("wait-old", 0, 0, 1, "active"), 1, 2000),
+            at(p("wait-new", 0, 0, 1, "active"), 2, 9000),
+            at(p("new-review", 1, 0, 1, "active"), 0, 5000),
             p("gone", 4, 0, 9, "archived"),
-            p("busy", 0, 0, 7, "active"),
+            p("paused", 0, 0, 1, "paused"),
+            busy,
+            stuck,
+            // Both waits and reviews: listed once, with the waits.
+            at(p("both", 3, 0, 4, "active"), 1, 4000),
         ];
-        v[2].counts.needs = 1;
-        v[4].counts.working = 2;
-        let mut g = Groups::default();
-        g.add("Первая").unwrap();
-        g.assign("quiet", "Первая", false);
-        g.collapsed.push("Первая".into());
-        let o = overview(&g, &v);
-        assert!(o.grouping);
+        let o = overview(&v);
         let slugs = |l: &[OverviewProject]| l.iter().map(|p| p.slug.clone()).collect::<Vec<_>>();
-        assert_eq!(slugs(&o.attention), ["wait", "rev"]);
-        assert_eq!(o.groups.len(), 2);
-        assert_eq!((o.groups[0].name.as_str(), o.groups[0].collapsed), ("Первая", true));
-        assert_eq!(slugs(&o.groups[0].projects), ["quiet"]);
-        assert!(o.groups[1].other);
-        assert_eq!(slugs(&o.groups[1].projects), ["busy"]);
-        assert_eq!(o.summary.waiting, 1);
-        // Grouping off: one unnamed group, busiest first.
-        g.on = Some(false);
-        let o = overview(&g, &v);
-        assert!(!o.grouping);
-        assert_eq!(o.groups.len(), 1);
-        assert_eq!(o.groups[0].name, "");
-        assert_eq!(slugs(&o.groups[0].projects), ["busy", "quiet"]);
+        assert_eq!(
+            slugs(&o.waiting),
+            ["wait-new", "both", "wait-old"],
+            "the newest first"
+        );
+        assert_eq!(
+            slugs(&o.review),
+            ["new-review", "old-review"],
+            "the newest first"
+        );
+        assert_eq!(slugs(&o.working), ["busy", "stuck"]);
+        assert_eq!(o.quiet, 2, "quiet and paused; archived is not counted");
+        assert_eq!(o.summary.waiting, 4);
+        assert_eq!(o.summary.attention_since, 9000);
+        assert_eq!(o.waiting[0].wait_hint, "запрос в wait-new");
+        assert_eq!(o.waiting[0].attention_since, 9000);
+        // Everything quiet: nothing is listed.
+        let o = overview(&[p("a", 0, 0, 1, "active"), p("b", 0, 0, 2, "active")]);
+        assert!(o.waiting.is_empty() && o.review.is_empty() && o.working.is_empty());
+        assert_eq!(o.quiet, 2);
+    }
+
+    #[test]
+    fn summary_hint_names_what_waits_newest_first() {
+        let v = vec![
+            at(p("a", 0, 0, 1, "active"), 1, 1000),
+            at(p("b", 0, 0, 2, "active"), 1, 3000),
+            p("c", 0, 0, 3, "active"),
+        ];
+        let s = summarize(&v);
+        assert_eq!(s.waiting_hint, "B: запрос в b\nA: запрос в a");
+        assert_eq!(summarize(&[p("c", 0, 0, 3, "active")]).waiting_hint, "");
+        let mut many: Vec<Project> = (0..7)
+            .map(|i| at(p(&format!("p{i}"), 0, 0, 1, "active"), 1, 100 + i))
+            .collect();
+        many.push(p("z", 0, 0, 1, "active"));
+        assert!(summarize(&many).waiting_hint.ends_with("…и ещё 2"));
     }
 
     #[test]

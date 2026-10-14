@@ -166,6 +166,8 @@ async fn summary(State(app): State<Shared>) -> Json<Value> {
     };
     Json(json!({
         "waiting": s.waiting,
+        "waiting_hint": s.waiting_hint,
+        "attention_since": s.attention_since,
         "review": s.review,
         "inbox": s.inbox,
         "projects": s.projects,
@@ -179,8 +181,7 @@ async fn summary(State(app): State<Shared>) -> Json<Value> {
 /// The bar popup's list: attention projects first, then the planner's groups.
 async fn overview(State(app): State<Shared>) -> Json<Value> {
     let projects = app.snapshot.read().unwrap().projects.clone();
-    let groups = app.state.lock().unwrap().groups.clone();
-    Json(serde_json::to_value(model::overview(&groups, &projects)).unwrap_or(Value::Null))
+    Json(serde_json::to_value(model::overview(&projects)).unwrap_or(Value::Null))
 }
 
 async fn theme(State(app): State<Shared>) -> Json<Value> {

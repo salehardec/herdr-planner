@@ -3,9 +3,13 @@
 //! on the event bus; nothing here blocks a request.
 
 use crate::app::{now_ms, Shared, Snapshot, Workspace, REFRESH_SECS, THEME_SECS, WORKSPACE_SECS};
+use crate::attention;
 use crate::model::{project_for_label, Project};
+use crate::mrstate::{self, MrState};
+use crate::sources::threads::{self, Thread};
 use crate::sources::{list, project_md, runner, workspace};
 use crate::theme;
+use std::collections::HashMap;
 use std::path::Path;
 use std::time::Duration;
 
@@ -73,7 +77,131 @@ pub async fn read_projects(app: &Shared) -> Result<Vec<Project>, String> {
     })
     .await
     .map_err(|e| e.to_string())?;
+    rebuild_attention(app, &mut projects).await;
     Ok(projects)
+}
+
+/// herdr-projects' «Waiting on you» and «Ready for review» counts are not signals
+/// by themselves: this rebuilds `needs`, `review` and the waits of every project
+/// (see `attention`, `coordask`, `mrstate`).
+async fn rebuild_attention(app: &Shared, projects: &mut [Project]) {
+    let root = app.config.root.clone();
+    let (records, alive) = tokio::task::spawn_blocking(move || {
+        (
+            attention::read_progress(&root),
+            attention::ticker_alive(&root),
+        )
+    })
+    .await
+    .unwrap_or_default();
+    let stale_ms = app.state.lock().unwrap().settings.review_stale_ms();
+    for p in projects.iter_mut() {
+        if p.status == "archived" {
+            continue;
+        }
+        let dir = app.config.root.join(&p.slug);
+        // A dead ticker leaves the coordinators' state as it was: not a signal.
+        let candidate = if alive {
+            attention::coordinator_candidate(&dir, &records)
+        } else {
+            None
+        };
+        let coordinator = match candidate {
+            Some(c) => coordinator_state(app, &p.slug, &c),
+            None => attention::Coordinator::No,
+        };
+        let listed = if p.counts.needs > 0 || p.counts.review > 0 {
+            thread_list(app, &p.slug).await
+        } else {
+            Some(Vec::new())
+        };
+        let mr = match &listed {
+            Some(list) => mr_states(app, &p.slug, list).await,
+            None => HashMap::new(),
+        };
+        let env = attention::Env {
+            now: now_ms(),
+            stale_ms,
+            mr: &mr,
+        };
+        attention::apply(p, coordinator, listed.as_deref(), &env);
+    }
+}
+
+/// Whether the coordinator that reported `Waiting for you` really asks something.
+fn coordinator_state(app: &Shared, slug: &str, c: &attention::Candidate) -> attention::Coordinator {
+    use crate::coordask::{self, Verdict};
+    let unclear =
+        |why: &str| attention::Coordinator::Unclear(format!("координатор: статус ждёт, {why}"));
+    if c.agent != "claude" || c.session.is_empty() {
+        return unclear("вопрос не распознан");
+    }
+    let Some(claude) = coordask::claude_dir() else {
+        return unclear("вопрос не распознан");
+    };
+    let path = coordask::transcript_path(&claude, &c.cwd, &c.session);
+    match coordask::verdict(app, slug, &path) {
+        Some(Verdict::No) => attention::Coordinator::No,
+        Some(Verdict::Asks(what)) => attention::Coordinator::Asks(crate::model::Wait {
+            kind: "coordinator".into(),
+            thread: String::new(),
+            text: what,
+            since: c.since,
+        }),
+        Some(Verdict::Unclear(_)) => unclear("вопрос не распознан"),
+        None => unclear("проверяю, есть ли вопрос"),
+    }
+}
+
+/// The state of the merge request each finished thread's report names (GitLab),
+/// for the threads herdr-projects shows in review or waiting. See `mrstate`.
+pub async fn mr_states(app: &Shared, slug: &str, list: &[Thread]) -> HashMap<String, MrState> {
+    let dir = app.config.root.join(slug).join("threads");
+    let ids: Vec<String> = list
+        .iter()
+        .filter(|t| {
+            !t.closed()
+                && matches!(
+                    t.group.as_str(),
+                    "Ready for review" | "Waiting on you" | "Needs you"
+                )
+        })
+        .filter(|t| t.pr_number().is_none())
+        .map(|t| t.id.clone())
+        .collect();
+    let refs = tokio::task::spawn_blocking(move || {
+        ids.into_iter()
+            .filter_map(|id| {
+                let text = std::fs::read_to_string(dir.join(format!("{id}.md"))).ok()?;
+                Some((id, mrstate::find_mr(&text)?))
+            })
+            .collect::<Vec<_>>()
+    })
+    .await
+    .unwrap_or_default();
+    refs.into_iter()
+        .map(|(id, mr)| (id, mrstate::state(app, &mr)))
+        .collect()
+}
+
+async fn thread_list(app: &Shared, slug: &str) -> Option<Vec<Thread>> {
+    let argv = runner::argv([
+        app.config.herdr_projects.as_str(),
+        "--root",
+        &app.config.root.display().to_string(),
+        "thread",
+        "list",
+        slug,
+        "--json",
+    ]);
+    let out = runner::run(&argv, None, Duration::from_secs(20))
+        .await
+        .ok()?;
+    if !out.ok() {
+        return None;
+    }
+    let groups = threads::parse_threads(&out.stdout).ok()?;
+    Some(groups.into_iter().flat_map(|g| g.threads).collect())
 }
 
 pub async fn refresh_once(app: &Shared) {

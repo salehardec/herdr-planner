@@ -34,7 +34,7 @@ const STATUS_LABEL = /** @type {Record<string,string>} */ ({ active: 'актив
 const STATUS_ICON = /** @type {Record<string,string>} */ ({ active: '◉', paused: '⏸', archived: '▣' });
 /** The glyph and tone of an open thread by herdr group. */
 const GROUP_META = /** @type {Record<string,[string,string]>} */ ({
-  'Waiting on you': ['🔔', 'warning'], 'Needs you': ['🔔', 'warning'], 'Ready for review': ['☑', 'warning'],
+  'Waiting on you': ['🔔', 'warning'], 'Needs you': ['🔔', 'warning'], 'Ready for review': ['☑', 'warning'], 'Can close': ['○', 'muted'], Forgotten: ['○', 'muted'],
   Blocked: ['✖', 'error'], Landing: ['⇪', 'info'], Working: ['◉', 'accent'], Idle: ['◌', 'muted'], Resolved: ['✔', 'success'],
 });
 const PR_WORD = /** @type {Record<string,string>} */ ({ MERGED: 'слит', OPEN: 'открыт', CLOSED: 'закрыт', DRAFT: 'черновик' });

@@ -32,6 +32,14 @@ pub struct Thread {
     pub created: String,
     pub updated: String,
     pub rank: Option<u32>,
+    pub brief_stuck: bool,
+    pub prompt_pending: bool,
+    pub last_state: String,
+    pub last_state_change: String,
+    pub last_report_change: String,
+    pub report_hash: String,
+    pub acked_report_hash: String,
+    pub pr_review: String,
 }
 
 impl Thread {
@@ -98,6 +106,8 @@ pub fn group_word(group: &str) -> String {
     match group {
         "Needs you" | "Waiting on you" => "ждёт тебя",
         "Ready for review" => "ревью",
+        "Can close" => "можно закрыть",
+        "Forgotten" => "забыт",
         "Blocked" => "блок",
         "Landing" => "вливается",
         "Working" => "в работе",
@@ -115,7 +125,7 @@ pub fn group_rank(group: &str) -> u32 {
         "Blocked" => 3,
         "Landing" => 3,
         "Working" => 4,
-        "Idle" => 5,
+        "Idle" | "Can close" | "Forgotten" => 5,
         _ => 6,
     }
 }

@@ -32,6 +32,7 @@ Panel {
   // ---------- pill state ----------
   property bool online: false
   property int waiting: 0
+  property string waitingHint: ""
   property int review: 0
   property int inbox: 0
   property int projectCount: 0
@@ -48,7 +49,8 @@ Panel {
     parts.push(waiting > 0 ? "ждут тебя: " + waiting : "никто не ждёт")
     parts.push("ревью: " + review)
     if (inbox > 0) parts.push("входящие: " + inbox)
-    return "Herdr Planner · " + parts.join(" · ")
+    // What exactly waits, the newest first: «Alpha: координатор ждёт ответа».
+    return "Herdr Planner · " + parts.join(" · ") + (waitingHint !== "" ? "\n" + waitingHint : "")
   }
 
   // Horizontal margins make the gap between pills; the height is the bar's.
@@ -85,6 +87,7 @@ Panel {
   function applySummary(data) {
     if (!data || typeof data.waiting !== "number" || typeof data.review !== "number") return false
     waiting = data.waiting
+    waitingHint = typeof data.waiting_hint === "string" ? data.waiting_hint : ""
     review = data.review
     inbox = Number(data.inbox) || 0
     projectCount = Number(data.projects) || 0
@@ -117,14 +120,30 @@ Panel {
   property var overview: null
   property string overviewJson: ""
   property bool overviewBusy: false
-  // Folded groups by key. Starts from the planner's folds, then the popup's own.
+  // Folded sections by key (the popup's own, until the shell restarts).
   property var folded: ({})
-  property bool foldedInit: false
+  // «5 мин» is counted from this; the poll moves it even when the data is unchanged.
+  property double nowMs: Date.now()
   property var rows: []
   property int cursor: -1
   property string cursorKey: ""
 
-  function groupKey(name) { return "g:" + name }
+  function plural(n, one, few, many) {
+    var m10 = n % 10, m100 = n % 100
+    if (m10 === 1 && m100 !== 11) return one
+    if (m10 >= 2 && m10 <= 4 && (m100 < 12 || m100 > 14)) return few
+    return many
+  }
+
+  // A short «how long ago» for a unix-millisecond time.
+  function ago(ms) {
+    if (!ms || ms <= 0) return ""
+    var min = Math.floor(Math.max(0, nowMs - ms) / 60000)
+    if (min < 1) return "сейчас"
+    if (min < 60) return min + " мин"
+    if (min < 1440) return Math.floor(min / 60) + " ч"
+    return Math.floor(min / 1440) + " дн"
+  }
 
   function pollOverview() {
     if (overviewBusy) return
@@ -132,47 +151,42 @@ Panel {
     request("GET", "/api/overview", undefined, function(status, text) {
       overviewBusy = false
       if (status !== 200) { online = false; return }
+      nowMs = Date.now()
       if (text === overviewJson) return
       var data = null
       try { data = JSON.parse(text) } catch (e) { return }
-      if (!data || !Array.isArray(data.attention) || !Array.isArray(data.groups)) return
+      if (!data || !Array.isArray(data.waiting) || !Array.isArray(data.review) || !Array.isArray(data.working)) return
       overviewJson = text
       overview = data
       if (data.summary) applySummary(data.summary)
-      if (!foldedInit) {
-        var map = {}
-        for (var i = 0; i < data.groups.length; i++)
-          if (data.groups[i].collapsed) map[groupKey(data.groups[i].name)] = true
-        folded = map
-        foldedInit = true
-      }
       rebuildRows()
     })
   }
 
-  // The flat list the cursor walks: group headers and the projects of the open groups.
+  // The flat list the cursor walks: the sections that are not empty, each with its projects.
+  // Projects where nothing happens are not rows: the popup only counts them.
   function rebuildRows() {
     // «Show every project» is always the first row: herdr gives no way to ask
     // whether its sidebar is filtered, so it is offered whenever the list is.
-    var out = [{ kind: "action", key: "__unfocus" }]
+    var out = [
+      { kind: "action", key: "__unfocus", title: "Показать все проекты", sub: "сбросить фильтр боковой панели herdr (unfocus)", letter: "U" },
+      { kind: "action", key: "__open", title: "Полный планировщик", sub: "вкладка herdr-gpui или окно приложения", letter: "O" }
+    ]
     var ov = overview
     if (ov) {
       var open = function(key) { return folded[key] !== true }
-      if (ov.attention.length > 0) {
-        out.push({ kind: "group", key: "__attention", label: "Ждут внимания", count: ov.attention.length, open: open("__attention"), hot: true })
-        if (open("__attention"))
-          for (var a = 0; a < ov.attention.length; a++)
-            out.push({ kind: "project", key: ov.attention[a].slug, project: ov.attention[a], group: "__attention" })
-      }
-      for (var g = 0; g < ov.groups.length; g++) {
-        var grp = ov.groups[g]
-        var key = groupKey(grp.name)
-        if (grp.name !== "") {
-          out.push({ kind: "group", key: key, label: grp.name, count: grp.projects.length, open: open(key), hot: false })
-          if (!open(key)) continue
-        }
-        for (var p = 0; p < grp.projects.length; p++)
-          out.push({ kind: "project", key: grp.projects[p].slug, project: grp.projects[p], group: grp.name === "" ? "" : key })
+      var sections = [
+        { key: "__waiting", label: "\uf0f3  Ждут тебя", list: ov.waiting, hot: true },
+        { key: "__review", label: "\uf06e  На ревью", list: ov.review, hot: false },
+        { key: "__working", label: "\uf013  Работают", list: ov.working, hot: false }
+      ]
+      for (var s = 0; s < sections.length; s++) {
+        var sec = sections[s]
+        if (sec.list.length === 0) continue
+        out.push({ kind: "group", key: sec.key, label: sec.label, count: sec.list.length, open: open(sec.key), hot: sec.hot })
+        if (!open(sec.key)) continue
+        for (var p = 0; p < sec.list.length; p++)
+          out.push({ kind: "project", key: sec.list[p].slug, project: sec.list[p], group: sec.key, section: sec.key })
       }
     }
     rows = out
@@ -212,7 +226,7 @@ Panel {
     if (index < 0 || index >= rows.length) return
     var row = rows[index]
     if (row.kind === "group") toggleGroup(row.key)
-    else if (row.kind === "action") unfocusAll()
+    else if (row.kind === "action") (row.key === "__open" ? openPlanner() : unfocusAll())
     else focusProject(row.project)
   }
 
@@ -241,6 +255,16 @@ Panel {
 
   function focusProject(project) {
     sendAction({ kind: "focus", slug: project.slug }, "не удалось перейти к «" + String(project.name || project.slug) + "»")
+  }
+
+  // The full page: `herdr-planner-open` tries a herdr-gpui tab (when that build has
+  // tabs), else an Omarchy app window. Never the plain system browser, never a click's
+  // side effect on the page. Run by the shell itself, so it has the desktop's environment.
+  function openPlanner() {
+    close()
+    var home = String(Quickshell.env("HOME") || "")
+    Quickshell.execDetached(["sh", "-c",
+      "exec \"$1/.local/bin/herdr-planner-open\" 2>/dev/null || exec herdr-planner-open", "sh", home])
   }
 
   // `herdr-projects unfocus`: the sidebar lists every project again.
@@ -373,6 +397,7 @@ Panel {
       }
       onTextKey: function(t) {
         if (t === "r") root.pollOverview()
+        else if (t === "o") root.openPlanner()
         else if (t === "u" || t === "0") root.unfocusAll()
       }
 
@@ -432,13 +457,42 @@ Panel {
                 onActivated: root.activate(index)
               }
             }
+
+            // Nothing waits, nothing is to review, nothing works.
+            Text {
+              textFormat: Text.PlainText
+              width: parent.width
+              visible: root.overview !== null && root.rows.length <= 1 && root.overview.quiet > 0
+              text: "Всё тихо"
+              color: root.dim
+              font.family: root.fam
+              font.pixelSize: Style.font.bodySmall
+              horizontalAlignment: Text.AlignHCenter
+              topPadding: Style.space(10)
+              bottomPadding: Style.space(4)
+            }
           }
+        }
+
+        // Not a row: no cursor, no click.
+        Text {
+          textFormat: Text.PlainText
+          width: parent.width
+          visible: root.overview !== null && root.overview.quiet > 0
+          text: root.overview === null ? "" : "ещё " + root.overview.quiet + " "
+            + root.plural(root.overview.quiet, "проект", "проекта", "проектов") + " без активности"
+          color: root.dim
+          font.family: root.fam
+          font.pixelSize: Style.font.caption
+          horizontalAlignment: Text.AlignHCenter
+          topPadding: Style.space(2)
+          bottomPadding: Style.space(2)
         }
 
         Text {
           textFormat: Text.PlainText
           width: parent.width
-          visible: root.rows.length <= 1
+          visible: root.overview === null || (root.overview.summary && root.overview.summary.projects === 0)
           text: root.overview === null ? "Загрузка…" : "Нет проектов"
           color: root.dim
           font.family: root.fam
@@ -451,7 +505,7 @@ Panel {
         Text {
           textFormat: Text.PlainText
           width: parent.width
-          text: "↑↓ jk · Enter перейти · U показать все · ←→ свернуть · Esc закрыть"
+          text: "↑↓ jk · Enter перейти · U показать все · O планировщик · ←→ свернуть · Esc закрыть"
           color: root.dim
           font.family: root.fam
           font.pixelSize: Style.font.caption
@@ -534,7 +588,7 @@ Panel {
         Text {
           textFormat: Text.PlainText
           width: parent.width
-          text: "Показать все проекты"
+          text: line.row && line.row.title ? String(line.row.title) : ""
           color: root.accentC
           font.family: root.fam
           font.pixelSize: Style.font.bodySmall
@@ -544,7 +598,7 @@ Panel {
         Text {
           textFormat: Text.PlainText
           width: parent.width
-          text: "сбросить фильтр боковой панели herdr (unfocus)"
+          text: line.row && line.row.sub ? String(line.row.sub) : ""
           color: root.dim
           font.family: root.fam
           font.pixelSize: Style.font.caption
@@ -553,7 +607,7 @@ Panel {
       }
       Text {
         textFormat: Text.PlainText
-        text: "U"
+        text: line.row && line.row.letter ? String(line.row.letter) : ""
         color: root.accentC
         font.family: root.fam
         font.pixelSize: Style.font.caption
@@ -629,11 +683,23 @@ Panel {
           elide: Text.ElideRight
         }
 
+        // What waits, in words (only for projects that wait on the user).
+        Text {
+          textFormat: Text.PlainText
+          width: parent.width
+          visible: line.project !== null && line.project.wait_hint !== ""
+          text: line.project ? String(line.project.wait_hint) : ""
+          color: root.accentC
+          font.family: root.fam
+          font.pixelSize: Style.font.caption
+          elide: Text.ElideRight
+        }
+
         // Progress: threads done out of all threads of the project.
         Row {
           width: parent.width
           spacing: Style.space(6)
-          visible: line.total > 0
+          visible: line.total > 0 && !(line.project !== null && line.project.wait_hint !== "")
 
           Rectangle {
             id: track
@@ -660,6 +726,17 @@ Panel {
             font.pixelSize: Style.font.caption
           }
         }
+      }
+
+      // When the newest event that needs a look arrived.
+      Text {
+        textFormat: Text.PlainText
+        visible: text !== ""
+        text: line.project && (line.project.waiting > 0 || line.project.review > 0) ? root.ago(line.project.attention_since) : ""
+        color: root.dim
+        font.family: root.fam
+        font.pixelSize: Style.font.caption
+        Layout.alignment: Qt.AlignVCenter
       }
 
       // Counters: waiting on you, to review, working, stuck. A zero is not drawn.

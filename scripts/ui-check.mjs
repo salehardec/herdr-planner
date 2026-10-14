@@ -373,7 +373,18 @@ async function settingsChecks() {
   const defs = (sel) => evalJs(`document.querySelectorAll(${JSON.stringify(sel)}).length`);
   const groupRows = () => evalJs('[...document.querySelectorAll(".grow-row")].map((r) => r.querySelector(".gname").textContent.replace(/\\s+/g, " ").trim())');
   await click('[data-act=settings]');
-  f('«⚙ Настройки» opens the settings screen', /Настройки/.test(await text('.header .title')) && (await defs('.card[data-row-key^="s:"]')) === 3, await text('.header .title'));
+  f('«⚙ Настройки» opens the settings screen', /Настройки/.test(await text('.header .title')) && (await defs('.card[data-row-key^="s:"]')) === 4, await text('.header .title'));
+  f('the review cut-off defaults to 3 days', /● 3 дня/.test(await text('.card[data-row-key="s:review_stale"] .badge.active')), await text('.card[data-row-key="s:review_stale"]'));
+  // A longer cut-off brings the 4-5 day old reports of pi back into review; the default takes them out again.
+  const piCounts = () => evalJs('fetch("/api/snapshot").then((r) => r.json()).then((s) => { const p = s.projects.find((x) => x.slug === "pi"); return [p.counts.review, p.forgotten]; })');
+  const setStale = async (value) => { await evalJs(`fetch("/api/settings", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ key: "review_stale", value: ${JSON.stringify(value)} }) })`); await evalJs('fetch("/api/refresh", { method: "POST" })'); };
+  await setStale('14');
+  let wide = [];
+  for (let i = 0; i < 40; i++) { wide = await piCounts(); if (wide[1] === 0) break; await sleep(250); }
+  await setStale('3');
+  let narrow = [];
+  for (let i = 0; i < 40; i++) { narrow = await piCounts(); if (narrow[1] === 2) break; await sleep(250); }
+  f('the cut-off is a setting: 14 days keeps the old reports in review, 3 days forgets them', wide[0] === 4 && wide[1] === 0 && narrow[0] === 2 && narrow[1] === 2, JSON.stringify({ wide, narrow }));
   f('the agent defaults to Claude Haiku 5.5; the checks and suggestions are on / off as seeded', /● Claude Haiku 5\.5/.test(await text('.card[data-row-key="s:agent"] .badge.active')) && /● вкл/.test(await text('.card[data-row-key="s:autocheck"] .badge.active')) && /● выкл/.test(await text('.card[data-row-key="s:autogroup"] .badge.active')));
   const g0 = await groupRows();
   f('the groups card lists the five starting groups with their counts', g0.length === 5 && /^▸?\s*1\. Omarchy\s+0 проектов$/.test(g0[0]) && /5\. Личное/.test(g0[4]), JSON.stringify(g0));
@@ -435,7 +446,7 @@ async function settingsChecks() {
   f('«Разложить заново» asks the agent even with the suggestion off, and shows it working', spin && done && gl.length === 1, JSON.stringify(await groupRows()));
   f('…it sees the groups with their hints and every project with its goal', /^Группы:\n- Omarchy — проекты вокруг Linux-окружения Omarchy/.test(gl[0].prompt) && /alpha \| Alpha \| Проект для проверки карточки/.test(gl[0].prompt) && /beta \| Beta \| Пустой проект на паузе/.test(gl[0].prompt), gl[0].prompt.slice(0, 200));
   const after = await groupRows();
-  f('…and the counts follow: Omarchy 1, Личное 1, ИИ-инфраструктура 1', /Omarchy\s+1 проект$/.test(after[0]) && /ИИ-инфраструктура\s+1 проект$/.test(after[2]) && /Личное\s+1 проект$/.test(after[4]), JSON.stringify(after));
+  f('…and the counts follow: Omarchy 1, Личное 1, ИИ-инфраструктура 13 (the other fixture projects)', /Omarchy\s+1 проект$/.test(after[0]) && /ИИ-инфраструктура\s+13 проектов$/.test(after[2]) && /Личное\s+1 проект$/.test(after[4]), JSON.stringify(after));
   const s1 = await snapshot();
   f('the guesses are marked «авто»', s1.groups.assign.alpha?.auto === true && s1.groups.assign.alpha?.g === 'Omarchy' && s1.groups.assign.gamma?.g === 'ИИ-инфраструктура' && s1.groups.on === null, JSON.stringify(s1.groups.assign));
   await shot('settings-groups.png');
@@ -641,6 +652,71 @@ async function main() {
     ['waiting', 'review', 'inbox', 'projects'].every((k) => sum.m[k] === sum.want[k]), JSON.stringify(sum));
   check('/api/summary: small, with the fields the bar icon reads', Object.keys(sum.m).length <= 10
     && ['waiting', 'review', 'updated', 'error'].every((k) => k in sum.m), JSON.stringify(sum.m));
+  if (fixture) {
+    // What waits on the user (see src/attention.rs): projects that arrived at different times, the newest on top.
+    // The coordinators' questions are checked by the cheap agent and the merge requests by glab, both in the background.
+    const readAll = () => evalJs(`Promise.all([fetch("/api/overview").then(r => r.json()), fetch("/api/summary").then(r => r.json()), fetch("/api/snapshot").then(r => r.json())]).then(([o, m, s]) => ({o, m, s}))`);
+    let ov = await readAll();
+    for (let i = 0; i < 80; i++) {
+      const pi = ov.s.projects.find((p) => p.slug === 'pi'), xi = ov.s.projects.find((p) => p.slug === 'xi');
+      if (ov.o.waiting.some((p) => p.slug === 'kappa') && pi && pi.can_close === 3 && xi && xi.coordinator_note.includes('не распознан')) break;
+      await sleep(250); ov = await readAll();
+    }
+    const slugs = (l) => l.map((p) => p.slug);
+    check('overview: «ждут тебя» by arrival, the newest first (coordinator 2 min, prompt 10 min, failed start 3 h)',
+      JSON.stringify(slugs(ov.o.waiting)) === JSON.stringify(['kappa', 'iota', 'alpha']), JSON.stringify(slugs(ov.o.waiting)));
+    check('overview: «на ревью» by arrival (a finished thread that left «Waiting for you» 5 min ago, a report 40 min ago, then pi at 1 h)',
+      JSON.stringify(slugs(ov.o.review)) === JSON.stringify(['zeta', 'eps', 'pi']), JSON.stringify(slugs(ov.o.review)));
+    check('overview: «работают» — the project whose coordinator went on working after asking waits for nothing',
+      JSON.stringify(slugs(ov.o.working)) === JSON.stringify(['lambda', 'theta']) || JSON.stringify(slugs(ov.o.working)) === JSON.stringify(['theta', 'lambda']), JSON.stringify(slugs(ov.o.working)));
+    const times = ov.o.waiting.map((p) => p.attention_since);
+    check('overview: attention_since is a time, falling down the list',
+      times.every((t) => t > 1.7e12) && times[0] > times[1] && times[1] > times[2], JSON.stringify(times));
+    const ageMin = (Date.now() - ov.o.waiting[0].attention_since) / 60000;
+    check('overview: the coordinator\'s question is 2 minutes old', ageMin > 1.5 && ageMin < 6, `${ageMin.toFixed(1)} min`);
+    check('overview: quiet projects are counted, not listed',
+      ov.o.quiet === ov.o.summary.projects - ov.o.waiting.length - ov.o.review.length - ov.o.working.length && ov.o.quiet >= 3 && !('groups' in ov.o), `quiet ${ov.o.quiet}`);
+    const hint = Object.fromEntries(ov.o.waiting.map((p) => [p.slug, p.wait_hint]));
+    check('overview: each waiting project says what waits',
+      hint.kappa === 'Запускать ли тред по расходам или подождать?' && /разрешение или вопрос в t-0001/.test(hint.iota) && hint.alpha === 'сбой запуска t-0007', JSON.stringify(hint));
+    check('summary: waiting counts the real waits, the hint names them newest first, attention_since is the newest',
+      ov.m.waiting === 3 && ov.m.attention_since === ov.o.waiting[0].attention_since && /^Kappa: Запускать ли тред по расходам или подождать\?\nIota: /.test(ov.m.waiting_hint), JSON.stringify(ov.m));
+    const zeta = ov.s.projects.find((p) => p.slug === 'zeta');
+    check('a done thread with «Waiting for you» is a review, not a bell', zeta.counts.needs === 0 && zeta.counts.review === 1, JSON.stringify(zeta.counts));
+    const lam = ov.s.projects.find((p) => p.slug === 'lambda');
+    check('a coordinator that went on working after asking waits for nothing', lam.counts.needs === 0 && lam.waits.length === 0);
+    const rowKappa = await evalJs('document.querySelector(\'.row[data-row="kappa"] .warning.strong\')?.textContent + "|" + document.querySelector(\'.row[data-row="kappa"] .warning.strong\')?.title + "|" + document.querySelector(\'.row[data-row="kappa"] .ago\')?.textContent');
+    check('the page row: «1 ждут», what the coordinator asks as its hint, and how long ago', /^1 ждут\s*\|Запускать ли тред по расходам или подождать\?\|\d+ мин|сейчас/.test(rowKappa || ''), rowKappa);
+    // The coordinator's status «Waiting for you» is not enough: its last answer must hold an open question.
+    const proj = (slug) => ov.s.projects.find((p) => p.slug === slug);
+    const asked = logLines('ask.jsonl').map((l) => l.text);
+    check('a coordinator that only says «жду указаний», one the user already answered, and a rhetorical question are no bell',
+      ['mu', 'nu', 'omi'].every((s) => proj(s).counts.needs === 0 && proj(s).waits.length === 0 && proj(s).coordinator_note === ''), JSON.stringify(['mu', 'nu', 'omi'].map((s) => proj(s).waits.length)));
+    check('the cheap agent was asked only where there is a question mark and no answer after it (kappa, omicron, xi), once each',
+      asked.length === 3 && asked.some((t) => /тред по расходам/.test(t)) && asked.some((t) => /Нужно что-то ещё/.test(t)) && asked.some((t) => /FAIL-AGENT/.test(t)) && !asked.some((t) => /жду ваших|нет/.test(t)), JSON.stringify(asked));
+    check('a check that fails or is not understood: no bell, a quiet note instead',
+      proj('xi').counts.needs === 0 && proj('xi').coordinator_note === 'координатор: статус ждёт, вопрос не распознан', JSON.stringify(proj('xi').coordinator_note));
+    const rowXi = await evalJs('document.querySelector(\'.row[data-row="xi"] .value\')?.textContent');
+    check('…and the page row says so', /коорд\.: вопрос не распознан/.test(rowXi || ''), rowXi);
+    // The review rule: a fresh unread report whose merge request is not merged; merged ones can be closed, old ones are forgotten.
+    const pi = proj('pi');
+    check('review: fresh unread reports count (MR open, glab not answering); looked-at ones do not',
+      pi.counts.review === 2, JSON.stringify(pi.counts));
+    check('review: a merged MR (even on an old thread) and a merged GitHub PR → «можно закрыть», not review', pi.can_close === 3, String(pi.can_close));
+    check('review: reports older than 3 days (no MR, or glab not answering) → «забыто», not review', pi.forgotten === 2, String(pi.forgotten));
+    check('the quiet ones are not in the bar or the popup (review 2 only) and the page shows them grey',
+      ov.o.review.find((p) => p.slug === 'pi').review === 2 && ov.s.projects.every((p) => p.slug !== 'pi' || p.counts.review === 2), '');
+    const rowPi = await evalJs('document.querySelector(\'.row[data-row="pi"] .value\')?.textContent');
+    check('…the page row: «2 ревью», «2 забыто», «3 можно закрыть»', /2 ревью/.test(rowPi || '') && /2 забыто/.test(rowPi || '') && /3 можно закрыть/.test(rowPi || ''), rowPi);
+    const glab = logLines('glab.jsonl').map((l) => l.argv.at(-1));
+    check('glab was asked once per merge request, only for threads in review', glab.length === 4 && new Set(glab).size === 4 && glab.every((a) => /^projects\/g%2Fpi\/merge_requests\/1[0-3]$/.test(a)), JSON.stringify(glab));
+    await evalJs('fetch("/api/refresh", { method: "POST" })');
+    await sleep(3000);
+    check('a refresh asks neither the agent nor glab again (cached)', logLines('ask.jsonl').length === 3 && logLines('glab.jsonl').length === 4, `${logLines('ask.jsonl').length} / ${logLines('glab.jsonl').length}`);
+    const first = await evalJs('(() => { document.querySelector("[data-act=sort]").click(); return [...document.querySelectorAll(".row[data-row]:not(.newrow)")].slice(0, 5).map((r) => r.getAttribute("data-row")); })()');
+    check('sorted by attention the page puts the newest event on top', first[0] === 'kappa' && first[1] === 'zeta' && first[2] === 'iota', JSON.stringify(first));
+    await evalJs('document.querySelector("[data-act=sort]").click()');
+  }
   await shot('list.png');
 
   await key('ArrowDown');
@@ -663,6 +739,8 @@ async function main() {
   await key('s');
   const sort = await evalJs('document.querySelector("[data-act=sort]")?.textContent');
   check('S toggles the sort', /внимание/.test(sort || ''), sort);
+  await key('s');
+  check('S toggles it back', /новые/.test(await evalJs('document.querySelector("[data-act=sort]")?.textContent') || ''));
   await key('Escape');
   check('Escape resets the chip', /Все/.test(await evalJs('document.querySelector(".badge.active")?.textContent') || ''));
 
