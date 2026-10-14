@@ -124,7 +124,7 @@ fn sync_workspace(app: &Shared) {
 }
 
 pub async fn workspace_loop(app: Shared) {
-    let argv = runner::argv(["herdr", "workspace", "list"]);
+    let argv = runner::argv([app.config.herdr.as_str(), "workspace", "list"]);
     loop {
         if let Ok(out) = runner::run(&argv, None, Duration::from_secs(5)).await {
             if out.ok() {

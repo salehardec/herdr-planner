@@ -14,6 +14,46 @@ pub struct Task {
     pub owner: Option<String>,
     /// `t-NNNN` after a trailing ` · `, if any.
     pub thread: Option<String>,
+    /// `full` cut to one line of the card.
+    pub text: String,
+    /// The indented lines under the task (its notes), joined with line breaks.
+    pub notes: String,
+    /// A thread already works on it: it cannot be given up from the card.
+    pub thread_led: bool,
+}
+
+/// `s` cut to `n` characters, with an ellipsis.
+pub fn clip(s: &str, n: usize) -> String {
+    if s.chars().count() <= n {
+        return s.to_string();
+    }
+    let mut out: String = s.chars().take(n.saturating_sub(1)).collect();
+    out.push('…');
+    out
+}
+
+/// A thread leads the task when the line ends with ` · t-NNNN` or `→ t-NNNN)`.
+fn led_by_thread(full: &str) -> bool {
+    let tail = full.trim_end();
+    let ends_id = |s: &str| {
+        let id = s
+            .rsplit(|c: char| !c.is_ascii_alphanumeric() && c != '-')
+            .next()
+            .unwrap_or("");
+        id.strip_prefix("t-")
+            .is_some_and(|d| !d.is_empty() && d.chars().all(|c| c.is_ascii_digit()))
+    };
+    if let Some((_, t)) = tail.rsplit_once('·') {
+        if ends_id(t.trim()) {
+            return true;
+        }
+    }
+    if let Some(inner) = tail.strip_suffix(')') {
+        if let Some((_, t)) = inner.rsplit_once('→') {
+            return ends_id(t.trim());
+        }
+    }
+    false
 }
 
 /// Drops the markdown that would only clutter a one-line view: bold/italic
@@ -42,28 +82,47 @@ pub fn strip_md(s: &str) -> String {
     out.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
+/// `- [ ] text` / `- [x] text`: whether it is done, and the text after the box.
+fn checkbox(t: &str) -> Option<(bool, &str)> {
+    let rest = t
+        .strip_prefix("- ")
+        .or_else(|| t.strip_prefix("* "))?
+        .trim_start();
+    if let Some(x) = rest.strip_prefix("[ ]") {
+        Some((false, x))
+    } else {
+        rest.strip_prefix("[x]")
+            .or_else(|| rest.strip_prefix("[X]"))
+            .map(|x| (true, x))
+    }
+}
+
 pub fn parse_tasks(content: &str) -> Vec<Task> {
-    let mut out = Vec::new();
+    let mut out: Vec<Task> = Vec::new();
+    // Indented lines belong to the task above until a blank line or a new task.
+    let mut open_notes = false;
     for line in content.lines() {
         let t = line.trim_start();
-        let Some(rest) = t.strip_prefix("- ").or_else(|| t.strip_prefix("* ")) else {
+        let indented = line.len() > t.len();
+        let Some((done, text)) = checkbox(t) else {
+            if indented && open_notes && !t.is_empty() {
+                if let Some(last) = out.last_mut() {
+                    if !last.notes.is_empty() {
+                        last.notes.push('\n');
+                    }
+                    last.notes.push_str(t.trim_end());
+                }
+            } else {
+                open_notes = false;
+            }
             continue;
         };
-        let rest = rest.trim_start();
-        let (done, text) = if let Some(x) = rest.strip_prefix("[ ]") {
-            (false, x)
-        } else if let Some(x) = rest
-            .strip_prefix("[x]")
-            .or_else(|| rest.strip_prefix("[X]"))
-        {
-            (true, x)
-        } else {
-            continue;
-        };
+        open_notes = false;
         let text = text.trim();
         if text.is_empty() {
             continue;
         }
+        open_notes = true;
         let full = strip_md(text);
         let owner = full
             .strip_prefix('(')
@@ -77,12 +136,16 @@ pub fn parse_tasks(content: &str) -> Vec<Task> {
                 t.starts_with("t-") && t[2..].chars().all(|c| c.is_ascii_digit()) && t.len() > 2
             })
             .map(String::from);
+        let thread_led = thread.is_some() || led_by_thread(&full);
         out.push(Task {
             idx: out.len() + 1,
             done,
+            text: clip(&full, 260),
             full,
             owner,
             thread,
+            notes: String::new(),
+            thread_led,
         });
     }
     out
@@ -106,6 +169,21 @@ mod tests {
         assert_eq!(t[2].full, "0.7.0: треды через thread list (2026-10-12)");
         assert_eq!(t[3].owner.as_deref(), Some("Priya Rao"));
         assert_eq!(t[3].idx, 4);
+    }
+
+    #[test]
+    fn notes_under_a_task() {
+        let text = "## Backlog\n- [ ] Этап 2 (claude-sonnet) · t-0001\n  Треды: git-строки.\n  Задачи: решить.\n- [ ] Второй\n\n  Не заметка после пустой строки\n- [x] Третий → t-0007)\n";
+        let t = parse_tasks(text);
+        assert_eq!(t.len(), 3);
+        assert_eq!(t[0].notes, "Треды: git-строки.\nЗадачи: решить.");
+        assert!(t[0].thread_led);
+        assert_eq!(t[1].notes, "");
+        assert!(!t[1].thread_led);
+        assert!(t[2].thread_led);
+        assert_eq!(clip("абвгд", 3), "аб…");
+        assert!(led_by_thread("Сделать (x → t-0042)"));
+        assert!(!led_by_thread("Сделать · не тред"));
     }
 
     #[test]

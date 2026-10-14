@@ -14,6 +14,9 @@
 /** @typedef {{is_light:boolean, vars:Record<string,string>}} Side */
 /** @typedef {{name:string, system:boolean, dark:Side, light:Side|null, ui:{family:string|null,size:number}, terminal:{family:string|null,size:number}, error:string|null}} Theme */
 
+import { esc, h, plural, clip, textMatches, post, keyOf } from './util.js';
+import * as Card from './card.js';
+
 const OTHER = 'Прочее';
 const NEW_ROW = '+new';
 const GROUP_PREFIX = 'g:';
@@ -32,12 +35,6 @@ export function chipMatch(p, chip) {
   if (chip === 'inbox') return p.inbox > 0;
   if (chip === 'idle') return p.status !== 'active';
   return true;
-}
-
-/** @param {string} hay @param {string} needle */
-export function textMatches(hay, needle) {
-  const h = hay.toLowerCase();
-  return needle.split(/\s+/).filter(Boolean).every((w) => h.includes(w.toLowerCase()));
 }
 
 /** @param {Project[]} list @param {'new'|'attention'} mode */
@@ -74,17 +71,6 @@ export function groupOf(g, slug) {
 /** @param {Counts} c */
 const total = (c) => c.review + c.working + c.resolved + c.blocked + c.needs;
 
-/** @param {number} n @param {string} one @param {string} few @param {string} many */
-function plural(n, one, few, many) {
-  const m10 = n % 10, m100 = n % 100;
-  if (m10 === 1 && m100 !== 11) return one;
-  if (m10 >= 2 && m10 <= 4 && (m100 < 12 || m100 > 14)) return few;
-  return many;
-}
-
-/** @param {string} s @param {number} n */
-const clip = (s, n) => (s.length > n ? s.slice(0, n - 1) + '…' : s);
-
 // ---------------------------------------------------------------------------
 // State
 
@@ -96,8 +82,6 @@ const view = {
   /** @type {'new'|'attention'} */ sort: 'new',
   /** @type {string|null} */ hl: null,
   /** @type {string|null} */ selected: null,
-  /** @type {any} */ detail: null,
-  detailLoading: false,
   help: false,
   filtering: false,
   /** @type {{slug:string, at:number, err:string|null, adding:boolean}|null} */ gpick: null,
@@ -133,14 +117,6 @@ window.matchMedia('(prefers-color-scheme: light)').addEventListener('change', ()
 // ---------------------------------------------------------------------------
 // Server
 
-/** @param {string} url @param {any} body */
-async function post(url, body) {
-  const r = await fetch(url, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
-  const data = await r.json().catch(() => ({}));
-  if (!r.ok) throw new Error(data.error || `HTTP ${r.status}`);
-  return data;
-}
-
 function connect() {
   const es = new EventSource('/api/events');
   es.addEventListener('theme', (e) => { applyTheme(JSON.parse(/** @type {MessageEvent} */ (e).data)); render(); });
@@ -148,29 +124,17 @@ function connect() {
     const snap = /** @type {Snapshot} */ (JSON.parse(/** @type {MessageEvent} */ (e).data));
     view.snap = snap;
     followWorkspace(snap.workspace);
-    if (view.selected) loadDetail(view.selected);
+    if (view.selected) Card.load();
     render();
   });
+  es.addEventListener('card', (e) => Card.onCardEvent(JSON.parse(/** @type {MessageEvent} */ (e).data)));
+  es.addEventListener('solve', (e) => Card.onSolveEvent(JSON.parse(/** @type {MessageEvent} */ (e).data)));
   es.addEventListener('workspace', (e) => {
     followWorkspace(JSON.parse(/** @type {MessageEvent} */ (e).data));
     render();
   });
   es.onerror = () => { view.status = 'нет связи с сервером, переподключение…'; render(); };
   es.onopen = () => { view.status = null; render(); };
-}
-
-/** @param {string} slug */
-async function loadDetail(slug) {
-  view.detailLoading = view.detail == null;
-  try {
-    const r = await fetch(`/api/project/${encodeURIComponent(slug)}`);
-    const d = await r.json();
-    if (view.selected === slug) view.detail = d;
-  } catch (e) {
-    if (view.selected === slug) view.detail = { error: String(e) };
-  }
-  view.detailLoading = false;
-  render();
 }
 
 // ---------------------------------------------------------------------------
@@ -186,7 +150,7 @@ function followWorkspace(ws) {
 }
 
 function typing() {
-  return view.filtering || view.gpick != null;
+  return view.filtering || view.gpick != null || (view.selected != null && Card.typing());
 }
 
 function settleFollow() {
@@ -201,15 +165,14 @@ function settleFollow() {
 /** @param {string} slug */
 function selectProject(slug) {
   view.selected = slug;
-  view.detail = null;
   view.help = false;
-  loadDetail(slug);
+  Card.open(slug);
 }
 
 function backToList() {
   view.hl = view.selected;
   view.selected = null;
-  view.detail = null;
+  Card.close();
 }
 
 // ---------------------------------------------------------------------------
@@ -296,6 +259,7 @@ function refresh() {
   if (view.snap) view.snap.loading = true;
   render();
   post('/api/refresh', {}).catch(() => {});
+  if (view.selected) Card.load();
 }
 
 function toggleSort() {
@@ -312,11 +276,11 @@ function foldGroup(name, folded) {
   post('/api/groups', { op: 'fold', name, folded }).catch((e) => flash(String(e.message)));
 }
 
-/** @param {string} msg */
-function flash(msg) {
+/** @param {string} msg @param {number} [ms] */
+function flash(msg, ms = 4000) {
   view.status = msg;
   render();
-  setTimeout(() => { if (view.status === msg) { view.status = null; render(); } }, 4000);
+  setTimeout(() => { if (view.status === msg) { view.status = null; render(); } }, ms);
 }
 
 /** @param {'focus'|'open'} kind */
@@ -380,7 +344,8 @@ function gpickAdd(name) {
 document.addEventListener('keydown', (ev) => {
   const target = /** @type {HTMLElement} */ (ev.target);
   const inInput = target && target.tagName === 'INPUT';
-  const k = ev.key;
+  // Shortcuts mean the same on a Russian layout; fields get the keys as typed.
+  const k = inInput ? ev.key : keyOf(ev);
   if (view.gpick) {
     if (view.gpick.adding) {
       if (k === 'Escape') { view.gpick.adding = false; render(); ev.preventDefault(); }
@@ -392,6 +357,11 @@ document.addEventListener('keydown', (ev) => {
     else if (k === 'Escape') { view.gpick = null; render(); settleFollow(); }
     else return;
     ev.preventDefault();
+    return;
+  }
+  if (inInput && view.selected) {
+    // The card's fields (filter, question) handle their own keys.
+    if (Card.inputKey(ev, target)) ev.preventDefault();
     return;
   }
   if (inInput) {
@@ -406,12 +376,13 @@ document.addEventListener('keydown', (ev) => {
     return;
   }
   if (ev.ctrlKey || ev.metaKey || ev.altKey) return;
+  if (view.selected && Card.key(ev)) { ev.preventDefault(); return; }
   if (k === '/') { view.filtering = true; render(); focusFilter(); ev.preventDefault(); return; }
   if (k === 'r') { refresh(); return; }
   if (k === 'o') { runAction('open'); return; }
   if (k === 'f') { runAction('focus'); return; }
   if (k === 'Escape') {
-    // The list keeps its filter while a project is open (the card gets its own filter in stage 2).
+    // The list keeps its filter while a project is open; the card has its own.
     if (view.selected) backToList();
     else if (view.help) view.help = false;
     else if (view.query !== '' || view.chip !== 'all') { view.query = ''; view.chip = 'all'; }
@@ -449,17 +420,6 @@ function focusFilter() {
 
 // ---------------------------------------------------------------------------
 // Rendering
-
-/** @param {string} s */
-function esc(s) {
-  return s.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c] || c);
-}
-
-/** @param {string} tag @param {Record<string,string>} attrs @param {string} inner */
-function h(tag, attrs, inner) {
-  const a = Object.entries(attrs).map(([k, v]) => ` ${k}="${esc(v)}"`).join('');
-  return `<${tag}${a}>${inner}</${tag}>`;
-}
 
 function ageText() {
   const s = view.snap;
@@ -575,8 +535,8 @@ function dockHtml() {
   /** @param {string[]} keys @param {string} text */
   const hint = (keys, text) => h('span', {}, keys.map((k) => `<kbd>${esc(k)}</kbd>`).join('') + ' ' + esc(text));
   if (view.gpick) return h('div', { class: 'dock' }, hint(['↑', '↓'], 'группа') + hint(['↵'], 'выбрать') + hint(['esc'], 'назад'));
-  if (view.filtering) return h('div', { class: 'dock' }, hint(['↵'], view.selected ? 'готово' : 'открыть первый') + hint(['esc'], 'выйти из фильтра'));
-  if (view.selected) return h('div', { class: 'dock' }, hint(['o'], 'открыть в herdr') + hint(['f'], 'фокус') + hint(['r'], 'обновить') + hint(['esc'], 'назад'));
+  if (view.filtering && !view.selected) return h('div', { class: 'dock' }, hint(['↵'], 'открыть первый') + hint(['esc'], 'выйти из фильтра'));
+  if (view.selected) return h('div', { class: 'dock' }, Card.dock(hint));
   if (!view.help) return h('div', { class: 'dock' }, hint(['?'], 'все клавиши'));
   return h('div', { class: 'dock' },
     hint(['↑', '↓'], 'выбор') + hint(['↵'], 'открыть (или двойной клик)') + hint(['f'], 'фокус') + hint(['o'], 'открыть в herdr')
@@ -606,56 +566,35 @@ function gpickHtml() {
     h('div', { class: 'dialog', role: 'dialog' }, h('h2', {}, `Группа для «${esc(p ? p.name : gp.slug)}»`) + body));
 }
 
-function detailHtml() {
-  const slug = view.selected;
-  const p = view.snap?.projects.find((x) => x.slug === slug) || view.detail?.project;
-  if (!slug) return '';
-  const d = view.detail;
-  let out = h('div', { class: 'header' },
-    h('span', { class: 'badge back', 'data-act': 'back' }, '← Назад')
-    + h('div', { class: 'title' }, h('strong', {}, esc(p ? p.name : slug)) + (p && p.goal ? h('span', { class: 'muted' }, ` · ${esc(p.goal)}`) : ''))
-    + h('span', { class: 'badge', 'data-act': 'focus' }, 'Фокус <kbd>F</kbd>') + h('span', { class: 'badge', 'data-act': 'open' }, 'Открыть в herdr <kbd>O</kbd>')
-    + h('span', { class: 'stamp', 'data-act': 'refresh' }, esc(view.snap?.loading ? 'обновление… ↻' : `обновлено ${ageText()} ↻`)));
-  let card = '';
-  if (p) {
-    const c = p.counts;
-    let kv = h('span', { class: 'k' }, 'Состояние') + h('span', {}, `${STATUS_ICON[/** @type {'active'} */ (p.status)] || ''} ${STATUS_LABEL[/** @type {'active'} */ (p.status)] || esc(p.status)}`);
-    kv += h('span', { class: 'k' }, 'Треды') + h('span', {}, [c.needs > 0 ? `${c.needs} ждут` : '', c.review > 0 ? `${c.review} ревью` : '', c.working > 0 ? `${c.working} в работе` : '', c.blocked > 0 ? `${c.blocked} блок` : '', `${c.resolved} сделано`].filter(Boolean).join(' · '));
-    if (p.inbox > 0) kv += h('span', { class: 'k' }, 'Входящие') + h('span', { class: 'info' }, String(p.inbox));
-    if (p.repos.length) kv += h('span', { class: 'k' }, p.repos.length === 1 ? 'Репозиторий' : 'Репозитории') + h('span', {}, p.repos.map((r) => h('span', { class: 'path' }, esc(r.path)) + (r.machine ? h('span', { class: 'muted' }, ` @${esc(r.machine)}`) : '')).join('<br>'));
-    card += h('div', { class: 'kv' }, kv);
-  }
-  card += h('div', { class: 'stub' }, 'Карточка проекта (треды с git-строками, задачи с «Решить» и вопросами) появится на этапе 2. Пока здесь задачи и треды как есть.');
-  if (view.detailLoading) card += h('div', { class: 'note' }, '◌ Читаю треды и задачи…');
-  if (d && d.error) card += h('div', { class: 'note error' }, esc(d.error));
-  if (d && d.tasks) {
-    const open = d.tasks.filter((/** @type {any} */ t) => !t.done);
-    card += h('h3', {}, `Сделать · ${open.length}`);
-    card += h('ul', {}, open.map((/** @type {any} */ t) => h('li', {}, esc(t.full) + (t.thread ? h('span', { class: 'muted' }, ` · ${esc(t.thread)}`) : ''))).join('') || h('li', { class: 'muted' }, 'задач нет'));
-  }
-  if (d && d.threads) {
-    for (const g of d.threads) {
-      card += h('h3', {}, `${esc(g.name)} · ${g.threads.length}`);
-      card += h('ul', {}, g.threads.map((/** @type {any} */ t) => h('li', {}, h('span', { class: 'muted' }, esc(t.id)) + ' ' + esc(t.title)
-        + (t.note ? h('span', { class: 'muted' }, ` · ${esc(t.note)}`) : '') + (t.failed || (t.status === 'failed') ? h('span', { class: 'error' }, ' ✕ сбой запуска') : ''))).join(''));
-    }
-  }
-  out += h('div', { class: 'card' }, card);
-  return out;
-}
+/** The fields whose text and caret survive a re-render. */
+const FIELDS = ['filter', 'cfilter', 'cask'];
+
+/** True while render() swaps the page: replacing a focused field fires focus events that are not the user's. */
+let rendering = false;
 
 function render() {
-  const active = document.activeElement;
-  const filterHadFocus = active && active.id === 'filter';
-  const sel = filterHadFocus ? [/** @type {HTMLInputElement} */ (active).selectionStart, /** @type {HTMLInputElement} */ (active).selectionEnd] : null;
+  if (rendering) return;
+  rendering = true;
+  try { paint(); } finally { rendering = false; }
+}
+
+function paint() {
+  const active = /** @type {HTMLInputElement|null} */ (document.activeElement);
+  const fieldId = active && FIELDS.includes(active.id) ? active.id : null;
+  const sel = fieldId && active ? [active.selectionStart, active.selectionEnd] : null;
+  // The scrolled list keeps its place, as long as the same list is on screen.
+  const scrolled = /** @type {HTMLElement|null} */ (root.querySelector('[data-scroll]'));
+  const scroll = scrolled ? { key: scrolled.getAttribute('data-scroll'), top: scrolled.scrollTop } : null;
   let html = '';
-  if (view.selected) html = detailHtml();
+  if (view.selected) html = Card.html();
   else html = headerHtml() + controlsHtml() + (view.status ? h('div', { class: 'note' }, esc(view.status)) : '') + listHtml();
   if (view.selected && view.status) html += h('div', { class: 'note' }, esc(view.status));
   html += dockHtml() + gpickHtml();
   root.innerHTML = html;
-  if (filterHadFocus) {
-    const input = /** @type {HTMLInputElement|null} */ (root.querySelector('#filter'));
+  const again = /** @type {HTMLElement|null} */ (root.querySelector('[data-scroll]'));
+  if (scroll && again && again.getAttribute('data-scroll') === scroll.key) again.scrollTop = scroll.top;
+  if (fieldId) {
+    const input = /** @type {HTMLInputElement|null} */ (root.querySelector('#' + fieldId));
     if (input) { input.focus(); if (sel && sel[0] != null && sel[1] != null) input.setSelectionRange(sel[0], sel[1]); }
   }
   if (view.gpick?.adding) root.querySelector('#gnew')?.addEventListener('keydown', (ev) => {
@@ -678,9 +617,11 @@ root.addEventListener('click', (ev) => {
     else if (a === 'back') { backToList(); render(); }
     else if (a === 'focus') runAction('focus');
     else if (a === 'open') runAction('open');
+    else if (a === 'usage') flash('«Траты агентов» — отдельная утилита, в планировщике появится позже.');
     else if (a === 'gpick-close') { view.gpick = null; render(); settleFollow(); }
     return;
   }
+  if (view.selected && Card.click(el)) return;
   const gp = el.closest('[data-gpick]');
   if (gp) { gpickChoose(gp.getAttribute('data-gpick') || ''); return; }
   const chip = el.closest('[data-chip]');
@@ -706,13 +647,31 @@ root.addEventListener('dblclick', (ev) => {
 root.addEventListener('input', (ev) => {
   const el = /** @type {HTMLInputElement} */ (ev.target);
   if (el.id === 'filter') { view.query = el.value; render(); }
+  else Card.input(el);
 });
 // render() re-creates the field and refocuses it, so only a change of state re-renders.
-root.addEventListener('focusin', (ev) => { if (/** @type {HTMLElement} */ (ev.target).id === 'filter' && !view.filtering) { view.filtering = true; render(); } });
-root.addEventListener('focusout', (ev) => { if (/** @type {HTMLElement} */ (ev.target).id === 'filter' && view.filtering) { view.filtering = false; render(); settleFollow(); } });
+root.addEventListener('focusin', (ev) => {
+  if (rendering) return;
+  const el = /** @type {HTMLElement} */ (ev.target);
+  if (el.id === 'filter' && !view.filtering) { view.filtering = true; render(); }
+  else if (view.selected) Card.focusChange(el, true);
+});
+root.addEventListener('focusout', (ev) => {
+  if (rendering) return;
+  const el = /** @type {HTMLElement} */ (ev.target);
+  if (el.id === 'filter' && view.filtering) { view.filtering = false; render(); settleFollow(); }
+  else if (view.selected && el.id === 'cfilter') { Card.focusChange(el, false); settleFollow(); }
+});
 
 // The «обновлено … с назад» stamp ticks without a server event.
-setInterval(() => { if (!view.filtering && !view.gpick) { const st = root.querySelector('.stamp'); if (st && view.snap && !view.snap.loading) st.textContent = `обновлено ${ageText()} ↻`; } }, 5000);
+setInterval(() => { if (!view.filtering && !view.gpick && !Card.typing()) { const st = root.querySelector('.stamp'); if (st && view.snap && !view.snap.loading) st.textContent = `обновлено ${ageText()} ↻`; } }, 5000);
 
+Card.init({
+  render,
+  flash,
+  root,
+  project: (slug) => view.snap?.projects.find((p) => p.slug === slug) || null,
+  stamp: () => (view.snap?.loading ? 'обновление… ↻' : `обновлено ${ageText()} ↻`),
+});
 render();
 connect();

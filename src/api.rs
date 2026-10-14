@@ -1,11 +1,13 @@
 //! HTTP: the embedded page, the JSON API and the SSE event stream.
 
+use crate::actions::{self, Failure};
 use crate::app::{Event, Shared};
+use crate::cards;
 use crate::model::OTHER;
-use crate::poller;
-use crate::sources::{runner, tasks, threads};
-use axum::extract::{Path, State};
+use crate::sources::runner;
+use axum::extract::{Path, Request, State};
 use axum::http::{header, StatusCode};
+use axum::middleware::{self, Next};
 use axum::response::sse::{self, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
@@ -20,12 +22,16 @@ use tokio_stream::wrappers::BroadcastStream;
 pub const INDEX_HTML: &str = include_str!("../web/index.html");
 pub const APP_CSS: &str = include_str!("../web/app.css");
 pub const APP_JS: &str = include_str!("../web/app.js");
+pub const UTIL_JS: &str = include_str!("../web/util.js");
+pub const CARD_JS: &str = include_str!("../web/card.js");
 
 pub fn router(app: Shared) -> Router {
     Router::new()
         .route("/", get(index))
         .route("/app.css", get(css))
         .route("/app.js", get(js))
+        .route("/util.js", get(util_js))
+        .route("/card.js", get(card_js))
         .route("/api/snapshot", get(snapshot))
         .route("/api/theme", get(theme))
         .route("/api/events", get(events))
@@ -33,7 +39,61 @@ pub fn router(app: Shared) -> Router {
         .route("/api/groups", post(groups))
         .route("/api/action", post(action))
         .route("/api/project/{slug}", get(project))
+        .route("/api/project/{slug}/thread/{id}", get(thread_detail))
+        .route("/api/project/{slug}/thread/{id}/worktree", post(worktree))
+        .route("/api/project/{slug}/assignable", get(assignable))
+        .route("/api/project/{slug}/solve", post(solve))
+        .route("/api/project/{slug}/remove", post(remove))
+        .route("/api/project/{slug}/ask", post(ask))
+        .layer(middleware::from_fn(local_only))
         .with_state(app)
+}
+
+/// The name part of `host[:port]`, `[::1]:port` included.
+fn host_name(host: &str) -> &str {
+    if let Some(rest) = host.strip_prefix('[') {
+        return rest.split(']').next().unwrap_or("");
+    }
+    host.rsplit_once(':').map_or(host, |(name, port)| {
+        if port.chars().all(|c| c.is_ascii_digit()) {
+            name
+        } else {
+            host
+        }
+    })
+}
+
+/// Whether `host` (a Host header, or the host part of an Origin) is this machine.
+pub fn host_is_local(host: &str) -> bool {
+    matches!(host_name(host), "127.0.0.1" | "localhost" | "::1")
+}
+
+/// The server listens on 127.0.0.1 only, but a web page on another site can
+/// still reach it through the browser: by a DNS name that is made to point
+/// here (the Host header then names that site), or by a cross-site request
+/// (the Origin header names it). Both are refused; the card can send prompts
+/// to coordinators and start agents, so this matters.
+async fn local_only(req: Request, next: Next) -> Response {
+    let headers = req.headers();
+    let host_ok = headers
+        .get(header::HOST)
+        .and_then(|h| h.to_str().ok())
+        .is_some_and(host_is_local);
+    let origin_ok = headers
+        .get(header::ORIGIN)
+        .and_then(|o| o.to_str().ok())
+        .is_none_or(|o| {
+            o.split_once("://")
+                .is_some_and(|(_, host)| host_is_local(host))
+        });
+    if !host_ok || !origin_ok {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(json!({"error": "только с этого компьютера"})),
+        )
+            .into_response();
+    }
+    next.run(req).await
 }
 
 fn asset(mime: &'static str, body: &'static str) -> Response {
@@ -57,6 +117,14 @@ async fn css() -> Response {
 
 async fn js() -> Response {
     asset("text/javascript; charset=utf-8", APP_JS)
+}
+
+async fn util_js() -> Response {
+    asset("text/javascript; charset=utf-8", UTIL_JS)
+}
+
+async fn card_js() -> Response {
+    asset("text/javascript; charset=utf-8", CARD_JS)
 }
 
 async fn snapshot(State(app): State<Shared>) -> Json<Value> {
@@ -203,63 +271,119 @@ async fn action(State(app): State<Shared>, Json(a): Json<Action>) -> Response {
     }
 }
 
-/// The project card's data (stage 2 draws it): the project, its tasks and
-/// its threads grouped as herdr groups them.
+fn failure(f: Failure) -> Response {
+    let status = StatusCode::from_u16(f.0).unwrap_or(StatusCode::BAD_REQUEST);
+    (status, Json(json!({"error": f.1}))).into_response()
+}
+
+fn bad_slug() -> Response {
+    failure((400, "нет проекта".into()))
+}
+
+/// The project card's data: the project, its tasks, its threads (with git
+/// lines and model badges), saved answers and «sent» marks.
 async fn project(State(app): State<Shared>, Path(slug): Path<String>) -> Response {
-    if slug.is_empty() || slug.contains('/') || slug.starts_with('.') || slug.starts_with('-') {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(json!({"error": "нет проекта"})),
-        )
-            .into_response();
+    if !cards::valid_slug(&slug) {
+        return bad_slug();
     }
-    let known = app
-        .snapshot
-        .read()
-        .unwrap()
-        .projects
-        .iter()
-        .find(|p| p.slug == slug)
-        .cloned();
-    let dir = app.config.project_dir(&slug);
-    let project = known.unwrap_or_else(|| {
-        let mut p = crate::model::Project {
-            slug: slug.clone(),
-            name: slug.clone(),
-            status: "active".into(),
-            ..Default::default()
-        };
-        poller::enrich(&mut p, &dir);
-        p
-    });
-    let task_text = tokio::fs::read_to_string(dir.join("TASKS.md")).await.ok();
-    let task_list = task_text
-        .as_deref()
-        .map(tasks::parse_tasks)
-        .unwrap_or_default();
-    let argv = runner::argv([
-        app.config.herdr_projects.as_str(),
-        "--root",
-        &app.config.root.display().to_string(),
-        "thread",
-        "list",
-        &slug,
-        "--json",
-    ]);
-    let (groups, error) = match runner::run(&argv, None, Duration::from_secs(20)).await {
-        Ok(out) if out.ok() => match threads::parse_threads(&out.stdout) {
-            Ok(g) => (g, None),
-            Err(e) => (vec![], Some(e)),
-        },
-        Ok(out) => (vec![], Some(out.error())),
-        Err(e) => (vec![], Some(e)),
-    };
-    Json(json!({
-        "project": project,
-        "tasks": task_list,
-        "tasks_read": task_text.is_some(),
-        "threads": groups,
-        "error": error,
-    }))
-    .into_response()
+    Json(cards::build(&app, &slug).await).into_response()
+}
+
+/// An opened thread: its git in full (diff stat, last commits, files not committed).
+async fn thread_detail(
+    State(app): State<Shared>,
+    Path((slug, id)): Path<(String, String)>,
+) -> Response {
+    if !cards::valid_slug(&slug) {
+        return bad_slug();
+    }
+    match cards::thread_detail(&app, &slug, &id).await {
+        Ok(v) => Json(v).into_response(),
+        Err(e) => failure((404, e)),
+    }
+}
+
+/// `w`: opens the thread's worktree in herdr.
+async fn worktree(State(app): State<Shared>, Path((slug, id)): Path<(String, String)>) -> Response {
+    if !cards::valid_slug(&slug) {
+        return bad_slug();
+    }
+    match cards::open_worktree(&app, &slug, &id).await {
+        Ok(()) => Json(json!({"ok": true})).into_response(),
+        Err(e) => failure((502, e)),
+    }
+}
+
+/// The profiles a task of the project can be handed to.
+async fn assignable(State(app): State<Shared>, Path(slug): Path<String>) -> Response {
+    if !cards::valid_slug(&slug) {
+        return bad_slug();
+    }
+    match cards::assignable(&app, &slug).await {
+        Ok(a) => Json(json!({"profiles": a.profiles, "error": null})).into_response(),
+        Err(e) => Json(json!({"profiles": [], "error": e})).into_response(),
+    }
+}
+
+#[derive(Deserialize)]
+struct TaskReq {
+    #[serde(default)]
+    task: String,
+    #[serde(default)]
+    profile: Option<String>,
+    #[serde(default)]
+    question: String,
+}
+
+fn done(r: Result<(), Failure>) -> Response {
+    match r {
+        Ok(()) => Json(json!({"ok": true})).into_response(),
+        Err(f) => failure(f),
+    }
+}
+
+/// «Решить»: the coordinator is asked to take the task (the project is
+/// opened first when it is not).
+async fn solve(
+    State(app): State<Shared>,
+    Path(slug): Path<String>,
+    Json(r): Json<TaskReq>,
+) -> Response {
+    done(actions::solve(&app, &slug, &r.task, r.profile.as_deref()).await)
+}
+
+/// «Не решать»: the coordinator is asked to remove the line from TASKS.md.
+async fn remove(
+    State(app): State<Shared>,
+    Path(slug): Path<String>,
+    Json(r): Json<TaskReq>,
+) -> Response {
+    done(actions::remove(&app, &slug, &r.task).await)
+}
+
+/// «Задать вопрос»: the cheap agent answers in the background.
+async fn ask(
+    State(app): State<Shared>,
+    Path(slug): Path<String>,
+    Json(r): Json<TaskReq>,
+) -> Response {
+    done(actions::ask(&app, &slug, &r.task, &r.question).await)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_this_machine_is_local() {
+        assert!(host_is_local("127.0.0.1:7117"));
+        assert!(host_is_local("localhost:7117"));
+        assert!(host_is_local("localhost"));
+        assert!(host_is_local("[::1]:7117"));
+        assert!(!host_is_local("evil.example:7117"));
+        assert!(!host_is_local("127.0.0.1.evil.example"));
+        assert!(!host_is_local("evil.example"));
+        assert!(!host_is_local(""));
+        assert_eq!(host_name("a:b"), "a:b");
+    }
 }

@@ -1,9 +1,6 @@
 //! `herdr-projects thread list <slug> --json`: one object per thread.
 //! Threads are grouped by `group` in order of first appearance.
 
-// Reference logic: parts are used only by tests and by stages 2–4 (the page mirrors the list logic).
-#![allow(dead_code)]
-
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -34,6 +31,7 @@ pub struct Thread {
     pub next: Vec<String>,
     pub created: String,
     pub updated: String,
+    pub rank: Option<u32>,
 }
 
 impl Thread {
@@ -58,6 +56,117 @@ impl Thread {
     pub fn remote(&self) -> bool {
         self.remote_profile || !self.machine.is_empty()
     }
+
+    /// Only a worktree thread has a directory of its own; a tab or checkout
+    /// thread works in the project's.
+    pub fn own_path(&self) -> Option<&str> {
+        if self.kind == "worktree" {
+            self.path()
+        } else {
+            None
+        }
+    }
+
+    /// The pull request number in `…/pull/N`.
+    pub fn pr_number(&self) -> Option<u32> {
+        let (_, rest) = self.pr.split_once("/pull/")?;
+        let digits: String = rest.chars().take_while(char::is_ascii_digit).collect();
+        digits.parse().ok()
+    }
+
+    /// The worktree as herdr names it: the branch, else the folder once the branch is gone.
+    pub fn worktree_name(&self) -> Option<String> {
+        if !self.branch.is_empty() {
+            return Some(self.branch.clone());
+        }
+        let path = self.worktree_path.trim_end_matches('/');
+        path.rsplit('/')
+            .next()
+            .filter(|n| !n.is_empty())
+            .map(String::from)
+    }
+}
+
+/// `hp/<project>/t-0115-18-prisma` reads as `t-0115-18-prisma` inside its project.
+pub fn short_worktree(name: &str, slug: &str) -> String {
+    let prefix = format!("hp/{slug}/");
+    name.strip_prefix(&prefix).unwrap_or(name).to_string()
+}
+
+/// A herdr thread group in words, and the order groups ask for attention.
+pub fn group_word(group: &str) -> String {
+    match group {
+        "Needs you" | "Waiting on you" => "ждёт тебя",
+        "Ready for review" => "ревью",
+        "Blocked" => "блок",
+        "Landing" => "вливается",
+        "Working" => "в работе",
+        "Idle" => "простаивает",
+        "Resolved" => "сделан",
+        other => other,
+    }
+    .to_string()
+}
+
+pub fn group_rank(group: &str) -> u32 {
+    match group {
+        "Needs you" | "Waiting on you" => 1,
+        "Ready for review" => 2,
+        "Blocked" => 3,
+        "Landing" => 3,
+        "Working" => 4,
+        "Idle" => 5,
+        _ => 6,
+    }
+}
+
+/// herdr's `note` of a thread in words, or none when it only repeats the
+/// group: the agent states (`working`, `idle`), the reasons a thread was
+/// resolved (`manual`, `merged`) and what the ticker saw (`pane closed`).
+pub fn note_word(group: &str, note: &str) -> Option<String> {
+    let note = note.trim();
+    let word = match note {
+        "" => return None,
+        "working" | "idle" => {
+            // The group already says so.
+            if matches!(group, "Working" | "Idle") {
+                return None;
+            }
+            if note == "working" {
+                "агент работает"
+            } else {
+                "агент простаивает"
+            }
+        }
+        "blocked" => "агент ждёт ответа",
+        "done" => "агент закончил",
+        "unknown" => "состояние неизвестно",
+        "manual" => "закрыт вручную",
+        "merged" => "PR слит",
+        "auto" => "закрыт автоматически",
+        "pane closed" => "пейн закрыт",
+        "no agent" => "агента нет",
+        "session unreachable" => "сессия herdr недоступна",
+        "not polled yet" => "ещё не опрошен",
+        other => {
+            if other.starts_with("failed:") {
+                // The launch error has its own line.
+                return None;
+            }
+            if let Some((state, machine)) = other.split_once(", on ") {
+                let state = match state {
+                    "working" => "работает",
+                    "idle" => "простаивает",
+                    "blocked" => "ждёт ответа",
+                    "done" => "закончил",
+                    other => other,
+                };
+                return Some(format!("{state} на машине {machine}"));
+            }
+            return Some(other.to_string());
+        }
+    };
+    Some(word.to_string())
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize)]
@@ -122,6 +231,63 @@ mod tests {
         assert!(!resolved[0].failed());
         assert!(resolved[1].failed());
         assert_eq!(resolved[1].path(), None);
+    }
+
+    #[test]
+    fn pr_and_worktree_names() {
+        let t = Thread {
+            pr: "https://github.com/o/r/pull/12".into(),
+            branch: "hp/proj/t-0016-1".into(),
+            kind: "worktree".into(),
+            worktree_path: "/wt/t-0016".into(),
+            ..Default::default()
+        };
+        assert_eq!(t.pr_number(), Some(12));
+        assert_eq!(t.worktree_name().as_deref(), Some("hp/proj/t-0016-1"));
+        assert_eq!(short_worktree("hp/proj/t-0016-1", "proj"), "t-0016-1");
+        assert_eq!(short_worktree("hp/other/t-1", "proj"), "hp/other/t-1");
+        assert_eq!(t.own_path(), Some("/wt/t-0016"));
+        let tab = Thread {
+            kind: "tab".into(),
+            cwd: "/repo".into(),
+            ..Default::default()
+        };
+        assert_eq!(tab.own_path(), None);
+        let gone = Thread {
+            worktree_path: "/wt/old/".into(),
+            ..Default::default()
+        };
+        assert_eq!(gone.worktree_name().as_deref(), Some("old"));
+    }
+
+    #[test]
+    fn notes_in_words() {
+        assert_eq!(note_word("Working", "working"), None);
+        assert_eq!(note_word("Idle", "idle"), None);
+        assert_eq!(note_word("Resolved", "merged").as_deref(), Some("PR слит"));
+        assert_eq!(
+            note_word("Resolved", "manual").as_deref(),
+            Some("закрыт вручную")
+        );
+        assert_eq!(
+            note_word("Ready for review", "pane closed").as_deref(),
+            Some("пейн закрыт")
+        );
+        assert_eq!(
+            note_word("Ready for review", "idle").as_deref(),
+            Some("агент простаивает")
+        );
+        assert_eq!(
+            note_word("Working", "working, on mac").as_deref(),
+            Some("работает на машине mac")
+        );
+        assert_eq!(note_word("Working", "failed: boom"), None);
+        assert_eq!(
+            note_word("Idle", "something new").as_deref(),
+            Some("something new")
+        );
+        assert_eq!(group_word("Ready for review"), "ревью");
+        assert!(group_rank("Waiting on you") < group_rank("Working"));
     }
 
     #[test]

@@ -2,13 +2,13 @@
 //! One JSON file under `$XDG_STATE_HOME/herdr-planner/`; on first run the
 //! Tern plugin's saved block state is imported (see `import_tern`).
 
-// Reference logic: parts are used only by tests and by stages 2–4 (the page mirrors the list logic).
+// Parts (settings editing, freshness verdicts, the form's last folder) are used from stage 3 on.
 #![allow(dead_code)]
 
 use crate::model::Groups;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::path::Path;
 
 /// Settings (stage 3 edits them; stage 1 keeps and validates them).
@@ -56,6 +56,20 @@ pub struct QaEntry {
     pub a: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    /// Asked and not answered yet; never survives a restart.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub pending: bool,
+}
+
+/// The key of a task's answers and «sent» mark: the project, a line break,
+/// the task text. A task text is one line, so keys from before 0.15.4 of the
+/// plugin (text only) are told apart by the missing line break.
+pub fn mem_key(slug: &str, text: &str) -> String {
+    format!("{slug}\n{text}")
+}
+
+fn legacy_key(key: &str) -> bool {
+    !key.contains('\n')
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -155,6 +169,55 @@ impl State {
         s.normalize()
     }
 
+    /// The answers of one task, newest first.
+    pub fn qa_list(&mut self, slug: &str, text: &str) -> &mut Vec<QaEntry> {
+        self.qa.entry(mem_key(slug, text)).or_default()
+    }
+
+    /// Only a TASKS.md that was read and has tasks counts: an empty read may
+    /// be a file being rewritten.
+    pub fn trusted(tasks: usize, read: bool) -> bool {
+        read && tasks > 0
+    }
+
+    /// After a trusted read of `slug`'s TASKS.md (`texts`: the tasks, done
+    /// ones too): keys of the old shape are copied to it, its keys for tasks
+    /// that are gone are dropped. `read` is the set of projects read so far;
+    /// once it covers `all`, the old keys go for good.
+    pub fn settle(
+        &mut self,
+        slug: &str,
+        texts: &HashSet<String>,
+        read: &mut HashSet<String>,
+        all: &[String],
+    ) {
+        let prefix = format!("{slug}\n");
+        fn settle_map<V: Clone>(
+            map: &mut BTreeMap<String, V>,
+            slug: &str,
+            prefix: &str,
+            texts: &HashSet<String>,
+        ) {
+            let copies: Vec<(String, V)> = map
+                .iter()
+                .filter(|(k, _)| legacy_key(k) && texts.contains(*k))
+                .filter(|(k, _)| !map.contains_key(&mem_key(slug, k)))
+                .map(|(k, v)| (mem_key(slug, k), v.clone()))
+                .collect();
+            map.extend(copies);
+            map.retain(|k, _| {
+                legacy_key(k) || !k.starts_with(prefix) || texts.contains(&k[prefix.len()..])
+            });
+        }
+        settle_map(&mut self.qa, slug, &prefix, texts);
+        settle_map(&mut self.sent, slug, &prefix, texts);
+        read.insert(slug.to_string());
+        if !all.is_empty() && all.iter().all(|p| read.contains(p)) {
+            self.qa.retain(|k, _| !legacy_key(k));
+            self.sent.retain(|k, _| !legacy_key(k));
+        }
+    }
+
     pub fn load(path: &Path) -> Option<State> {
         let text = std::fs::read_to_string(path).ok()?;
         serde_json::from_str::<State>(&text)
@@ -202,6 +265,82 @@ mod tests {
         assert_eq!(s.sent.len(), 1);
         assert_eq!(s.fresh["apicache"]["head"], "abc");
         assert_eq!(s.last_dir.as_deref(), Some("/home/u/Projects"));
+    }
+
+    #[test]
+    fn settle_keeps_current_tasks_and_migrates_old_keys() {
+        let mut s = State::default();
+        s.qa.insert(
+            "a\nkeep".into(),
+            vec![QaEntry {
+                q: "q".into(),
+                a: Some("x".into()),
+                ..Default::default()
+            }],
+        );
+        s.qa.insert("a\ngone".into(), vec![]);
+        s.qa.insert("b\nother".into(), vec![]);
+        s.qa.insert(
+            "old".into(),
+            vec![QaEntry {
+                q: "o".into(),
+                a: Some("y".into()),
+                ..Default::default()
+            }],
+        );
+        s.sent.insert("a\nkeep".into(), Value::Bool(true));
+        s.sent.insert("a\ngone".into(), Value::Bool(true));
+        let mut read = HashSet::new();
+        let texts: HashSet<String> = ["keep".to_string(), "old".to_string()].into();
+        s.settle("a", &texts, &mut read, &["a".into(), "b".into()]);
+        assert!(s.qa.contains_key("a\nkeep"));
+        assert!(
+            !s.qa.contains_key("a\ngone"),
+            "a task that is gone loses its answers"
+        );
+        assert!(
+            s.qa.contains_key("b\nother"),
+            "other projects are not touched"
+        );
+        assert!(
+            s.qa.contains_key("a\nold"),
+            "the old key is copied to the project that has the text"
+        );
+        assert!(
+            s.qa.contains_key("old"),
+            "…and stays until every project was read"
+        );
+        assert!(!s.sent.contains_key("a\ngone"));
+        s.settle("b", &HashSet::new(), &mut read, &["a".into(), "b".into()]);
+        assert!(
+            !s.qa.contains_key("old"),
+            "every project read: the old key goes"
+        );
+        assert!(!s.qa.contains_key("b\nother"));
+        assert!(State::trusted(2, true) && !State::trusted(0, true) && !State::trusted(2, false));
+    }
+
+    #[test]
+    fn pending_answers_do_not_survive() {
+        let mut s = State::default();
+        s.qa_list("a", "t").push(QaEntry {
+            q: "wait".into(),
+            pending: true,
+            ..Default::default()
+        });
+        s.qa_list("a", "t").push(QaEntry {
+            q: "done".into(),
+            a: Some("ok".into()),
+            ..Default::default()
+        });
+        let json = serde_json::to_string(&s).unwrap();
+        let back: State = serde_json::from_str(&json).unwrap();
+        let back = back.normalize();
+        assert_eq!(back.qa["a\nt"].len(), 1);
+        assert_eq!(back.qa["a\nt"][0].q, "done");
+        assert!(!serde_json::to_string(&back.qa["a\nt"][0])
+            .unwrap()
+            .contains("pending"));
     }
 
     #[test]

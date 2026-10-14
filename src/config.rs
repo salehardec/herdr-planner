@@ -17,6 +17,11 @@ pub struct AppConfig {
     pub config_file: PathBuf,
     /// The `herdr-projects` executable; a full path when `HERDR_PROJECTS_BIN` names one.
     pub herdr_projects: String,
+    /// The `herdr` executable (`HERDR_BIN`): opens a thread's worktree.
+    pub herdr: String,
+    /// How long «Решить» waits for a coordinator that is being opened
+    /// (`HERDR_PLANNER_OPEN_WAIT_SECS`, 45 s).
+    pub open_wait: std::time::Duration,
 }
 
 pub fn home() -> PathBuf {
@@ -106,6 +111,16 @@ impl AppConfig {
                 .ok()
                 .filter(|v| !v.is_empty())
                 .unwrap_or_else(|| "herdr-projects".to_string()),
+            herdr: env::var("HERDR_BIN")
+                .ok()
+                .filter(|v| !v.is_empty())
+                .unwrap_or_else(|| "herdr".to_string()),
+            open_wait: std::time::Duration::from_secs(
+                env::var("HERDR_PLANNER_OPEN_WAIT_SECS")
+                    .ok()
+                    .and_then(|v| v.parse().ok())
+                    .unwrap_or(45),
+            ),
         }
     }
 

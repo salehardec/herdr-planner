@@ -1,14 +1,16 @@
 //! Shared server state: the latest snapshot of projects, the saved state,
 //! the theme, and the event bus the page listens to.
 
+use crate::cards::Cache;
 use crate::config::AppConfig;
 use crate::model::{Groups, Project};
 use crate::store::State;
 use crate::theme::ThemeReport;
 use serde::Serialize;
+use std::collections::HashSet;
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::{SystemTime, UNIX_EPOCH};
-use tokio::sync::{broadcast, Notify};
+use tokio::sync::{broadcast, Notify, Semaphore};
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -76,6 +78,14 @@ pub struct App {
     pub events: broadcast::Sender<Event>,
     /// Woken by `POST /api/refresh`.
     pub refresh_now: Notify,
+    /// What the project card reads in the background (git, profiles, trailers).
+    pub cache: Mutex<Cache>,
+    /// Projects whose TASKS.md was read since the start (see `State::settle`).
+    pub tasks_read: Mutex<HashSet<String>>,
+    /// At most this many `git` scripts run at once …
+    pub git_gate: Semaphore,
+    /// … and at most three of them read finished threads' repositories.
+    pub trailer_gate: Semaphore,
 }
 
 pub type Shared = Arc<App>;
@@ -94,6 +104,10 @@ impl App {
             workspace: RwLock::new(Workspace::default()),
             events,
             refresh_now: Notify::new(),
+            cache: Mutex::new(Cache::default()),
+            tasks_read: Mutex::new(HashSet::new()),
+            git_gate: Semaphore::new(6),
+            trailer_gate: Semaphore::new(3),
         })
     }
 

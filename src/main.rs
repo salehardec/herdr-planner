@@ -1,9 +1,11 @@
 //! Herdr Planner: a local web dashboard for herdr-projects, in the herdr-gpui
 //! theme. One binary: the server, the data sources and the embedded page.
 
+mod actions;
 mod agent;
 mod api;
 mod app;
+mod cards;
 mod config;
 mod import_tern;
 mod model;

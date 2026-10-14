@@ -34,10 +34,23 @@ pub async fn run(
     stdin: Option<&str>,
     timeout: Duration,
 ) -> Result<Output, String> {
+    run_in(argv, stdin, timeout, None).await
+}
+
+/// `run` in the folder `cwd`.
+pub async fn run_in(
+    argv: &[String],
+    stdin: Option<&str>,
+    timeout: Duration,
+    cwd: Option<&str>,
+) -> Result<Output, String> {
     if argv.is_empty() {
         return Err("пустая команда".into());
     }
     let mut cmd = Command::new(&argv[0]);
+    if let Some(dir) = cwd {
+        cmd.current_dir(dir);
+    }
     cmd.args(&argv[1..])
         .stdin(if stdin.is_some() {
             Stdio::piped()
