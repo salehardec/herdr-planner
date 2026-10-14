@@ -60,11 +60,19 @@ pub fn solve_text(task: &str, profile: Option<&str>, qa: &[String]) -> String {
     text
 }
 
-/// «Не решать»: the coordinator is asked to remove the line.
-pub fn remove_text(task: &str, qa: &[String]) -> String {
+/// «Не решать» / «Убрать»: the coordinator is asked to remove the line. A
+/// freshness verdict (word, reason) goes along when that is where it came from.
+pub fn remove_text(task: &str, verdict: Option<(&str, &str)>, qa: &[String]) -> String {
     let mut text = format!(
         "(из Планировщика проектов) Пользователь отказался от задачи «{task}»: удали её из TASKS.md."
     );
+    if let Some((word, why)) = verdict {
+        text.push_str(&format!(" Проверка актуальности отметила её как «{word}»"));
+        if !why.is_empty() {
+            text.push_str(&format!(": {why}"));
+        }
+        text.push('.');
+    }
     if !qa.is_empty() {
         text.push_str(&format!(
             " Уточнения по задаче (вопрос — ответ): {}",
@@ -278,14 +286,29 @@ pub async fn solve(
 
 /// «Не решать» (the page has asked «Убрать из бэклога?» already): the
 /// coordinator is asked to remove the line. A task a thread works on stays.
-pub async fn remove(app: &Shared, slug: &str, task: &str) -> Result<(), Failure> {
+pub async fn remove(
+    app: &Shared,
+    slug: &str,
+    task: &str,
+    with_verdict: bool,
+) -> Result<(), Failure> {
     let t = open_task(app, slug, task).await?;
     if t.thread_led {
         return fail(409, "задачу ведёт тред, из Планировщика её не убрать");
     }
+    let verdict = if with_verdict {
+        crate::fresh::view(app, slug, &t.full).0
+    } else {
+        None
+    };
     let key = format!("{slug}\n{}", t.full);
     begin(app, &key)?;
-    let text = remove_text(&t.full, &qa_of(app, slug, &t.full));
+    let word = verdict.as_ref().map(|v| crate::fresh::verdict_word(&v.v));
+    let text = remove_text(
+        &t.full,
+        verdict.as_ref().zip(word).map(|(v, w)| (w, v.why.as_str())),
+        &qa_of(app, slug, &t.full),
+    );
     let result = prompt_coordinator(app, slug, &text).await;
     end(app, &key);
     match result {
@@ -389,12 +412,21 @@ mod tests {
 
     #[test]
     fn remove_sentence() {
-        let t = remove_text("Старое", &[]);
+        let t = remove_text("Старое", None, &[]);
         assert_eq!(
             t,
             "(из Планировщика проектов) Пользователь отказался от задачи «Старое»: удали её из TASKS.md."
         );
-        assert!(remove_text("Старое", &["В: q — О: a".into()]).contains("Уточнения по задаче"));
+        assert!(
+            remove_text("Старое", None, &["В: q — О: a".into()]).contains("Уточнения по задаче")
+        );
+        let v = remove_text(
+            "Старое",
+            Some(("⊘ сделано", "есть в src/a.rs")),
+            &["В: q — О: a".into()],
+        );
+        assert!(v.contains("Проверка актуальности отметила её как «⊘ сделано»: есть в src/a.rs. Уточнения по задаче"));
+        assert!(remove_text("Старое", Some(("◐ частично", "")), &[]).ends_with("как «◐ частично»."));
     }
 
     #[test]
@@ -486,6 +518,7 @@ mod tests {
             herdr_projects: bin.display().to_string(),
             herdr: "herdr".into(),
             open_wait: Duration::from_secs(wait_secs),
+            fresh_debounce: Duration::from_secs(60),
         };
         let app = crate::app::App::new(cfg, crate::store::State::default(), crate::theme::load());
         Fake { dir, app }
@@ -571,13 +604,13 @@ mod tests {
         );
         // A task a thread works on is not given up from the card.
         assert_eq!(
-            remove(&f.app, "alpha", "Вторая · t-0003")
+            remove(&f.app, "alpha", "Вторая · t-0003", false)
                 .await
                 .unwrap_err()
                 .0,
             409
         );
-        remove(&f.app, "alpha", "Первая").await.unwrap();
+        remove(&f.app, "alpha", "Первая", false).await.unwrap();
         assert_eq!(
             f.app.state.lock().unwrap().sent.get("alpha\nПервая"),
             Some(&Value::String("remove".into()))

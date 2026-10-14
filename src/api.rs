@@ -4,8 +4,10 @@ use crate::actions::{self, Failure};
 use crate::app::{Event, Shared};
 use crate::cards;
 use crate::model::OTHER;
+use crate::newproject;
 use crate::sources::runner;
-use axum::extract::{Path, Request, State};
+use crate::{fresh, suggest};
+use axum::extract::{Path, Query, Request, State};
 use axum::http::{header, StatusCode};
 use axum::middleware::{self, Next};
 use axum::response::sse::{self, KeepAlive, Sse};
@@ -24,6 +26,8 @@ pub const APP_CSS: &str = include_str!("../web/app.css");
 pub const APP_JS: &str = include_str!("../web/app.js");
 pub const UTIL_JS: &str = include_str!("../web/util.js");
 pub const CARD_JS: &str = include_str!("../web/card.js");
+pub const SETTINGS_JS: &str = include_str!("../web/settings.js");
+pub const NEW_JS: &str = include_str!("../web/new.js");
 
 pub fn router(app: Shared) -> Router {
     Router::new()
@@ -32,11 +36,18 @@ pub fn router(app: Shared) -> Router {
         .route("/app.js", get(js))
         .route("/util.js", get(util_js))
         .route("/card.js", get(card_js))
+        .route("/settings.js", get(settings_js))
+        .route("/new.js", get(new_js))
         .route("/api/snapshot", get(snapshot))
         .route("/api/theme", get(theme))
         .route("/api/events", get(events))
         .route("/api/refresh", post(refresh))
         .route("/api/groups", post(groups))
+        .route("/api/settings", post(settings))
+        .route("/api/new/options", get(new_options))
+        .route("/api/browse", get(browse))
+        .route("/api/complete", get(complete))
+        .route("/api/new", post(new_project))
         .route("/api/action", post(action))
         .route("/api/project/{slug}", get(project))
         .route("/api/project/{slug}/thread/{id}", get(thread_detail))
@@ -45,6 +56,7 @@ pub fn router(app: Shared) -> Router {
         .route("/api/project/{slug}/solve", post(solve))
         .route("/api/project/{slug}/remove", post(remove))
         .route("/api/project/{slug}/ask", post(ask))
+        .route("/api/project/{slug}/fresh-keep", post(fresh_keep))
         .layer(middleware::from_fn(local_only))
         .with_state(app)
 }
@@ -127,6 +139,14 @@ async fn card_js() -> Response {
     asset("text/javascript; charset=utf-8", CARD_JS)
 }
 
+async fn settings_js() -> Response {
+    asset("text/javascript; charset=utf-8", SETTINGS_JS)
+}
+
+async fn new_js() -> Response {
+    asset("text/javascript; charset=utf-8", NEW_JS)
+}
+
 async fn snapshot(State(app): State<Shared>) -> Json<Value> {
     Json(serde_json::to_value(app.full()).unwrap_or(Value::Null))
 }
@@ -178,10 +198,17 @@ struct GroupOp {
     folded: Option<bool>,
     #[serde(default)]
     on: Option<bool>,
+    /// `rename`: the new name; `delete`: the group the projects go to ("" = «Прочее»).
+    #[serde(default)]
+    to: String,
+    /// `move`: places up (negative) or down.
+    #[serde(default)]
+    delta: i32,
 }
 
 /// `assign` (slug, name: "" = no group), `add` (name), `fold` (name, folded),
-/// `toggle` (on). Every op saves and re-broadcasts the snapshot.
+/// `toggle` (on), `rename` (name, to), `move` (name, delta), `delete` (name,
+/// to), `resort`. Every op saves and re-broadcasts the snapshot.
 async fn groups(State(app): State<Shared>, Json(op): Json<GroupOp>) -> Response {
     let result: Result<Value, String> = {
         let mut st = app.state.lock().unwrap();
@@ -214,9 +241,33 @@ async fn groups(State(app): State<Shared>, Json(op): Json<GroupOp>) -> Response 
                 }
                 Ok(json!({"on": st.groups.grouping_on()}))
             }
+            "rename" => st
+                .groups
+                .rename(&op.name, &op.to)
+                .map(|n| json!({"group": n})),
+            "move" => {
+                if st.groups.move_group(&op.name, op.delta) {
+                    Ok(json!({"ok": true}))
+                } else {
+                    Err("дальше некуда".into())
+                }
+            }
+            "delete" => {
+                if st.groups.delete(&op.name, Some(op.to.as_str())) {
+                    Ok(json!({"ok": true}))
+                } else {
+                    Err("нет такой группы".into())
+                }
+            }
+            "resort" => Ok(json!({"ok": true})),
             other => Err(format!("неизвестная операция «{other}»")),
         }
     };
+    if op.op == "resort" {
+        // The state lock is gone: the suggestion takes it itself.
+        suggest::resort(&app);
+        return Json(json!({"ok": true})).into_response();
+    }
     match result {
         Ok(v) => {
             app.save_state();
@@ -225,6 +276,33 @@ async fn groups(State(app): State<Shared>, Json(op): Json<GroupOp>) -> Response 
         }
         Err(e) => (StatusCode::BAD_REQUEST, Json(json!({"error": e}))).into_response(),
     }
+}
+
+#[derive(Deserialize)]
+struct SettingReq {
+    key: String,
+    value: String,
+}
+
+/// One setting changed. A value the setting does not have is refused;
+/// turning the group suggestion on runs it for the projects that wait.
+async fn settings(State(app): State<Shared>, Json(r): Json<SettingReq>) -> Response {
+    let was = {
+        let mut st = app.state.lock().unwrap();
+        let was = st.settings.get(&r.key).to_string();
+        if !st.settings.set(&r.key, &r.value) {
+            drop(st);
+            return failure((400, "неизвестная настройка или значение".into()));
+        }
+        was
+    };
+    app.save_state();
+    app.emit_snapshot();
+    if r.key == "autogroup" && was != r.value && r.value == "on" {
+        suggest::tick(&app);
+    }
+    Json(json!({"ok": true, "settings": app.state.lock().unwrap().settings.clone()}))
+        .into_response()
 }
 
 #[derive(Deserialize)]
@@ -329,6 +407,9 @@ async fn assignable(State(app): State<Shared>, Path(slug): Path<String>) -> Resp
 struct TaskReq {
     #[serde(default)]
     task: String,
+    /// «Убрать» on a freshness badge: the verdict goes into the request.
+    #[serde(default)]
+    fresh: bool,
     #[serde(default)]
     profile: Option<String>,
     #[serde(default)]
@@ -358,7 +439,69 @@ async fn remove(
     Path(slug): Path<String>,
     Json(r): Json<TaskReq>,
 ) -> Response {
-    done(actions::remove(&app, &slug, &r.task).await)
+    done(actions::remove(&app, &slug, &r.task, r.fresh).await)
+}
+
+/// «Оставить»: the freshness badge stays hidden until main gets a new commit.
+async fn fresh_keep(
+    State(app): State<Shared>,
+    Path(slug): Path<String>,
+    Json(r): Json<TaskReq>,
+) -> Response {
+    if !cards::valid_slug(&slug) {
+        return bad_slug();
+    }
+    if fresh::keep(&app, &slug, &r.task) {
+        app.emit("card", &json!({ "slug": slug }));
+        Json(json!({"ok": true})).into_response()
+    } else {
+        failure((409, "проект ещё не проверялся".into()))
+    }
+}
+
+/// The «Новый проект» form's lists: machines and profiles.
+async fn new_options(State(app): State<Shared>) -> Json<Value> {
+    Json(newproject::options(&app).await)
+}
+
+#[derive(Deserialize)]
+struct PathQuery {
+    #[serde(default)]
+    path: String,
+    #[serde(default)]
+    start: Option<String>,
+}
+
+/// The folder browser: `path` is the folder, or with `start` the field's text
+/// from which a starting folder is found.
+async fn browse(State(app): State<Shared>, Query(q): Query<PathQuery>) -> Response {
+    let last_dir = app.state.lock().unwrap().last_dir.clone();
+    let start = q.start.is_some();
+    let result = tokio::task::spawn_blocking(move || {
+        newproject::browse(&q.path, start, last_dir.as_deref())
+    })
+    .await
+    .unwrap_or_else(|e| Err(e.to_string()));
+    match result {
+        Ok(v) => Json(v).into_response(),
+        Err(e) => failure((400, e)),
+    }
+}
+
+/// Tab in the «Папка» field.
+async fn complete(Query(q): Query<PathQuery>) -> Response {
+    let v = tokio::task::spawn_blocking(move || newproject::complete(&q.path))
+        .await
+        .unwrap_or(Value::Null);
+    Json(v).into_response()
+}
+
+/// Creates the project (`herdr-projects new`); the page opens it afterwards.
+async fn new_project(State(app): State<Shared>, Json(r): Json<newproject::NewReq>) -> Response {
+    match newproject::create(&app, &r).await {
+        Ok(v) => Json(v).into_response(),
+        Err(f) => failure(f),
+    }
 }
 
 /// «Задать вопрос»: the cheap agent answers in the background.

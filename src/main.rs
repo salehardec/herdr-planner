@@ -7,11 +7,15 @@ mod api;
 mod app;
 mod cards;
 mod config;
+mod fresh;
 mod import_tern;
+mod jsonscan;
 mod model;
+mod newproject;
 mod poller;
 mod sources;
 mod store;
+mod suggest;
 mod theme;
 
 use std::net::{Ipv4Addr, SocketAddr};

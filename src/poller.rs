@@ -99,6 +99,8 @@ pub async fn refresh_once(app: &Shared) {
     }
     sync_workspace(app);
     app.emit_snapshot();
+    // Projects that appeared since the last read get their group guess.
+    crate::suggest::tick(app);
 }
 
 pub async fn refresh_loop(app: Shared) {

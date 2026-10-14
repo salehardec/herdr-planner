@@ -22,6 +22,9 @@ pub struct AppConfig {
     /// How long «Решить» waits for a coordinator that is being opened
     /// (`HERDR_PLANNER_OPEN_WAIT_SECS`, 45 s).
     pub open_wait: std::time::Duration,
+    /// How long a new commit in main waits before the backlog is checked again
+    /// (`HERDR_PLANNER_FRESH_DEBOUNCE_SECS`, 60 s).
+    pub fresh_debounce: std::time::Duration,
 }
 
 pub fn home() -> PathBuf {
@@ -120,6 +123,12 @@ impl AppConfig {
                     .ok()
                     .and_then(|v| v.parse().ok())
                     .unwrap_or(45),
+            ),
+            fresh_debounce: std::time::Duration::from_secs(
+                env::var("HERDR_PLANNER_FRESH_DEBOUNCE_SECS")
+                    .ok()
+                    .and_then(|v| v.parse().ok())
+                    .unwrap_or(crate::fresh::DEBOUNCE_MS / 1000),
             ),
         }
     }

@@ -3,11 +3,13 @@
 
 use crate::cards::Cache;
 use crate::config::AppConfig;
+use crate::fresh::FreshRun;
 use crate::model::{Groups, Project};
 use crate::store::State;
+use crate::suggest::GroupRun;
 use crate::theme::ThemeReport;
 use serde::Serialize;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::{broadcast, Notify, Semaphore};
@@ -58,8 +60,18 @@ pub struct Full {
     pub error: Option<String>,
     pub groups: Groups,
     pub settings: crate::store::Settings,
+    /// What the settings screen is built from.
+    pub setting_defs: &'static [crate::store::SettingDef],
+    /// The group suggestion: running, and why it failed.
+    pub group_suggest: GroupSuggest,
     pub workspace: Workspace,
     pub imported_from: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct GroupSuggest {
+    pub busy: bool,
+    pub error: Option<String>,
 }
 
 /// One event on the bus, serialized for SSE.
@@ -82,6 +94,10 @@ pub struct App {
     pub cache: Mutex<Cache>,
     /// Projects whose TASKS.md was read since the start (see `State::settle`).
     pub tasks_read: Mutex<HashSet<String>>,
+    /// The backlog freshness check of each project the card was opened on.
+    pub fresh_run: Mutex<HashMap<String, FreshRun>>,
+    /// The group suggestion of the cheap agent.
+    pub group_run: Mutex<GroupRun>,
     /// At most this many `git` scripts run at once …
     pub git_gate: Semaphore,
     /// … and at most three of them read finished threads' repositories.
@@ -106,6 +122,8 @@ impl App {
             refresh_now: Notify::new(),
             cache: Mutex::new(Cache::default()),
             tasks_read: Mutex::new(HashSet::new()),
+            fresh_run: Mutex::new(HashMap::new()),
+            group_run: Mutex::new(GroupRun::default()),
             git_gate: Semaphore::new(6),
             trailer_gate: Semaphore::new(3),
         })
@@ -124,6 +142,14 @@ impl App {
             error: s.error,
             groups: st.groups.clone(),
             settings: st.settings.clone(),
+            setting_defs: &crate::store::SETTING_DEFS,
+            group_suggest: {
+                let run = self.group_run.lock().unwrap();
+                GroupSuggest {
+                    busy: run.busy,
+                    error: run.error.clone(),
+                }
+            },
             workspace: self.workspace.read().unwrap().clone(),
             imported_from: st.imported_from.clone(),
         }

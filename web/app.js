@@ -10,12 +10,15 @@
 /** @typedef {{slug:string, name:string, status:string, goal:string|null, repos:{path:string, machine:string}[], counts:Counts, inbox:number, activity:number}} Project */
 /** @typedef {{configured:boolean, list:string[], assign:Record<string,{g:string, auto:boolean}>, collapsed:string[], on:boolean|null}} Groups */
 /** @typedef {{label:string|null, slug:string|null, seq:number}} Workspace */
-/** @typedef {{version:string, projects:Project[], updated:number, now:number, loading:boolean, error:string|null, groups:Groups, workspace:Workspace}} Snapshot */
+/** @typedef {{key:string, label:string, hint:string, default:string, options:[string,string][]}} SettingDef */
+/** @typedef {{version:string, projects:Project[], updated:number, now:number, loading:boolean, error:string|null, groups:Groups, settings:Record<string,string>, setting_defs:SettingDef[], group_suggest:{busy:boolean, error:string|null}, workspace:Workspace}} Snapshot */
 /** @typedef {{is_light:boolean, vars:Record<string,string>}} Side */
 /** @typedef {{name:string, system:boolean, dark:Side, light:Side|null, ui:{family:string|null,size:number}, terminal:{family:string|null,size:number}, error:string|null}} Theme */
 
 import { esc, h, plural, clip, textMatches, post, keyOf } from './util.js';
 import * as Card from './card.js';
+import * as Settings from './settings.js';
+import * as NewProject from './new.js';
 
 const OTHER = 'Прочее';
 const NEW_ROW = '+new';
@@ -83,6 +86,7 @@ const view = {
   /** @type {string|null} */ hl: null,
   /** @type {string|null} */ selected: null,
   help: false,
+  /** A full-screen form over the list or the card. @type {'settings'|'new'|null} */ screen: null,
   filtering: false,
   /** @type {{slug:string, at:number, err:string|null, adding:boolean}|null} */ gpick: null,
   /** @type {string|null} */ status: null,
@@ -150,7 +154,8 @@ function followWorkspace(ws) {
 }
 
 function typing() {
-  return view.filtering || view.gpick != null || (view.selected != null && Card.typing());
+  return view.filtering || view.gpick != null || view.screen === 'new' || (view.screen === 'settings' && Settings.typing())
+    || (view.selected != null && Card.typing());
 }
 
 function settleFollow() {
@@ -166,6 +171,7 @@ function settleFollow() {
 function selectProject(slug) {
   view.selected = slug;
   view.help = false;
+  view.screen = null;
   Card.open(slug);
 }
 
@@ -293,8 +299,35 @@ function runAction(kind) {
     .catch((e) => flash(`Не вышло: ${e.message}`));
 }
 
+function openSettings() {
+  view.screen = 'settings';
+  view.help = false;
+  Settings.open();
+  render();
+}
+
 function openNew() {
-  flash('Форма «Новый проект» появится на этапе 3; пока: herdr-projects new NAME --repo DIR');
+  view.screen = 'new';
+  view.help = false;
+  NewProject.open();
+  render();
+}
+
+function closeScreen() {
+  view.screen = null;
+  render();
+  settleFollow();
+}
+
+/** The form made a project: it is shown, and its coordinator is started (as «Открыть» does). @param {string} slug @param {string[]} warnings */
+function projectCreated(slug, warnings) {
+  view.screen = null;
+  selectProject(slug);
+  post('/api/refresh', {}).catch(() => {});
+  flash(`Проект создан: ${slug}${warnings.length ? ` (${warnings.join('; ')})` : ''}. Открываю его в herdr…`, 6000);
+  post('/api/action', { kind: 'open', slug })
+    .then(() => flash(`Проект ${slug} создан и открыт в herdr`))
+    .catch((e) => flash(`Проект ${slug} создан, но не открылся: ${e.message}`, 8000));
 }
 
 function startGroupPick() {
@@ -346,6 +379,14 @@ document.addEventListener('keydown', (ev) => {
   const inInput = target && target.tagName === 'INPUT';
   // Shortcuts mean the same on a Russian layout; fields get the keys as typed.
   const k = inInput ? ev.key : keyOf(ev);
+  if (view.screen) {
+    if (ev.ctrlKey || ev.metaKey || ev.altKey) return;
+    const handled = inInput
+      ? (view.screen === 'new' ? NewProject.inputKey(ev, target) : Settings.inputKey(ev))
+      : (view.screen === 'new' ? NewProject.key(ev) : Settings.key(ev));
+    if (handled) ev.preventDefault();
+    return;
+  }
   if (view.gpick) {
     if (view.gpick.adding) {
       if (k === 'Escape') { view.gpick.adding = false; render(); ev.preventDefault(); }
@@ -409,8 +450,8 @@ document.addEventListener('keydown', (ev) => {
   else if (k === 'g') toggleGroups();
   else if (k === 't') startGroupPick();
   else if (k === 'n') openNew();
+  else if (k === ',') openSettings();
   else if (k === '?') { view.help = !view.help; render(); }
-  else if (k === 'u') flash('«Траты агентов» — отдельная утилита, в планировщике появится позже.');
 });
 
 function focusFilter() {
@@ -442,7 +483,7 @@ function headerHtml() {
   const stamp = s && s.loading ? 'обновление… ↻' : (age ? `обновлено ${age} ↻` : '↻');
   return h('div', { class: 'header' },
     h('div', { class: 'title' }, title)
-    + h('span', { class: 'badge', 'data-act': 'settings', title: 'Настройки появятся на этапе 3' }, '⚙ Настройки')
+    + h('span', { class: 'badge', 'data-act': 'settings', title: 'Настройки (,)' }, '⚙ Настройки')
     + h('span', { class: 'stamp', 'data-act': 'refresh', title: 'Обновить (R)' }, esc(stamp)));
 }
 
@@ -534,6 +575,8 @@ function listHtml() {
 function dockHtml() {
   /** @param {string[]} keys @param {string} text */
   const hint = (keys, text) => h('span', {}, keys.map((k) => `<kbd>${esc(k)}</kbd>`).join('') + ' ' + esc(text));
+  if (view.screen === 'new') return h('div', { class: 'dock' }, NewProject.dock(hint));
+  if (view.screen === 'settings') return h('div', { class: 'dock' }, Settings.dock(hint));
   if (view.gpick) return h('div', { class: 'dock' }, hint(['↑', '↓'], 'группа') + hint(['↵'], 'выбрать') + hint(['esc'], 'назад'));
   if (view.filtering && !view.selected) return h('div', { class: 'dock' }, hint(['↵'], 'открыть первый') + hint(['esc'], 'выйти из фильтра'));
   if (view.selected) return h('div', { class: 'dock' }, Card.dock(hint));
@@ -541,7 +584,7 @@ function dockHtml() {
   return h('div', { class: 'dock' },
     hint(['↑', '↓'], 'выбор') + hint(['↵'], 'открыть (или двойной клик)') + hint(['f'], 'фокус') + hint(['o'], 'открыть в herdr')
     + hint(['/'], 'фильтр') + hint(['1', '2', '3', '4'], 'раздел') + hint(['s'], 'сортировка') + hint(['g'], 'группы вкл / выкл')
-    + hint(['t'], 'группа проекта') + hint(['←', '→'], 'свернуть / развернуть группу') + hint(['n'], 'новый проект') + hint(['r'], 'обновить')
+    + hint(['t'], 'группа проекта') + hint(['←', '→'], 'свернуть / развернуть группу') + hint(['n'], 'новый проект') + hint([','], 'настройки') + hint(['r'], 'обновить')
     + hint(['esc'], 'сбросить / закрыть'));
 }
 
@@ -566,8 +609,9 @@ function gpickHtml() {
     h('div', { class: 'dialog', role: 'dialog' }, h('h2', {}, `Группа для «${esc(p ? p.name : gp.slug)}»`) + body));
 }
 
-/** The fields whose text and caret survive a re-render. */
-const FIELDS = ['filter', 'cfilter', 'cask'];
+/** The fields whose text and caret survive a re-render (the new-project form's are `nf-…`). */
+const FIELDS = ['filter', 'cfilter', 'cask', 'gedit'];
+const isField = (/** @type {string} */ id) => FIELDS.includes(id) || id.startsWith('nf-');
 
 /** True while render() swaps the page: replacing a focused field fires focus events that are not the user's. */
 let rendering = false;
@@ -580,15 +624,17 @@ function render() {
 
 function paint() {
   const active = /** @type {HTMLInputElement|null} */ (document.activeElement);
-  const fieldId = active && FIELDS.includes(active.id) ? active.id : null;
+  const fieldId = active && isField(active.id) ? active.id : null;
   const sel = fieldId && active ? [active.selectionStart, active.selectionEnd] : null;
   // The scrolled list keeps its place, as long as the same list is on screen.
   const scrolled = /** @type {HTMLElement|null} */ (root.querySelector('[data-scroll]'));
   const scroll = scrolled ? { key: scrolled.getAttribute('data-scroll'), top: scrolled.scrollTop } : null;
   let html = '';
-  if (view.selected) html = Card.html();
+  if (view.screen === 'new') html = NewProject.html();
+  else if (view.screen === 'settings') html = Settings.html();
+  else if (view.selected) html = Card.html();
   else html = headerHtml() + controlsHtml() + (view.status ? h('div', { class: 'note' }, esc(view.status)) : '') + listHtml();
-  if (view.selected && view.status) html += h('div', { class: 'note' }, esc(view.status));
+  if ((view.selected || view.screen) && view.status) html += h('div', { class: 'note' }, esc(view.status));
   html += dockHtml() + gpickHtml();
   root.innerHTML = html;
   const again = /** @type {HTMLElement|null} */ (root.querySelector('[data-scroll]'));
@@ -606,6 +652,8 @@ function paint() {
 // Clicks: one click highlights a row, a double click opens it; badges act.
 root.addEventListener('click', (ev) => {
   const el = /** @type {HTMLElement} */ (ev.target);
+  if (view.screen === 'settings' && Settings.click(el)) return;
+  if (view.screen === 'new' && NewProject.click(el)) return;
   const act = el.closest('[data-act]');
   if (act && act.getAttribute('data-act') === 'gpick-close' && el !== act) { /* inside the dialog */ } else if (act) {
     const a = act.getAttribute('data-act');
@@ -613,11 +661,10 @@ root.addEventListener('click', (ev) => {
     else if (a === 'sort') toggleSort();
     else if (a === 'groups') toggleGroups();
     else if (a === 'new') openNew();
-    else if (a === 'settings') flash('Настройки (дешёвый агент, автопроверка, группы) появятся на этапе 3.');
+    else if (a === 'settings') openSettings();
     else if (a === 'back') { backToList(); render(); }
     else if (a === 'focus') runAction('focus');
     else if (a === 'open') runAction('open');
-    else if (a === 'usage') flash('«Траты агентов» — отдельная утилита, в планировщике появится позже.');
     else if (a === 'gpick-close') { view.gpick = null; render(); settleFollow(); }
     return;
   }
@@ -647,29 +694,35 @@ root.addEventListener('dblclick', (ev) => {
 root.addEventListener('input', (ev) => {
   const el = /** @type {HTMLInputElement} */ (ev.target);
   if (el.id === 'filter') { view.query = el.value; render(); }
+  else if (view.screen === 'new') NewProject.input(el);
+  else if (view.screen === 'settings') Settings.input(el);
   else Card.input(el);
 });
 // render() re-creates the field and refocuses it, so only a change of state re-renders.
 root.addEventListener('focusin', (ev) => {
   if (rendering) return;
   const el = /** @type {HTMLElement} */ (ev.target);
+  if (view.screen) return;
   if (el.id === 'filter' && !view.filtering) { view.filtering = true; render(); }
   else if (view.selected) Card.focusChange(el, true);
 });
 root.addEventListener('focusout', (ev) => {
-  if (rendering) return;
+  if (rendering || view.screen) return;
   const el = /** @type {HTMLElement} */ (ev.target);
   if (el.id === 'filter' && view.filtering) { view.filtering = false; render(); settleFollow(); }
   else if (view.selected && el.id === 'cfilter') { Card.focusChange(el, false); settleFollow(); }
 });
 
 // The «обновлено … с назад» stamp ticks without a server event.
-setInterval(() => { if (!view.filtering && !view.gpick && !Card.typing()) { const st = root.querySelector('.stamp'); if (st && view.snap && !view.snap.loading) st.textContent = `обновлено ${ageText()} ↻`; } }, 5000);
+setInterval(() => { if (!view.filtering && !view.gpick && !view.screen && !Card.typing()) { const st = root.querySelector('.stamp'); if (st && view.snap && !view.snap.loading) st.textContent = `обновлено ${ageText()} ↻`; } }, 5000);
 
+Settings.init({ render, flash, root, snap: () => view.snap, close: closeScreen });
+NewProject.init({ render, flash, root, created: projectCreated, close: closeScreen });
 Card.init({
   render,
   flash,
   root,
+  openSettings,
   project: (slug) => view.snap?.projects.find((p) => p.slug === slug) || null,
   stamp: () => (view.snap?.loading ? 'обновление… ↻' : `обновлено ${ageText()} ↻`),
 });

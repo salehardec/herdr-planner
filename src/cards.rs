@@ -552,9 +552,14 @@ pub async fn build(app: &Shared, slug: &str) -> Value {
         (qa, sent, agent)
     };
 
+    // The check of the backlog runs in the background for the open project.
+    crate::fresh::tick(app, slug, &project.repos, &task_list);
+    let fresh = crate::fresh::card_part(app, slug, &task_list);
+
     json!({
         "project": project,
         "tasks": task_list,
+        "fresh": fresh,
         "tasks_read": task_text.is_some(),
         "threads": views,
         "qa": qa,

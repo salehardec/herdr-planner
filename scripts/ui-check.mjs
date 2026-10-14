@@ -5,12 +5,13 @@
 // Exits 1 when a check fails. Needs `chromium` (or $CHROMIUM) on the PATH.
 //
 // Against a live server only the list and a read-only look at the first
-// project's card are checked. With FIXTURE=DIR (a server started on the world
+// project's card, the settings screen and the new-project form (nothing is changed
+// or created) are checked. With FIXTURE=DIR (a server started on the world
 // of scripts/fixture.mjs; `scripts/run-checks.sh` does all of it) the card is
 // checked in full: threads, git lines, badges, worktree, tasks, «Решить»,
 // «Не решать», questions — with the fake binaries' logs as the witness.
 
-import { spawn } from 'node:child_process';
+import { spawn, execFileSync } from 'node:child_process';
 import http from 'node:http';
 import { mkdtempSync, writeFileSync, rmSync, readFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -92,8 +93,17 @@ async function cardSmoke() {
   check('1 opens «Сделать»', /Сделать/.test(await text('.tab.active')));
 }
 
+const tasksMd = () => join(fixture, 'root/alpha/TASKS.md');
+const tasksAtStart = fixture ? readFileSync(tasksMd(), 'utf8') : '';
+const gitIn = (cwd, ...args) => execFileSync('git', ['-C', cwd, ...args], { stdio: 'pipe', env: { ...process.env, GIT_AUTHOR_NAME: 'T', GIT_AUTHOR_EMAIL: 't@t', GIT_COMMITTER_NAME: 'T', GIT_COMMITTER_EMAIL: 't@t' } });
+const typed = async (s) => { await send('Input.insertText', { text: s }); await sleep(150); };
+const snapshot = () => evalJs('fetch("/api/snapshot").then(r => r.json())');
+
 async function cardChecks() {
   const f = (name, ok, extra) => check(name, ok, extra);
+  // The backlog check starts by itself when the card opens and shows «…» while it runs.
+  const row0 = (id) => text(`.row[data-id="${id}"]`);
+  f('tasks being checked show «…»; a person\'s task and a thread-led one are not asked', await waitFor('/…/.test(document.querySelector(".row[data-id=k1]")?.innerText || "") && /…/.test(document.querySelector(".row[data-id=k2]")?.innerText || "")', 2500) && !/…/.test(await row0('k3')) && !/…/.test(await row0('k4')), `${await row0('k1')} | ${await row0('k3')}`);
   const title = await text('.header .title');
   f('card header names the project', /Alpha/.test(title), title);
   const kv = await text('.kv');
@@ -117,6 +127,14 @@ async function cardChecks() {
   f('badges from the profile: Sonnet 5.5, Haiku 5.5, pi', (await badge('t-0005')) === 'Sonnet 5.5:fam-sonnet' && (await badge('t-0003')) === 'Haiku 5.5:fam-haiku' && (await badge('t-0002')) === 'pi:fam-other', `${await badge('t-0005')} | ${await badge('t-0003')} | ${await badge('t-0002')}`);
   const overflow = await evalJs('document.scrollingElement.scrollWidth - window.innerWidth');
   f('card does not scroll horizontally', overflow <= 0, `overflow ${overflow}px`);
+  const badged = await waitFor('/◐ частично/.test(document.querySelector(".row[data-id=k1]")?.innerText || "") && /⊘ сделано/.test(document.querySelector(".row[data-id=k2]")?.innerText || "")', 8000);
+  f('verdicts: «◐ частично» and «⊘ сделано» on the tasks that are not actual; none on the others', badged && !/[◐⊘]/.test(await row('k3')) && !/[◐⊘]/.test(await row('k4')) && !/…/.test(await row('k1')), `${await row('k1')} | ${await row('k2')}`);
+  const fl = logLines('fresh.jsonl');
+  const fa = fl[0] || { argv: [], prompt: '', cwd: '' };
+  f('one agent call asked about the two open tasks of nobody or of a profile, with their notes', fl.length === 1 && /\n1\. Починить экспорт отчёта \(claude-sonnet\)\n\s+заметка: Заметки: экспорт падает на пустом файле\.\n\s+заметка: Смотреть export\.txt\.\n2\. Добавить тёмную тему/.test(fa.prompt) && !/Выпустить ключ|Миграция базы|Готовая задача/.test(fa.prompt), fa.prompt);
+  f('…naming the repository, the commit of main and the log', /Репозиторий проекта: .*\/repos\/alpha\nКоммит main: [0-9a-f]{10}\n/.test(fa.prompt) && /Экспорт отчёта \(#7\)/.test(fa.prompt), fa.prompt.slice(0, 300));
+  const fdirs = fa.argv.slice(fa.argv.indexOf('--add-dir') + 1);
+  f('the agent is read-only, in the repository, with the project folder; «сделано» needs a file as proof', fa.argv.includes('claude-haiku-5-5') && fa.argv.includes('Read,Grep,Glob') && fa.argv.includes('--disallowedTools') && fa.cwd.endsWith('/repos/alpha') && fdirs.length === 1 && fdirs[0].endsWith('/root/alpha') && fa.argv.some((a) => /ТОЛЬКО с доказательством в коде/.test(a)), JSON.stringify({ cwd: fa.cwd, fdirs }));
   await shot('card-todo.png');
 
   // keys: ↑ ↓ enter w
@@ -261,6 +279,8 @@ async function cardChecks() {
   rmSync(join(fixture, 'data', 'refuse-alpha'));
   await key('Escape');
 
+  await freshChecks();
+
   // other sites cannot reach the server through the browser
   const raw = (headers, method = 'GET', path = '/api/snapshot') => new Promise((resolve) => {
     const u = new URL(base);
@@ -290,8 +310,297 @@ async function cardChecks() {
   const [t3] = await api('POST', '/api/project/alpha/thread/t-0001/worktree', {});
   const [t4] = await api('GET', '/api/project/.hidden/thread/t-1');
   f('threads: unknown 404, tab thread 502, removed worktree 502, bad slug 400', [t1, t2, t3, t4].join() === '404,502,502,400', [t1, t2, t3, t4].join());
-  f('wrong inputs sent nothing more', logLines('prompts.jsonl').length === 4 && logLines('claude.jsonl').length === 1 && logLines('herdr.jsonl').length === 1, `${logLines('prompts.jsonl').length} prompts`);
+  f('wrong inputs sent nothing more', logLines('prompts.jsonl').length === 5 && logLines('claude.jsonl').length === 1 && logLines('herdr.jsonl').length === 1, `${logLines('prompts.jsonl').length} prompts`);
+  f('TASKS.md was never edited: not by the checks, not by the actions', readFileSync(tasksMd(), 'utf8') === tasksAtStart);
 
+}
+
+// What «◐ частично» / «⊘ сделано» do: the reason, «Убрать» (asks the coordinator), «Оставить» (hides
+// until main moves), a new commit hides the old verdicts and is checked again after the debounce.
+async function freshChecks() {
+  const f = check;
+  const row = (id) => text(`.row[data-id="${id}"]`);
+  const repo = join(fixture, 'repos/alpha');
+  await click('.row[data-id="k2"]');
+  const panel = await text('.panel');
+  f('a picked task with a verdict shows the reason, the proof file, «Убрать» and «Оставить»', /⊘ сделано/.test(panel) && /тема уже есть/.test(panel) && /Доказательство в коде:\s*export\.txt/.test(panel) && (await evalJs('!!document.querySelector("[data-c=fresh-remove]") && !!document.querySelector("[data-c=fresh-keep]")')), panel.replace(/\s+/g, ' '));
+  await shot('card-fresh.png');
+  await click('[data-c=fresh-keep]');
+  await waitFor('!/⊘/.test(document.querySelector(".row[data-id=k2]")?.innerText || "")', 4000);
+  f('«Оставить» hides the badge (and the buttons)', !/⊘/.test(await row('k2')) && !(await evalJs('!!document.querySelector("[data-c=fresh-remove]")')), await row('k2'));
+  f('…but k1 keeps its own', /◐ частично/.test(await row('k1')));
+  await key('Escape');
+  f('esc drops the pick, the card stays', !(await evalJs('!!document.querySelector(".panel")')) && !!(await evalJs('!!document.querySelector(".tabs")')));
+
+  // A new commit in main: the old verdicts go at once, the check waits for the debounce (2 s here) …
+  gitIn(repo, 'commit', '--allow-empty', '-qm', 'Новый коммит в main');
+  await key('r');
+  const hidden = await waitFor('!/[◐⊘]/.test(document.querySelector(".row[data-id=k1]")?.innerText || "") && !/[◐⊘]/.test(document.querySelector(".row[data-id=k2]")?.innerText || "")', 5000);
+  f('a new commit in main hides the verdicts of the old one', hidden, `${await row('k1')} | ${await row('k2')}`);
+  f('…and does not ask at once (the debounce)', logLines('fresh.jsonl').length === 1, String(logLines('fresh.jsonl').length));
+  await sleep(2600);
+  await key('r');
+  const again = await waitFor('/⊘ сделано/.test(document.querySelector(".row[data-id=k2]")?.innerText || "")', 8000);
+  const fl = logLines('fresh.jsonl');
+  f('after the debounce the backlog is checked again, with what changed since the last check', again && fl.length === 2 && /С прошлой проверки \([0-9a-f]+\):/.test(fl[1].prompt) && /Новый коммит в main/.test(fl[1].prompt), (fl[1]?.prompt || '').slice(0, 300));
+  f('the badge for the kept task is back at the new commit; k1 is no worry now (no badge)', again && !/[◐⊘]/.test(await row('k1')), `${await row('k1')} | ${await row('k2')}`);
+
+  // «Убрать» asks the coordinator, with the verdict; nothing is removed here.
+  await click('.row[data-id="k2"]');
+  await click('[data-c=fresh-remove]');
+  f('«Убрать» asks «Убрать из бэклога?»', /Убрать из бэклога\?/.test(await text('.panel')), await text('.panel'));
+  await key('y');
+  const sent = await waitFor('/Просьба убрать задачу отправлена/.test(document.querySelector(".note")?.innerText || "")', 8000);
+  const rp = logLines('prompts.jsonl').at(-1);
+  f('the request to the coordinator carries the verdict and its reason', sent && /отказался от задачи «Добавить тёмную тему»: удали её из TASKS\.md\. Проверка актуальности отметила её как «⊘ сделано»: тема уже есть\./.test(rp?.text || ''), rp?.text);
+
+  // An agent that fails: a quiet line, not a verdict; the next try waits.
+  writeFileSync(join(fixture, 'data', 'fresh-fails'), '');
+  gitIn(repo, 'commit', '--allow-empty', '-qm', 'Ещё коммит');
+  await key('r');
+  await sleep(2600);
+  await key('r');
+  const failed = await waitFor('/Проверка актуальности не удалась: .*fake agent fails/.test(document.querySelector(".note")?.innerText || "")', 8000);
+  f('a failed check says so under the progress bar and gives no verdict', failed && !/[◐⊘]/.test(await row('k1')), await note());
+  rmSync(join(fixture, 'data', 'fresh-fails'));
+  await shot('card-fresh-error.png');
+  f('the failed check asked once, and TASKS.md is as it was', logLines('fresh.jsonl').length === 3 && readFileSync(tasksMd(), 'utf8') === tasksAtStart, String(logLines('fresh.jsonl').length));
+}
+
+// ----- the settings screen and the group suggestion (fixture)
+async function settingsChecks() {
+  const f = check;
+  const defs = (sel) => evalJs(`document.querySelectorAll(${JSON.stringify(sel)}).length`);
+  const groupRows = () => evalJs('[...document.querySelectorAll(".grow-row")].map((r) => r.querySelector(".gname").textContent.replace(/\\s+/g, " ").trim())');
+  await click('[data-act=settings]');
+  f('«⚙ Настройки» opens the settings screen', /Настройки/.test(await text('.header .title')) && (await defs('.card[data-row-key^="s:"]')) === 3, await text('.header .title'));
+  f('the agent defaults to Claude Haiku 5.5; the checks and suggestions are on / off as seeded', /● Claude Haiku 5\.5/.test(await text('.card[data-row-key="s:agent"] .badge.active')) && /● вкл/.test(await text('.card[data-row-key="s:autocheck"] .badge.active')) && /● выкл/.test(await text('.card[data-row-key="s:autogroup"] .badge.active')));
+  const g0 = await groupRows();
+  f('the groups card lists the five starting groups with their counts', g0.length === 5 && /^▸?\s*1\. Omarchy\s+0 проектов$/.test(g0[0]) && /5\. Личное/.test(g0[4]), JSON.stringify(g0));
+  await shot('settings.png');
+  await click('.card[data-row-key="s:agent"] .badge[data-value=deepseek]');
+  await waitFor('/DeepSeek/.test(document.querySelector(".card[data-row-key=\'s:agent\'] .badge.active")?.innerText || "")');
+  f('choosing the cheap agent sticks (state.json) and shows', (await snapshot()).settings.agent === 'deepseek' && /● DeepSeek Flash/.test(await text('.card[data-row-key="s:agent"] .badge.active')));
+  await click('.card[data-row-key="s:agent"] .badge[data-value=haiku]');
+  await waitFor('/Haiku/.test(document.querySelector(".card[data-row-key=\'s:agent\'] .badge.active")?.innerText || "")');
+  await key('ArrowDown');
+  await key('ArrowRight');
+  await waitFor('/выкл/.test(document.querySelector(".card[data-row-key=\'s:autocheck\'] .badge.active")?.innerText || "")');
+  f('↓ then → turns the selected setting to its next value', (await snapshot()).settings.autocheck === 'off' && /^s:autocheck$/.test(await evalJs('document.querySelector(".card.sel")?.getAttribute("data-row-key")')));
+  await key('ArrowLeft');
+  await waitFor('/вкл/.test(document.querySelector(".card[data-row-key=\'s:autocheck\'] .badge.active")?.innerText || "")');
+  f('← turns it back', (await snapshot()).settings.autocheck === 'on');
+
+  // add, rename, move, delete a group
+  await key('a');
+  f('a opens the group editor with the cursor in it', await evalJs('document.activeElement?.id === "gedit"'));
+  await typed('Тест');
+  await key('Enter');
+  f('Enter adds the group at the end, selected', (await groupRows()).at(-1)?.includes('6. Тест') && /Тест/.test(await text('.grow-row.sel')), JSON.stringify(await groupRows()));
+  await key('Enter');
+  f('Enter on a group renames it: the editor holds the name', await evalJs('document.activeElement?.id === "gedit" && document.activeElement.value === "Тест"'));
+  await typed('2');
+  await key('Enter');
+  f('…the new name replaces the old one', /6\. Тест2/.test((await groupRows()).at(-1) || '') && !/6\. Тест\s/.test((await groupRows()).at(-1) || ''), JSON.stringify(await groupRows()));
+  await key('[');
+  const moved = await groupRows();
+  f('[ moves the group up one place', /5\. Тест2/.test(moved[4]) && /6\. Личное/.test(moved[5]), JSON.stringify(moved));
+  await key('x');
+  f('x on an empty group asks to delete it (the group is empty)', /Группа пуста/.test(await text('.confirm')), await text('.confirm'));
+  await key('n');
+  f('n leaves it', (await groupRows()).length === 6 && !(await evalJs('!!document.querySelector(".confirm")')));
+  await key('x');
+  await key('y');
+  await waitFor('document.querySelectorAll(".grow-row").length === 5');
+  f('y deletes it', (await groupRows()).length === 5 && !(await groupRows()).some((r) => /Тест2/.test(r)), JSON.stringify(await groupRows()));
+  await click('[data-s=gadd]');
+  await typed('Омарчи');
+  await key('Enter');
+  await waitFor('document.querySelectorAll(".grow-row").length === 6');
+  await key('Enter');
+  await evalJs('(() => { const e = document.querySelector("#gedit"); e.value = "omarchy"; e.dispatchEvent(new Event("input", { bubbles: true })); })()');
+  await key('Enter');
+  f('a name that is taken (any case) is refused with the reason', /такая группа уже есть/.test(await text('.note.error')), await text('.note.error'));
+  await key('Escape');
+  await key('x');
+  await key('y');
+  await waitFor('document.querySelectorAll(".grow-row").length === 5');
+
+  // «Разложить заново»: the agent sorts the projects without a group
+  f('no group suggestion ran while it is off', logLines('groups.jsonl').length === 0);
+  await click('[data-s=gresort]');
+  const spin = await waitFor('/раскладывает проекты/.test(document.body.innerText)', 3000);
+  const done = await waitFor('/Omarchy\\s+1 проект/.test(document.querySelector(".grow-row")?.innerText || "")', 8000);
+  const gl = logLines('groups.jsonl');
+  f('«Разложить заново» asks the agent even with the suggestion off, and shows it working', spin && done && gl.length === 1, JSON.stringify(await groupRows()));
+  f('…it sees the groups with their hints and every project with its goal', /^Группы:\n- Omarchy — проекты вокруг Linux-окружения Omarchy/.test(gl[0].prompt) && /alpha \| Alpha \| Проект для проверки карточки/.test(gl[0].prompt) && /beta \| Beta \| Пустой проект на паузе/.test(gl[0].prompt), gl[0].prompt.slice(0, 200));
+  const after = await groupRows();
+  f('…and the counts follow: Omarchy 1, Личное 1, ИИ-инфраструктура 1', /Omarchy\s+1 проект$/.test(after[0]) && /ИИ-инфраструктура\s+1 проект$/.test(after[2]) && /Личное\s+1 проект$/.test(after[4]), JSON.stringify(after));
+  const s1 = await snapshot();
+  f('the guesses are marked «авто»', s1.groups.assign.alpha?.auto === true && s1.groups.assign.alpha?.g === 'Omarchy' && s1.groups.assign.gamma?.g === 'ИИ-инфраструктура' && s1.groups.on === null, JSON.stringify(s1.groups.assign));
+  await shot('settings-groups.png');
+
+  // A manual pick stays when the guesses are redone.
+  await api('POST', '/api/groups', { op: 'assign', slug: 'alpha', name: 'Личное' });
+  await click('[data-s=gresort]');
+  await waitFor('!/раскладывает проекты/.test(document.body.innerText)', 8000);
+  const gl2 = logLines('groups.jsonl');
+  const s2 = await snapshot();
+  f('«Разложить заново» forgets only the «авто» ones: a manual pick is not asked again and stays', gl2.length === 2 && !/\nalpha \|/.test(gl2[1].prompt.split('Проекты')[1]) && /\nbeta \|/.test(gl2[1].prompt) && s2.groups.assign.alpha?.auto === false && s2.groups.assign.alpha?.g === 'Личное', JSON.stringify(s2.groups.assign));
+
+  // Deleting a group with projects: they move to the chosen group (as a manual pick) or to «Прочее».
+  await click('[data-s=gdel][data-name="Личное"]');
+  f('x on a group with projects asks where they go', /В группе 2 проекта\. Перенести в:\s*Прочее/.test(await text('.confirm')), await text('.confirm'));
+  await click('[data-s=gdel-to]');
+  await click('[data-s=gdel-to]');
+  f('the target steps through the other groups', /Перенести в:\s*ЯНАО/.test(await text('.confirm')), await text('.confirm'));
+  await click('[data-s=gdel-yes]');
+  await waitFor('!(document.body.innerText.includes("Личное"))', 5000);
+  const s3 = await snapshot();
+  f('the projects moved to the chosen group as manual picks; the group is gone', s3.groups.assign.alpha?.g === 'ЯНАО' && s3.groups.assign.alpha?.auto === false && s3.groups.assign.beta?.g === 'ЯНАО' && s3.groups.assign.beta?.auto === false && !s3.groups.list.includes('Личное'), JSON.stringify(s3.groups));
+  await click('[data-s=gdel][data-name="ИИ-инфраструктура"]');
+  await click('[data-s=gdel-yes]');
+  await waitFor('!(document.body.innerText.includes("ИИ-инфраструктура"))', 5000);
+  const s4 = await snapshot();
+  f('deleting to «Прочее» (the default) leaves the guess a guess', s4.groups.assign.gamma?.g === '' && s4.groups.assign.gamma?.auto === true, JSON.stringify(s4.groups.assign.gamma));
+  await click('[data-s=gup][data-name="Агенты и herdr"]');
+  await waitFor('/2\\. Агенты и herdr/.test(document.body.innerText)', 4000);
+  f('a group moves up with its ↑ button', /2\. Агенты и herdr/.test((await groupRows())[1]), JSON.stringify(await groupRows()));
+
+  // Wrong inputs
+  const [b1] = await api('POST', '/api/groups', { op: 'rename', name: 'Omarchy', to: 'Прочее' });
+  const [b2] = await api('POST', '/api/groups', { op: 'frobnicate' });
+  const [b3] = await api('POST', '/api/groups', { op: 'move', name: 'Omarchy', delta: -1 });
+  const [b4] = await api('POST', '/api/settings', { key: 'agent', value: 'gpt' });
+  const [b5] = await api('POST', '/api/settings', { key: 'nope', value: 'on' });
+  const [b6] = await api('POST', '/api/groups', { op: 'delete', name: 'Нет такой' });
+  f('group and setting ops: «Прочее» is taken 400, unknown op 400, nowhere to move 400, bad value 400, bad key 400, unknown group 400', [b1, b2, b3, b4, b5, b6].join() === '400,400,400,400,400,400', [b1, b2, b3, b4, b5, b6].join());
+  await key('Escape');
+  f('esc leaves the settings: the list is back', !!(await evalJs('!!document.querySelector(".controls") && !document.querySelector(".card")')));
+  await key('Escape');
+}
+
+// ----- the «Новый проект» form (fixture: the real `herdr-projects new` never runs)
+async function newProjectChecks() {
+  const f = check;
+  const val = (id) => evalJs(`document.getElementById(${JSON.stringify(id)})?.value`);
+  const newLog = () => logLines('new.jsonl');
+  // Turn the suggestion on: nothing waits, so nothing runs.
+  await key(',');
+  await click('.card[data-row-key="s:autogroup"] .badge[data-value=on]');
+  await waitFor('document.querySelector(".card[data-row-key=\'s:autogroup\'] .badge.active")?.innerText.includes("вкл")');
+  await sleep(500);
+  f('the suggestion on with every project in a group: no call', logLines('groups.jsonl').length === 2, String(logLines('groups.jsonl').length));
+  await key('Escape');
+
+  await key('n');
+  f('n opens the form with the cursor in «Папка»', /Новый проект/.test(await text('.header .title')) && await evalJs('document.activeElement?.id === "nf-path"'));
+  const loaded = await waitFor('/Треды: как в настройках \\(claude-sonnet\\)/.test(document.body.innerText) && /Коорд\\.: как в настройках \\(claude\\)/.test(document.body.innerText)', 4000);
+  f('machines and profiles are read when it opens: the profile badges name the defaults', loaded, (await text('.nform')).replace(/\s+/g, ' ').slice(0, 300));
+  await shot('new-form.png');
+  await click('[data-n=machine][data-i="0"]');
+  const m1 = await text('[data-n=machine][data-i="0"]');
+  await click('[data-n=machine][data-i="0"]');
+  const m2 = await text('[data-n=machine][data-i="0"]');
+  f('«Машина» steps through the enabled machines (not the disabled one) and back to «локально»', /@mac/.test(m1) && /@nas/.test(m2), `${m1} | ${m2}`);
+  f('a remote folder has no «Обзор»', !(await evalJs('!!document.querySelector("[data-n=browse-toggle]")')));
+  await click('[data-n=machine][data-i="0"]');
+  f('…and «локально» brings it back', /локально/.test(await text('[data-n=machine][data-i="0"]')) && (await evalJs('!!document.querySelector("[data-n=browse-toggle]")')));
+  await key('Escape');
+  f('esc cancels: the list is back and nothing was created', !!(await evalJs('!!document.querySelector(".controls")')) && newLog().length === 0);
+
+  await key('n');
+  await waitFor('document.activeElement?.id === "nf-path"');
+  await typed(`${fixture}/repos/`);
+  await key('ArrowDown');
+  const open = await waitFor('document.querySelectorAll(".brow").length >= 4', 4000);
+  const rows = (await evalJs('[...document.querySelectorAll(".brow")].map((r) => r.innerText.replace(/\\s+/g, " ").trim())')).map((r) => r.replace(/^➜\s*/, ''));
+  f('↓ in «Папка» opens the folder browser: .., the folders by name, repositories marked, hidden ones and files not shown', open && JSON.stringify(rows) === JSON.stringify(['..', 'alpha/ ⎇ репозиторий', 'delta/ ⎇ репозиторий', 'plain/']), JSON.stringify(rows));
+  await shot('new-browse.png');
+  await key('ArrowDown');
+  await key('ArrowRight');
+  await waitFor('/src\\//.test(document.querySelector(".browse")?.innerText || "")');
+  f('→ enters the highlighted folder', /\/repos\/delta/.test(await text('.brow-head')) && /src\//.test(await text('.browse')), await text('.brow-head'));
+  await key('ArrowLeft');
+  await waitFor('/\\/repos$/.test(document.querySelector(".brow-head")?.innerText.trim() || "")');
+  f('← goes up and highlights the folder it came out of', (await evalJs('document.querySelector(".brow.hl")?.innerText.trim()')).includes('delta/'), await text('.brow.hl'));
+  await key('Enter');
+  f('Enter picks it: the path, the name from the folder, the cursor in «Название»', (await val('nf-path')) === `${fixture}/repos/delta` && (await val('nf-name')) === 'Delta' && (await evalJs('document.activeElement?.id === "nf-name"')) && !(await evalJs('!!document.querySelector(".browse")')), `${await val('nf-path')} | ${await val('nf-name')}`);
+
+  // a second repository, completed with tab, on another machine
+  await click('[data-n=repo-add]');
+  f('«+ ещё репозиторий» adds «Папка 2» with the cursor in it', await evalJs('document.activeElement?.id === "nf-path2"') && /Папка 2/.test(await text('.nform')));
+  await typed(`${fixture}/repos/pla`);
+  await key('Tab');
+  await waitFor('document.getElementById("nf-path2")?.value.endsWith("/plain/")', 3000);
+  f('tab in a folder field completes the path', (await val('nf-path2')) === `${fixture}/repos/plain/`, await val('nf-path2'));
+  await click('[data-n=machine][data-i="1"]');
+  await evalJs('(() => { const e = document.getElementById("nf-path2"); e.value = "/srv/delta-mac/"; e.dispatchEvent(new Event("input", { bubbles: true })); })()');
+  f('a machine for the second repository', /@mac/.test(await text('[data-n=machine][data-i="1"]')));
+  await click('[data-n=tprof]'); await click('[data-n=tprof]');
+  await click('[data-n=cprof]');
+  f('the profile badges step through the allowed ones: threads → haiku, coordinator → claude', /Треды: claude-haiku/.test(await text('[data-n=tprof]')) && /Коорд\.: claude$/.test(await text('[data-n=cprof]')), await text('[data-n=tprof]') + ' | ' + await text('[data-n=cprof]'));
+  await evalJs('document.getElementById("nf-goal").focus()');
+  await typed('Цель дельты');
+  await shot('new-filled.png');
+  await key('Enter');
+  const created = await waitFor('/Delta/.test(document.querySelector(".header .title")?.innerText || "") && /Проект создан: delta/.test(document.body.innerText)', 8000);
+  const nl = newLog();
+  f('Enter creates the project: `herdr-projects new` with both repositories, goal and profiles; the name after --', created && nl.length === 1 && JSON.stringify(nl[0].argv) === JSON.stringify([`--repo=${fixture}/repos/delta`, '--repo=/srv/delta-mac@mac', '--goal=Цель дельты', '--thread-profile=claude-haiku', '--coordinator-profile=claude', '--', 'Delta']), JSON.stringify(nl[0]?.argv));
+  const opened = await waitFor('/создан и открыт в herdr/.test(document.body.innerText)', 6000);
+  f('the new project opens in the page and its coordinator is started (`open`)', opened && /Delta/.test(await text('.header .title')) && logLines('opens.jsonl').some((o) => o.slug === 'delta'), await text('.header .title'));
+  const pm = readFileSync(join(fixture, 'root/delta/PROJECT.md'), 'utf8');
+  f('the project was made by herdr-projects (the stand-in), not by the page', /name = "Delta"/.test(pm) && /goal = "Цель дельты"/.test(pm) && /machine = "mac"/.test(pm));
+  await shot('new-created.png');
+
+  // The suggestion for a new project: one call, only for it; a name the agent coined becomes a group.
+  const grouped = await waitFor('(async () => { const s = await fetch("/api/snapshot").then(r => r.json()); return s.groups.assign.delta?.g === "Новая область"; })()', 12000);
+  const gl = logLines('groups.jsonl');
+  const s = await snapshot();
+  f('a new project gets its group guess once: one call that asks only about it', grouped && gl.length === 3 && /\ndelta \| Delta \| Цель дельты/.test(gl[2].prompt) && !/\nalpha \|/.test(gl[2].prompt.split('Проекты')[1]), (gl[2]?.prompt || '').slice(-200));
+  f('…a group the agent named is added at the end and the project sits in it as a guess', s.groups.list.at(-1) === 'Новая область' && s.groups.assign.delta?.auto === true, JSON.stringify([s.groups.list, s.groups.assign.delta]));
+
+  // Wrong inputs go back as errors and create nothing.
+  const post = (body) => api('POST', '/api/new', body);
+  const repo = (path, machine = '') => ({ path, machine });
+  const [n1] = await post({ name: 'x', repos: [] });
+  const [n2, e2] = await post({ name: 'x', repos: [repo('/x', 'a b')] });
+  const [n3, e3] = await post({ name: 'x', repos: [repo(`${fixture}/repos/нет`)] });
+  const [n4, e4] = await post({ name: 'Alpha', repos: [repo(`${fixture}/repos/plain`)] });
+  const [n5] = await post({ name: 'x', repos: Array.from({ length: 7 }, () => repo('/x', 'm')) });
+  const [n6, e6] = await post({ name: 'Zed', repos: [repo(`${fixture}/repos/plain`)], thread_profile: '-bad profile' });
+  f('new: no repository 400, a machine with a space 400, a missing folder 400, a taken slug 409, seven repositories 400, a bad profile 400', [n1, n2, n3, n4, n5, n6].join() === '400,400,400,409,400,400' && /без пробелов/.test(e2.error) && /Папка не найдена/.test(e3.error) && /Проект alpha уже есть/.test(e4.error) && /профиля/.test(e6.error), [n1, n2, n3, n4, n5, n6].join());
+  writeFileSync(join(fixture, 'data', 'refuse-new'), '');
+  const [n7, e7] = await post({ name: 'Epsilon', repos: [repo(`${fixture}/repos/plain`)] });
+  rmSync(join(fixture, 'data', 'refuse-new'));
+  f('a refusal of herdr-projects comes back as 502 with its words, and no project appears', n7 === 502 && /refusing to create epsilon/.test(e7.error) && !existsSync(join(fixture, 'root/epsilon')), JSON.stringify(e7));
+  const [r1] = await api('GET', `/api/browse?path=${encodeURIComponent('/нет/такой')}`);
+  const [r2, c2] = await api('GET', `/api/complete?path=${encodeURIComponent(`${fixture}/repos/de`)}`);
+  f('browse: an unreadable folder 400; complete: a path is completed', r1 === 400 && r2 === 200 && c2.path === `${fixture}/repos/delta/`, JSON.stringify([r1, r2, c2]));
+  f('only the one project was ever made (the second attempt was refused, the others never reached the command)', newLog().length === 2 && logLines('set.jsonl').length === 0, String(newLog().length));
+  await key('Escape');
+}
+
+// ----- live server: the screens are looked at, nothing is changed or created
+async function screensSmoke() {
+  await click('[data-act=settings]');
+  check('settings: a card per setting and the groups card', (await evalJs('document.querySelectorAll(".card[data-row-key^=\'s:\']").length')) >= 3 && /Группы проектов/.test(await text('.scroll')));
+  check('settings: the cheap agent shows Haiku 5.5 as an option', /Claude Haiku 5\.5/.test(await text('.card[data-row-key="s:agent"]')));
+  await shot('settings.png');
+  await key('Escape');
+  check('esc leaves the settings', !!(await evalJs('!!document.querySelector(".controls")')));
+  await key('n');
+  check('n opens the new-project form', /Новый проект/.test(await text('.header .title')) && !!(await evalJs('!!document.querySelector("#nf-path") && !!document.querySelector("#nf-name") && !!document.querySelector("#nf-goal")')));
+  await waitFor('!/Читаю машины и профили/.test(document.body.innerText)', 6000);
+  check('the form asks for the machines and profiles (and works without them)', !/Читаю машины и профили/.test(await text('.nform')), (await text('.nform')).replace(/\s+/g, ' ').slice(0, 200));
+  await key('ArrowDown');
+  const browsed = await waitFor('!!document.querySelector(".browse")', 4000);
+  check('↓ in «Папка» opens the folder browser', browsed && (await evalJs('document.querySelectorAll(".brow").length')) > 0);
+  await shot('new-form.png');
+  await key('Escape');
+  check('esc closes the browser, not the form', !(await evalJs('!!document.querySelector(".browse")')) && /Новый проект/.test(await text('.header .title')));
+  await key('Escape');
+  check('esc leaves the form: nothing was created', !!(await evalJs('!!document.querySelector(".controls")')));
 }
 
 async function main() {
@@ -369,6 +678,7 @@ async function main() {
   if (fixture) await cardChecks(); else await cardSmoke();
   await key('Escape');
   check('Escape returns to the list with the project highlighted', await evalJs('!!document.querySelector(".row.hl[data-row]")'));
+  if (fixture) { await settingsChecks(); await newProjectChecks(); } else await screensSmoke();
 
   ws.close();
 }

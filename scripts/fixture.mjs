@@ -44,6 +44,15 @@ write(join(w3, 'docs.md'), 'docs\n'); git(w3, 'add', '.'); git(w3, 'commit', '-q
 const w8 = wt('t-0008', 'hp/alpha/t-0008-1');   // finished, worktree kept: its trailers come from the branch
 write(join(w8, 'x.txt'), 'x\n'); git(w8, 'add', '.'); git(w8, 'commit', '-qm', 'Икс', '-m', 'Co-Authored-By: Claude Haiku 5.5 <noreply@anthropic.com>');
 
+// --- repositories the «Новый проект» form finds: a git one with a subfolder, a plain one, a hidden one
+const delta = join(dir, 'repos/delta');
+mkdirSync(delta, { recursive: true });
+git(delta, 'init', '-q', '-b', 'main');
+write(join(delta, 'src/lib.rs'), 'fn main() {}\n');
+git(delta, 'add', '.'); git(delta, 'commit', '-qm', 'Initial commit');
+mkdirSync(join(dir, 'repos/plain'), { recursive: true });
+write(join(dir, 'repos/.hidden/x'), '');
+
 // --- the projects
 const project = (slug, name, goal, repos = '', status) => write(join(dir, 'root', slug, 'PROJECT.md'),
   `+++\nname = "${name}"\ngoal = "${goal}"\n${status ? `status = "${status}"\n` : ''}${repos}+++\n\n# Instructions\n`);
@@ -87,6 +96,17 @@ write(join(dir, 'data/profiles.json'), JSON.stringify({
   pi: { agent: 'pi', args: [], name: 'pi' },
 }, null, 1));
 
+write(join(dir, 'data/profile-list.txt'), `Profiles (built-ins: the agent CLIs installed and signed in here: pi, claude, omp):
+  claude         claude · model claude-opus-5-5 · effort medium — Координатор
+  claude-haiku   claude · model claude-haiku-5-5 · effort high — Лёгкий тред
+  claude-sonnet  claude · model claude-sonnet-5-5 · effort high — Тред по умолчанию
+  pi             pi · default model  (built-in)
+
+Defaults for new projects: thread_profile = claude-sonnet, coordinator_profile = claude
+Allowed for threads in projects without their own list: claude-sonnet, claude-haiku
+Allowed for the coordinator in projects without their own list: claude
+`);
+
 // --- stand-ins
 const bin = (name, body) => { const p = join(dir, 'bin', name); write(p, `#!/usr/bin/env node\n${body}`); chmodSync(p, 0o755); };
 const prelude = `const fs = require('node:fs'); const path = require('node:path');
@@ -98,8 +118,28 @@ bin('herdr-projects', `${prelude}
 const argv = process.argv.slice(2); const i = argv.indexOf('--root'); if (i >= 0) argv.splice(i, 2);
 const [cmd, ...rest] = argv;
 const opened = (slug) => fs.existsSync(path.join(D, 'state', 'opened-' + slug));
+const created = () => { try { return fs.readFileSync(path.join(D, 'state', 'created'), 'utf8').split('\\n').filter(Boolean); } catch { return []; } };
 if (cmd === 'list') {
-  console.log('alpha\\tactive\\tReady for review: 1, Working: 1, Resolved: 4\\nbeta\\tpaused\\tno threads\\ngamma\\tactive\\tno threads');
+  console.log('alpha\\tactive\\tReady for review: 1, Working: 1, Resolved: 4\\nbeta\\tpaused\\tno threads\\ngamma\\tactive\\tno threads' + created().map((s) => '\\n' + s + '\\tactive\\tno threads').join(''));
+} else if (cmd === 'profile' && rest[0] === 'list') {
+  console.log(fs.readFileSync(path.join(D, 'data', 'profile-list.txt'), 'utf8'));
+} else if (cmd === 'new') {
+  // The arguments as the planner sends them: new --repo=P[@M] ... --goal=G ... -- NAME
+  const dd = rest.indexOf('--'); const name = dd >= 0 ? rest.slice(dd + 1).join(' ') : rest[0];
+  log('new.jsonl', { argv: rest });
+  const slug = name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+  const repos = rest.filter((a) => a.startsWith('--repo=')).map((a) => a.slice(7));
+  const goal = (rest.find((a) => a.startsWith('--goal=')) || '--goal=').slice(7);
+  if (!slug) { console.error('empty slug'); process.exit(1); }
+  if (fs.existsSync(path.join(D, 'data', 'refuse-new'))) { console.error('herdr-projects: refusing to create ' + slug); process.exit(1); }
+  const root = process.argv[process.argv.indexOf('--root') + 1];
+  fs.mkdirSync(path.join(root, slug), { recursive: true });
+  const toml = repos.map((r) => { const [p, m] = r.split(/@(?=[^/@]*$)/); return '[[repos]]\\npath = "' + p + '"\\n' + (m ? 'machine = "' + m + '"\\n' : ''); }).join('\\n');
+  fs.writeFileSync(path.join(root, slug, 'PROJECT.md'), '+++\\nname = "' + name + '"\\ngoal = "' + goal + '"\\n' + toml + '+++\\n');
+  fs.appendFileSync(path.join(D, 'state', 'created'), slug + '\\n');
+  console.log('created \`' + slug + '\` in ' + root);
+} else if (cmd === 'set') {
+  log('set.jsonl', { argv: rest });
 } else if (cmd === 'thread' && rest[0] === 'list') {
   const f = path.join(D, 'data', 'threads-' + rest[1] + '.json');
   console.log(fs.existsSync(f) ? fs.readFileSync(f, 'utf8') : '[]');
@@ -125,6 +165,9 @@ if (cmd === 'list') {
 bin('herdr', `${prelude}
 const argv = process.argv.slice(2);
 if (argv[0] === 'workspace') { console.log(JSON.stringify({ result: { workspaces: [] } })); }
+else if (argv[0] === 'machine' && argv[1] === 'list') {
+  console.log(fs.existsSync(path.join(D, 'data', 'no-machines')) ? '[]' : JSON.stringify([{ label: 'mac', enabled: true }, { label: 'old', enabled: false }, { label: 'nas', enabled: true }]));
+}
 else if (argv[0] === 'worktree' && argv[1] === 'open') {
   const at = argv.indexOf('--path'); const p = at >= 0 ? argv[at + 1] : '';
   log('herdr.jsonl', { argv });
@@ -133,8 +176,31 @@ else if (argv[0] === 'worktree' && argv[1] === 'open') {
 `);
 bin('claude', `${prelude}
 const argv = process.argv.slice(2); const prompt = readStdin();
-log('claude.jsonl', { argv, prompt, cwd: process.cwd() });
-sleep(1200);
-console.log('Ответ из теста: **готово**.\\n\\n- первый пункт\\n- второй пункт с \`кодом\`\\n\\n<script>alert(1)</script>');
+const entry = { argv, prompt, cwd: process.cwd() };
+if (prompt.includes('Задачи бэклога:')) {
+  // The freshness check: the first answer says «частично» for the export task and «сделано» (with a file)
+  // for the theme one; after a new commit the export task is no longer a worry.
+  const f = path.join(D, 'state', 'fresh-count'); const n = (fs.existsSync(f) ? Number(fs.readFileSync(f, 'utf8')) : 0) + 1;
+  fs.writeFileSync(f, String(n)); log('fresh.jsonl', { ...entry, n });
+  if (fs.existsSync(path.join(D, 'data', 'fresh-fails'))) { console.error('the fake agent fails'); process.exit(1); }
+  sleep(n === 1 ? 2500 : 600);
+  const rows = [...prompt.matchAll(/^(\\d+)\\. (.*)$/gm)].map((m) => {
+    const text = m[2]; const row = { n: Number(m[1]), v: 'actual', why: 'нужна' };
+    if (/экспорт/.test(text)) Object.assign(row, n === 1 ? { v: 'partial', why: 'часть экспорта уже есть в export.txt' } : { v: 'actual', why: 'не сделано' });
+    if (/тёмную/.test(text)) Object.assign(row, { v: 'done', why: 'тема уже есть', proof: 'export.txt' });
+    if (/Единственная/.test(text)) Object.assign(row, { v: 'done', why: 'кажется, есть', proof: 'нет/такого/файла.rs' });
+    return row;
+  });
+  console.log('Проверил по коду.\\n\`\`\`json\\n' + JSON.stringify(rows) + '\\n\`\`\`');
+} else if (prompt.includes('Проекты (slug | название | цель):')) {
+  log('groups.jsonl', entry); sleep(300);
+  const slugs = prompt.split('Проекты (slug | название | цель):')[1].split('\\n').map((l) => l.split(' | ')[0].trim()).filter(Boolean);
+  const group = (s) => (s === 'delta' ? 'Новая область' : s.startsWith('a') ? 'Omarchy' : s.startsWith('b') ? 'Личное' : 'ИИ-инфраструктура');
+  console.log('Вот раскладка:\\n' + JSON.stringify(slugs.map((slug) => ({ slug, group: group(slug) }))));
+} else {
+  log('claude.jsonl', entry);
+  sleep(1200);
+  console.log('Ответ из теста: **готово**.\\n\\n- первый пункт\\n- второй пункт с \`кодом\`\\n\\n<script>alert(1)</script>');
+}
 `);
 console.log(dir);

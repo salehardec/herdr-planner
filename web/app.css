@@ -172,3 +172,34 @@ kbd {
 .note.success { color: var(--green); }
 
 @media (prefers-reduced-motion: reduce) { * { transition: none !important; animation: none !important; } }
+
+/* Settings: a card per setting, the groups below. */
+.card { border: 1px solid var(--border); border-radius: 8px; background: var(--surface); padding: 8px 10px; margin: 0 6px 8px; display: flex; flex-direction: column; gap: 6px; }
+.card.sel { border-color: var(--accent); background: var(--accent-wash); }
+.grow-row { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 8px; padding: 2px 4px; border-radius: 6px; border: 1px solid transparent; }
+.grow-row.sel { background: var(--accent-wash); border-color: var(--accent); }
+.grow-row .gname { flex: 1 1 200px; white-space: pre; }
+.grow-row .badge { padding: 0 8px; }
+.actions.confirm { padding-left: 14px; }
+.gedit { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 0 6px 8px; }
+.gedit input { flex: 1 1 220px; background: var(--surface); border: 1px solid var(--border); border-radius: 6px; padding: 4px 8px; outline: none; }
+.gedit input:focus { border-color: var(--accent); }
+
+/* The new-project form: label, field, badges; the folder browser under the folder. */
+.nform { padding: 2px 6px; }
+.nrow { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; padding: 3px 0; }
+.nrow.sub { padding-left: 26px; }
+.nrow .k { color: var(--muted); flex: 0 0 74px; }
+.nrow input { flex: 1 1 260px; min-width: 0; background: var(--surface); border: 1px solid var(--border); border-radius: 6px; padding: 4px 8px; outline: none; }
+.nrow input:focus { border-color: var(--accent); }
+.nrow input[readonly] { opacity: .7; }
+.nform .actions { padding: 4px 0; }
+.nform .actions .k { color: var(--muted); }
+.hint-line { padding-left: 82px; }
+.browse { margin: 2px 0 6px 82px; padding: 6px 8px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); display: flex; flex-direction: column; gap: 2px; }
+.brow-head { padding-bottom: 2px; border-bottom: 1px solid var(--border); margin-bottom: 2px; }
+.brow { display: grid; grid-template-columns: 18px 1fr; gap: 8px; padding: 1px 6px; border-radius: 6px; cursor: pointer; border: 1px solid transparent; }
+.brow:hover { background: var(--active); }
+.brow.hl { background: var(--accent-wash); border-color: var(--accent); }
+.brow .icon { color: var(--accent); text-align: center; }
+.badge.warn:hover { filter: brightness(1.1); }

@@ -1,7 +1,7 @@
 //! The project list's pure logic: rows, sorting, chips, text filter, groups
 //! and the workspace-to-project match. Ported from the Tern plugin 0.17.1.
 
-// Reference logic: parts are used only by tests and by stages 2–4 (the page mirrors the list logic).
+// Reference logic: the list's sorting, chips and sections are mirrored by the page and used here by tests only.
 #![allow(dead_code)]
 
 use serde::{Deserialize, Serialize};
@@ -216,6 +216,15 @@ pub fn group_name_clean(raw: &str) -> Option<String> {
     Some(s)
 }
 
+/// Why `group_name_clean` refused `raw`.
+fn name_error(raw: &str) -> String {
+    if lower(raw.trim()) == lower(OTHER) {
+        "«Прочее» занято: туда попадают проекты без группы".into()
+    } else {
+        "введите название группы".into()
+    }
+}
+
 impl Groups {
     pub fn index(&self, name: &str) -> Option<usize> {
         let key = lower(name);
@@ -315,11 +324,7 @@ impl Groups {
     /// A new group at the end, or the existing one of that name (any case).
     pub fn add(&mut self, raw: &str) -> Result<String, String> {
         let Some(name) = group_name_clean(raw) else {
-            return Err(if lower(raw.trim()) == lower(OTHER) {
-                "«Прочее» занято: туда попадают проекты без группы".into()
-            } else {
-                "введите название группы".into()
-            });
+            return Err(name_error(raw));
         };
         if let Some(at) = self.index(&name) {
             return Ok(self.list[at].clone());
@@ -350,6 +355,77 @@ impl Groups {
 
     pub fn toggle_grouping(&mut self) {
         self.on = Some(!self.grouping_on());
+    }
+
+    /// Renames a group; its projects and its fold state follow.
+    pub fn rename(&mut self, name: &str, raw: &str) -> Result<String, String> {
+        let Some(at) = self.index(name) else {
+            return Err("нет такой группы".into());
+        };
+        let Some(new) = group_name_clean(raw) else {
+            return Err(name_error(raw));
+        };
+        if self.index(&new).is_some_and(|other| other != at) {
+            return Err("такая группа уже есть".into());
+        }
+        let old = std::mem::replace(&mut self.list[at], new.clone());
+        for e in self.assign.values_mut() {
+            if e.g == old {
+                e.g = new.clone();
+            }
+        }
+        if self.is_collapsed(&old) {
+            self.collapsed.retain(|c| *c != old);
+            self.collapsed.push(new.clone());
+            self.collapsed.sort();
+        }
+        Ok(new)
+    }
+
+    /// Moves a group by `delta` places; false when it cannot move that far.
+    pub fn move_group(&mut self, name: &str, delta: i32) -> bool {
+        let Some(at) = self.index(name) else {
+            return false;
+        };
+        let to = at as i64 + delta as i64;
+        if to < 0 || to >= self.list.len() as i64 {
+            return false;
+        }
+        self.list.swap(at, to as usize);
+        true
+    }
+
+    /// Removes a group. Without `target` its projects go to «Прочее» (a manual
+    /// choice stays manual, an agent's guess stays a guess that «Разложить
+    /// заново» can redo); with the name of another group they move there as a
+    /// manual choice.
+    pub fn delete(&mut self, name: &str, target: Option<&str>) -> bool {
+        let Some(at) = self.index(name) else {
+            return false;
+        };
+        let old = self.list.remove(at);
+        let target = target
+            .filter(|t| !t.is_empty())
+            .and_then(|t| self.index(t))
+            .map(|i| self.list[i].clone());
+        self.collapsed.retain(|c| *c != old);
+        for e in self.assign.values_mut() {
+            if e.g == old {
+                match &target {
+                    Some(t) => {
+                        e.g = t.clone();
+                        e.auto = false;
+                    }
+                    None => e.g.clear(),
+                }
+            }
+        }
+        true
+    }
+
+    /// Forgets the agent's guesses (manual picks stay).
+    pub fn forget_auto(&mut self) {
+        self.assign.retain(|_, e| !e.auto);
     }
 
     /// Projects without a group (candidates for the cheap agent's suggestion).
@@ -582,6 +658,65 @@ mod tests {
         assert!(g2.is_collapsed("New-Group"));
         g2.fold("New-Group", Some(false));
         assert!(!g2.is_collapsed("New-Group"));
+    }
+
+    #[test]
+    fn groups_rename_move_delete() {
+        let mut g = Groups::normalize(None);
+        g.assign("a", "Omarchy", false);
+        g.assign("b", "Omarchy", true);
+        g.assign("c", "ЯНАО", false);
+        g.fold("Omarchy", Some(true));
+        assert_eq!(
+            g.rename("Omarchy", " Мой  Omarchy ").unwrap(),
+            "Мой Omarchy"
+        );
+        assert_eq!(g.group_of("a").0, "Мой Omarchy");
+        assert!(g.is_collapsed("Мой Omarchy") && !g.is_collapsed("Omarchy"));
+        assert_eq!(g.rename("Мой Omarchy", "яна").unwrap(), "яна");
+        assert!(g.rename("яна", "ЯНАО").is_err(), "a name that is taken");
+        assert_eq!(
+            g.rename("яна", "Прочее").unwrap_err(),
+            "«Прочее» занято: туда попадают проекты без группы"
+        );
+        assert_eq!(g.rename("нет", "x").unwrap_err(), "нет такой группы");
+        assert_eq!(
+            g.rename("яна", "Omarchy").unwrap(),
+            "Omarchy",
+            "the old name is free again"
+        );
+        // move
+        assert!(g.move_group("Omarchy", 1));
+        assert_eq!(g.list[..2], ["ЯНАО".to_string(), "Omarchy".to_string()]);
+        assert!(!g.move_group("ЯНАО", -1), "the first one cannot go up");
+        assert!(!g.move_group("Личное", 1), "the last one cannot go down");
+        assert!(g.move_group("Omarchy", -1));
+        // delete: to «Прочее», then to another group
+        assert!(g.delete("ЯНАО", None));
+        assert_eq!(g.group_of("c").0, OTHER);
+        assert_eq!(
+            g.assign["c"],
+            Assign {
+                g: String::new(),
+                auto: false
+            }
+        );
+        g.assign("d", "Личное", true);
+        assert!(g.delete("Личное", Some("Omarchy")));
+        assert_eq!(
+            g.assign["d"],
+            Assign {
+                g: "Omarchy".into(),
+                auto: false
+            }
+        );
+        assert!(g.delete("Omarchy", Some("Omarchy")), "itself is no target");
+        assert_eq!(g.group_of("a").0, OTHER);
+        assert!(!g.delete("Omarchy", None));
+        g.assign("e", "", true);
+        g.assign("f", "", false);
+        g.forget_auto();
+        assert!(!g.assign.contains_key("e") && g.assign.contains_key("f"));
     }
 
     #[test]

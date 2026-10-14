@@ -18,11 +18,13 @@ import { esc, h, plural, clip, oneLine, textMatches, post, getJson, markdown, ke
  * @typedef {{id:string, title:string, group:string, state:string, note:string|null, closed:boolean, failed:boolean, error:string, rank:number, branch:string, worktree:string|null, base:string, kind:string, path:string|null, wt_exists:boolean, pr:string, pr_state:string, pr_number:number|null, profile:string, machine:string, percent:number|null, activity:string, summary:string|null, git:Git|null, models:Models, search:string}} Thread
  * @typedef {{idx:number, done:boolean, full:string, text:string, notes:string, owner:string|null, thread:string|null, thread_led:boolean}} Task
  * @typedef {{q:string, a?:string, error?:string, pending?:boolean}} Qa
- * @typedef {{project:any, tasks:Task[], tasks_read:boolean, threads:Thread[], qa:Record<string,Qa[]>, sent:Record<string,any>, agent:string, error:string|null}} CardData
+ * @typedef {{v:string, why:string, proof:string|null, word:string}} Verdict
+ * @typedef {{verdicts:Record<string,Verdict>, checking:string[], error:string|null, on:boolean}} Fresh
+ * @typedef {{project:any, tasks:Task[], fresh:Fresh, tasks_read:boolean, threads:Thread[], qa:Record<string,Qa[]>, sent:Record<string,any>, agent:string, error:string|null}} CardData
  * @typedef {{kind:'t', key:string, t:Thread}|{kind:'k', key:string, k:Task}} Row
  */
 
-/** What the page gives the card: rendering, the status line, the project record, the refresh stamp. @type {{ render:()=>void, flash:(msg:string, ms?:number)=>void, root:HTMLElement, project:(slug:string)=>any, stamp:()=>string }} */
+/** What the page gives the card: rendering, the status line, the settings screen, the project record, the refresh stamp. @type {{ render:()=>void, flash:(msg:string, ms?:number)=>void, root:HTMLElement, openSettings:()=>void, project:(slug:string)=>any, stamp:()=>string }} */
 let ctx;
 
 /** @param {typeof ctx} c */
@@ -53,6 +55,8 @@ export const card = {
   asking: false,
   qtext: '',
   removing: false,
+  /** The removal asked for comes from a freshness badge: its verdict goes along. */
+  removeFresh: false,
   profileOpen: false,
   /** '' = the coordinator chooses. */ profile: '',
   /** @type {{slug:string, profiles:string[], error:string|null, loaded:boolean}|null} */ assign: null,
@@ -204,6 +208,7 @@ function dropPick() {
   card.picked = null;
   card.asking = false;
   card.removing = false;
+  card.removeFresh = false;
   card.profileOpen = false;
   card.profile = '';
 }
@@ -287,8 +292,10 @@ async function removeTask() {
   const slug = card.slug;
   if (!k || !slug || !card.removing) return;
   card.removing = false;
+  const withVerdict = card.removeFresh;
+  card.removeFresh = false;
   try {
-    await post(`/api/project/${encode(slug)}/remove`, { task: k.full });
+    await post(`/api/project/${encode(slug)}/remove`, { task: k.full, fresh: withVerdict });
     if (card.picked === k.full) dropPick();
     ctx.flash(`Просьба убрать задачу отправлена координатору (${slug})`);
   } catch (e) {
@@ -296,6 +303,20 @@ async function removeTask() {
   }
   await load();
   ctx.render();
+}
+
+/** «Оставить»: the badge stays hidden until main has a new commit. */
+async function keepTask() {
+  const k = pickedTask();
+  const slug = card.slug;
+  if (!k || !slug) return;
+  try {
+    await post(`/api/project/${encode(slug)}/fresh-keep`, { task: k.full });
+    ctx.flash('Отметка спрятана до нового коммита в main');
+  } catch (e) {
+    ctx.flash(`Не вышло: ${/** @type {Error} */ (e).message}`, 6000);
+  }
+  await load();
 }
 
 async function ask() {
@@ -387,7 +408,7 @@ export function key(ev) {
   const k = keyOf(ev);
   if (card.removing) {
     if (k === 'y' || k === 'Y') { removeTask(); return true; }
-    if (k === 'n' || k === 'N' || k === 'Escape') { card.removing = false; ctx.render(); return true; }
+    if (k === 'n' || k === 'N' || k === 'Escape') { card.removing = false; card.removeFresh = false; ctx.render(); return true; }
     return true;
   }
   if (k === 'Escape') {
@@ -414,15 +435,15 @@ export function key(ev) {
     return true;
   }
   if (k === 'w' || k === 'W') { openWorktree(cur?.kind === 't' ? cur.t.id : ''); return true; }
-  if (k === ',') { ctx.flash('Настройки (дешёвый агент, автопроверка, группы) появятся на этапе 3.'); return true; }
-  if (k === 'u') { ctx.flash('«Траты агентов» — отдельная утилита, в планировщике появится позже.'); return true; }
+  if (k === ',') { ctx.openSettings(); return true; }
   return false;
 }
 
-/** @param {Task} task */
-function askRemove(task) {
+/** @param {Task} task @param {boolean} [fromVerdict] */
+function askRemove(task, fromVerdict = false) {
   if (task.thread_led) { ctx.flash('Задачу ведёт тред: её не убрать из панели.'); return; }
   card.removing = true;
+  card.removeFresh = fromVerdict;
   card.asking = false;
   ctx.render();
 }
@@ -452,8 +473,10 @@ export function click(el) {
   else if (a === 'profile') { card.profile = id; card.profileOpen = false; ctx.render(); }
   else if (a === 'ask') startAsking();
   else if (a === 'remove-ask') { const t = pickedTask(); if (t) askRemove(t); }
+  else if (a === 'fresh-remove') { const t = pickedTask(); if (t) askRemove(t, true); }
+  else if (a === 'fresh-keep') keepTask();
   else if (a === 'remove-yes') removeTask();
-  else if (a === 'remove-no') { card.removing = false; ctx.render(); }
+  else if (a === 'remove-no') { card.removing = false; card.removeFresh = false; ctx.render(); }
   else if (a === 'unpick') { dropPick(); ctx.render(); }
   else if (a === 'filter-clear') { card.query = ''; ctx.render(); }
   else return false;
@@ -572,6 +595,10 @@ function taskRow(k) {
   if (mark === 'remove') value = span('просьба убрать отправлена', 'info');
   else if (mark) value = span('отправлено координатору', 'info');
   else if (picked) value = span('выбрана', 'accent');
+  // The freshness check: a badge only for what is not actual, «…» while it runs.
+  const verdict = d.fresh?.verdicts?.[k.full];
+  if (verdict) value = span(verdict.word, verdict.v === 'done' ? 'info strong' : 'warning strong') + span('  ', '') + value;
+  else if ((d.fresh?.checking || []).includes(k.full)) value = span('…', 'dim') + span('  ', '') + value;
   if (hl && !picked) value += `<span class="hint">Выбрать <kbd>↵</kbd></span>`;
   return h('div', { class: `row task${hl || picked ? ' hl' : ''}`, 'data-c': 'task', 'data-id': `k${k.idx}` },
     h('span', { class: `icon ${hl || picked ? 'accent' : ''}` }, hl || picked ? '➜' : '○')
@@ -644,6 +671,11 @@ function panelHtml() {
   const qa = d.qa[k.full] || [];
   let body = h('div', {}, span('Задача: ', 'muted') + esc(k.full));
   if (k.notes) body += h('div', { class: 'notes' }, esc(k.notes));
+  const verdict = d.fresh?.verdicts?.[k.full];
+  if (verdict) {
+    body += h('div', {}, span(verdict.word, (verdict.v === 'done' ? 'info' : 'warning') + ' strong') + span('  ' + (verdict.why || 'без пояснения'), 'muted'));
+    if (verdict.proof) body += h('div', {}, span('Доказательство в коде: ', 'muted') + span(verdict.proof, 'path'));
+  }
   if (card.removing) {
     body += h('div', { class: 'actions' }, h('strong', {}, 'Убрать из бэклога?')
       + h('span', { class: 'badge warn', 'data-c': 'remove-yes' }, 'Да') + '<kbd>y</kbd>'
@@ -657,6 +689,12 @@ function panelHtml() {
       + h('span', { class: `badge${card.profileOpen ? ' active' : ''}`, 'data-c': 'profile-toggle' }, esc(profile))
       + h('span', { class: 'badge info', 'data-c': 'ask' }, 'Задать вопрос') + '<kbd>?</kbd>';
     if (!k.thread_led) actions += h('span', { class: 'badge', 'data-c': 'remove-ask' }, 'Не решать') + '<kbd>x</kbd>';
+    if (verdict && !k.thread_led) {
+      body += h('div', { class: 'actions' },
+        h('span', { class: 'badge warn', 'data-c': 'fresh-remove' }, 'Убрать')
+        + h('span', { class: 'badge', 'data-c': 'fresh-keep' }, 'Оставить')
+        + span('«Оставить» прячет отметку до нового коммита в main; ничего не удаляется само', 'muted'));
+    }
     if (qa.some((e) => e.a)) actions += span(`«Решить» передаст и ${qa.filter((e) => e.a).length} вопр.`, 'muted');
     actions += h('span', { class: 'grow' }, '') + h('span', { class: 'badge', 'data-c': 'unpick', title: 'Снять выбор (esc)' }, '✕');
     body += h('div', { class: 'actions' }, actions);
@@ -695,10 +733,10 @@ export function html() {
   let out = h('div', { class: 'header' },
     h('span', { class: 'badge back', 'data-act': 'back' }, '← Назад')
     + h('div', { class: 'title' }, h('strong', {}, esc(name)) + (p && p.status && p.status !== 'active' ? span('  ' + (STATUS_LABEL[p.status] || p.status), 'muted') : ''))
-    + h('span', { class: 'badge', 'data-act': 'settings', title: 'Настройки (на этапе 3)' }, '⚙')
+    + h('span', { class: 'badge', 'data-act': 'settings', title: 'Настройки (,)' }, '⚙')
     + h('span', { class: 'badge', 'data-act': 'focus' }, 'Фокус <kbd>F</kbd>')
     + h('span', { class: 'badge accent', 'data-act': 'open' }, 'Открыть <kbd>O</kbd>')
-    + h('span', { class: 'badge', 'data-act': 'usage' }, 'Траты')
+
     + h('span', { class: 'stamp', 'data-act': 'refresh' }, esc(ctx.stamp())));
   // Goal and repositories.
   if (p) {
@@ -717,6 +755,7 @@ export function html() {
   out += h('div', { class: 'progress' },
     h('div', { class: 'meter' }, `<div class="bar" style="width:${Math.round((m.allDone / all) * 100)}%"></div>`)
     + h('span', {}, h('span', { class: 'strong num' }, String(m.allDone)) + span(` из ${all} сделано  ·  ${m.threads} ${plural(m.threads, 'тред', 'треда', 'тредов')}`, 'muted')));
+  if (d.fresh && d.fresh.on && d.fresh.error) out += h('div', { class: 'note' }, esc('Проверка актуальности не удалась: ' + d.fresh.error));
   const shown = m.todo.length + m.done.length;
   out += h('div', { class: 'controls' },
     h('div', { class: 'filter' }, `<kbd>/</kbd><input id="cfilter" type="search" placeholder="фильтр: слово, модель, профиль, «сбой запуска»" value="${esc(card.query)}" autocomplete="off">`
