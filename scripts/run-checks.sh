@@ -11,6 +11,7 @@ SHOTS="${1:-}"
 [ -z "$SHOTS" ] || mkdir -p "$SHOTS"
 $CARGO test --quiet
 $CARGO build --quiet
+sh scripts/check-install.sh ./target/debug/herdr-planner
 FX="$(mktemp -d)"
 STATE="$(mktemp -d)"
 SERVER=

@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Herdr Planner
+Name[ru]=Планировщик проектов
+Comment=Dashboard of herdr-projects in the herdr-gpui theme
+Comment[ru]=Дашборд проектов herdr-projects в теме herdr-gpui
+Exec=@OPEN@
+Icon=herdr-planner
+Terminal=false
+Categories=Development;ProjectManagement;
+Keywords=herdr;projects;planner;

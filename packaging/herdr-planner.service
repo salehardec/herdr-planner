@@ -1,0 +1,15 @@
+[Unit]
+Description=Herdr Planner: local dashboard of herdr-projects (127.0.0.1)
+Documentation=https://github.com/salehardec/herdr-planner
+
+[Service]
+Type=simple
+ExecStart=@BIN@
+Environment=PATH=@PATH@
+Restart=on-failure
+RestartSec=2
+TimeoutStopSec=10
+# The server logs to stdout/stderr: journalctl --user -u herdr-planner
+
+[Install]
+WantedBy=default.target

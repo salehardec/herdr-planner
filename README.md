@@ -7,9 +7,10 @@
 
 **Этап 1**: каркас, тема, список проектов, группы, следование за активным пространством herdr, перенос
 сохранённого состояния плагина. **Этап 2**: карточка проекта — треды с git-строками и бейджами моделей,
-задачи из TASKS.md с «Решить» / «Не решать» / «Задать вопрос», фильтр карточки. **Этап 3 (этот)**: экран настроек
+задачи из TASKS.md с «Решить» / «Не решать» / «Задать вопрос», фильтр карточки. **Этап 3**: экран настроек
 (дешёвый агент, автопроверка, автопредложение, группы), автопроверка актуальности задач, автопредложение групп,
-форма «Новый проект». Этап 4 — ниже.
+форма «Новый проект». **Этап 4 (этот)**: упаковка — установка одним скриптом, служба `systemd --user`, ярлык и
+горячая клавиша Omarchy.
 
 ## Запуск
 
@@ -29,7 +30,61 @@ herdr-gpui browser open localhost:7117   # вкладка в herdr-gpui (на Li
   `HERDR_PLANNER_OPEN_WAIT_SECS` — сколько «Решить» ждёт запуска координатора (45 с); `HERDR_BIN=/путь` — `herdr`.
 - `herdr-projects` ищется в `PATH`; `HERDR_PROJECTS_BIN=/путь` переопределяет.
 
-Упаковка (служба `systemd --user`, ярлык и горячая клавиша Omarchy) — этап 4.
+Постоянная установка (служба `systemd --user`, ярлык и горячая клавиша Omarchy) — раздел «Установка».
+
+## Установка
+
+Без `sudo` и системного пакетного менеджера; всё лежит в домашней папке. Нужны `cargo` (или `mise` с `rust@stable`),
+`systemd --user`; для клавиши — Omarchy на Lua-конфиге Hyprland (`~/.config/hypr/bindings.lua`), `hyprctl` и `jq`.
+
+```sh
+scripts/install.sh              # собрать release, поставить, включить службу, ярлык и клавишу
+scripts/install.sh status       # что стоит, включена ли служба, отвечает ли порт
+scripts/install.sh uninstall    # убрать всё установленное
+```
+
+Что и куда ставится:
+
+| Что | Куда |
+|---|---|
+| бинарник и открывалка | `~/.local/bin/herdr-planner`, `~/.local/bin/herdr-planner-open` |
+| служба | `~/.config/systemd/user/herdr-planner.service` (из `packaging/`, включена и запущена) |
+| ярлык приложения | `~/.local/share/applications/herdr-planner.desktop`, значок `…/icons/hicolor/scalable/apps/herdr-planner.svg` |
+| клавиша | `~/.config/hypr/herdr_planner.lua` и один помеченный блок в `~/.config/hypr/bindings.lua` |
+
+**Обновление** — тот же `scripts/install.sh` после `git pull`: пересобирает, подменяет бинарник (через переименование, работающий
+файл не затирается) и перезапускает службу. Группы, настройки и ответы (`~/.local/state/herdr-planner`, `~/.config/herdr-planner`)
+не трогаются; `uninstall` их тоже оставляет. Флаги: `--no-build` (взять уже собранный `target/release/herdr-planner`),
+`--no-service`, `--no-hypr`, `--key "SUPER + ALT + P"`. `HERDR_PLANNER_BIN_DIR` — другая папка для бинарников, `HERDR_PLANNER_SRC` — другой собранный бинарник.
+
+**Служба.** `herdr-planner.service` слушает только `127.0.0.1:7117` (порт — `config.toml` или `HERDR_PLANNER_PORT`, см. «Запуск»),
+перезапускается при сбое (`Restart=on-failure`, пауза 2 с), стартует вместе с пользовательской сессией systemd. Вывод — в journal:
+
+```sh
+systemctl --user status herdr-planner
+journalctl --user -u herdr-planner -f
+systemctl --user restart herdr-planner
+```
+
+В юнит записывается `PATH` с папками, где на момент установки нашлись `herdr-projects`, `herdr`, `claude` и `git`: у служб
+systemd нет `PATH` оболочки. Если эти программы переехали, запусти установку ещё раз. Запущенный вручную `herdr-planner`
+занимает порт — останови его (`pkill -x herdr-planner`), иначе служба не поднимется.
+
+**Открытие** (`herdr-planner-open`, его вызывают ярлык и клавиша): запускает службу, если она стоит, затем
+
+1. вкладка herdr-gpui — `herdr-gpui browser open localhost:7117`; на Linux-сборке без вкладок эта команда сама отправляет
+   страницу в системный браузер и завершается успехом — это считается открытием;
+2. иначе окно Omarchy (`omarchy-launch-or-focus-webapp`: уже открытое окно получает фокус, окно ищется по заголовку страницы);
+3. иначе `xdg-open`.
+
+Форсировать способ: `herdr-planner-open --tab | --window | --browser` или `HERDR_PLANNER_OPEN=tab|window|browser`.
+
+**Клавиша Hyprland.** `scripts/install.sh` выбирает первую свободную из `SUPER + ALT + P`, `SUPER + SHIFT + H`,
+`SUPER + SHIFT + L`, `SUPER + SHIFT + T`, `SUPER + SHIFT + Z`, сверяясь с `hyprctl binds`; своя — `--key "SUPER + …"` (занятая
+отклоняется). Привязка лежит в отдельном файле `herdr_planner.lua`, в `bindings.lua` дописан только блок между
+`-- >>> herdr-planner (scripts/install.sh) >>>` и `-- <<< herdr-planner <<<` с `pcall(require, …)` — ошибка в нашем файле не
+ломает конфиг. Повторная установка блок не дублирует и выбранную клавишу сохраняет; `uninstall` вырезает только свой блок.
+Проверить: `hyprctl binds | grep -B6 -A3 "Herdr Planner"` или `SUPER + K`.
 
 ## Архитектура
 
@@ -309,7 +364,8 @@ cargo test                       # разборщики, git-скрипты на
                                  # (правка, перенос, удаление), тема, импорт, state.json, «Решить» с поддельным herdr-projects,
                                  # вердикты и доказательство «сделано», решение «пора ли проверять», разбор ответа с группами,
                                  # обзор папок, дополнение пути, машины и профили формы, аргументы `herdr-projects new`
-scripts/run-checks.sh [папка-для-скриншотов]   # то же + страница на фикстуре (нужны node ≥ 22 и chromium)
+scripts/run-checks.sh [папка-для-скриншотов]   # то же + установщик во временных папках (scripts/check-install.sh)
+                                 # + страница на фикстуре (нужны node ≥ 22 и chromium)
 cargo run &                      # или по отдельности, на живом сервере:
 node scripts/ui-check.mjs http://127.0.0.1:7117 [папка-для-скриншотов]
 ```
@@ -343,5 +399,7 @@ CI нет.
   заметки задач — агенту, «сделано» только с файлом-доказательством, бейдж только у неактуальных, ничего не удаляется),
   автопредложение групп (`suggest.rs`), форма «Новый проект» (обзор папок, машины `herdr machine list --json`, профили
   `herdr-projects profile list`, несколько `--repo ПУТЬ@МАШИНА`). «Траты агентов» не переносятся.
-- **Этап 4 — упаковка**: `systemd --user` служба, ярлык и горячая клавиша Omarchy, открытие во вкладке herdr-gpui,
-  `cargo install` / релизный бинарник, README для установки.
+- **Этап 4 — упаковка (сделан)**: `scripts/install.sh` (сборка release, установка и удаление, идемпотентно), служба
+  `systemd --user` (`packaging/herdr-planner.service`), ярлык и значок (`packaging/`), `herdr-planner-open` (вкладка herdr-gpui →
+  окно Omarchy → браузер), клавиша Hyprland. Завершение по SIGTERM — не дольше 2 с (открытые потоки событий страницы не держат
+  остановку службы).
