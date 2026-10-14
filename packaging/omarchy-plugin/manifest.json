@@ -1,0 +1,46 @@
+{
+  "schemaVersion": 1,
+  "id": "salehardec.herdr-planner",
+  "name": "Herdr Planner",
+  "version": "1.0.0",
+  "author": "Aleksey Abaydulin",
+  "license": "MIT",
+  "description": "Herdr Planner in the bar: counters of threads waiting on you and to review; a click opens a popup with the projects, a project click focuses its herdr workspace.",
+  "kinds": [
+    "bar-widget"
+  ],
+  "entryPoints": {
+    "barWidget": "Widget.qml"
+  },
+  "barWidget": {
+    "displayName": "Herdr Planner",
+    "description": "Waiting / review counters from the local herdr-planner service (127.0.0.1) and a project popup (attention first, then the planner's groups); hidden while the service does not answer.",
+    "category": "Utilities",
+    "allowMultiple": false,
+    "defaultSection": "center",
+    "defaults": {
+      "port": 7117,
+      "refreshSec": 5
+    },
+    "schema": [
+      {
+        "key": "port",
+        "type": "integer",
+        "label": "Planner port",
+        "min": 1024,
+        "max": 65535,
+        "step": 1,
+        "defaultValue": 7117
+      },
+      {
+        "key": "refreshSec",
+        "type": "integer",
+        "label": "Refresh interval (seconds)",
+        "min": 2,
+        "max": 120,
+        "step": 1,
+        "defaultValue": 5
+      }
+    ]
+  }
+}

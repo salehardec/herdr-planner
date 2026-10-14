@@ -524,6 +524,132 @@ pub fn project_for_label(projects: &[Project], label: &str) -> Option<String> {
         .map(|p| p.slug.clone())
 }
 
+/// What the shell icon shows: attention totals over the projects that are not archived.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
+pub struct Summary {
+    /// Threads waiting on the user.
+    pub waiting: u32,
+    /// Threads ready for review.
+    pub review: u32,
+    /// Items in the projects' `inbox/`.
+    pub inbox: u32,
+    /// Projects counted (not archived).
+    pub projects: u32,
+}
+
+pub fn summarize(projects: &[Project]) -> Summary {
+    let mut s = Summary::default();
+    for p in projects.iter().filter(|p| p.status != "archived") {
+        s.waiting += p.counts.needs;
+        s.review += p.counts.review;
+        s.inbox += p.inbox;
+        s.projects += 1;
+    }
+    s
+}
+
+/// One project row of the bar popup.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct OverviewProject {
+    pub slug: String,
+    pub name: String,
+    pub status: String,
+    pub waiting: u32,
+    pub review: u32,
+    pub working: u32,
+    pub blocked: u32,
+    pub resolved: u32,
+    pub inbox: u32,
+}
+
+impl OverviewProject {
+    fn of(p: &Project) -> Self {
+        OverviewProject {
+            slug: p.slug.clone(),
+            name: p.name.clone(),
+            status: p.status.clone(),
+            waiting: p.counts.needs,
+            review: p.counts.review,
+            working: p.counts.working,
+            blocked: p.counts.blocked,
+            resolved: p.counts.resolved,
+            inbox: p.inbox,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct OverviewGroup {
+    /// "" when grouping is off: one unnamed group with the rest of the projects.
+    pub name: String,
+    pub other: bool,
+    pub collapsed: bool,
+    pub projects: Vec<OverviewProject>,
+}
+
+/// What the bar popup lists: the projects waiting on the user or to review first, then
+/// the others in the planner's groups (the same order and folds as the page).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct Overview {
+    pub summary: Summary,
+    pub attention: Vec<OverviewProject>,
+    pub groups: Vec<OverviewGroup>,
+    pub grouping: bool,
+}
+
+pub fn overview(groups: &Groups, projects: &[Project]) -> Overview {
+    let live: Vec<Project> = projects
+        .iter()
+        .filter(|p| p.status != "archived")
+        .cloned()
+        .collect();
+    let (mut attention, mut rest): (Vec<Project>, Vec<Project>) = live
+        .into_iter()
+        .partition(|p| p.counts.needs > 0 || p.counts.review > 0);
+    attention.sort_by(|a, b| {
+        b.counts
+            .needs
+            .cmp(&a.counts.needs)
+            .then(b.counts.review.cmp(&a.counts.review))
+            .then(b.activity.cmp(&a.activity))
+            .then(a.slug.cmp(&b.slug))
+    });
+    rest.sort_by(|a, b| {
+        b.counts
+            .working
+            .cmp(&a.counts.working)
+            .then(b.activity.cmp(&a.activity))
+            .then(a.slug.cmp(&b.slug))
+    });
+    let grouping = groups.grouping_on();
+    let groups_out = if grouping {
+        group_sections(groups, &rest, false)
+            .into_iter()
+            .map(|s| OverviewGroup {
+                name: s.name,
+                other: s.other,
+                collapsed: s.collapsed,
+                projects: s.projects.iter().map(OverviewProject::of).collect(),
+            })
+            .collect()
+    } else if rest.is_empty() {
+        Vec::new()
+    } else {
+        vec![OverviewGroup {
+            name: String::new(),
+            other: false,
+            collapsed: false,
+            projects: rest.iter().map(OverviewProject::of).collect(),
+        }]
+    };
+    Overview {
+        summary: summarize(projects),
+        attention: attention.iter().map(OverviewProject::of).collect(),
+        groups: groups_out,
+        grouping,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -561,6 +687,54 @@ mod tests {
             v.iter().map(|p| p.slug.as_str()).collect::<Vec<_>>(),
             ["b", "c", "a"]
         );
+    }
+
+    #[test]
+    fn summary_skips_archived() {
+        let mut v = vec![
+            p("a", 2, 1, 5, "active"),
+            p("b", 1, 0, 3, "paused"),
+            p("c", 9, 9, 9, "archived"),
+        ];
+        v[0].counts.needs = 3;
+        v[2].counts.needs = 7;
+        let s = summarize(&v);
+        assert_eq!((s.waiting, s.review, s.inbox, s.projects), (3, 3, 1, 2));
+        assert_eq!(summarize(&[]), Summary::default());
+    }
+
+    #[test]
+    fn overview_puts_attention_first_then_groups() {
+        let mut v = vec![
+            p("quiet", 0, 0, 5, "active"),
+            p("rev", 2, 0, 3, "active"),
+            p("wait", 0, 0, 1, "active"),
+            p("gone", 4, 0, 9, "archived"),
+            p("busy", 0, 0, 7, "active"),
+        ];
+        v[2].counts.needs = 1;
+        v[4].counts.working = 2;
+        let mut g = Groups::default();
+        g.add("Первая").unwrap();
+        g.assign("quiet", "Первая", false);
+        g.collapsed.push("Первая".into());
+        let o = overview(&g, &v);
+        assert!(o.grouping);
+        let slugs = |l: &[OverviewProject]| l.iter().map(|p| p.slug.clone()).collect::<Vec<_>>();
+        assert_eq!(slugs(&o.attention), ["wait", "rev"]);
+        assert_eq!(o.groups.len(), 2);
+        assert_eq!((o.groups[0].name.as_str(), o.groups[0].collapsed), ("Первая", true));
+        assert_eq!(slugs(&o.groups[0].projects), ["quiet"]);
+        assert!(o.groups[1].other);
+        assert_eq!(slugs(&o.groups[1].projects), ["busy"]);
+        assert_eq!(o.summary.waiting, 1);
+        // Grouping off: one unnamed group, busiest first.
+        g.on = Some(false);
+        let o = overview(&g, &v);
+        assert!(!o.grouping);
+        assert_eq!(o.groups.len(), 1);
+        assert_eq!(o.groups[0].name, "");
+        assert_eq!(slugs(&o.groups[0].projects), ["busy", "quiet"]);
     }
 
     #[test]

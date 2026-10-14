@@ -735,6 +735,7 @@ export function html() {
     + h('div', { class: 'title' }, h('strong', {}, esc(name)) + (p && p.status && p.status !== 'active' ? span('  ' + (STATUS_LABEL[p.status] || p.status), 'muted') : ''))
     + h('span', { class: 'badge', 'data-act': 'settings', title: 'Настройки (,)' }, '⚙')
     + h('span', { class: 'badge', 'data-act': 'focus' }, 'Фокус <kbd>F</kbd>')
+    + h('span', { class: 'badge', 'data-act': 'unfocus', title: 'Боковая панель herdr: снова показать все проекты' }, 'Все <kbd>U</kbd>')
     + h('span', { class: 'badge accent', 'data-act': 'open' }, 'Открыть <kbd>O</kbd>')
 
     + h('span', { class: 'stamp', 'data-act': 'refresh' }, esc(ctx.stamp())));
@@ -785,5 +786,5 @@ export function dock(hint) {
   if (card.removing) return hint(['y'], 'убрать') + hint(['n'], 'оставить в бэклоге');
   if (card.picked) return hint(['↵'], 'решить') + hint(['?'], 'задать вопрос') + hint(['x'], 'не решать') + hint(['esc'], 'снять выбор');
   return hint(['↑', '↓'], 'строка') + hint(['↵'], 'раскрыть / выбрать') + hint(['w'], 'ворктри') + hint(['/'], 'фильтр')
-    + hint(['tab'], 'сделать / сделано') + hint(['o'], 'открыть') + hint(['f'], 'фокус') + hint(['r'], 'обновить') + hint(['esc'], 'назад');
+    + hint(['tab'], 'сделать / сделано') + hint(['o'], 'открыть') + hint(['f'], 'фокус') + hint(['u'], 'показать все') + hint(['r'], 'обновить') + hint(['esc'], 'назад');
 }

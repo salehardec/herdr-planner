@@ -160,6 +160,8 @@ if (cmd === 'list') {
   fs.writeFileSync(path.join(D, 'state', 'opened-' + rest[0]), '');
 } else if (cmd === 'focus') {
   log('focus.jsonl', { slug: rest[0] });
+} else if (cmd === 'unfocus') {
+  log('unfocus.jsonl', { argv: rest });
 } else { console.error('fixture herdr-projects: unsupported ' + argv.join(' ')); process.exit(2); }
 `);
 bin('herdr', `${prelude}

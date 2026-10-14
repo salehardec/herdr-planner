@@ -289,6 +289,14 @@ function flash(msg, ms = 4000) {
   setTimeout(() => { if (view.status === msg) { view.status = null; render(); } }, ms);
 }
 
+/** `unfocus` needs no project: the herdr sidebar shows every project again. */
+function runUnfocus() {
+  flash('Показываю все проекты…');
+  post('/api/action', { kind: 'unfocus' })
+    .then(() => flash('Боковая панель herdr снова показывает все проекты'))
+    .catch((e) => flash(`Не вышло: ${e.message}`));
+}
+
 /** @param {'focus'|'open'} kind */
 function runAction(kind) {
   const p = view.selected ? view.snap?.projects.find((x) => x.slug === view.selected) : hlProject();
@@ -422,6 +430,7 @@ document.addEventListener('keydown', (ev) => {
   if (k === 'r') { refresh(); return; }
   if (k === 'o') { runAction('open'); return; }
   if (k === 'f') { runAction('focus'); return; }
+  if (k === 'u') { runUnfocus(); return; }
   if (k === 'Escape') {
     // The list keeps its filter while a project is open; the card has its own.
     if (view.selected) backToList();
@@ -499,7 +508,7 @@ function projectRow(p, hl, opts) {
   if (p.inbox > 0) value += h('span', { class: 'info' }, `${p.inbox} вход.  `);
   const t = total(c);
   value += t > 0 ? h('span', { class: 'num' }, `${c.resolved}/${t}`) : h('span', { class: 'muted' }, '—');
-  if (hl) value += h('span', { class: 'hint' }, 'Открыть <kbd>↵</kbd> или 2× клик · Фокус <kbd>F</kbd> · Открыть в herdr <kbd>O</kbd> · Группа <kbd>T</kbd>');
+  if (hl) value += h('span', { class: 'hint' }, 'Открыть <kbd>↵</kbd> или 2× клик · Фокус <kbd>F</kbd> · Показать все <kbd>U</kbd> · Открыть в herdr <kbd>O</kbd> · Группа <kbd>T</kbd>');
   let icon = STATUS_ICON[/** @type {'active'} */ (p.status)] || '○', tone = '';
   if (c.needs > 0) { icon = '🔔'; tone = 'warning'; }
   else if (c.review > 0) { icon = '☑'; tone = 'warning'; }
@@ -540,6 +549,7 @@ function controlsHtml() {
     + chips
     + h('span', { class: 'toggle', 'data-act': 'sort' }, `⇅ ${SORT_LABEL[view.sort]} <kbd>S</kbd>`)
     + h('span', { class: 'toggle', 'data-act': 'groups' }, `▦ группы ${grouped ? 'вкл' : 'выкл'} <kbd>G</kbd>`)
+    + h('span', { class: 'toggle', 'data-act': 'unfocus', title: 'Боковая панель herdr: снова показать все проекты (herdr-projects unfocus)' }, `◎ все проекты <kbd>U</kbd>`)
     + h('span', { class: 'btn-row' }, h('span', { class: 'badge accent', 'data-act': 'new' }, '+ Проект') + '<kbd>n</kbd>'));
 }
 
@@ -582,7 +592,7 @@ function dockHtml() {
   if (view.selected) return h('div', { class: 'dock' }, Card.dock(hint));
   if (!view.help) return h('div', { class: 'dock' }, hint(['?'], 'все клавиши'));
   return h('div', { class: 'dock' },
-    hint(['↑', '↓'], 'выбор') + hint(['↵'], 'открыть (или двойной клик)') + hint(['f'], 'фокус') + hint(['o'], 'открыть в herdr')
+    hint(['↑', '↓'], 'выбор') + hint(['↵'], 'открыть (или двойной клик)') + hint(['f'], 'фокус') + hint(['u'], 'показать все проекты') + hint(['o'], 'открыть в herdr')
     + hint(['/'], 'фильтр') + hint(['1', '2', '3', '4'], 'раздел') + hint(['s'], 'сортировка') + hint(['g'], 'группы вкл / выкл')
     + hint(['t'], 'группа проекта') + hint(['←', '→'], 'свернуть / развернуть группу') + hint(['n'], 'новый проект') + hint([','], 'настройки') + hint(['r'], 'обновить')
     + hint(['esc'], 'сбросить / закрыть'));
@@ -664,6 +674,7 @@ root.addEventListener('click', (ev) => {
     else if (a === 'settings') openSettings();
     else if (a === 'back') { backToList(); render(); }
     else if (a === 'focus') runAction('focus');
+    else if (a === 'unfocus') runUnfocus();
     else if (a === 'open') runAction('open');
     else if (a === 'gpick-close') { view.gpick = null; render(); settleFollow(); }
     return;

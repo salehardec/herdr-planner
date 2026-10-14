@@ -3,7 +3,7 @@
 use crate::actions::{self, Failure};
 use crate::app::{Event, Shared};
 use crate::cards;
-use crate::model::OTHER;
+use crate::model::{self, summarize, OTHER};
 use crate::newproject;
 use crate::sources::runner;
 use crate::{fresh, suggest};
@@ -39,6 +39,8 @@ pub fn router(app: Shared) -> Router {
         .route("/settings.js", get(settings_js))
         .route("/new.js", get(new_js))
         .route("/api/snapshot", get(snapshot))
+        .route("/api/summary", get(summary))
+        .route("/api/overview", get(overview))
         .route("/api/theme", get(theme))
         .route("/api/events", get(events))
         .route("/api/refresh", post(refresh))
@@ -149,6 +151,36 @@ async fn new_js() -> Response {
 
 async fn snapshot(State(app): State<Shared>) -> Json<Value> {
     Json(serde_json::to_value(app.full()).unwrap_or(Value::Null))
+}
+
+/// Attention totals for the Omarchy bar icon: small, polled every few seconds.
+async fn summary(State(app): State<Shared>) -> Json<Value> {
+    let (s, updated, loading, error) = {
+        let snap = app.snapshot.read().unwrap();
+        (
+            summarize(&snap.projects),
+            snap.updated,
+            snap.loading,
+            snap.error.is_some(),
+        )
+    };
+    Json(json!({
+        "waiting": s.waiting,
+        "review": s.review,
+        "inbox": s.inbox,
+        "projects": s.projects,
+        "updated": updated,
+        "loading": loading,
+        "error": error,
+        "version": crate::app::VERSION,
+    }))
+}
+
+/// The bar popup's list: attention projects first, then the planner's groups.
+async fn overview(State(app): State<Shared>) -> Json<Value> {
+    let projects = app.snapshot.read().unwrap().projects.clone();
+    let groups = app.state.lock().unwrap().groups.clone();
+    Json(serde_json::to_value(model::overview(&groups, &projects)).unwrap_or(Value::Null))
 }
 
 async fn theme(State(app): State<Shared>) -> Json<Value> {
@@ -308,15 +340,18 @@ async fn settings(State(app): State<Shared>, Json(r): Json<SettingReq>) -> Respo
 #[derive(Deserialize)]
 struct Action {
     kind: String,
+    #[serde(default)]
     slug: String,
 }
 
 /// `focus` runs `herdr-projects focus <slug>`, `open` runs `herdr-projects
-/// open <slug>` (starts the coordinator in the project's workspace).
+/// open <slug>` (starts the coordinator in the project's workspace), `unfocus`
+/// runs `herdr-projects unfocus` (the sidebar shows every project again; no slug).
 async fn action(State(app): State<Shared>, Json(a): Json<Action>) -> Response {
     let sub = match a.kind.as_str() {
         "focus" => "focus",
         "open" => "open",
+        "unfocus" => "unfocus",
         _ => {
             return (
                 StatusCode::BAD_REQUEST,
@@ -325,20 +360,19 @@ async fn action(State(app): State<Shared>, Json(a): Json<Action>) -> Response {
                 .into_response()
         }
     };
-    if a.slug.is_empty() || a.slug.starts_with('-') {
+    if sub != "unfocus" && (a.slug.is_empty() || a.slug.starts_with('-')) {
         return (
             StatusCode::BAD_REQUEST,
             Json(json!({"error": "нет проекта"})),
         )
             .into_response();
     }
-    let argv = runner::argv([
-        app.config.herdr_projects.as_str(),
-        "--root",
-        &app.config.root.display().to_string(),
-        sub,
-        &a.slug,
-    ]);
+    let root = app.config.root.display().to_string();
+    let mut parts = vec![app.config.herdr_projects.as_str(), "--root", &root, sub];
+    if sub != "unfocus" {
+        parts.push(&a.slug);
+    }
+    let argv = runner::argv(parts);
     match runner::run(&argv, None, Duration::from_secs(30)).await {
         Ok(out) if out.ok() => {
             app.refresh_now.notify_one();

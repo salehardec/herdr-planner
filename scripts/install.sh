@@ -1,7 +1,7 @@
 #!/bin/sh
 # Installs Herdr Planner for the current user: no sudo, no system package manager.
-#   scripts/install.sh [install] [--no-build] [--no-service] [--no-hypr] [--key "SUPER + ALT + P"]
-#   scripts/install.sh uninstall [--no-service] [--no-hypr]   removes everything installed; state and config stay
+#   scripts/install.sh [install] [--no-build] [--no-service] [--no-hypr] [--no-shell] [--key "SUPER + ALT + P"]
+#   scripts/install.sh uninstall [--no-service] [--no-hypr] [--no-shell]   removes everything installed; state and config stay
 #   scripts/install.sh status
 # Running install again updates: it rebuilds, replaces the binary and restarts the service.
 #
@@ -10,6 +10,8 @@
 #   ~/.config/systemd/user/herdr-planner.service        (enabled, started)
 #   ~/.local/share/applications/herdr-planner.desktop, ~/.local/share/icons/hicolor/scalable/apps/herdr-planner.svg
 #   ~/.config/hypr/herdr_planner.lua + one marked block in ~/.config/hypr/bindings.lua   (Omarchy, Lua config)
+#   ~/.config/omarchy/plugins/salehardec.herdr-planner/ + one entry after the clock in the bar layout of
+#   ~/.config/omarchy/shell.json (a copy of the file is kept beside it as shell.json.bak-herdr-planner-*)
 set -eu
 
 repo=$(cd "$(dirname "$0")/.." && pwd)
@@ -21,11 +23,16 @@ hypr_dir="$config_home/hypr"
 unit=herdr-planner.service
 begin_mark='-- >>> herdr-planner (scripts/install.sh) >>>'
 end_mark='-- <<< herdr-planner <<<'
+plugin_id=salehardec.herdr-planner
+omarchy_dir="$config_home/omarchy"
+plugin_dir="$omarchy_dir/plugins/$plugin_id"
+shell_json="$omarchy_dir/shell.json"
 
 action=install
 build=1
 service=1
 hypr=1
+shell=1
 key=
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -33,16 +40,23 @@ while [ $# -gt 0 ]; do
     --no-build) build=0 ;;
     --no-service) service=0 ;;
     --no-hypr) hypr=0 ;;
+    --no-shell) shell=0 ;;
     --key)
       [ $# -ge 2 ] || { echo "install.sh: --key needs a value" >&2; exit 2; }
       key="$2"
       shift
       ;;
-    -h | --help) sed -n '2,14p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h | --help) sed -n '2,/^set -eu/{/^set -eu/!p;}' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "install.sh: unknown argument $1" >&2; exit 2 ;;
   esac
   shift
 done
+
+# Ask a running shell to rescan its plugins; never when the shell is not this session's.
+shell_reload=0
+if [ "$shell" -eq 1 ] && [ -n "${HYPRLAND_INSTANCE_SIGNATURE:-}" ] && command -v omarchy-shell >/dev/null 2>&1; then
+  shell_reload=1
+fi
 
 say() { printf '%s\n' "$*"; }
 have() { command -v "$1" >/dev/null 2>&1; }
@@ -166,6 +180,87 @@ hypr_uninstall() {
   if in_hyprland; then hyprctl reload >/dev/null 2>&1 || true; fi
 }
 
+# ---- Omarchy shell: bar plugin ----
+
+# Rewrites shell.json with the jq filter $1 (extra jq arguments after it) when the result differs,
+# keeping the previous file beside it. Prints "changed" or "same".
+shell_edit() {
+  filter="$1"
+  shift
+  tmp=$(mktemp "$omarchy_dir/.shell.json.XXXXXX")
+  if ! jq --arg id "$plugin_id" "$@" "$filter" "$shell_json" >"$tmp" 2>/dev/null; then
+    rm -f "$tmp"
+    return 1
+  fi
+  if [ "$(jq -c . "$tmp")" = "$(jq -c . "$shell_json")" ]; then
+    rm -f "$tmp"
+    echo same
+    return 0
+  fi
+  cp -p "$shell_json" "$shell_json.bak-herdr-planner-$(date +%s)"
+  cat "$tmp" >"$shell_json"
+  rm -f "$tmp"
+  echo changed
+}
+
+# The planner entry after the clock (bar.centerAnchor, else omarchy.clock, else the end of the center
+# section); if it is already in the layout it stays where it is and only `port` follows the config.
+# --argjson port 0 means "default port": no `port` key.
+filter_add='
+  def mine: type == "object" and .id == $id;
+  def setport: if $port == 0 then del(.port) else .port = $port end;
+  if ([.bar.layout[]? | arrays | .[] | select(mine)] | length) > 0 then
+    .bar.layout |= with_entries(.value |= (if type == "array" then map(if mine then setport else . end) else . end))
+  else
+    ({id: $id, chip: false} | setport) as $e
+    | (.bar.centerAnchor // "omarchy.clock") as $anchor
+    | .bar.layout.center as $c
+    | ($c | map(if type == "object" then .id else . end) | index($anchor)) as $i
+    | .bar.layout.center = (if $i == null then $c + [$e] else $c[:$i + 1] + [$e] + $c[$i + 1:] end)
+  end'
+filter_remove='
+  def mine: type == "object" and .id == $id;
+  (if (.bar.layout | type) == "object" then
+     .bar.layout |= with_entries(.value |= (if type == "array" then map(select(mine | not)) else . end))
+   else . end)
+  | (if (.plugins | type) == "array" then .plugins |= map(select(mine | not)) else . end)
+  | (if (.disabledPlugins | type) == "array" then .disabledPlugins |= map(select(. != $id)) else . end)'
+
+shell_install() {
+  if [ ! -f "$shell_json" ]; then
+    say "Omarchy shell: $shell_json not found: bar icon skipped"
+    return 0
+  fi
+  if ! have jq; then
+    say "Omarchy shell: jq not found: bar icon skipped"
+    return 0
+  fi
+  if [ "$(jq -r '.bar.layout.center | type' "$shell_json" 2>/dev/null)" != array ]; then
+    say "Omarchy shell: no bar layout in $shell_json: bar icon skipped (omarchy plugin enable $plugin_id center)"
+    return 0
+  fi
+  src_dir="$repo/packaging/omarchy-plugin"
+  mkdir -p "$plugin_dir"
+  rm -f "$plugin_dir"/*.qml "$plugin_dir"/manifest.json
+  install -m 644 "$src_dir/manifest.json" "$src_dir/Widget.qml" "$plugin_dir/"
+  p=$(port)
+  [ "$p" != 7117 ] || p=0
+  r=$(shell_edit "$filter_add" --argjson port "$p") || { say "Omarchy shell: could not edit $shell_json"; return 1; }
+  say "Omarchy shell: bar icon $r ($plugin_dir; layout entry in $shell_json)"
+  if [ "$shell_reload" -eq 1 ]; then omarchy-shell shell rescanPlugins >/dev/null 2>&1 || true; fi
+}
+
+shell_uninstall() {
+  if [ -f "$shell_json" ] && have jq; then
+    shell_edit "$filter_remove" >/dev/null || say "Omarchy shell: could not edit $shell_json"
+  fi
+  # Only a folder that really is ours.
+  if [ -f "$plugin_dir/manifest.json" ] && grep -q "\"id\": \"$plugin_id\"" "$plugin_dir/manifest.json"; then
+    rm -rf "$plugin_dir"
+  fi
+  if [ "$shell_reload" -eq 1 ]; then omarchy-shell shell rescanPlugins >/dev/null 2>&1 || true; fi
+}
+
 # ---- install / uninstall / status ----
 
 do_install() {
@@ -222,6 +317,7 @@ do_install() {
   fi
 
   if [ "$hypr" -eq 1 ]; then hypr_install; fi
+  if [ "$shell" -eq 1 ]; then shell_install; fi
 }
 
 do_uninstall() {
@@ -232,17 +328,18 @@ do_uninstall() {
     systemctl --user daemon-reload >/dev/null 2>&1 || true
   fi
   hypr_uninstall
+  if [ "$shell" -eq 1 ]; then shell_uninstall; fi
   rm -f "$bin_dir/herdr-planner" "$bin_dir/herdr-planner-open" "$bin_dir/.herdr-planner.new" \
     "$data_home/applications/herdr-planner.desktop" \
     "$data_home/icons/hicolor/scalable/apps/herdr-planner.svg"
   if have update-desktop-database; then update-desktop-database "$data_home/applications" >/dev/null 2>&1 || true; fi
-  say "Removed the binary, service, launcher and shortcut."
+  say "Removed the binary, service, launcher, shortcut and bar icon."
   say "Kept: $config_home/herdr-planner and ${XDG_STATE_HOME:-$HOME/.local/state}/herdr-planner (config, groups, answers)."
 }
 
 do_status() {
   for f in "$bin_dir/herdr-planner" "$bin_dir/herdr-planner-open" "$unit_dir/$unit" \
-    "$data_home/applications/herdr-planner.desktop" "$hypr_dir/herdr_planner.lua"; do
+    "$data_home/applications/herdr-planner.desktop" "$hypr_dir/herdr_planner.lua" "$plugin_dir/manifest.json"; do
     if [ -e "$f" ]; then say "ok       $f"; else say "missing  $f"; fi
   done
   if have systemctl; then
@@ -250,6 +347,13 @@ do_status() {
   fi
   k=$(current_key)
   [ -z "$k" ] || say "key      $k"
+  if [ -f "$shell_json" ] && have jq; then
+    if jq -e --arg id "$plugin_id" 'any(.bar.layout[]?; type == "array" and any(.[]; type == "object" and .id == $id))' "$shell_json" >/dev/null 2>&1; then
+      say "bar      $plugin_id is in the bar layout"
+    else
+      say "bar      $plugin_id is not in the bar layout"
+    fi
+  fi
   if curl -fs --max-time 2 "http://127.0.0.1:$(port)/api/snapshot" >/dev/null 2>&1; then
     say "http     answers on 127.0.0.1:$(port)"
   else

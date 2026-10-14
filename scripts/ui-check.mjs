@@ -631,6 +631,16 @@ async function main() {
   check('theme variables applied', /^#[0-9a-f]{6}$/i.test(vars) && vars !== '#101419', vars);
   const font = await evalJs('getComputedStyle(document.body).fontFamily');
   check('ui font from herdr-gpui config', !!font, font);
+  // The bar icon's endpoint agrees with the list it summarises (archived projects do not count).
+  const sum = await evalJs(`Promise.all([fetch("/api/summary").then(r => r.json()), fetch("/api/snapshot").then(r => r.json())]).then(([m, s]) => {
+    const live = s.projects.filter((p) => p.status !== "archived");
+    const add = (f) => live.reduce((n, p) => n + f(p), 0);
+    return { m, want: { waiting: add((p) => p.counts.needs), review: add((p) => p.counts.review), inbox: add((p) => p.inbox), projects: live.length } };
+  })`);
+  check('/api/summary: waiting, review, inbox and projects match the list',
+    ['waiting', 'review', 'inbox', 'projects'].every((k) => sum.m[k] === sum.want[k]), JSON.stringify(sum));
+  check('/api/summary: small, with the fields the bar icon reads', Object.keys(sum.m).length <= 10
+    && ['waiting', 'review', 'updated', 'error'].every((k) => k in sum.m), JSON.stringify(sum.m));
   await shot('list.png');
 
   await key('ArrowDown');
@@ -656,6 +666,25 @@ async function main() {
   await key('Escape');
   check('Escape resets the chip', /Все/.test(await evalJs('document.querySelector(".badge.active")?.textContent') || ''));
 
+  check('the list has «все проекты» next to the sort and group switches', /все проекты\s*U/i.test(await evalJs('document.querySelector("[data-act=unfocus]")?.textContent') || ''));
+  if (fixture) {
+    // F focuses the highlighted project, U clears the sidebar view; the fake herdr-projects logs both (never the real one).
+    await key('ArrowDown');
+    if ((await evalJs('document.querySelector(".row.hl")?.getAttribute("data-row")')) === '+new') await key('ArrowUp');
+    const hlSlug = await evalJs('document.querySelector(".row.hl[data-row]")?.getAttribute("data-row")');
+    await key('f');
+    const focused = await waitFor('/Фокус на/.test(document.querySelector(".note")?.innerText || "")');
+    check('F focuses the highlighted project', focused && logLines('focus.jsonl').at(-1)?.slug === hlSlug && logLines('unfocus.jsonl').length === 0, `${hlSlug} ${JSON.stringify(logLines('focus.jsonl').at(-1))}`);
+    await key('u');
+    const cleared = await waitFor('/снова показывает все проекты/.test(document.querySelector(".note")?.innerText || "")');
+    check('U runs `herdr-projects unfocus` (no project needed)', cleared && logLines('unfocus.jsonl').length === 1, JSON.stringify(logLines('unfocus.jsonl')));
+    await click('[data-act=unfocus]');
+    for (let i = 0; i < 25 && logLines('unfocus.jsonl').length < 2; i++) await sleep(100);
+    check('the «все проекты» switch does the same by click', logLines('unfocus.jsonl').length === 2);
+    await key('?');
+    check('? lists the key', /U\s*показать все проекты/i.test(await text('.dock')), await text('.dock'));
+    await key('?');
+  }
   const word = (await evalJs('document.querySelector(".row[data-row]:not(.newrow)")?.getAttribute("data-row") || ""') || '').slice(0, 4);
   await key('/');
   check('/ focuses the filter', await evalJs('document.activeElement?.id === "filter"'));
