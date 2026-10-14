@@ -1,0 +1,19 @@
+[package]
+name = "herdr-planner"
+version = "0.1.0"
+edition = "2021"
+description = "Планировщик проектов herdr-projects: локальный веб-дашборд в теме herdr-gpui"
+license = "MIT"
+
+[dependencies]
+axum = { version = "0.8", features = ["json"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "fs", "time", "sync", "io-util", "signal"] }
+tokio-stream = { version = "0.1", features = ["sync"] }
+futures-util = { version = "0.3", default-features = false }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+
+[profile.release]
+strip = true
+lto = "thin"
