@@ -6,50 +6,59 @@
 // Server data arrives over SSE (/api/events): `theme`, `snapshot`, `workspace`.
 // The page keeps only view state: filter, chip, sort, highlight, open project.
 
-/** @typedef {{review:number, working:number, resolved:number, blocked:number, needs:number}} Counts */
-/** @typedef {{slug:string, name:string, status:string, goal:string|null, repos:{path:string, machine:string}[], counts:Counts, inbox:number, activity:number, waits:{kind:string, thread:string, text:string, since:number}[], attention_since:number, can_close:number, forgotten:number, coordinator_note:string}} Project */
+/** @typedef {{needs:number, ready:number, failed:number, review:number, working:number, queued:number, todo:number, done:number}} Counts */
+/** @typedef {{id:string, tag:string, title:string, bucket:string, label:string, msg:string, progress:number|null, at:number}} TaskBrief */
+/** @typedef {{slug:string, name:string, key:string, path:string, counts:Counts, tasks:TaskBrief[], done_hidden:number, waits:{id:string, text:string, since:number}[], attention_since:number, activity:number}} Project */
 /** @typedef {{configured:boolean, list:string[], assign:Record<string,{g:string, auto:boolean}>, collapsed:string[], on:boolean|null}} Groups */
-/** @typedef {{label:string|null, slug:string|null, seq:number}} Workspace */
+/** @typedef {{id:string|null, label:string|null, slug:string|null, seq:number}} Workspace */
+/** @typedef {{slug:string, at:number}} Show */
 /** @typedef {{key:string, label:string, hint:string, default:string, options:[string,string][]}} SettingDef */
-/** @typedef {{version:string, projects:Project[], updated:number, now:number, loading:boolean, error:string|null, groups:Groups, settings:Record<string,string>, setting_defs:SettingDef[], group_suggest:{busy:boolean, error:string|null}, workspace:Workspace}} Snapshot */
+/** @typedef {{version:string, projects:Project[], updated:number, now:number, loading:boolean, error:string|null, groups:Groups, settings:Record<string,string>, setting_defs:SettingDef[], group_suggest:{busy:boolean, error:string|null}, workspace:Workspace, show:Show|null}} Snapshot */
 /** @typedef {{is_light:boolean, vars:Record<string,string>}} Side */
 /** @typedef {{name:string, system:boolean, dark:Side, light:Side|null, ui:{family:string|null,size:number}, terminal:{family:string|null,size:number}, error:string|null}} Theme */
 
 import { esc, h, plural, clip, textMatches, post, keyOf, ago } from './util.js';
 import * as Card from './card.js';
 import * as Settings from './settings.js';
-import * as NewProject from './new.js';
 
 const OTHER = 'Прочее';
-const NEW_ROW = '+new';
 const GROUP_PREFIX = 'g:';
-const CHIPS = /** @type {const} */ (['all', 'review', 'inbox', 'idle']);
-const CHIP_LABEL = { all: 'Все', review: 'Ревью', inbox: 'Входящие', idle: 'Пауза' };
+const CHIPS = /** @type {const} */ (['all', 'waiting', 'active', 'quiet']);
+const CHIP_LABEL = { all: 'Все', waiting: 'Ждут', active: 'В работе', quiet: 'Тихие' };
 const SORT_LABEL = { new: 'новые', attention: 'внимание' };
-const STATUS_LABEL = { active: 'активен', paused: 'пауза', archived: 'архив' };
-const STATUS_ICON = { active: '◉', paused: '⏸', archived: '▣' };
 
 // ---------------------------------------------------------------------------
 // Pure helpers (mirror src/model.rs so the page and the server agree).
 
+/** What waits on the user in a project: an answer, a yes, a look at what failed. @param {Counts} c */
+export const attention = (c) => c.needs + c.ready + c.failed;
+
+/** Something runs or waits. @param {Counts} c */
+const active = (c) => attention(c) + c.review + c.working + c.queued;
+
+/** @param {Counts} c */
+const total = (c) => active(c) + c.todo + c.done;
+
 /** @param {Project} p @param {string} chip */
 export function chipMatch(p, chip) {
-  if (chip === 'review') return p.counts.review > 0;
-  if (chip === 'inbox') return p.inbox > 0;
-  if (chip === 'idle') return p.status !== 'active';
+  if (chip === 'waiting') return attention(p.counts) > 0;
+  if (chip === 'active') return p.counts.review + p.counts.working + p.counts.queued > 0;
+  if (chip === 'quiet') return active(p.counts) === 0;
   return true;
 }
 
 /** @param {Project[]} list @param {'new'|'attention'} mode */
 export function sortProjects(list, mode) {
-  const need = (/** @type {Project} */ p) => (p.counts.needs > 0 || p.counts.review > 0 || p.inbox > 0 ? 1 : 0);
+  const need = (/** @type {Project} */ p) => (attention(p.counts) > 0 ? 1 : 0);
+  const byName = (/** @type {Project} */ a, /** @type {Project} */ b) => (a.slug < b.slug ? -1 : a.slug > b.slug ? 1 : 0);
   if (mode === 'attention') {
     // Who needs a look comes first, the newest event on top.
     list.sort((a, b) => need(b) - need(a) || (b.attention_since || 0) - (a.attention_since || 0)
-      || b.counts.review - a.counts.review || b.inbox - a.inbox
-      || (b.status === 'active' ? 1 : 0) - (a.status === 'active' ? 1 : 0) || b.counts.resolved - a.counts.resolved);
+      || attention(b.counts) - attention(a.counts) || b.counts.review - a.counts.review || b.counts.working - a.counts.working
+      || b.activity - a.activity || byName(a, b));
   } else {
-    list.sort((a, b) => b.activity - a.activity || b.counts.review - a.counts.review || (a.slug < b.slug ? -1 : a.slug > b.slug ? 1 : 0));
+    // The project whose tasks moved last leads.
+    list.sort((a, b) => b.activity - a.activity || attention(b.counts) - attention(a.counts) || byName(a, b));
   }
   return list;
 }
@@ -73,9 +82,6 @@ export function groupOf(g, slug) {
   return [OTHER, e ? e.auto : false];
 }
 
-/** @param {Counts} c */
-const total = (c) => c.review + c.working + c.resolved + c.blocked + c.needs;
-
 // ---------------------------------------------------------------------------
 // State
 
@@ -83,18 +89,20 @@ const view = {
   /** @type {Snapshot|null} */ snap: null,
   /** @type {Theme|null} */ theme: null,
   query: '',
-  /** @type {'all'|'review'|'inbox'|'idle'} */ chip: 'all',
+  /** @type {'all'|'waiting'|'active'|'quiet'} */ chip: 'all',
   /** @type {'new'|'attention'} */ sort: 'new',
   /** @type {string|null} */ hl: null,
   /** @type {string|null} */ selected: null,
   help: false,
-  /** A full-screen form over the list or the card. @type {'settings'|'new'|null} */ screen: null,
+  /** A full-screen form over the list or the card. @type {'settings'|null} */ screen: null,
   filtering: false,
   /** @type {{slug:string, at:number, err:string|null, adding:boolean}|null} */ gpick: null,
   /** @type {string|null} */ status: null,
   /** The workspace switch still waiting (typing, list not loaded). */
   /** @type {string|null} */ wsWant: null,
   wsSeq: -1,
+  /** The last «show this project» request that was obeyed (its time). */
+  showAt: 0,
   /** @type {number} */ ticker: 0,
 };
 
@@ -130,11 +138,11 @@ function connect() {
     const snap = /** @type {Snapshot} */ (JSON.parse(/** @type {MessageEvent} */ (e).data));
     view.snap = snap;
     followWorkspace(snap.workspace);
-    if (view.selected) Card.load();
+    if (snap.show) showRequest(snap.show);
+    if (view.selected) Card.onSnapshot();
     render();
   });
-  es.addEventListener('card', (e) => Card.onCardEvent(JSON.parse(/** @type {MessageEvent} */ (e).data)));
-  es.addEventListener('solve', (e) => Card.onSolveEvent(JSON.parse(/** @type {MessageEvent} */ (e).data)));
+  es.addEventListener('show', (e) => { showRequest(JSON.parse(/** @type {MessageEvent} */ (e).data)); render(); });
   es.addEventListener('workspace', (e) => {
     followWorkspace(JSON.parse(/** @type {MessageEvent} */ (e).data));
     render();
@@ -156,7 +164,7 @@ function followWorkspace(ws) {
 }
 
 function typing() {
-  return view.filtering || view.gpick != null || view.screen === 'new' || (view.screen === 'settings' && Settings.typing())
+  return view.filtering || view.gpick != null || (view.screen === 'settings' && Settings.typing())
     || (view.selected != null && Card.typing());
 }
 
@@ -167,6 +175,14 @@ function settleFollow() {
   if (slug === view.selected) return;
   if (!view.snap.projects.some((p) => p.slug === slug)) return;
   selectProject(slug);
+}
+
+/** The bar popup asked for a project: it is shown once, whatever the page was doing. @param {Show} show */
+function showRequest(show) {
+  if (show.at <= view.showAt) return;
+  view.showAt = show.at;
+  view.wsWant = null;
+  if (view.snap && view.snap.projects.some((p) => p.slug === show.slug)) selectProject(show.slug);
 }
 
 /** @param {string} slug */
@@ -187,12 +203,12 @@ function backToList() {
 // Layout of the list
 
 /** @typedef {{key:string, project?:Project, auto?:boolean, section?:Section}} Row */
-/** @typedef {{name:string, other:boolean, collapsed:boolean, projects:Project[], autos:boolean[], needs:number, review:number, inbox:number}} Section */
+/** @typedef {{name:string, other:boolean, collapsed:boolean, projects:Project[], autos:boolean[], waiting:number, review:number, working:number}} Section */
 
 function visibleProjects() {
   const snap = view.snap;
   if (!snap) return [];
-  const out = snap.projects.filter((p) => chipMatch(p, view.chip) && textMatches(`${p.name} ${p.slug} ${p.goal || ''}`, view.query));
+  const out = snap.projects.filter((p) => chipMatch(p, view.chip) && textMatches(`${p.name} ${p.slug} ${p.key}`, view.query));
   return sortProjects(out, view.sort);
 }
 
@@ -220,8 +236,8 @@ function layout() {
       if (items.length === 0 && !(showEmpty && !other)) return;
       const s = {
         name, other, collapsed: g.collapsed.includes(name), projects: items.map((i) => i.p), autos: items.map((i) => i.auto),
-        needs: items.reduce((n, i) => n + i.p.counts.needs, 0), review: items.reduce((n, i) => n + i.p.counts.review, 0),
-        inbox: items.reduce((n, i) => n + i.p.inbox, 0),
+        waiting: items.reduce((n, i) => n + attention(i.p.counts), 0), review: items.reduce((n, i) => n + i.p.counts.review, 0),
+        working: items.reduce((n, i) => n + i.p.counts.working + i.p.counts.queued, 0),
       };
       sections?.push(s);
       rows.push({ key: GROUP_PREFIX + name, section: s });
@@ -232,7 +248,6 @@ function layout() {
   } else {
     for (const p of visible) rows.push({ key: p.slug, project: p });
   }
-  rows.push({ key: NEW_ROW });
   return { rows, visible, sections };
 }
 
@@ -267,7 +282,6 @@ function refresh() {
   if (view.snap) view.snap.loading = true;
   render();
   post('/api/refresh', {}).catch(() => {});
-  if (view.selected) Card.load();
 }
 
 function toggleSort() {
@@ -299,16 +313,6 @@ function runUnfocus() {
     .catch((e) => flash(`Не вышло: ${e.message}`));
 }
 
-/** @param {'focus'|'open'} kind */
-function runAction(kind) {
-  const p = view.selected ? view.snap?.projects.find((x) => x.slug === view.selected) : hlProject();
-  if (!p) { flash('Сначала подсветьте проект (↑ / ↓ или клик).'); return; }
-  flash(kind === 'focus' ? `Фокус: ${p.name}…` : `Открываю ${p.name} в herdr…`);
-  post('/api/action', { kind, slug: p.slug })
-    .then(() => flash(kind === 'focus' ? `Фокус на ${p.name}` : `${p.name} открыт в herdr`))
-    .catch((e) => flash(`Не вышло: ${e.message}`));
-}
-
 function openSettings() {
   view.screen = 'settings';
   view.help = false;
@@ -316,28 +320,10 @@ function openSettings() {
   render();
 }
 
-function openNew() {
-  view.screen = 'new';
-  view.help = false;
-  NewProject.open();
-  render();
-}
-
 function closeScreen() {
   view.screen = null;
   render();
   settleFollow();
-}
-
-/** The form made a project: it is shown, and its coordinator is started (as «Открыть» does). @param {string} slug @param {string[]} warnings */
-function projectCreated(slug, warnings) {
-  view.screen = null;
-  selectProject(slug);
-  post('/api/refresh', {}).catch(() => {});
-  flash(`Проект создан: ${slug}${warnings.length ? ` (${warnings.join('; ')})` : ''}. Открываю его в herdr…`, 6000);
-  post('/api/action', { kind: 'open', slug })
-    .then(() => flash(`Проект ${slug} создан и открыт в herdr`))
-    .catch((e) => flash(`Проект ${slug} создан, но не открылся: ${e.message}`, 8000));
 }
 
 function startGroupPick() {
@@ -391,9 +377,7 @@ document.addEventListener('keydown', (ev) => {
   const k = inInput ? ev.key : keyOf(ev);
   if (view.screen) {
     if (ev.ctrlKey || ev.metaKey || ev.altKey) return;
-    const handled = inInput
-      ? (view.screen === 'new' ? NewProject.inputKey(ev, target) : Settings.inputKey(ev))
-      : (view.screen === 'new' ? NewProject.key(ev) : Settings.key(ev));
+    const handled = inInput ? Settings.inputKey(ev) : Settings.key(ev);
     if (handled) ev.preventDefault();
     return;
   }
@@ -430,8 +414,6 @@ document.addEventListener('keydown', (ev) => {
   if (view.selected && Card.key(ev)) { ev.preventDefault(); return; }
   if (k === '/') { view.filtering = true; render(); focusFilter(); ev.preventDefault(); return; }
   if (k === 'r') { refresh(); return; }
-  if (k === 'o') { runAction('open'); return; }
-  if (k === 'f') { runAction('focus'); return; }
   if (k === 'u') { runUnfocus(); return; }
   if (k === 'Escape') {
     // The list keeps its filter while a project is open; the card has its own.
@@ -450,8 +432,7 @@ document.addEventListener('keydown', (ev) => {
   const at = highlighted(rows);
   if (k === 'ArrowDown' || k === 'ArrowUp') { moveHl(k === 'ArrowDown' ? 1 : -1); ev.preventDefault(); }
   else if (k === 'Enter') {
-    if (at === NEW_ROW) openNew();
-    else if (at && at.startsWith(GROUP_PREFIX)) foldGroup(at.slice(GROUP_PREFIX.length), null);
+    if (at && at.startsWith(GROUP_PREFIX)) foldGroup(at.slice(GROUP_PREFIX.length), null);
     else if (at) selectProject(at);
     render();
   }
@@ -460,7 +441,6 @@ document.addEventListener('keydown', (ev) => {
   else if (k === 's') toggleSort();
   else if (k === 'g') toggleGroups();
   else if (k === 't') startGroupPick();
-  else if (k === 'n') openNew();
   else if (k === ',') openSettings();
   else if (k === '?') { view.help = !view.help; render(); }
 });
@@ -484,6 +464,13 @@ function ageText() {
   return '';
 }
 
+/** The board in one line: what waits on the user, what runs. @param {Project[]} projects */
+function totalsText(projects) {
+  /** @type {Counts} */ const c = { needs: 0, ready: 0, failed: 0, review: 0, working: 0, queued: 0, todo: 0, done: 0 };
+  for (const p of projects) for (const k of /** @type {(keyof Counts)[]} */ (Object.keys(c))) c[k] += p.counts[k];
+  return Card.countersText(c);
+}
+
 function headerHtml() {
   const s = view.snap;
   const n = s ? s.projects.length : 0;
@@ -492,48 +479,59 @@ function headerHtml() {
   if (s) title += h('span', { class: 'muted' }, ` · v${esc(s.version)}`);
   const age = ageText();
   const stamp = s && s.loading ? 'обновление… ↻' : (age ? `обновлено ${age} ↻` : '↻');
+  const totals = s && s.updated > 0 ? totalsText(s.projects) : '';
   return h('div', { class: 'header' },
     h('div', { class: 'title' }, title)
     + h('span', { class: 'badge', 'data-act': 'settings', title: 'Настройки (,)' }, '⚙ Настройки')
-    + h('span', { class: 'stamp', 'data-act': 'refresh', title: 'Обновить (R)' }, esc(stamp)));
+    + h('span', { class: 'stamp', 'data-act': 'refresh', title: 'Обновить (R)' }, esc(stamp)))
+    + (s && s.updated > 0 ? h('div', { class: 'totals' }, totals ? esc(totals) : h('span', { class: 'muted' }, 'на доске всё тихо')) : '');
+}
+
+/** The second line of a project: what waits on the user, else what runs. @param {Project} p */
+function projectDetail(p) {
+  if (p.waits.length > 0) return p.waits.map((w) => w.text).join('; ');
+  const run = p.tasks.find((t) => t.bucket === 'working' || t.bucket === 'review');
+  if (run) return `${run.tag} ${run.title}${run.progress != null ? ` · ${run.progress}%` : ''}`;
+  const queued = p.tasks.find((t) => t.bucket === 'queued');
+  return queued ? `${queued.tag} ${queued.title} · ${queued.label}` : '';
 }
 
 /** @param {Project} p @param {boolean} hl @param {{indent?:boolean, auto?:boolean}} opts */
 function projectRow(p, hl, opts) {
   const c = p.counts;
   let label = h('span', { class: 'strong' }, esc(p.name));
-  if (p.status !== 'active') label += h('span', { class: 'muted' }, `  ${STATUS_LABEL[/** @type {'active'} */ (p.status)] || esc(p.status)}`);
+  if (p.key) label += h('span', { class: 'muted' }, `  ${esc(p.key)}`);
   if (opts.auto) label += h('span', { class: 'dim' }, '  авто');
   let value = '';
   if (c.needs > 0) value += h('span', { class: 'warning strong', title: p.waits.map((w) => w.text).join('; ') }, `${c.needs} ждут  `);
-  if (c.review > 0) value += h('span', { class: 'warning' }, `${c.review} ревью  `);
-  // Quiet marks: not counted in the bar or the popup.
-  if (p.forgotten > 0) value += h('span', { class: 'dim', title: 'Отчёт старше срока из настроек: тред забыт и не считается ревью' }, `${p.forgotten} забыто  `);
-  if (p.can_close > 0) value += h('span', { class: 'dim', title: 'PR/MR слит или закрыт: тред можно закрыть' }, `${p.can_close} можно закрыть  `);
-  if (p.coordinator_note) value += h('span', { class: 'dim', title: p.coordinator_note }, 'коорд.: вопрос не распознан  ');
-  if ((c.needs > 0 || c.review > 0) && p.attention_since) value += h('span', { class: 'muted ago', title: 'Когда пришло последнее событие' }, `${ago(p.attention_since)}  `);
-  if (p.inbox > 0) value += h('span', { class: 'info' }, `${p.inbox} вход.  `);
-  const t = total(c);
-  value += t > 0 ? h('span', { class: 'num' }, `${c.resolved}/${t}`) : h('span', { class: 'muted' }, '—');
-  if (hl) value += h('span', { class: 'hint' }, 'Открыть <kbd>↵</kbd> или 2× клик · Фокус <kbd>F</kbd> · Показать все <kbd>U</kbd> · Открыть в herdr <kbd>O</kbd> · Группа <kbd>T</kbd>');
-  let icon = STATUS_ICON[/** @type {'active'} */ (p.status)] || '○', tone = '';
-  if (c.needs > 0) { icon = '🔔'; tone = 'warning'; }
-  else if (c.review > 0) { icon = '☑'; tone = 'warning'; }
-  else if (c.blocked > 0) { icon = '✖'; tone = 'error'; }
-  else if (p.status !== 'active') tone = 'muted';
+  if (c.ready > 0) value += h('span', { class: 'success strong' }, `${c.ready} к одобр.  `);
+  if (c.failed > 0) value += h('span', { class: 'error' }, `${c.failed} ${plural(c.failed, 'упала', 'упали', 'упали')}  `);
+  if (c.review > 0) value += h('span', { class: 'info' }, `${c.review} ревью  `);
+  if (c.working > 0) value += h('span', { class: 'accent' }, `${c.working} в работе  `);
+  if (c.queued > 0) value += h('span', { class: 'muted' }, `${c.queued} в очереди  `);
+  if (attention(c) > 0 && p.attention_since) value += h('span', { class: 'muted ago', title: 'Когда задача пришла в эту стадию' }, `${ago(p.attention_since)}  `);
+  const all = total(c);
+  value += all > 0 ? h('span', { class: 'num' }, `${c.done}/${all}`) : h('span', { class: 'muted' }, '—');
+  if (hl) value += h('span', { class: 'hint' }, 'Открыть <kbd>↵</kbd> или 2× клик · Показать все <kbd>U</kbd> · Группа <kbd>T</kbd>');
+  let icon = '○', tone = 'muted';
+  if (c.needs + c.ready > 0) { icon = '🔔'; tone = 'warning'; }
+  else if (c.failed > 0) { icon = '✖'; tone = 'error'; }
+  else if (c.review + c.working > 0) { icon = '◉'; tone = 'accent'; }
+  else if (c.queued > 0) { icon = '◌'; tone = 'muted'; }
   if (hl) { icon = '➜'; tone = 'accent'; }
-  const cls = `row${hl ? ' hl' : ''}${opts.indent ? ' indent' : ''}`;
-  return h('div', { class: cls, 'data-row': p.slug, title: p.slug },
+  const cls = `row${hl ? ' hl' : ''}${opts.indent ? ' indent' : ''}${active(c) === 0 ? ' quiet' : ''}`;
+  const detail = projectDetail(p);
+  return h('div', { class: cls, 'data-row': p.slug, title: p.path || p.slug },
     h('span', { class: `icon ${tone}` }, icon) + h('span', { class: 'label' }, label) + h('span', { class: 'value' }, value)
-    + (p.goal ? h('span', { class: 'detail' }, esc(clip(p.goal, 160))) : ''));
+    + (detail ? h('span', { class: 'detail' }, esc(clip(detail, 160))) : ''));
 }
 
 /** @param {Section} s @param {boolean} hl */
 function groupRow(s, hl) {
   /** @type {string[]} */ const parts = [];
-  if (s.needs > 0) parts.push(h('span', { class: 'warning strong' }, `${s.needs} ждут`));
-  if (s.review > 0) parts.push(h('span', { class: 'warning' }, `${s.review} ревью`));
-  if (s.inbox > 0) parts.push(h('span', { class: 'info' }, `${s.inbox} вход.`));
+  if (s.waiting > 0) parts.push(h('span', { class: 'warning strong' }, `${s.waiting} ждут`));
+  if (s.review > 0) parts.push(h('span', { class: 'info' }, `${s.review} ревью`));
+  if (s.working > 0) parts.push(h('span', { class: 'accent' }, `${s.working} в работе`));
   let value = parts.join(h('span', { class: 'sep' }, ' · '));
   if (hl) value += h('span', { class: 'hint' }, `${s.collapsed ? 'Развернуть' : 'Свернуть'} <kbd>↵</kbd> или 2× клик`);
   let label = h('span', {}, `${s.collapsed ? '▸' : '▾'} ${esc(s.name)}`) + h('span', { class: 'muted' }, ` · ${s.projects.length}`);
@@ -552,12 +550,11 @@ function controlsHtml() {
   const vis = visibleProjects().length;
   const shown = filteringActive() ? h('span', { class: 'muted' }, `${vis} из ${s.projects.length}`) : '';
   return h('div', { class: 'controls' },
-    h('div', { class: 'filter' }, `<kbd>/</kbd>` + `<input id="filter" type="search" placeholder="фильтр: имя, slug, цель" value="${esc(view.query)}" autocomplete="off">` + shown)
+    h('div', { class: 'filter' }, `<kbd>/</kbd>` + `<input id="filter" type="search" placeholder="фильтр: имя, ключ" value="${esc(view.query)}" autocomplete="off">` + shown)
     + chips
     + h('span', { class: 'toggle', 'data-act': 'sort' }, `⇅ ${SORT_LABEL[view.sort]} <kbd>S</kbd>`)
     + h('span', { class: 'toggle', 'data-act': 'groups' }, `▦ группы ${grouped ? 'вкл' : 'выкл'} <kbd>G</kbd>`)
-    + h('span', { class: 'toggle', 'data-act': 'unfocus', title: 'Боковая панель herdr: снова показать все проекты (herdr-projects unfocus)' }, `◎ все проекты <kbd>U</kbd>`)
-    + h('span', { class: 'btn-row' }, h('span', { class: 'badge accent', 'data-act': 'new' }, '+ Проект') + '<kbd>n</kbd>'));
+    + h('span', { class: 'toggle', 'data-act': 'unfocus', title: 'Боковая панель herdr: снова показать все проекты' }, `◎ все проекты <kbd>U</kbd>`));
 }
 
 function listHtml() {
@@ -581,10 +578,6 @@ function listHtml() {
     if (r.project) items += projectRow(r.project, hl === r.key, { indent: r.section != null, auto: r.auto });
     else if (r.section) items += groupRow(r.section, hl === r.key);
   }
-  const newHl = hl === NEW_ROW;
-  items += h('div', { class: `row newrow${newHl ? ' hl' : ''}`, 'data-row': NEW_ROW },
-    h('span', { class: `icon ${newHl ? 'accent' : ''}` }, newHl ? '➜' : '+') + h('span', { class: 'label' }, 'Новый проект…')
-    + h('span', { class: 'value' }, newHl ? 'Создать <kbd>↵</kbd>' : ''));
   out += h('div', { class: 'list' }, items);
   return out;
 }
@@ -592,16 +585,15 @@ function listHtml() {
 function dockHtml() {
   /** @param {string[]} keys @param {string} text */
   const hint = (keys, text) => h('span', {}, keys.map((k) => `<kbd>${esc(k)}</kbd>`).join('') + ' ' + esc(text));
-  if (view.screen === 'new') return h('div', { class: 'dock' }, NewProject.dock(hint));
   if (view.screen === 'settings') return h('div', { class: 'dock' }, Settings.dock(hint));
   if (view.gpick) return h('div', { class: 'dock' }, hint(['↑', '↓'], 'группа') + hint(['↵'], 'выбрать') + hint(['esc'], 'назад'));
   if (view.filtering && !view.selected) return h('div', { class: 'dock' }, hint(['↵'], 'открыть первый') + hint(['esc'], 'выйти из фильтра'));
   if (view.selected) return h('div', { class: 'dock' }, Card.dock(hint));
   if (!view.help) return h('div', { class: 'dock' }, hint(['?'], 'все клавиши'));
   return h('div', { class: 'dock' },
-    hint(['↑', '↓'], 'выбор') + hint(['↵'], 'открыть (или двойной клик)') + hint(['f'], 'фокус') + hint(['u'], 'показать все проекты') + hint(['o'], 'открыть в herdr')
+    hint(['↑', '↓'], 'выбор') + hint(['↵'], 'открыть (или двойной клик)') + hint(['u'], 'показать все проекты')
     + hint(['/'], 'фильтр') + hint(['1', '2', '3', '4'], 'раздел') + hint(['s'], 'сортировка') + hint(['g'], 'группы вкл / выкл')
-    + hint(['t'], 'группа проекта') + hint(['←', '→'], 'свернуть / развернуть группу') + hint(['n'], 'новый проект') + hint([','], 'настройки') + hint(['r'], 'обновить')
+    + hint(['t'], 'группа проекта') + hint(['←', '→'], 'свернуть / развернуть группу') + hint([','], 'настройки') + hint(['r'], 'обновить')
     + hint(['esc'], 'сбросить / закрыть'));
 }
 
@@ -626,9 +618,9 @@ function gpickHtml() {
     h('div', { class: 'dialog', role: 'dialog' }, h('h2', {}, `Группа для «${esc(p ? p.name : gp.slug)}»`) + body));
 }
 
-/** The fields whose text and caret survive a re-render (the new-project form's are `nf-…`). */
-const FIELDS = ['filter', 'cfilter', 'cask', 'gedit'];
-const isField = (/** @type {string} */ id) => FIELDS.includes(id) || id.startsWith('nf-');
+/** The fields whose text and caret survive a re-render. */
+const FIELDS = ['filter', 'cfilter', 'ctell', 'gedit'];
+const isField = (/** @type {string} */ id) => FIELDS.includes(id);
 
 /** True while render() swaps the page: replacing a focused field fires focus events that are not the user's. */
 let rendering = false;
@@ -647,8 +639,7 @@ function paint() {
   const scrolled = /** @type {HTMLElement|null} */ (root.querySelector('[data-scroll]'));
   const scroll = scrolled ? { key: scrolled.getAttribute('data-scroll'), top: scrolled.scrollTop } : null;
   let html = '';
-  if (view.screen === 'new') html = NewProject.html();
-  else if (view.screen === 'settings') html = Settings.html();
+  if (view.screen === 'settings') html = Settings.html();
   else if (view.selected) html = Card.html();
   else html = headerHtml() + controlsHtml() + (view.status ? h('div', { class: 'note' }, esc(view.status)) : '') + listHtml();
   if ((view.selected || view.screen) && view.status) html += h('div', { class: 'note' }, esc(view.status));
@@ -670,19 +661,15 @@ function paint() {
 root.addEventListener('click', (ev) => {
   const el = /** @type {HTMLElement} */ (ev.target);
   if (view.screen === 'settings' && Settings.click(el)) return;
-  if (view.screen === 'new' && NewProject.click(el)) return;
   const act = el.closest('[data-act]');
   if (act && act.getAttribute('data-act') === 'gpick-close' && el !== act) { /* inside the dialog */ } else if (act) {
     const a = act.getAttribute('data-act');
     if (a === 'refresh') refresh();
     else if (a === 'sort') toggleSort();
     else if (a === 'groups') toggleGroups();
-    else if (a === 'new') openNew();
     else if (a === 'settings') openSettings();
     else if (a === 'back') { backToList(); render(); }
-    else if (a === 'focus') runAction('focus');
     else if (a === 'unfocus') runUnfocus();
-    else if (a === 'open') runAction('open');
     else if (a === 'gpick-close') { view.gpick = null; render(); settleFollow(); }
     return;
   }
@@ -704,15 +691,13 @@ root.addEventListener('dblclick', (ev) => {
   const row = el.closest('[data-row]');
   if (!row) return;
   const key = row.getAttribute('data-row');
-  if (key === NEW_ROW) openNew();
-  else if (key) selectProject(key);
+  if (key) selectProject(key);
   render();
 });
 
 root.addEventListener('input', (ev) => {
   const el = /** @type {HTMLInputElement} */ (ev.target);
   if (el.id === 'filter') { view.query = el.value; render(); }
-  else if (view.screen === 'new') NewProject.input(el);
   else if (view.screen === 'settings') Settings.input(el);
   else Card.input(el);
 });
@@ -735,7 +720,6 @@ root.addEventListener('focusout', (ev) => {
 setInterval(() => { if (!view.filtering && !view.gpick && !view.screen && !Card.typing()) { const st = root.querySelector('.stamp'); if (st && view.snap && !view.snap.loading) st.textContent = `обновлено ${ageText()} ↻`; } }, 5000);
 
 Settings.init({ render, flash, root, snap: () => view.snap, close: closeScreen });
-NewProject.init({ render, flash, root, created: projectCreated, close: closeScreen });
 Card.init({
   render,
   flash,

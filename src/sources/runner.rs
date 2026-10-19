@@ -44,6 +44,17 @@ pub async fn run_in(
     timeout: Duration,
     cwd: Option<&str>,
 ) -> Result<Output, String> {
+    run_env(argv, stdin, timeout, cwd, &[]).await
+}
+
+/// `run_in` with more variables in the command's environment.
+pub async fn run_env(
+    argv: &[String],
+    stdin: Option<&str>,
+    timeout: Duration,
+    cwd: Option<&str>,
+    env: &[(String, String)],
+) -> Result<Output, String> {
     if argv.is_empty() {
         return Err("пустая команда".into());
     }
@@ -51,6 +62,7 @@ pub async fn run_in(
     if let Some(dir) = cwd {
         cmd.current_dir(dir);
     }
+    cmd.envs(env.iter().map(|(k, v)| (k, v)));
     cmd.args(&argv[1..])
         .stdin(if stdin.is_some() {
             Stdio::piped()
@@ -87,4 +99,13 @@ pub async fn run_in(
 
 pub fn argv<I: IntoIterator<Item = S>, S: AsRef<str>>(parts: I) -> Vec<String> {
     parts.into_iter().map(|s| s.as_ref().to_string()).collect()
+}
+
+/// `s` cut to `n` characters, with `…` when it was longer.
+pub fn clip(s: &str, n: usize) -> String {
+    if s.chars().count() <= n {
+        s.to_string()
+    } else {
+        s.chars().take(n.saturating_sub(1)).collect::<String>() + "…"
+    }
 }

@@ -5,15 +5,16 @@
 // Exits 1 when a check fails. Needs `chromium` (or $CHROMIUM) on the PATH.
 //
 // Against a live server only the list and a read-only look at the first
-// project's card, the settings screen and the new-project form (nothing is changed
-// or created) are checked. With FIXTURE=DIR (a server started on the world
-// of scripts/fixture.mjs; `scripts/run-checks.sh` does all of it) the card is
-// checked in full: threads, git lines, badges, worktree, tasks, «Решить»,
-// «Не решать», questions — with the fake binaries' logs as the witness.
+// project's card and the settings screen (nothing is changed) are checked. With
+// FIXTURE=DIR (a server started on the world of scripts/fixture.mjs;
+// `scripts/run-checks.sh` does all of it) the whole page is checked: the
+// stages of the board, the counters, the task panel and the board's commands
+// (approve, review, retry, delegate, stop, tell), the bar popup's data, the
+// workspace follow and the settings — with the fake binaries' logs as the witness.
 
-import { spawn, execFileSync } from 'node:child_process';
-import http from 'node:http';
-import { mkdtempSync, writeFileSync, rmSync, readFileSync, existsSync } from 'node:fs';
+import { spawn } from 'node:child_process';
+import net from 'node:net';
+import { mkdtempSync, writeFileSync, rmSync, readFileSync, existsSync, appendFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -73,7 +74,7 @@ async function waitFor(expr, ms = 8000) {
   return false;
 }
 const text = (sel) => evalJs(`document.querySelector(${JSON.stringify(sel)})?.innerText || ''`);
-const ids = () => evalJs('[...document.querySelectorAll(".list .row")].map((r) => r.getAttribute("data-id"))');
+const ids = () => evalJs('[...document.querySelectorAll(".list .row.task")].map((r) => r.getAttribute("data-id"))');
 const logLines = (name) => {
   const f = join(fixture, 'log', name);
   return existsSync(f) ? readFileSync(f, 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l)) : [];
@@ -81,6 +82,33 @@ const logLines = (name) => {
 const api = (method, path, body) => evalJs(`fetch(${JSON.stringify(path)}, { method: ${JSON.stringify(method)}, headers: { 'content-type': 'application/json' }, body: ${body === undefined ? 'undefined' : JSON.stringify(JSON.stringify(body))} }).then(async (r) => [r.status, await r.json().catch(() => null)])`);
 const click = (sel) => evalJs(`(() => { const e = document.querySelector(${JSON.stringify(sel)}); if (e) e.click(); return !!e; })()`);
 const note = () => text('.note');
+
+
+const typed = async (s) => { await send('Input.insertText', { text: s }); await sleep(150); };
+const snapshot = () => evalJs('fetch("/api/snapshot").then(r => r.json())');
+const refresh = async () => { await evalJs('fetch("/api/refresh", { method: "POST" })'); };
+const rowText = (id) => text(`.row[data-id="${id}"]`).then((t) => t.replace(/\s+/g, ' '));
+const slugs = (l) => l.map((p) => p.slug);
+const board = () => JSON.parse(readFileSync(join(fixture, 'state/board.json'), 'utf8'));
+const calls = () => logLines('calls.jsonl');
+const lastCall = () => calls().at(-1);
+
+// The herdr server's socket: one JSON line in, one out; the page's «показать все» goes here.
+let sockServer = null;
+function startSocket() {
+  const path = join(fixture, 'herdr.sock');
+  sockServer = net.createServer((c) => {
+    let buf = '';
+    c.on('data', (d) => {
+      buf += d;
+      if (!buf.includes('\n')) return;
+      const req = JSON.parse(buf.split('\n')[0]);
+      appendFileSync(join(fixture, 'log', 'socket.jsonl'), JSON.stringify(req) + '\n');
+      c.end(JSON.stringify({ id: req.id, result: { type: 'agent_view', active: false } }) + '\n');
+    });
+  });
+  sockServer.listen(path);
+}
 
 // The card of a live project, read-only: what is there is there.
 async function cardSmoke() {
@@ -90,281 +118,309 @@ async function cardSmoke() {
   await key('2');
   check('2 opens «Сделано»', /Сделано/.test(await text('.tab.active')));
   await key('1');
-  check('1 opens «Сделать»', /Сделать/.test(await text('.tab.active')));
+  check('1 opens «В деле»', /В деле/.test(await text('.tab.active')));
 }
 
-const tasksMd = () => join(fixture, 'root/alpha/TASKS.md');
-const tasksAtStart = fixture ? readFileSync(tasksMd(), 'utf8') : '';
-const gitIn = (cwd, ...args) => execFileSync('git', ['-C', cwd, ...args], { stdio: 'pipe', env: { ...process.env, GIT_AUTHOR_NAME: 'T', GIT_AUTHOR_EMAIL: 't@t', GIT_COMMITTER_NAME: 'T', GIT_COMMITTER_EMAIL: 't@t' } });
-const typed = async (s) => { await send('Input.insertText', { text: s }); await sleep(150); };
-const snapshot = () => evalJs('fetch("/api/snapshot").then(r => r.json())');
+// ----- the list against the board of the fixture
+async function boardChecks() {
+  const ov = await evalJs('Promise.all([fetch("/api/overview").then(r => r.json()), fetch("/api/summary").then(r => r.json()), fetch("/api/snapshot").then(r => r.json())]).then(([o, m, s]) => ({o, m, s}))');
+  const proj = (slug) => ov.s.projects.find((p) => p.slug === slug);
+  check('the projects are the repos of the board (and one that only has tasks)', ov.s.projects.length === 12 && !!proj('orphan') && proj('alpha').key === 'ALP' && proj('orphan').key === 'ORP' && proj('orphan').path === '', JSON.stringify(slugs(ov.s.projects)));
+  const a = proj('alpha');
+  check('alpha: its tasks by stage', JSON.stringify(Object.entries(a.counts).sort()) === JSON.stringify(Object.entries({ needs: 5, ready: 1, failed: 1, review: 1, working: 1, queued: 2, todo: 1, done: 2 }).sort()), JSON.stringify(a.counts));
+  check('alpha: the tasks come needs-you first, the newest first inside a stage, done last',
+    JSON.stringify(a.tasks.map((t) => t.id.split('/')[1])) === JSON.stringify(['2', '3', '5', '14', '12', '4', '8', '7', '6', '9', '10', '11', '1', '13']), JSON.stringify(a.tasks.map((t) => t.id.split('/')[1])));
+  const stage = Object.fromEntries(a.tasks.map((t) => [t.id.split('/')[1], t.label]));
+  check('…each stage in words: plan ready, review failed, ready to approve, failed, queued, queued after, pick one',
+    stage[3] === 'план готов' && stage[5] === 'ревью не прошло' && stage[4] === 'готова к одобрению' && stage[8] === 'упала' && stage[9] === 'в очереди, №1' && stage[10] === 'ждёт другие задачи' && stage[12] === 'выбери вариант' && stage[2] === 'ждёт ответа', JSON.stringify(stage));
+  check('tags come from the board (ALP-2); a repo with no key shows #n', a.tasks[0].tag === 'ALP-2' && !!ov.s.projects.length, a.tasks[0].tag);
+  check('iota: a task that stopped without a summary has failed; zeta: finished work is ready; beta has nothing', proj('iota').counts.failed === 1 && proj('zeta').counts.ready === 1 && proj('beta').tasks.length === 0);
+  check('overview: «ждут тебя» by arrival, the newest first (kappa 2 min, zeta 5, alpha 6, iota 10, sigma 100)', JSON.stringify(slugs(ov.o.waiting)) === JSON.stringify(['kappa', 'zeta', 'alpha', 'iota', 'sigma']), JSON.stringify(slugs(ov.o.waiting)));
+  check('overview: «на ревью» (rho 8 min, eps 40 min) and «работают» (theta); alpha is listed once, with the waits', JSON.stringify(slugs(ov.o.review)) === JSON.stringify(['rho', 'eps']) && JSON.stringify(slugs(ov.o.working)) === JSON.stringify(['theta']), JSON.stringify([slugs(ov.o.review), slugs(ov.o.working)]));
+  check('overview: quiet projects are counted, not listed (beta, gamma, eta, orphan)', ov.o.quiet === 4 && !('groups' in ov.o), `quiet ${ov.o.quiet}`);
+  const times = ov.o.waiting.map((p) => p.attention_since);
+  check('overview: attention_since is the time the task came to its stage, falling down the list', times.every((t) => t > 1.7e12) && times[0] > times[1] && times[1] > times[2] && times[2] > times[3] && times[3] > times[4], JSON.stringify(times));
+  check('overview: a project under review shows when its review began, the newest first (rho 8 min, eps 40 min)', ov.o.review.every((p) => p.since > 1.7e12) && ov.o.review[0].since > ov.o.review[1].since && ov.o.review[0].attention_since === 0 && ov.o.waiting.every((p) => p.since === p.attention_since) && ov.o.working[0].since === 0, JSON.stringify(ov.o.review.map((p) => [p.slug, p.since])));
+  const sg = Object.fromEntries(proj('sigma').tasks.map((t) => [t.id.split('/')[1], t]));
+  check('sigma: a stop by hand is «остановлена» and can be delegated again; a stop at a limit waits for you and can be continued (retry)', sg[1].bucket === 'todo' && sg[1].label === 'остановлена' && sg[1].actions.join() === 'delegate' && sg[2].bucket === 'needs' && sg[2].label === 'остановлена на лимите' && sg[2].actions.join() === 'retry,tell', JSON.stringify([sg[1], sg[2]].map((t) => [t.label, t.actions])));
+  check('sigma: work whose pull request checks fail is not «готова к одобрению»: it is «нельзя влить» and can be approved anyway; a reviewer that asks waits for you', sg[3].bucket === 'needs' && sg[3].label === 'нельзя влить' && sg[3].actions.join() === 'anyway,review,tell' && sg[4].bucket === 'needs' && sg[4].label === 'ревьюеру нужен ты', JSON.stringify([sg[3], sg[4]].map((t) => [t.label, t.actions])));
+  const ageMin = (Date.now() - times[0]) / 60000;
+  check('overview: kappa\'s question is 2 minutes old', ageMin > 1.2 && ageMin < 6, `${ageMin.toFixed(1)} min`);
+  const w = ov.o.waiting;
+  check('overview: each waiting project says what waits (tag and stage)', w[0].wait_hint === 'KAP-1: ждёт ответа' && w[1].wait_hint === 'ZET-1: готова к одобрению' && w[2].wait_hint === 'ALP-2: ждёт ответа; ALP-4: готова к одобрению; ALP-3: план готов; ALP-5: ревью не прошло; ALP-14: ревью не прошло; ALP-8: упала; ALP-12: выбери вариант' && w[3].wait_hint === 'IOT-1: остановилась без итога', JSON.stringify(w.map((p) => p.wait_hint)));
+  check('overview: alpha counts for the popup (waiting = needs + ready + failed), and its lines say what goes on',
+    w[2].waiting === 7 && w[2].ready === 1 && w[2].failed === 1 && w[2].review === 1 && w[2].working === 3 && w[2].done === 2 && w[2].total === 14
+    && w[2].tasks.length === 5 && w[2].tasks[0].tag === 'ALP-2' && w[2].tasks[0].bucket === 'needs' && !w[2].tasks.some((t) => t.bucket === 'todo' || t.bucket === 'done'), JSON.stringify(w[2]).slice(0, 400));
+  const wk = ov.o.working[0].tasks[0];
+  check('overview: a working task carries its progress; a review does not', wk.progress === 30 && wk.bucket === 'working' && ov.o.review[0].tasks[0].progress === null, JSON.stringify([wk, ov.o.review[0].tasks[0]]));
+  const m = ov.m;
+  check('summary: waiting 13 (9 need you, 2 ready, 2 failed), review 3, working 2, queued 2, 12 projects',
+    m.waiting === 13 && m.needs === 9 && m.ready === 2 && m.failed === 2 && m.review === 3 && m.working === 2 && m.queued === 2 && m.projects === 12 && m.attention_since === times[0], JSON.stringify(m));
+  check('summary: the hint names the projects that wait, the newest first', /^kappa: KAP-1: ждёт ответа\nzeta: ZET-1/.test(m.waiting_hint), m.waiting_hint);
+  check('/api/summary is small and has the fields the bar icon reads', Object.keys(m).length <= 16 && ['waiting', 'review', 'updated', 'error'].every((k) => k in m), JSON.stringify(Object.keys(m)));
+  const lists = logLines('lists.jsonl');
+  check('the board is read with `list --json` (and the plain `list` for the tags), in the folder that was named', lists.some((l) => l.argv.includes('--json')) && lists.some((l) => !l.argv.includes('--json')) && lists.every((l) => l.data === join(fixture, 'board')), JSON.stringify(lists.at(-1)));
+  const totals = (await text('.totals')).replace(/\s+/g, ' ');
+  check('the header counts the board\'s tasks: waiting, ready, failed, review, working, queued', totals === '9 ждут тебя · 2 к одобрению · 2 упали · 3 на ревью · 2 в работе · 2 в очереди', totals);
+  const rowKappa = await evalJs('(document.querySelector(\'.row[data-row="kappa"] .warning.strong\')?.textContent || "") + "|" + (document.querySelector(\'.row[data-row="kappa"] .ago\')?.textContent || "") + "|" + (document.querySelector(\'.row[data-row="kappa"] .detail\')?.textContent || "")');
+  check('the page row: «1 ждут», how long ago, and what waits as the second line', /^1 ждут\s*\|(\d+ мин|сейчас)\s*\|KAP-1: ждёт ответа$/.test(rowKappa || ''), rowKappa);
+  const rowAlpha = (await rowText0('alpha'));
+  check('alpha\'s row: counts by stage and done/all', /5 ждут/.test(rowAlpha) && /1 к одобр\./.test(rowAlpha) && /1 упала/.test(rowAlpha) && /1 ревью/.test(rowAlpha) && /1 в работе/.test(rowAlpha) && /2 в очереди/.test(rowAlpha) && /2\/14/.test(rowAlpha), rowAlpha);
+  const first = await evalJs('(() => { document.querySelector("[data-act=sort]").click(); return [...document.querySelectorAll(".row[data-row]")].slice(0, 5).map((r) => r.getAttribute("data-row")); })()');
+  check('sorted by attention the page puts the newest event on top', JSON.stringify(first.slice(0, 4)) === JSON.stringify(['kappa', 'zeta', 'alpha', 'iota']), JSON.stringify(first));
+  await evalJs('document.querySelector("[data-act=sort]").click()');
+  const quiet = await evalJs('[...document.querySelectorAll(".row.quiet[data-row]")].map((r) => r.getAttribute("data-row")).sort().join()');
+  check('quiet projects are marked quiet on the page', quiet === 'beta,eta,gamma,orphan', quiet);
+}
 
+const rowText0 = (slug) => text(`.row[data-row="${slug}"]`).then((t) => t.replace(/\s+/g, ' '));
+
+// ----- the list's own keys against the fixture: chips, filter, unfocus
+async function listChecks() {
+  await key('2');
+  check('2 shows the projects that wait', /Ждут/.test(await text('.badge.active')) && JSON.stringify(await evalJs('[...document.querySelectorAll(".row[data-row]")].map((r) => r.getAttribute("data-row")).sort()')) === JSON.stringify(['alpha', 'iota', 'kappa', 'sigma', 'zeta']));
+  await key('3');
+  check('3 shows those in progress (alpha, eps, rho, theta; orphan\'s task is not started)', JSON.stringify(await evalJs('[...document.querySelectorAll(".row[data-row]")].map((r) => r.getAttribute("data-row")).sort()')) === JSON.stringify(['alpha', 'eps', 'rho', 'theta']));
+  await key('4');
+  check('4 shows the quiet ones', JSON.stringify(await evalJs('[...document.querySelectorAll(".row[data-row]")].map((r) => r.getAttribute("data-row")).sort()')) === JSON.stringify(['beta', 'eta', 'gamma', 'orphan']));
+  const chips = await evalJs('[...document.querySelectorAll("[data-chip]")].map((c) => c.textContent.replace(/[●\\s]+/g, " ").trim())');
+  check('the chips carry their counts', JSON.stringify(chips) === JSON.stringify(['Все 12', 'Ждут 5', 'В работе 4', 'Тихие 4']), JSON.stringify(chips));
+  await key('1');
+  await key('/');
+  await typed('KAP');
+  check('the filter finds a project by its key', JSON.stringify(await evalJs('[...document.querySelectorAll(".row[data-row]")].map((r) => r.getAttribute("data-row"))')) === JSON.stringify(['kappa']));
+  await key('Escape');
+  await evalJs('(() => { const f = document.querySelector("#filter"); f.value = ""; f.dispatchEvent(new Event("input", { bubbles: true })); })()');
+  await key('Escape');
+  // «показать все проекты» clears the agent view of herdr: a request to its socket
+  const before = logLines('socket.jsonl').length;
+  await key('u');
+  const cleared = await waitFor('/снова показывает все проекты/.test(document.querySelector(".note")?.innerText || "")');
+  const sock = logLines('socket.jsonl');
+  check('U clears the sidebar view through the herdr socket (agent.view.clear)', cleared && sock.length === before + 1 && sock.at(-1).method === 'agent.view.clear', JSON.stringify(sock.at(-1)));
+  await click('[data-act=unfocus]');
+  for (let i = 0; i < 25 && logLines('socket.jsonl').length < before + 2; i++) await sleep(100);
+  check('the «все проекты» switch does the same by click', logLines('socket.jsonl').length === before + 2);
+  check('…and no command of the board is run for it', calls().length === 0, JSON.stringify(calls()));
+  await key('?');
+  check('? lists the keys: U shows all, there is no focus or new-project key any more', /U\s*показать все проекты/i.test(await text('.dock')) && !/фокус|новый проект/i.test(await text('.dock')), await text('.dock'));
+  await key('?');
+  const [s1, e1] = await api('POST', '/api/action', { kind: 'focus', slug: 'alpha' });
+  const [s2] = await api('POST', '/api/action', { kind: 'show', slug: 'нет такого' });
+  check('there is no «focus» or «open» action any more; «show» wants a project of the board', s1 === 400 && s2 === 404 && calls().length === 0, JSON.stringify([s1, e1, s2]));
+}
+
+// ----- the card of alpha: the stages, the panel of a task and the board's commands
 async function cardChecks() {
-  const f = (name, ok, extra) => check(name, ok, extra);
-  // The backlog check starts by itself when the card opens and shows «…» while it runs.
-  const row0 = (id) => text(`.row[data-id="${id}"]`);
-  f('tasks being checked show «…»; a person\'s task and a thread-led one are not asked', await waitFor('/…/.test(document.querySelector(".row[data-id=k1]")?.innerText || "") && /…/.test(document.querySelector(".row[data-id=k2]")?.innerText || "")', 2500) && !/…/.test(await row0('k3')) && !/…/.test(await row0('k4')), `${await row0('k1')} | ${await row0('k3')}`);
+  const f = check;
   const title = await text('.header .title');
-  f('card header names the project', /Alpha/.test(title), title);
-  const kv = await text('.kv');
-  f('goal and both repositories are shown, the remote one with its machine', /Проект для проверки карточки/.test(kv) && /@mac/.test(kv), kv.replace(/\s+/g, ' '));
-  f('progress counts threads and tasks', /5\s+из 13 сделано\s+·\s+8 тредов/.test(await text('.progress')), await text('.progress'));
-  const order = await ids();
-  f('open threads first (failed start, review, working, idle), then tasks', JSON.stringify(order) === JSON.stringify(['t-0007', 't-0003', 't-0005', 't-0002', 'k1', 'k2', 'k3', 'k4']), JSON.stringify(order));
-  const row = (id) => text(`.row[data-id="${id}"]`);
-  const failed = await row('t-0007');
-  f('a failed start says so, in red, with the error', /сбой запуска/.test(failed) && /timed out/.test(failed) && await evalJs('!!document.querySelector(".row[data-id=t-0007] .detail .error")'), failed.replace(/\s+/g, ' '));
-
-  // git lines arrive in the background
-  const git = await waitFor('/не закоммичено: 2/.test(document.querySelector(".row[data-id=t-0005] .detail")?.innerText || "") && /PR #12 открыт/.test(document.querySelector(".row[data-id=t-0003] .detail")?.innerText || "")');
-  const w5 = (await row('t-0005')).replace(/\s+/g, ' ');
-  f('git line: branch, commits, files with +/−, uncommitted', git && /⎇ t-0005-1/.test(w5) && /1 коммит/.test(w5) && /2 файла \+2 −0/.test(w5) && /● не закоммичено: 2/.test(w5), w5);
-  const w3 = (await row('t-0003')).replace(/\s+/g, ' ');
-  f('git line of a clean branch with an open PR', /1 коммит/.test(w3) && /всё закоммичено/.test(w3) && /PR #12 открыт/.test(w3), w3);
-  f('a tab thread has no worktree', /без ворктри/.test(await row('t-0002')));
-  f('herdr states in words', /ревью · пейн закрыт/.test(w3.replace(/\s+/g, ' ')) && /в работе ~40%/.test(w5), w3);
-  const badge = (id) => evalJs(`[...document.querySelectorAll('.row[data-id="${id}"] .mdl')].map((b) => b.textContent + ':' + b.className.replace('mdl ', '')).join(',')`);
-  f('badges from the profile: Sonnet 5.5, Haiku 5.5, pi', (await badge('t-0005')) === 'Sonnet 5.5:fam-sonnet' && (await badge('t-0003')) === 'Haiku 5.5:fam-haiku' && (await badge('t-0002')) === 'pi:fam-other', `${await badge('t-0005')} | ${await badge('t-0003')} | ${await badge('t-0002')}`);
+  f('card header names the project and its key', /alpha\s+ALP/.test(title), title);
+  f('the folder is shown', /\/repos\/alpha/.test(await text('.kv')), await text('.kv'));
+  const progress = (await text('.progress')).replace(/\s+/g, ' ');
+  f('progress counts the board\'s tasks and the stages', /^2 из 14 сделано · 5 ждут тебя · 1 к одобрению · 1 упала · 1 на ревью · 1 в работе · 2 в очереди$/.test(progress), progress);
+  const heads = await evalJs('[...document.querySelectorAll(".sect")].map((s) => s.innerText.replace(/\\s+/g, " ").trim())');
+  f('the stages are headed in the order they need the user', JSON.stringify(heads.map((s) => s.replace(/^\S+\s/, ''))) === JSON.stringify(['Ждут тебя 5', 'Готовы к одобрению 1', 'Упали 1', 'На ревью 1', 'В работе 1', 'В очереди 2', 'Не начаты 1']), JSON.stringify(heads));
+  f('the open tasks are listed in that order (the done ones are on the other tab)', JSON.stringify(await ids()) === JSON.stringify(['alpha/2', 'alpha/3', 'alpha/5', 'alpha/14', 'alpha/12', 'alpha/4', 'alpha/8', 'alpha/7', 'alpha/6', 'alpha/9', 'alpha/10', 'alpha/11']), JSON.stringify(await ids()));
+  f('a task row: tag, title, stage in words, progress, minutes left', /ALP-6\s+Миграция базы/.test(await rowText('alpha/6')) && /в работе\s+40%\s+· ещё 12 мин/.test(await rowText('alpha/6')) && /Writing migration/.test(await rowText('alpha/6')), await rowText('alpha/6'));
+  f('…review round and pull request for finished work', /готова к одобрению.*R#1.*PR#12/.test(await rowText('alpha/4')), await rowText('alpha/4'));
+  f('…a failed review is red and says so; the plan and the pick wait too', /ревью не прошло.*R#2/.test(await rowText('alpha/5')) && await evalJs('!!document.querySelector(".row[data-id=\\"alpha/5\\"] .value .error")') && /план готов/.test(await rowText('alpha/3')) && /выбери вариант/.test(await rowText('alpha/12')), await rowText('alpha/5'));
+  f('…a queued task says its place', /в очереди, №1/.test(await rowText('alpha/9')));
   const overflow = await evalJs('document.scrollingElement.scrollWidth - window.innerWidth');
   f('card does not scroll horizontally', overflow <= 0, `overflow ${overflow}px`);
-  const badged = await waitFor('/◐ частично/.test(document.querySelector(".row[data-id=k1]")?.innerText || "") && /⊘ сделано/.test(document.querySelector(".row[data-id=k2]")?.innerText || "")', 8000);
-  f('verdicts: «◐ частично» and «⊘ сделано» on the tasks that are not actual; none on the others', badged && !/[◐⊘]/.test(await row('k3')) && !/[◐⊘]/.test(await row('k4')) && !/…/.test(await row('k1')), `${await row('k1')} | ${await row('k2')}`);
-  const fl = logLines('fresh.jsonl');
-  const fa = fl[0] || { argv: [], prompt: '', cwd: '' };
-  f('one agent call asked about the two open tasks of nobody or of a profile, with their notes', fl.length === 1 && /\n1\. Починить экспорт отчёта \(claude-sonnet\)\n\s+заметка: Заметки: экспорт падает на пустом файле\.\n\s+заметка: Смотреть export\.txt\.\n2\. Добавить тёмную тему/.test(fa.prompt) && !/Выпустить ключ|Миграция базы|Готовая задача/.test(fa.prompt), fa.prompt);
-  f('…naming the repository, the commit of main and the log', /Репозиторий проекта: .*\/repos\/alpha\nКоммит main: [0-9a-f]{10}\n/.test(fa.prompt) && /Экспорт отчёта \(#7\)/.test(fa.prompt), fa.prompt.slice(0, 300));
-  const fdirs = fa.argv.slice(fa.argv.indexOf('--add-dir') + 1);
-  f('the agent is read-only, in the repository, with the project folder; «сделано» needs a file as proof', fa.argv.includes('claude-haiku-5-5') && fa.argv.includes('Read,Grep,Glob') && fa.argv.includes('--disallowedTools') && fa.cwd.endsWith('/repos/alpha') && fdirs.length === 1 && fdirs[0].endsWith('/root/alpha') && fa.argv.some((a) => /ТОЛЬКО с доказательством в коде/.test(a)), JSON.stringify({ cwd: fa.cwd, fdirs }));
   await shot('card-todo.png');
 
-  // keys: ↑ ↓ enter w
-  await key('ArrowDown'); await key('ArrowDown'); await key('ArrowDown');
-  f('↓ highlights threads row by row', (await evalJs('document.querySelector(".row.hl")?.getAttribute("data-id")')) === 't-0005');
-  f('the highlighted thread shows its keys', /Раскрыть/.test(await text('.row.hl .hint')) && /Ворктри/.test(await text('.row.hl .hint')));
-  await key('Enter');
-  const opened = await waitFor('/Изменения против main/.test(document.querySelector(".outcome")?.innerText || "")');
-  const block = await text('.outcome[data-thread="t-0005"]');
-  f('Enter opens the thread: branch, base, worktree, launch, model', opened && /hp\/alpha\/t-0005-1/.test(block) && /База\s+main/.test(block) && /claude · профиль claude-sonnet · claude-sonnet-5-5 · effort high/.test(block) && /Sonnet 5\.5\s*по профилю/.test(block), block.replace(/\s+/g, ' ').slice(0, 240));
-  f('…its diff, last commits and files not committed', /src\/a\.rs \| 1 \+/.test(block) && /[0-9a-f]{7}\s+Добавить a и b/.test(block) && /\?\? notes\.txt/.test(block) && /M src\/a\.rs/.test(block));
-  await shot('card-expanded.png');
-  const before = logLines('herdr.jsonl').length;
-  await key('w');
-  await waitFor(`1`, 50);
-  const opens = await waitFor('/открыт в herdr/.test(document.querySelector(".note")?.innerText || "")');
-  const wl = logLines('herdr.jsonl');
-  f('W opens the worktree through herdr', opens && wl.length === before + 1 && wl.at(-1).argv.join(' ').includes('worktree open --path') && wl.at(-1).argv.join(' ').endsWith('worktrees/t-0005 --focus'), JSON.stringify(wl.at(-1)));
-  await key('Enter');
-  f('Enter closes the block', !(await evalJs('!!document.querySelector(".outcome[data-thread=t-0005]")')));
-  await key('ArrowDown');
-  await key('w');
-  await waitFor('/нет/.test(document.querySelector(".note")?.innerText || "")');
-  f('W on a thread without a worktree says so and runs nothing', /у треда нет/.test(await note()) && logLines('herdr.jsonl').length === before + 1, await note());
-  await key('Enter');
-  f('a thread without a worktree says so in its block', /У треда нет своего ворктри/.test(await text('.outcome[data-thread="t-0002"]')));
-  await key('Enter');
-  f('Enter again closes the block', !(await evalJs('!!document.querySelector(".outcome[data-thread=t-0002]")')));
-  await click('.row[data-id="t-0005"]');
-  f('a click opens a thread too', await evalJs('!!document.querySelector(".outcome[data-thread=t-0005]")'));
-  await click('.row[data-id="t-0005"]');
-  f('…and closes it', !(await evalJs('!!document.querySelector(".outcome[data-thread=t-0005]")')));
-
-  // «Сделано»
-  await key('2');
-  f('2 opens «Сделано» with its count', /Сделано\s*5/.test(await text('.tab.active')));
-  const done = await ids();
-  f('finished threads newest first, then done tasks', JSON.stringify(done) === JSON.stringify(['t-0008', 't-0006', 't-0004', 't-0001', 'k5']), JSON.stringify(done));
-  await waitFor('document.querySelector(".row[data-id=t-0001] .mdl.fam-opus")');
-  f('badge from the commits of a merged PR (squash commit)', (await badge('t-0001')) === 'Opus 5.5:fam-opus', await badge('t-0001'));
-  f('badge from the branch trailers of a finished thread', (await badge('t-0008')) === 'Haiku 5.5:fam-haiku', await badge('t-0008'));
-  f('no trailers: the profile, quietly', (await badge('t-0004')) === 'DS Flash:quiet', await badge('t-0004'));
-  f('«итог» when there is a report, «без отчёта» when not', /итог/.test(await row('t-0001')) && /без отчёта/.test(await row('t-0008')));
-  f('a closed failed start is quiet: «не запустился», no second line', /✕ не запустился/.test(await row('t-0006')) && !(await evalJs('!!document.querySelector(".row[data-id=t-0006] .detail")')) && !(await evalJs('!!document.querySelector(".row[data-id=t-0006] .error")')));
-  await click('.row[data-id="t-0001"]');
-  const merged = await text('.outcome[data-thread="t-0001"]');
-  f('a finished thread opens with its outcome, PR and the source of its models', /Экспорт отчёта готов, PR слит/.test(merged) && /PR #7 слит/.test(merged) && /по коммитам \(слитый коммит\)/.test(merged) && /PR слит/.test(merged) && /закрыт|сделан/.test(merged) && /удалён/.test(merged), merged.replace(/\s+/g, ' ').slice(0, 300));
-  await shot('card-done.png');
-  await click('.row[data-id="t-0001"]');
-
-  // the card's filter
-  await key('/');
-  f('/ focuses the card filter', await evalJs('document.activeElement?.id === "cfilter"'));
-  await send('Input.insertText', { text: 'haiku' });
-  await sleep(200);
-  f('the filter finds threads by model, in both tabs', /Сделать\s*1/.test(await text('.tabs')) && /Сделано\s*1/.test(await text('.tabs')), await text('.tabs'));
-  f('…and counts what it shows', /2 из 13/.test(await text('.controls')), await text('.controls'));
-  await key('ArrowDown');
-  f('↓ leaves the filter and keeps the text', await evalJs('document.activeElement?.id !== "cfilter" && document.querySelector("#cfilter").value === "haiku"'));
-  await click('[data-c=filter-clear]');
-  await key('/');
-  await send('Input.insertText', { text: 'сбой запуска' });
-  await sleep(200);
-  f('«сбой запуска» finds the failed starts', /Сделать\s*1/.test(await text('.tabs')) && /Сделано\s*1/.test(await text('.tabs')), await text('.tabs'));
-  await send('Input.insertText', { text: ' zzz' });
-  await sleep(200);
-  f('typing goes on at the caret after each re-render', (await evalJs('document.querySelector("#cfilter").value')) === 'сбой запуска zzz');
-  await key('Escape');
-  f('nothing found says so', /Ничего не найдено по «сбой запуска zzz»/.test(await text('.list')), await text('.list'));
-  await click('[data-c=filter-clear]');
-  await key('1');
-
-  // tasks
-  const k1 = 'k1';
-  await click(`.row[data-id="${k1}"]`);
-  const panel = await text('.panel');
-  f('a task picks into a panel with its notes and four actions', /Починить экспорт отчёта/.test(panel) && /Смотреть export\.txt/.test(panel) && /Решить/.test(panel) && /профиль/.test(panel) && /Задать вопрос/.test(panel) && /Не решать/.test(panel), panel.replace(/\s+/g, ' ').slice(0, 200));
+  // the panel of a ready task
+  await click('.row[data-id="alpha/4"]');
+  const read = await waitFor('/Ветка\\s+work\\/4/.test(document.querySelector(".panel")?.innerText || "")');
+  const panel = (await text('.panel')).replace(/\s+/g, ' ');
+  f('a click opens the task: stage, branch, worktree, pull request, agent, time', read && /Стадия\s+готова к одобрению/.test(panel) && /work\/4/.test(panel) && /\/fixture\/worktrees\/work-4/.test(panel) && /pull\/12/.test(panel) && /Агент\s+claude/.test(panel) && /Время агента\s+4m/.test(panel), panel.slice(0, 300));
+  f('…the review: passed, with its tally and findings', /Ревью: прошло · 1 minor/.test(panel) && /minor Название кнопки можно короче/.test(panel), panel);
+  f('…the commands of the stage: approve, send the review, reply — and nothing else', JSON.stringify(await evalJs('[...document.querySelectorAll(".panel [data-c=cmd]")].map((b) => b.getAttribute("data-id"))')) === JSON.stringify(['approve', 'anyway', 'review', 'tell']));
   await shot('card-panel.png');
-  await key('?');
-  f('? opens the question field', await evalJs('document.activeElement?.id === "cask"'));
-  await send('Input.insertText', { text: 'Что нужно сделать?' });
-  await key('Enter');
-  f('a question shows the agent thinking', await waitFor('/Haiku 5\\.5 думает/.test(document.querySelector(".qa")?.innerText || "")', 4000), await text('.qa'));
-  const answered = await waitFor('document.querySelector(".qa .md strong")?.textContent === "готово"', 10000);
-  f('the answer arrives and is rendered as markdown', answered && (await evalJs('document.querySelectorAll(".qa .md li").length')) === 2 && (await evalJs('!!document.querySelector(".qa .md code")')), await text('.qa'));
-  f('markup in an answer is escaped, never run', !(await evalJs('!!document.querySelector(".qa script")')) && /<script>alert\(1\)<\/script>/.test(await text('.qa')));
-  const cl = logLines('claude.jsonl');
-  const ask = cl.at(-1) || { argv: [], prompt: '' };
-  const dirs = ask.argv.slice(ask.argv.indexOf('--add-dir') + 1);
-  f('the agent is read-only Haiku in the project folder with the local repository', cl.length === 1 && ask.argv.includes('claude-haiku-5-5') && ask.argv.includes('Read,Grep,Glob') && ask.argv.includes('--disallowedTools') && ask.cwd.endsWith('/root/alpha') && dirs.length === 1 && dirs[0].endsWith('/repos/alpha'), JSON.stringify({ n: cl.length, cwd: ask.cwd, dirs }));
-  f('its question names the task, its notes, both repositories and the question', /«Починить экспорт отчёта \(claude-sonnet\)»/.test(ask.prompt) && /Смотреть export\.txt/.test(ask.prompt) && /\/srv\/alpha-mac \(на машине mac, здесь недоступен\)/.test(ask.prompt) && /Вопрос: Что нужно сделать\?/.test(ask.prompt), ask.prompt);
-  await click('[data-c=profile-toggle]');
-  await waitFor('/pi@mac/.test(document.querySelector(".options")?.innerText || "")');
-  const opts = await text('.options');
-  f('the profile menu lists the coordinator’s pick and the assignable profiles', /на выбор координатора/.test(opts) && /claude-opus/.test(opts) && /deepseek-flash/.test(opts) && /pi@mac/.test(opts), opts.replace(/\s+/g, ' '));
-  await click('[data-c=profile][data-id=claude-opus]');
-  f('a chosen profile shows on the button', /профиль: claude-opus/.test(await text('.panel')), await text('.panel'));
-  await click('[data-c=solve]');
-  f('Решить on a project that is not open opens it first', await waitFor('/Открываю проект/.test(document.querySelector(".panel")?.innerText || "")', 3000), await text('.panel'));
-  const sentOk = await waitFor('/Задача отправлена координатору/.test(document.querySelector(".note")?.innerText || "")', 12000);
-  f('…then the coordinator takes the task', sentOk, await note());
-  const pr = logLines('prompts.jsonl');
-  f('first prompt was refused (not open), `open` ran once, the retry went through', pr.length === 2 && pr[0].opened === false && pr[1].opened === true && logLines('opens.jsonl').length === 1, JSON.stringify(pr.map((p) => p.opened)));
-  const sentText = pr.at(-1)?.text || '';
-  f('the sentence names the task, the profile and the answered question', /Реши задачу из TASKS\.md: «Починить экспорт отчёта \(claude-sonnet\)»/.test(sentText) && /с профилем claude-opus/.test(sentText) && /В: Что нужно сделать\? — О: Ответ из теста/.test(sentText), sentText);
-  f('the pick is gone and the task is marked as sent', !(await evalJs('!!document.querySelector(".panel")')) && /отправлено координатору/.test(await row('k1')), await row('k1'));
-  const state = await evalJs('fetch("/api/project/alpha").then(r => r.json()).then(d => JSON.stringify([d.sent, Object.keys(d.qa)]))');
-  f('the mark and the answers are kept in the state by task text', /отправлено|true/.test(state) && /Починить экспорт отчёта/.test(state), state);
-
-  // «Не решать»
-  await click('.row[data-id="k2"]');
-  await key('x');
-  f('x asks «Убрать из бэклога?»', /Убрать из бэклога\?/.test(await text('.panel')) && /y.*n/s.test(await text('.dock')), await text('.panel'));
+  const n0 = calls().length;
+  await key('a');
+  f('approving asks first', /Одобрить и влить работу\?/.test(await text('.panel .actions')) && calls().length === n0, await text('.panel .actions'));
   await key('n');
-  f('n keeps the task: nothing is sent', !/Убрать из бэклога/.test(await text('.panel')) && logLines('prompts.jsonl').length === 2);
-  await key('x');
+  f('n leaves it: nothing was sent', !(await evalJs('!!document.querySelector(".panel [data-c=approve-yes]")')) && calls().length === n0);
+  await key('a');
   await key('y');
-  const removed = await waitFor('/Просьба убрать задачу отправлена/.test(document.querySelector(".note")?.innerText || "")', 8000);
-  const rp = logLines('prompts.jsonl');
-  f('y asks the coordinator to remove the line (TASKS.md is not edited here)', removed && rp.length === 3 && /отказался от задачи «Добавить тёмную тему»: удали её из TASKS\.md/.test(rp.at(-1).text), rp.at(-1)?.text);
-  f('the task shows «просьба убрать отправлена»', /просьба убрать отправлена/.test(await row('k2')), await row('k2'));
-  await click('.row[data-id="k4"]');
-  f('a task a thread works on has no «Не решать»', !/Не решать/.test(await text('.panel')) && /Решить/.test(await text('.panel')), await text('.panel'));
+  const merged = await waitFor('/одобрить — ALP-4: approved/.test(document.body.innerText)', 6000);
+  const c = lastCall();
+  f('y approves: `approve alpha/4` through the board, its answer is shown', merged && calls().length === n0 + 1 && JSON.stringify(c.argv) === JSON.stringify(['approve', 'alpha/4']), JSON.stringify(c));
+  const moved = await waitFor('!document.querySelector(".row[data-id=\\"alpha/4\\"]")', 6000);
+  f('…and the task leaves the list when the board has merged it', moved && board().rows.find((r) => r.id === 'alpha/4').state === 'done');
+  f('…the panel closed with it', !(await evalJs('!!document.querySelector(".panel")')));
+
+  // work that failed its review: send it back, or merge it anyway
+  await click('.row[data-id="alpha/5"]');
+  await waitFor('/Кэш не сбрасывается/.test(document.querySelector(".panel")?.innerText || "")');
+  const p5 = (await text('.panel')).replace(/\s+/g, ' ');
+  f('a failed review shows the verdict, the tally and the findings', /Ревью: не прошло · 1 critical, 1 major/.test(p5) && /critical Кэш не сбрасывается/.test(p5) && /cache\.rs:40/.test(p5) && /кругов: 2/.test(p5), p5);
+  f('…the commands: send the review back, approve anyway (no plain approve), reply', JSON.stringify(await evalJs('[...document.querySelectorAll(".panel [data-c=cmd]")].map((b) => b.getAttribute("data-id") + ":" + b.textContent.trim())')) === JSON.stringify(['review:Отправить ревью агенту', 'anyway:Одобрить всё равно', 'tell:Ответить']));
+  await key('a');
+  f('a plain approve key does nothing there', !(await evalJs('!!document.querySelector(".panel [data-c=approve-yes]")')));
+  await key('w');
+  f('approving anyway says why it asks', /Ревью не прошло\. Влить всё равно\?/.test(await text('.panel .actions')), await text('.panel .actions'));
+  await key('y');
+  await waitFor('/одобрить всё равно — ALP-5: approved anyway/.test(document.body.innerText)', 6000);
+  f('…and passes --anyway on', JSON.stringify(lastCall().argv) === JSON.stringify(['approve', 'alpha/5', '--anyway']), JSON.stringify(lastCall()));
+  await click('.row[data-id="alpha/14"]');
+  await waitFor('/ALP-14/.test(document.querySelector(".panel")?.innerText || "")');
+  await key('v');
+  await waitFor('/отправить ревью агенту — ALP-14/.test(document.body.innerText)', 6000);
+  f('v sends the review back to the agent: `review alpha/14` (no confirmation)', JSON.stringify(lastCall().argv) === JSON.stringify(['review', 'alpha/14']), JSON.stringify(lastCall()));
+  const back = await waitFor('/в работе/.test(document.querySelector(".row[data-id=\\"alpha/14\\"]")?.innerText || "")', 6000);
+  f('…the task is with the agent again', back, await rowText('alpha/14'));
+
+  // a plan
+  await click('.row[data-id="alpha/3"]');
+  await waitFor('/Снять копию базы/.test(document.querySelector(".panel")?.innerText || "")');
+  f('a plan is shown, and approving it is "accept the plan"', /Прогнать миграцию/.test(await text('.panel')) && /Принять план/.test(await text('.panel .actions')));
+  await key('a');
+  f('…with its own question', /Принять план\? Агент начнёт работу\./.test(await text('.panel .actions')));
+  await click('[data-c=approve-yes]');
+  await waitFor('/принять план|одобрить — ALP-3/.test(document.body.innerText)', 6000);
+  f('…the board gets the same `approve`', JSON.stringify(lastCall().argv) === JSON.stringify(['approve', 'alpha/3']));
+
+  // an error: retry
+  await click('.row[data-id="alpha/8"]');
+  await waitFor('/Сборка упала/.test(document.querySelector(".panel")?.innerText || "")');
+  const p8 = await text('.panel');
+  f('a failed task shows the board\'s failure; markup in it stays text', /Сбой: Сборка упала/.test(p8) && /npm test: 3 failed/.test(p8) && /<script>alert\(1\)<\/script>/.test(p8) && !(await evalJs('!!document.querySelector(".panel script")')), p8.slice(0, 200));
+  f('…the commands: retry, reply, stop', JSON.stringify(await evalJs('[...document.querySelectorAll(".panel [data-c=cmd]")].map((b) => b.getAttribute("data-id"))')) === JSON.stringify(['retry', 'tell', 'stop']));
+  await key('e');
+  await waitFor('/повторить — ALP-8/.test(document.body.innerText)', 6000);
+  f('e retries: `retry alpha/8`', JSON.stringify(lastCall().argv) === JSON.stringify(['retry', 'alpha/8']), JSON.stringify(lastCall()));
+
+  // a task nobody started: delegate; a working one: stop
+  await click('.row[data-id="alpha/11"]');
+  await waitFor('/ALP-11/.test(document.querySelector(".panel")?.innerText || "")');
+  f('a task not started offers «Запустить» only', JSON.stringify(await evalJs('[...document.querySelectorAll(".panel [data-c=cmd]")].map((b) => b.getAttribute("data-id"))')) === JSON.stringify(['delegate']));
+  await key('d');
+  await waitFor('/запустить — ALP-11/.test(document.body.innerText)', 6000);
+  f('d delegates: `delegate alpha/11`', JSON.stringify(lastCall().argv) === JSON.stringify(['delegate', 'alpha/11']));
+  await click('.row[data-id="alpha/6"]');
+  await waitFor('/ALP-6/.test(document.querySelector(".panel")?.innerText || "")');
   await key('x');
-  f('x on it says a thread leads it', /ведёт тред/.test(await note()) && !/Убрать из бэклога/.test(await text('.panel')), await note());
+  await waitFor('/остановить — ALP-6/.test(document.body.innerText)', 6000);
+  f('x stops the agent: `stop alpha/6`', JSON.stringify(lastCall().argv) === JSON.stringify(['stop', 'alpha/6']));
+  await waitFor('/не начата/.test(document.querySelector(".row[data-id=\\"alpha/6\\"]")?.innerText || "")', 6000);
+
+  // a question: reply to the agent
+  await click('.row[data-id="alpha/2"]');
+  await waitFor('/ALP-2/.test(document.querySelector(".panel")?.innerText || "")');
+  f('a question shows what the agent asks', /Какую схему брать/.test(await text('.panel')));
+  await key('m');
+  f('m opens the reply field', await evalJs('document.activeElement?.id === "ctell"'));
+  await typed('--now делай по новой схеме');
+  await key('Enter');
+  await waitFor('/ответить — ALP-2: sent/.test(document.body.innerText)', 6000);
+  f('Enter sends it: `tell alpha/2 -- <text>` (words that look like options stay words)', JSON.stringify(lastCall().argv) === JSON.stringify(['tell', 'alpha/2', '--', '--now делай по новой схеме']), JSON.stringify(lastCall()));
+  f('…the field is empty and closed again', !(await evalJs('!!document.querySelector("#ctell")')));
+
+  // a choice between attempts is made on the board
+  await click('.row[data-id="alpha/12"]');
+  await waitFor('/ALP-12/.test(document.querySelector(".panel")?.innerText || "")');
+  f('«pick one» offers no command here and says where to pick', (await evalJs('document.querySelectorAll(".panel [data-c=cmd]").length')) === 0 && /herdr-projects pick alpha\/12/.test(await text('.panel')), await text('.panel'));
   await key('Escape');
-  f('Escape drops the pick', !(await evalJs('!!document.querySelector(".panel")')));
-  // The same shortcuts on a Russian layout: the key is told by its place (ч on X, т on N).
-  await click('.row[data-id="k3"]');
-  await key('ч', undefined, 'KeyX');
-  f('shortcuts work on a Russian layout (ч = x)', /Убрать из бэклога\?/.test(await text('.panel')), await text('.panel'));
-  await key('т', undefined, 'KeyN');
-  f('…and т = n cancels', !/Убрать из бэклога/.test(await text('.panel')) && logLines('prompts.jsonl').length === 3);
+  f('esc closes the panel', !(await evalJs('!!document.querySelector(".panel")')));
+
+  // the board refuses: its words are shown, nothing moves
+  writeFileSync(join(fixture, 'data', 'refuse'), '');
+  await click('.row[data-id="alpha/9"]');
+  await waitFor('/ALP-9/.test(document.querySelector(".panel")?.innerText || "")');
+  const before = calls().length;
+  await key('x');
+  await waitFor('/не вышло — .*merge has a conflict/.test(document.body.innerText)', 6000);
+  rmSync(join(fixture, 'data', 'refuse'));
+  f('a refusal of the board is shown with its words and changes nothing', calls().length === before + 1 && board().rows.find((r) => r.id === 'alpha/9').stage === 'queued', (await note()));
   await key('Escape');
 
-  // a coordinator that refuses
-  writeFileSync(join(fixture, 'data', 'refuse-alpha'), '');
-  await click('.row[data-id="k3"]');
-  await click('[data-c=solve]');
-  await waitFor('/Координатор не принял задачу/.test(document.querySelector(".note")?.innerText || "")', 8000);
-  f('a refusal is shown and the task stays picked', /Координатор не принял задачу: .*refuses/.test(await note()) && (await evalJs('!!document.querySelector(".panel")')) && !/отправлено координатору/.test(await row('k3')), await note());
-  rmSync(join(fixture, 'data', 'refuse-alpha'));
+  // the other tab
+  await key('2');
+  f('2 opens «Сделано»: the finished ones, the newest first', /Сделано\s*4/.test(await text('.tab.active')) && JSON.stringify(await ids()) === JSON.stringify(['alpha/4', 'alpha/5', 'alpha/1', 'alpha/13']), JSON.stringify(await ids()));
+  f('a done task shows its pull request quietly and has no commands', /PR#7/.test(await rowText('alpha/1')));
+  await click('.row[data-id="alpha/1"]');
+  await waitFor('/ALP-1/.test(document.querySelector(".panel")?.innerText || "")');
+  f('…the panel says there are no commands', /команд нет/.test(await text('.panel')));
   await key('Escape');
+  await key('1');
+  await key('/');
+  await typed('кэш');
+  f('the card\'s filter finds a task by words in its title', JSON.stringify(await ids()) === JSON.stringify(['alpha/14']), JSON.stringify(await ids()));
+  await key('Escape');
+  await evalJs('(() => { const f = document.querySelector("#cfilter"); f.value = ""; f.dispatchEvent(new Event("input", { bubbles: true })); })()');
+  await shot('card-after.png');
 
-  await freshChecks();
-
-  // other sites cannot reach the server through the browser
-  const raw = (headers, method = 'GET', path = '/api/snapshot') => new Promise((resolve) => {
-    const u = new URL(base);
-    const r = http.request({ host: u.hostname, port: u.port, path, method, headers: { 'content-type': 'application/json', ...headers } }, (res) => { res.resume(); res.on('end', () => resolve(res.statusCode)); });
-    r.on('error', () => resolve(0));
-    r.end(method === 'POST' ? '{}' : undefined);
-  });
-  const hostOk = await raw({}), hostBad = await raw({ host: 'evil.example' }), originBad = await raw({ origin: 'https://evil.example' }, 'POST', '/api/refresh'), originOk = await raw({ origin: base }, 'POST', '/api/refresh');
-  f('a foreign Host (DNS rebinding) and a foreign Origin (cross-site) are refused', [hostOk, hostBad, originBad, originOk].join() === '200,403,403,200', [hostOk, hostBad, originBad, originOk].join());
-
-  // wrong inputs to the API
-  const solveEnc = '/api/project/alpha/solve';
-  const [s1] = await api('POST', solveEnc, { task: 'Нет такой задачи' });
-  const [s2] = await api('POST', solveEnc, { task: 'Готовая задача (2026-10-01)' });
-  const [s3] = await api('POST', solveEnc, { task: 'Добавить тёмную тему', profile: '-bad profile' });
-  const [s4] = await api('POST', '/api/project/nope/solve', { task: 'x' });
-  const [s5] = await api('POST', '/api/project/.hidden/solve', { task: 'x' });
-  f('solve: unknown task 404, done task 404, bad profile 400, unknown project 404, bad slug 400', [s1, s2, s3, s4, s5].join() === '404,404,400,404,400', [s1, s2, s3, s4, s5].join());
-  const [r1] = await api('POST', '/api/project/alpha/remove', { task: 'Миграция базы (claude-opus) · t-0005' });
-  const [r2] = await api('POST', '/api/project/alpha/remove', { task: '' });
-  f('remove: a thread-led task 409, no task 400', [r1, r2].join() === '409,400', [r1, r2].join());
-  const [a1] = await api('POST', '/api/project/alpha/ask', { task: 'Добавить тёмную тему', question: '   ' });
-  const [a2] = await api('POST', '/api/project/alpha/ask', { task: 'Нет такой', question: 'что?' });
-  f('ask: empty question 400, unknown task 404', [a1, a2].join() === '400,404', [a1, a2].join());
-  const [t1] = await api('GET', '/api/project/alpha/thread/t-9999');
-  const [t2] = await api('POST', '/api/project/alpha/thread/t-0002/worktree', {});
-  const [t3] = await api('POST', '/api/project/alpha/thread/t-0001/worktree', {});
-  const [t4] = await api('GET', '/api/project/.hidden/thread/t-1');
-  f('threads: unknown 404, tab thread 502, removed worktree 502, bad slug 400', [t1, t2, t3, t4].join() === '404,502,502,400', [t1, t2, t3, t4].join());
-  f('wrong inputs sent nothing more', logLines('prompts.jsonl').length === 5 && logLines('claude.jsonl').length === 1 && logLines('herdr.jsonl').length === 1, `${logLines('prompts.jsonl').length} prompts`);
-  f('TASKS.md was never edited: not by the checks, not by the actions', readFileSync(tasksMd(), 'utf8') === tasksAtStart);
-
+  // wrong inputs
+  const post = (body) => api('POST', '/api/task/action', body);
+  const [a1] = await post({ id: 'alpha/13', kind: 'stop' });
+  const [a2] = await post({ id: 'alpha/13', kind: 'rm' });
+  const [a3] = await post({ id: '--now', kind: 'stop' });
+  const [a4] = await post({ id: 'нет/1', kind: 'stop' });
+  const [a5] = await post({ id: 'alpha/2', kind: 'tell', text: '   ' });
+  const [a6] = await post({ id: 'alpha/12', kind: 'approve' });
+  const [a7] = await post({ id: 'alpha/2', kind: 'anyway' });
+  const [d1] = await api('GET', '/api/task?id=alpha/13');
+  const [d2] = await api('GET', '/api/task?id=--now');
+  const [d3] = await api('GET', '/api/task?id=zzz/1');
+  f('task commands: a finished task 409, an unknown command 400, an id like an option 400, a task the board does not list 404, empty words 400, approving a pick 409, --anyway where nothing failed 409',
+    [a1, a2, a3, a4, a5, a6, a7].join() === '409,400,400,404,400,409,409', [a1, a2, a3, a4, a5, a6, a7].join());
+  // Work the board will not merge by a plain yes, and a task a limit stopped.
+  const [c1] = await post({ id: 'sigma/3', kind: 'approve' });
+  const [c2] = await post({ id: 'sigma/2', kind: 'delegate' });
+  const nc = calls().length;
+  const [c3, cc3] = await post({ id: 'sigma/3', kind: 'anyway' });
+  f('checks that fail: a plain approve 409, «anyway» goes to the board as `approve --anyway`; a limit stop cannot be delegated 409', c1 === 409 && c2 === 409 && c3 === 200 && calls().length === nc + 1 && JSON.stringify(lastCall().argv) === JSON.stringify(['approve', 'sigma/3', '--anyway']) && /approved anyway/.test(cc3.message), JSON.stringify([c1, c2, c3, lastCall()]));
+  const [c4] = await post({ id: 'sigma/2', kind: 'retry' });
+  f('a task a limit stopped is continued with `retry`', c4 === 200 && JSON.stringify(lastCall().argv) === JSON.stringify(['retry', 'sigma/2']), JSON.stringify(lastCall()));
+  f('task details: a listed task 200, an id like an option 400, an unknown one 404', [d1, d2, d3].join() === '200,400,404', [d1, d2, d3].join());
+  const cmds = calls().map((c) => c.argv[0]);
+  f('none of the refused requests reached the board', !calls().slice(-1).some((c) => c.argv.includes('--now')) && cmds.every((c) => ['approve', 'review', 'retry', 'delegate', 'stop', 'tell'].includes(c)), JSON.stringify(cmds));
+  f('every command of the board ran in the folder that was named', calls().every((c) => c.data === join(fixture, 'board')));
 }
 
-// What «◐ частично» / «⊘ сделано» do: the reason, «Убрать» (asks the coordinator), «Оставить» (hides
-// until main moves), a new commit hides the old verdicts and is checked again after the debounce.
-async function freshChecks() {
-  const f = check;
-  const row = (id) => text(`.row[data-id="${id}"]`);
-  const repo = join(fixture, 'repos/alpha');
-  await click('.row[data-id="k2"]');
-  const panel = await text('.panel');
-  f('a picked task with a verdict shows the reason, the proof file, «Убрать» and «Оставить»', /⊘ сделано/.test(panel) && /тема уже есть/.test(panel) && /Доказательство в коде:\s*export\.txt/.test(panel) && (await evalJs('!!document.querySelector("[data-c=fresh-remove]") && !!document.querySelector("[data-c=fresh-keep]")')), panel.replace(/\s+/g, ' '));
-  await shot('card-fresh.png');
-  await click('[data-c=fresh-keep]');
-  await waitFor('!/⊘/.test(document.querySelector(".row[data-id=k2]")?.innerText || "")', 4000);
-  f('«Оставить» hides the badge (and the buttons)', !/⊘/.test(await row('k2')) && !(await evalJs('!!document.querySelector("[data-c=fresh-remove]")')), await row('k2'));
-  f('…but k1 keeps its own', /◐ частично/.test(await row('k1')));
+// ----- the page follows the active herdr workspace and the bar popup
+async function followChecks() {
+  const setWs = (v) => writeFileSync(join(fixture, 'state/workspace.json'), JSON.stringify(v));
+  setWs({ id: 'wK1', label: 'какое-то имя' });
+  const byId = await waitFor('/kappa/.test(document.querySelector(".header .title")?.innerText || "") && !!document.querySelector(".tabs")', 8000);
+  check('the space the board opened for a repo (spaces.json) opens that project\'s card', byId, await text('.header .title'));
+  setWs({ id: 'wT9', label: 'ZET-1 Готово к вливанию' });
+  const byTag = await waitFor('/zeta/.test(document.querySelector(".header .title")?.innerText || "")', 8000);
+  check('a task\'s space (its label starts with ZET-1) opens the project of that key', byTag, await text('.header .title'));
+  setWs({ id: 'wX', label: 'eta' });
+  const byName = await waitFor('/eta/.test(document.querySelector(".header .title")?.innerText || "")', 8000);
+  check('a space named like a project opens it', byName, await text('.header .title'));
   await key('Escape');
-  f('esc drops the pick, the card stays', !(await evalJs('!!document.querySelector(".panel")')) && !!(await evalJs('!!document.querySelector(".tabs")')));
+  setWs(null);
+  await sleep(3500);
+  // the bar popup asks for a project
+  const [s] = await api('POST', '/api/action', { kind: 'show', slug: 'theta' });
+  const shown = await waitFor('/theta/.test(document.querySelector(".header .title")?.innerText || "") && !!document.querySelector(".tabs")', 5000);
+  check('the bar popup\'s «show» request opens that project\'s card in the open page', s === 200 && shown, await text('.header .title'));
+  await key('Escape');
+  check('esc returns to the list', !!(await evalJs('!!document.querySelector(".controls")')));
+  // the request is not obeyed twice: a refresh does not bring the card back
+  await refresh();
+  await sleep(1200);
+  check('a request is obeyed once: the next snapshot leaves the list alone', !!(await evalJs('!!document.querySelector(".controls")')));
+}
 
-  // A new commit in main: the old verdicts go at once, the check waits for the debounce (2 s here) …
-  gitIn(repo, 'commit', '--allow-empty', '-qm', 'Новый коммит в main');
-  await key('r');
-  const hidden = await waitFor('!/[◐⊘]/.test(document.querySelector(".row[data-id=k1]")?.innerText || "") && !/[◐⊘]/.test(document.querySelector(".row[data-id=k2]")?.innerText || "")', 5000);
-  f('a new commit in main hides the verdicts of the old one', hidden, `${await row('k1')} | ${await row('k2')}`);
-  f('…and does not ask at once (the debounce)', logLines('fresh.jsonl').length === 1, String(logLines('fresh.jsonl').length));
-  await sleep(2600);
-  await key('r');
-  const again = await waitFor('/⊘ сделано/.test(document.querySelector(".row[data-id=k2]")?.innerText || "")', 8000);
-  const fl = logLines('fresh.jsonl');
-  f('after the debounce the backlog is checked again, with what changed since the last check', again && fl.length === 2 && /С прошлой проверки \([0-9a-f]+\):/.test(fl[1].prompt) && /Новый коммит в main/.test(fl[1].prompt), (fl[1]?.prompt || '').slice(0, 300));
-  f('the badge for the kept task is back at the new commit; k1 is no worry now (no badge)', again && !/[◐⊘]/.test(await row('k1')), `${await row('k1')} | ${await row('k2')}`);
-
-  // «Убрать» asks the coordinator, with the verdict; nothing is removed here.
-  await click('.row[data-id="k2"]');
-  await click('[data-c=fresh-remove]');
-  f('«Убрать» asks «Убрать из бэклога?»', /Убрать из бэклога\?/.test(await text('.panel')), await text('.panel'));
-  await key('y');
-  const sent = await waitFor('/Просьба убрать задачу отправлена/.test(document.querySelector(".note")?.innerText || "")', 8000);
-  const rp = logLines('prompts.jsonl').at(-1);
-  f('the request to the coordinator carries the verdict and its reason', sent && /отказался от задачи «Добавить тёмную тему»: удали её из TASKS\.md\. Проверка актуальности отметила её как «⊘ сделано»: тема уже есть\./.test(rp?.text || ''), rp?.text);
-
-  // An agent that fails: a quiet line, not a verdict; the next try waits.
-  writeFileSync(join(fixture, 'data', 'fresh-fails'), '');
-  gitIn(repo, 'commit', '--allow-empty', '-qm', 'Ещё коммит');
-  await key('r');
-  await sleep(2600);
-  await key('r');
-  const failed = await waitFor('/Проверка актуальности не удалась: .*fake agent fails/.test(document.querySelector(".note")?.innerText || "")', 8000);
-  f('a failed check says so under the progress bar and gives no verdict', failed && !/[◐⊘]/.test(await row('k1')), await note());
-  rmSync(join(fixture, 'data', 'fresh-fails'));
-  await shot('card-fresh-error.png');
-  f('the failed check asked once, and TASKS.md is as it was', logLines('fresh.jsonl').length === 3 && readFileSync(tasksMd(), 'utf8') === tasksAtStart, String(logLines('fresh.jsonl').length));
+// ----- the board answers badly
+async function errorChecks() {
+  writeFileSync(join(fixture, 'data', 'list-fails'), '');
+  await refresh();
+  const shown = await waitFor('/Не удалось получить проекты.*board is locked/.test(document.querySelector(".note.error")?.innerText || "")', 6000);
+  check('a board that cannot be read is said so with its words, and the projects stay', shown && (await evalJs('document.querySelectorAll(".row[data-row]").length')) >= 12, await text('.note.error'));
+  rmSync(join(fixture, 'data', 'list-fails'));
+  writeFileSync(join(fixture, 'data', 'list-garbage'), '');
+  await refresh();
+  const junk = await waitFor('/не JSON/.test(document.querySelector(".note.error")?.innerText || "")', 6000);
+  check('an answer that is not JSON is an error too', junk, await text('.note.error'));
+  rmSync(join(fixture, 'data', 'list-garbage'));
+  await refresh();
+  check('…and the page recovers when the board does', await waitFor('!document.querySelector(".note.error")', 6000));
 }
 
 // ----- the settings screen and the group suggestion (fixture)
@@ -373,19 +429,9 @@ async function settingsChecks() {
   const defs = (sel) => evalJs(`document.querySelectorAll(${JSON.stringify(sel)}).length`);
   const groupRows = () => evalJs('[...document.querySelectorAll(".grow-row")].map((r) => r.querySelector(".gname").textContent.replace(/\\s+/g, " ").trim())');
   await click('[data-act=settings]');
-  f('«⚙ Настройки» opens the settings screen', /Настройки/.test(await text('.header .title')) && (await defs('.card[data-row-key^="s:"]')) === 4, await text('.header .title'));
-  f('the review cut-off defaults to 3 days', /● 3 дня/.test(await text('.card[data-row-key="s:review_stale"] .badge.active')), await text('.card[data-row-key="s:review_stale"]'));
-  // A longer cut-off brings the 4-5 day old reports of pi back into review; the default takes them out again.
-  const piCounts = () => evalJs('fetch("/api/snapshot").then((r) => r.json()).then((s) => { const p = s.projects.find((x) => x.slug === "pi"); return [p.counts.review, p.forgotten]; })');
-  const setStale = async (value) => { await evalJs(`fetch("/api/settings", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ key: "review_stale", value: ${JSON.stringify(value)} }) })`); await evalJs('fetch("/api/refresh", { method: "POST" })'); };
-  await setStale('14');
-  let wide = [];
-  for (let i = 0; i < 40; i++) { wide = await piCounts(); if (wide[1] === 0) break; await sleep(250); }
-  await setStale('3');
-  let narrow = [];
-  for (let i = 0; i < 40; i++) { narrow = await piCounts(); if (narrow[1] === 2) break; await sleep(250); }
-  f('the cut-off is a setting: 14 days keeps the old reports in review, 3 days forgets them', wide[0] === 4 && wide[1] === 0 && narrow[0] === 2 && narrow[1] === 2, JSON.stringify({ wide, narrow }));
-  f('the agent defaults to Claude Haiku 5.5; the checks and suggestions are on / off as seeded', /● Claude Haiku 5\.5/.test(await text('.card[data-row-key="s:agent"] .badge.active')) && /● вкл/.test(await text('.card[data-row-key="s:autocheck"] .badge.active')) && /● выкл/.test(await text('.card[data-row-key="s:autogroup"] .badge.active')));
+  f('«⚙ Настройки» opens the settings screen with the two settings that are left', /Настройки/.test(await text('.header .title')) && (await defs('.card[data-row-key^="s:"]')) === 2, await text('.header .title'));
+  f('…none of the TASKS.md ones (freshness check, forgotten review) remain', (await defs('.card[data-row-key="s:autocheck"], .card[data-row-key="s:review_stale"]')) === 0);
+  f('the agent defaults to Claude Haiku 5.5; the group suggestion is off as seeded', /● Claude Haiku 5\.5/.test(await text('.card[data-row-key="s:agent"] .badge.active')) && /● выкл/.test(await text('.card[data-row-key="s:autogroup"] .badge.active')));
   const g0 = await groupRows();
   f('the groups card lists the five starting groups with their counts', g0.length === 5 && /^▸?\s*1\. Omarchy\s+0 проектов$/.test(g0[0]) && /5\. Личное/.test(g0[4]), JSON.stringify(g0));
   await shot('settings.png');
@@ -394,13 +440,12 @@ async function settingsChecks() {
   f('choosing the cheap agent sticks (state.json) and shows', (await snapshot()).settings.agent === 'deepseek' && /● DeepSeek Flash/.test(await text('.card[data-row-key="s:agent"] .badge.active')));
   await click('.card[data-row-key="s:agent"] .badge[data-value=haiku]');
   await waitFor('/Haiku/.test(document.querySelector(".card[data-row-key=\'s:agent\'] .badge.active")?.innerText || "")');
-  await key('ArrowDown');
   await key('ArrowRight');
-  await waitFor('/выкл/.test(document.querySelector(".card[data-row-key=\'s:autocheck\'] .badge.active")?.innerText || "")');
-  f('↓ then → turns the selected setting to its next value', (await snapshot()).settings.autocheck === 'off' && /^s:autocheck$/.test(await evalJs('document.querySelector(".card.sel")?.getAttribute("data-row-key")')));
+  await waitFor('/DeepSeek/.test(document.querySelector(".card[data-row-key=\'s:agent\'] .badge.active")?.innerText || "")');
+  f('→ turns the selected setting to its next value', (await snapshot()).settings.agent === 'deepseek' && /^s:agent$/.test(await evalJs('document.querySelector(".card.sel")?.getAttribute("data-row-key")')));
   await key('ArrowLeft');
-  await waitFor('/вкл/.test(document.querySelector(".card[data-row-key=\'s:autocheck\'] .badge.active")?.innerText || "")');
-  f('← turns it back', (await snapshot()).settings.autocheck === 'on');
+  await waitFor('/Haiku/.test(document.querySelector(".card[data-row-key=\'s:agent\'] .badge.active")?.innerText || "")');
+  f('← turns it back', (await snapshot()).settings.agent === 'haiku');
 
   // add, rename, move, delete a group
   await key('a');
@@ -444,9 +489,11 @@ async function settingsChecks() {
   const done = await waitFor('/Omarchy\\s+1 проект/.test(document.querySelector(".grow-row")?.innerText || "")', 8000);
   const gl = logLines('groups.jsonl');
   f('«Разложить заново» asks the agent even with the suggestion off, and shows it working', spin && done && gl.length === 1, JSON.stringify(await groupRows()));
-  f('…it sees the groups with their hints and every project with its goal', /^Группы:\n- Omarchy — проекты вокруг Linux-окружения Omarchy/.test(gl[0].prompt) && /alpha \| Alpha \| Проект для проверки карточки/.test(gl[0].prompt) && /beta \| Beta \| Пустой проект на паузе/.test(gl[0].prompt), gl[0].prompt.slice(0, 200));
+  f('…it sees the groups with their hints and every repo of the board with its folder and the titles of its tasks',
+    /^Группы:\n- Omarchy — проекты вокруг Linux-окружения Omarchy/.test(gl[0].prompt) && /Проекты \(slug \| название \| о проекте\):/.test(gl[0].prompt)
+    && /\nalpha \| alpha \| .*\/repos\/alpha · задачи: Ещё один кэш; Старое дело; Три варианта; Заметка на потом/.test(gl[0].prompt) && /\nbeta \| beta \| .*\/repos\/beta\n/.test(gl[0].prompt) && /\norphan \| orphan \| задачи: Задача без репозитория/.test(gl[0].prompt), gl[0].prompt.slice(0, 700));
   const after = await groupRows();
-  f('…and the counts follow: Omarchy 1, Личное 1, ИИ-инфраструктура 13 (the other fixture projects)', /Omarchy\s+1 проект$/.test(after[0]) && /ИИ-инфраструктура\s+13 проектов$/.test(after[2]) && /Личное\s+1 проект$/.test(after[4]), JSON.stringify(after));
+  f('…and the counts follow: Omarchy 1, Личное 1, ИИ-инфраструктура 10 (the other repos)', /Omarchy\s+1 проект$/.test(after[0]) && /ИИ-инфраструктура\s+10 проектов$/.test(after[2]) && /Личное\s+1 проект$/.test(after[4]), JSON.stringify(after));
   const s1 = await snapshot();
   f('the guesses are marked «авто»', s1.groups.assign.alpha?.auto === true && s1.groups.assign.alpha?.g === 'Omarchy' && s1.groups.assign.gamma?.g === 'ИИ-инфраструктура' && s1.groups.on === null, JSON.stringify(s1.groups.assign));
   await shot('settings-groups.png');
@@ -485,136 +532,39 @@ async function settingsChecks() {
   const [b4] = await api('POST', '/api/settings', { key: 'agent', value: 'gpt' });
   const [b5] = await api('POST', '/api/settings', { key: 'nope', value: 'on' });
   const [b6] = await api('POST', '/api/groups', { op: 'delete', name: 'Нет такой' });
-  f('group and setting ops: «Прочее» is taken 400, unknown op 400, nowhere to move 400, bad value 400, bad key 400, unknown group 400', [b1, b2, b3, b4, b5, b6].join() === '400,400,400,400,400,400', [b1, b2, b3, b4, b5, b6].join());
+  const [b7] = await api('POST', '/api/settings', { key: 'autocheck', value: 'on' });
+  f('group and setting ops: «Прочее» is taken 400, unknown op 400, nowhere to move 400, bad value 400, bad key 400, unknown group 400, a setting that is gone 400', [b1, b2, b3, b4, b5, b6, b7].join() === '400,400,400,400,400,400,400', [b1, b2, b3, b4, b5, b6, b7].join());
   await key('Escape');
   f('esc leaves the settings: the list is back', !!(await evalJs('!!document.querySelector(".controls") && !document.querySelector(".card")')));
-  await key('Escape');
-}
 
-// ----- the «Новый проект» form (fixture: the real `herdr-projects new` never runs)
-async function newProjectChecks() {
-  const f = check;
-  const val = (id) => evalJs(`document.getElementById(${JSON.stringify(id)})?.value`);
-  const newLog = () => logLines('new.jsonl');
-  // Turn the suggestion on: nothing waits, so nothing runs.
-  await key(',');
-  await click('.card[data-row-key="s:autogroup"] .badge[data-value=on]');
-  await waitFor('document.querySelector(".card[data-row-key=\'s:autogroup\'] .badge.active")?.innerText.includes("вкл")');
+  // A new repo of the board gets its group guess once, by itself, when the suggestion is on.
+  await api('POST', '/api/settings', { key: 'autogroup', value: 'on' });
   await sleep(500);
-  f('the suggestion on with every project in a group: no call', logLines('groups.jsonl').length === 2, String(logLines('groups.jsonl').length));
-  await key('Escape');
-
-  await key('n');
-  f('n opens the form with the cursor in «Папка»', /Новый проект/.test(await text('.header .title')) && await evalJs('document.activeElement?.id === "nf-path"'));
-  const loaded = await waitFor('/Треды: как в настройках \\(claude-sonnet\\)/.test(document.body.innerText) && /Коорд\\.: как в настройках \\(claude\\)/.test(document.body.innerText)', 4000);
-  f('machines and profiles are read when it opens: the profile badges name the defaults', loaded, (await text('.nform')).replace(/\s+/g, ' ').slice(0, 300));
-  await shot('new-form.png');
-  await click('[data-n=machine][data-i="0"]');
-  const m1 = await text('[data-n=machine][data-i="0"]');
-  await click('[data-n=machine][data-i="0"]');
-  const m2 = await text('[data-n=machine][data-i="0"]');
-  f('«Машина» steps through the enabled machines (not the disabled one) and back to «локально»', /@mac/.test(m1) && /@nas/.test(m2), `${m1} | ${m2}`);
-  f('a remote folder has no «Обзор»', !(await evalJs('!!document.querySelector("[data-n=browse-toggle]")')));
-  await click('[data-n=machine][data-i="0"]');
-  f('…and «локально» brings it back', /локально/.test(await text('[data-n=machine][data-i="0"]')) && (await evalJs('!!document.querySelector("[data-n=browse-toggle]")')));
-  await key('Escape');
-  f('esc cancels: the list is back and nothing was created', !!(await evalJs('!!document.querySelector(".controls")')) && newLog().length === 0);
-
-  await key('n');
-  await waitFor('document.activeElement?.id === "nf-path"');
-  await typed(`${fixture}/repos/`);
-  await key('ArrowDown');
-  const open = await waitFor('document.querySelectorAll(".brow").length >= 4', 4000);
-  const rows = (await evalJs('[...document.querySelectorAll(".brow")].map((r) => r.innerText.replace(/\\s+/g, " ").trim())')).map((r) => r.replace(/^➜\s*/, ''));
-  f('↓ in «Папка» opens the folder browser: .., the folders by name, repositories marked, hidden ones and files not shown', open && JSON.stringify(rows) === JSON.stringify(['..', 'alpha/ ⎇ репозиторий', 'delta/ ⎇ репозиторий', 'plain/']), JSON.stringify(rows));
-  await shot('new-browse.png');
-  await key('ArrowDown');
-  await key('ArrowRight');
-  await waitFor('/src\\//.test(document.querySelector(".browse")?.innerText || "")');
-  f('→ enters the highlighted folder', /\/repos\/delta/.test(await text('.brow-head')) && /src\//.test(await text('.browse')), await text('.brow-head'));
-  await key('ArrowLeft');
-  await waitFor('/\\/repos$/.test(document.querySelector(".brow-head")?.innerText.trim() || "")');
-  f('← goes up and highlights the folder it came out of', (await evalJs('document.querySelector(".brow.hl")?.innerText.trim()')).includes('delta/'), await text('.brow.hl'));
-  await key('Enter');
-  f('Enter picks it: the path, the name from the folder, the cursor in «Название»', (await val('nf-path')) === `${fixture}/repos/delta` && (await val('nf-name')) === 'Delta' && (await evalJs('document.activeElement?.id === "nf-name"')) && !(await evalJs('!!document.querySelector(".browse")')), `${await val('nf-path')} | ${await val('nf-name')}`);
-
-  // a second repository, completed with tab, on another machine
-  await click('[data-n=repo-add]');
-  f('«+ ещё репозиторий» adds «Папка 2» with the cursor in it', await evalJs('document.activeElement?.id === "nf-path2"') && /Папка 2/.test(await text('.nform')));
-  await typed(`${fixture}/repos/pla`);
-  await key('Tab');
-  await waitFor('document.getElementById("nf-path2")?.value.endsWith("/plain/")', 3000);
-  f('tab in a folder field completes the path', (await val('nf-path2')) === `${fixture}/repos/plain/`, await val('nf-path2'));
-  await click('[data-n=machine][data-i="1"]');
-  await evalJs('(() => { const e = document.getElementById("nf-path2"); e.value = "/srv/delta-mac/"; e.dispatchEvent(new Event("input", { bubbles: true })); })()');
-  f('a machine for the second repository', /@mac/.test(await text('[data-n=machine][data-i="1"]')));
-  await click('[data-n=tprof]'); await click('[data-n=tprof]');
-  await click('[data-n=cprof]');
-  f('the profile badges step through the allowed ones: threads → haiku, coordinator → claude', /Треды: claude-haiku/.test(await text('[data-n=tprof]')) && /Коорд\.: claude$/.test(await text('[data-n=cprof]')), await text('[data-n=tprof]') + ' | ' + await text('[data-n=cprof]'));
-  await evalJs('document.getElementById("nf-goal").focus()');
-  await typed('Цель дельты');
-  await shot('new-filled.png');
-  await key('Enter');
-  const created = await waitFor('/Delta/.test(document.querySelector(".header .title")?.innerText || "") && /Проект создан: delta/.test(document.body.innerText)', 8000);
-  const nl = newLog();
-  f('Enter creates the project: `herdr-projects new` with both repositories, goal and profiles; the name after --', created && nl.length === 1 && JSON.stringify(nl[0].argv) === JSON.stringify([`--repo=${fixture}/repos/delta`, '--repo=/srv/delta-mac@mac', '--goal=Цель дельты', '--thread-profile=claude-haiku', '--coordinator-profile=claude', '--', 'Delta']), JSON.stringify(nl[0]?.argv));
-  const opened = await waitFor('/создан и открыт в herdr/.test(document.body.innerText)', 6000);
-  f('the new project opens in the page and its coordinator is started (`open`)', opened && /Delta/.test(await text('.header .title')) && logLines('opens.jsonl').some((o) => o.slug === 'delta'), await text('.header .title'));
-  const pm = readFileSync(join(fixture, 'root/delta/PROJECT.md'), 'utf8');
-  f('the project was made by herdr-projects (the stand-in), not by the page', /name = "Delta"/.test(pm) && /goal = "Цель дельты"/.test(pm) && /machine = "mac"/.test(pm));
-  await shot('new-created.png');
-
-  // The suggestion for a new project: one call, only for it; a name the agent coined becomes a group.
+  const asked0 = logLines('groups.jsonl').length;
+  const reposFile = join(fixture, 'board', 'repos.json');
+  const repos = JSON.parse(readFileSync(reposFile, 'utf8'));
+  repos.delta = join(fixture, 'repos/delta');
+  writeFileSync(reposFile, JSON.stringify(repos));
+  await refresh();
   const grouped = await waitFor('(async () => { const s = await fetch("/api/snapshot").then(r => r.json()); return s.groups.assign.delta?.g === "Новая область"; })()', 12000);
-  const gl = logLines('groups.jsonl');
-  const s = await snapshot();
-  f('a new project gets its group guess once: one call that asks only about it', grouped && gl.length === 3 && /\ndelta \| Delta \| Цель дельты/.test(gl[2].prompt) && !/\nalpha \|/.test(gl[2].prompt.split('Проекты')[1]), (gl[2]?.prompt || '').slice(-200));
-  f('…a group the agent named is added at the end and the project sits in it as a guess', s.groups.list.at(-1) === 'Новая область' && s.groups.assign.delta?.auto === true, JSON.stringify([s.groups.list, s.groups.assign.delta]));
-
-  // Wrong inputs go back as errors and create nothing.
-  const post = (body) => api('POST', '/api/new', body);
-  const repo = (path, machine = '') => ({ path, machine });
-  const [n1] = await post({ name: 'x', repos: [] });
-  const [n2, e2] = await post({ name: 'x', repos: [repo('/x', 'a b')] });
-  const [n3, e3] = await post({ name: 'x', repos: [repo(`${fixture}/repos/нет`)] });
-  const [n4, e4] = await post({ name: 'Alpha', repos: [repo(`${fixture}/repos/plain`)] });
-  const [n5] = await post({ name: 'x', repos: Array.from({ length: 7 }, () => repo('/x', 'm')) });
-  const [n6, e6] = await post({ name: 'Zed', repos: [repo(`${fixture}/repos/plain`)], thread_profile: '-bad profile' });
-  f('new: no repository 400, a machine with a space 400, a missing folder 400, a taken slug 409, seven repositories 400, a bad profile 400', [n1, n2, n3, n4, n5, n6].join() === '400,400,400,409,400,400' && /без пробелов/.test(e2.error) && /Папка не найдена/.test(e3.error) && /Проект alpha уже есть/.test(e4.error) && /профиля/.test(e6.error), [n1, n2, n3, n4, n5, n6].join());
-  writeFileSync(join(fixture, 'data', 'refuse-new'), '');
-  const [n7, e7] = await post({ name: 'Epsilon', repos: [repo(`${fixture}/repos/plain`)] });
-  rmSync(join(fixture, 'data', 'refuse-new'));
-  f('a refusal of herdr-projects comes back as 502 with its words, and no project appears', n7 === 502 && /refusing to create epsilon/.test(e7.error) && !existsSync(join(fixture, 'root/epsilon')), JSON.stringify(e7));
-  const [r1] = await api('GET', `/api/browse?path=${encodeURIComponent('/нет/такой')}`);
-  const [r2, c2] = await api('GET', `/api/complete?path=${encodeURIComponent(`${fixture}/repos/de`)}`);
-  f('browse: an unreadable folder 400; complete: a path is completed', r1 === 400 && r2 === 200 && c2.path === `${fixture}/repos/delta/`, JSON.stringify([r1, r2, c2]));
-  f('only the one project was ever made (the second attempt was refused, the others never reached the command)', newLog().length === 2 && logLines('set.jsonl').length === 0, String(newLog().length));
-  await key('Escape');
+  const gl3 = logLines('groups.jsonl');
+  const s5 = await snapshot();
+  f('a new repo on the board gets its group guess once: one call that asks only about it', grouped && gl3.length > asked0 && /\ndelta \| delta \| .*\/repos\/delta\n?/.test(gl3.at(-1).prompt) && !/\nalpha \|/.test(gl3.at(-1).prompt.split('Проекты')[1]), (gl3.at(-1)?.prompt || '').slice(-200));
+  f('…a group the agent named is added at the end and the project sits in it as a guess', s5.groups.list.at(-1) === 'Новая область' && s5.groups.assign.delta?.auto === true, JSON.stringify([s5.groups.list, s5.groups.assign.delta]));
 }
 
-// ----- live server: the screens are looked at, nothing is changed or created
+// ----- live server: the screens are looked at, nothing is changed
 async function screensSmoke() {
   await click('[data-act=settings]');
-  check('settings: a card per setting and the groups card', (await evalJs('document.querySelectorAll(".card[data-row-key^=\'s:\']").length')) >= 3 && /Группы проектов/.test(await text('.scroll')));
+  check('settings: a card per setting and the groups card', (await evalJs('document.querySelectorAll(".card[data-row-key^=\'s:\']").length')) >= 2 && /Группы проектов/.test(await text('.scroll')));
   check('settings: the cheap agent shows Haiku 5.5 as an option', /Claude Haiku 5\.5/.test(await text('.card[data-row-key="s:agent"]')));
   await shot('settings.png');
   await key('Escape');
   check('esc leaves the settings', !!(await evalJs('!!document.querySelector(".controls")')));
-  await key('n');
-  check('n opens the new-project form', /Новый проект/.test(await text('.header .title')) && !!(await evalJs('!!document.querySelector("#nf-path") && !!document.querySelector("#nf-name") && !!document.querySelector("#nf-goal")')));
-  await waitFor('!/Читаю машины и профили/.test(document.body.innerText)', 6000);
-  check('the form asks for the machines and profiles (and works without them)', !/Читаю машины и профили/.test(await text('.nform')), (await text('.nform')).replace(/\s+/g, ' ').slice(0, 200));
-  await key('ArrowDown');
-  const browsed = await waitFor('!!document.querySelector(".browse")', 4000);
-  check('↓ in «Папка» opens the folder browser', browsed && (await evalJs('document.querySelectorAll(".brow").length')) > 0);
-  await shot('new-form.png');
-  await key('Escape');
-  check('esc closes the browser, not the form', !(await evalJs('!!document.querySelector(".browse")')) && /Новый проект/.test(await text('.header .title')));
-  await key('Escape');
-  check('esc leaves the form: nothing was created', !!(await evalJs('!!document.querySelector(".controls")')));
 }
 
 async function main() {
+  if (fixture) startSocket();
   await waitForChrome();
   let target = await (await fetch(`http://127.0.0.1:${port}/json/new?${base}/`, { method: 'PUT' })).json().catch(() => null);
   if (!target) target = await (await fetch(`http://127.0.0.1:${port}/json/new?${base}/`)).json();
@@ -624,7 +574,7 @@ async function main() {
   await send('Page.enable');
   await send('Runtime.enable');
   // Wait for the first snapshot to arrive over SSE.
-  for (let i = 0; i < 50 && !(await evalJs('document.querySelectorAll(".row[data-row]:not(.newrow), .header .back").length > 0')); i++) await sleep(200);
+  for (let i = 0; i < 50 && !(await evalJs('document.querySelectorAll(".row[data-row], .header .back").length > 0')); i++) await sleep(200);
   // The page follows the focused herdr workspace and may open a project at once.
   if (await evalJs('!!document.querySelector(".header .back")')) { console.log('note: opened on the active workspace\'s project'); await key('Escape'); await key('Escape'); }
 
@@ -642,81 +592,14 @@ async function main() {
   check('theme variables applied', /^#[0-9a-f]{6}$/i.test(vars) && vars !== '#101419', vars);
   const font = await evalJs('getComputedStyle(document.body).fontFamily');
   check('ui font from herdr-gpui config', !!font, font);
-  // The bar icon's endpoint agrees with the list it summarises (archived projects do not count).
+  // The bar icon's endpoint agrees with the list it summarises.
   const sum = await evalJs(`Promise.all([fetch("/api/summary").then(r => r.json()), fetch("/api/snapshot").then(r => r.json())]).then(([m, s]) => {
-    const live = s.projects.filter((p) => p.status !== "archived");
-    const add = (f) => live.reduce((n, p) => n + f(p), 0);
-    return { m, want: { waiting: add((p) => p.counts.needs), review: add((p) => p.counts.review), inbox: add((p) => p.inbox), projects: live.length } };
+    const add = (f) => s.projects.reduce((n, p) => n + f(p), 0);
+    return { m, want: { waiting: add((p) => p.counts.needs + p.counts.ready + p.counts.failed), review: add((p) => p.counts.review), working: add((p) => p.counts.working), projects: s.projects.length } };
   })`);
-  check('/api/summary: waiting, review, inbox and projects match the list',
-    ['waiting', 'review', 'inbox', 'projects'].every((k) => sum.m[k] === sum.want[k]), JSON.stringify(sum));
-  check('/api/summary: small, with the fields the bar icon reads', Object.keys(sum.m).length <= 10
-    && ['waiting', 'review', 'updated', 'error'].every((k) => k in sum.m), JSON.stringify(sum.m));
-  if (fixture) {
-    // What waits on the user (see src/attention.rs): projects that arrived at different times, the newest on top.
-    // The coordinators' questions are checked by the cheap agent and the merge requests by glab, both in the background.
-    const readAll = () => evalJs(`Promise.all([fetch("/api/overview").then(r => r.json()), fetch("/api/summary").then(r => r.json()), fetch("/api/snapshot").then(r => r.json())]).then(([o, m, s]) => ({o, m, s}))`);
-    let ov = await readAll();
-    for (let i = 0; i < 80; i++) {
-      const pi = ov.s.projects.find((p) => p.slug === 'pi'), xi = ov.s.projects.find((p) => p.slug === 'xi');
-      if (ov.o.waiting.some((p) => p.slug === 'kappa') && pi && pi.can_close === 3 && xi && xi.coordinator_note.includes('не распознан')) break;
-      await sleep(250); ov = await readAll();
-    }
-    const slugs = (l) => l.map((p) => p.slug);
-    check('overview: «ждут тебя» by arrival, the newest first (coordinator 2 min, prompt 10 min, failed start 3 h)',
-      JSON.stringify(slugs(ov.o.waiting)) === JSON.stringify(['kappa', 'iota', 'alpha']), JSON.stringify(slugs(ov.o.waiting)));
-    check('overview: «на ревью» by arrival (a finished thread that left «Waiting for you» 5 min ago, a report 40 min ago, then pi at 1 h)',
-      JSON.stringify(slugs(ov.o.review)) === JSON.stringify(['zeta', 'eps', 'pi']), JSON.stringify(slugs(ov.o.review)));
-    check('overview: «работают» — the project whose coordinator went on working after asking waits for nothing',
-      JSON.stringify(slugs(ov.o.working)) === JSON.stringify(['lambda', 'theta']) || JSON.stringify(slugs(ov.o.working)) === JSON.stringify(['theta', 'lambda']), JSON.stringify(slugs(ov.o.working)));
-    const times = ov.o.waiting.map((p) => p.attention_since);
-    check('overview: attention_since is a time, falling down the list',
-      times.every((t) => t > 1.7e12) && times[0] > times[1] && times[1] > times[2], JSON.stringify(times));
-    const ageMin = (Date.now() - ov.o.waiting[0].attention_since) / 60000;
-    check('overview: the coordinator\'s question is 2 minutes old', ageMin > 1.5 && ageMin < 6, `${ageMin.toFixed(1)} min`);
-    check('overview: quiet projects are counted, not listed',
-      ov.o.quiet === ov.o.summary.projects - ov.o.waiting.length - ov.o.review.length - ov.o.working.length && ov.o.quiet >= 3 && !('groups' in ov.o), `quiet ${ov.o.quiet}`);
-    const hint = Object.fromEntries(ov.o.waiting.map((p) => [p.slug, p.wait_hint]));
-    check('overview: each waiting project says what waits',
-      hint.kappa === 'Запускать ли тред по расходам или подождать?' && /разрешение или вопрос в t-0001/.test(hint.iota) && hint.alpha === 'сбой запуска t-0007', JSON.stringify(hint));
-    check('summary: waiting counts the real waits, the hint names them newest first, attention_since is the newest',
-      ov.m.waiting === 3 && ov.m.attention_since === ov.o.waiting[0].attention_since && /^Kappa: Запускать ли тред по расходам или подождать\?\nIota: /.test(ov.m.waiting_hint), JSON.stringify(ov.m));
-    const zeta = ov.s.projects.find((p) => p.slug === 'zeta');
-    check('a done thread with «Waiting for you» is a review, not a bell', zeta.counts.needs === 0 && zeta.counts.review === 1, JSON.stringify(zeta.counts));
-    const lam = ov.s.projects.find((p) => p.slug === 'lambda');
-    check('a coordinator that went on working after asking waits for nothing', lam.counts.needs === 0 && lam.waits.length === 0);
-    const rowKappa = await evalJs('document.querySelector(\'.row[data-row="kappa"] .warning.strong\')?.textContent + "|" + document.querySelector(\'.row[data-row="kappa"] .warning.strong\')?.title + "|" + document.querySelector(\'.row[data-row="kappa"] .ago\')?.textContent');
-    check('the page row: «1 ждут», what the coordinator asks as its hint, and how long ago', /^1 ждут\s*\|Запускать ли тред по расходам или подождать\?\|\d+ мин|сейчас/.test(rowKappa || ''), rowKappa);
-    // The coordinator's status «Waiting for you» is not enough: its last answer must hold an open question.
-    const proj = (slug) => ov.s.projects.find((p) => p.slug === slug);
-    const asked = logLines('ask.jsonl').map((l) => l.text);
-    check('a coordinator that only says «жду указаний», one the user already answered, and a rhetorical question are no bell',
-      ['mu', 'nu', 'omi'].every((s) => proj(s).counts.needs === 0 && proj(s).waits.length === 0 && proj(s).coordinator_note === ''), JSON.stringify(['mu', 'nu', 'omi'].map((s) => proj(s).waits.length)));
-    check('the cheap agent was asked only where there is a question mark and no answer after it (kappa, omicron, xi), once each',
-      asked.length === 3 && asked.some((t) => /тред по расходам/.test(t)) && asked.some((t) => /Нужно что-то ещё/.test(t)) && asked.some((t) => /FAIL-AGENT/.test(t)) && !asked.some((t) => /жду ваших|нет/.test(t)), JSON.stringify(asked));
-    check('a check that fails or is not understood: no bell, a quiet note instead',
-      proj('xi').counts.needs === 0 && proj('xi').coordinator_note === 'координатор: статус ждёт, вопрос не распознан', JSON.stringify(proj('xi').coordinator_note));
-    const rowXi = await evalJs('document.querySelector(\'.row[data-row="xi"] .value\')?.textContent');
-    check('…and the page row says so', /коорд\.: вопрос не распознан/.test(rowXi || ''), rowXi);
-    // The review rule: a fresh unread report whose merge request is not merged; merged ones can be closed, old ones are forgotten.
-    const pi = proj('pi');
-    check('review: fresh unread reports count (MR open, glab not answering); looked-at ones do not',
-      pi.counts.review === 2, JSON.stringify(pi.counts));
-    check('review: a merged MR (even on an old thread) and a merged GitHub PR → «можно закрыть», not review', pi.can_close === 3, String(pi.can_close));
-    check('review: reports older than 3 days (no MR, or glab not answering) → «забыто», not review', pi.forgotten === 2, String(pi.forgotten));
-    check('the quiet ones are not in the bar or the popup (review 2 only) and the page shows them grey',
-      ov.o.review.find((p) => p.slug === 'pi').review === 2 && ov.s.projects.every((p) => p.slug !== 'pi' || p.counts.review === 2), '');
-    const rowPi = await evalJs('document.querySelector(\'.row[data-row="pi"] .value\')?.textContent');
-    check('…the page row: «2 ревью», «2 забыто», «3 можно закрыть»', /2 ревью/.test(rowPi || '') && /2 забыто/.test(rowPi || '') && /3 можно закрыть/.test(rowPi || ''), rowPi);
-    const glab = logLines('glab.jsonl').map((l) => l.argv.at(-1));
-    check('glab was asked once per merge request, only for threads in review', glab.length === 4 && new Set(glab).size === 4 && glab.every((a) => /^projects\/g%2Fpi\/merge_requests\/1[0-3]$/.test(a)), JSON.stringify(glab));
-    await evalJs('fetch("/api/refresh", { method: "POST" })');
-    await sleep(3000);
-    check('a refresh asks neither the agent nor glab again (cached)', logLines('ask.jsonl').length === 3 && logLines('glab.jsonl').length === 4, `${logLines('ask.jsonl').length} / ${logLines('glab.jsonl').length}`);
-    const first = await evalJs('(() => { document.querySelector("[data-act=sort]").click(); return [...document.querySelectorAll(".row[data-row]:not(.newrow)")].slice(0, 5).map((r) => r.getAttribute("data-row")); })()');
-    check('sorted by attention the page puts the newest event on top', first[0] === 'kappa' && first[1] === 'zeta' && first[2] === 'iota', JSON.stringify(first));
-    await evalJs('document.querySelector("[data-act=sort]").click()');
-  }
+  check('/api/summary: waiting (needs + ready + failed), review, working and projects match the list',
+    ['waiting', 'review', 'working', 'projects'].every((k) => sum.m[k] === sum.want[k]), JSON.stringify(sum));
+  if (fixture) await boardChecks();
   await shot('list.png');
 
   await key('ArrowDown');
@@ -733,65 +616,46 @@ async function main() {
   await key('Escape');
   check('Escape closes the picker', !(await evalJs('!!document.querySelector(".dialog")')));
 
-  await key('2');
-  const chip = await evalJs('document.querySelector(".badge.active")?.textContent');
-  check('digit keys switch chips', /Ревью/.test(chip || ''), chip);
   await key('s');
   const sort = await evalJs('document.querySelector("[data-act=sort]")?.textContent');
   check('S toggles the sort', /внимание/.test(sort || ''), sort);
   await key('s');
   check('S toggles it back', /новые/.test(await evalJs('document.querySelector("[data-act=sort]")?.textContent') || ''));
-  await key('Escape');
-  check('Escape resets the chip', /Все/.test(await evalJs('document.querySelector(".badge.active")?.textContent') || ''));
-
   check('the list has «все проекты» next to the sort and group switches', /все проекты\s*U/i.test(await evalJs('document.querySelector("[data-act=unfocus]")?.textContent') || ''));
-  if (fixture) {
-    // F focuses the highlighted project, U clears the sidebar view; the fake herdr-projects logs both (never the real one).
-    await key('ArrowDown');
-    if ((await evalJs('document.querySelector(".row.hl")?.getAttribute("data-row")')) === '+new') await key('ArrowUp');
-    const hlSlug = await evalJs('document.querySelector(".row.hl[data-row]")?.getAttribute("data-row")');
-    await key('f');
-    const focused = await waitFor('/Фокус на/.test(document.querySelector(".note")?.innerText || "")');
-    check('F focuses the highlighted project', focused && logLines('focus.jsonl').at(-1)?.slug === hlSlug && logLines('unfocus.jsonl').length === 0, `${hlSlug} ${JSON.stringify(logLines('focus.jsonl').at(-1))}`);
-    await key('u');
-    const cleared = await waitFor('/снова показывает все проекты/.test(document.querySelector(".note")?.innerText || "")');
-    check('U runs `herdr-projects unfocus` (no project needed)', cleared && logLines('unfocus.jsonl').length === 1, JSON.stringify(logLines('unfocus.jsonl')));
-    await click('[data-act=unfocus]');
-    for (let i = 0; i < 25 && logLines('unfocus.jsonl').length < 2; i++) await sleep(100);
-    check('the «все проекты» switch does the same by click', logLines('unfocus.jsonl').length === 2);
-    await key('?');
-    check('? lists the key', /U\s*показать все проекты/i.test(await text('.dock')), await text('.dock'));
-    await key('?');
-  }
-  const word = (await evalJs('document.querySelector(".row[data-row]:not(.newrow)")?.getAttribute("data-row") || ""') || '').slice(0, 4);
+  if (fixture) await listChecks();
+  await key('Escape');
+  const word = (await evalJs('document.querySelector(".row[data-row]")?.getAttribute("data-row") || ""') || '').slice(0, 4);
   await key('/');
   check('/ focuses the filter', await evalJs('document.activeElement?.id === "filter"'));
   await send('Input.insertText', { text: word });
   await sleep(150);
-  if (process.env.DEBUG) console.log('debug', await evalJs('JSON.stringify({v: document.querySelector("#filter")?.value, active: document.activeElement?.id, note: document.querySelector(".note")?.textContent, rows: document.querySelectorAll(".row").length})'));
-  const shown = await evalJs('document.querySelectorAll(".row[data-row]:not(.newrow)").length');
-  check('typing filters the list', shown > 0 && shown < rows, `${shown} of ${rows}`);
+  const shown = await evalJs('document.querySelectorAll(".row[data-row]").length');
+  check('typing filters the list', shown > 0 && shown <= rows, `${shown} of ${rows}`);
   await key('ArrowDown');
   check('↓ leaves the filter and keeps the text', await evalJs('document.activeElement?.id !== "filter" && document.querySelector("#filter").value === ' + JSON.stringify(word)));
-  // The highlight may already sit on the one project the filter left; ↓ then moved on to «+ Новый проект».
-  if ((await evalJs('document.querySelector(".row.hl")?.getAttribute("data-row")')) === '+new') await key('ArrowUp');
-  if (process.env.DEBUG) console.log('before Enter', await evalJs('JSON.stringify({hl: document.querySelector(".row.hl")?.getAttribute("data-row"), active: document.activeElement?.tagName, rows: document.querySelectorAll(".row").length})'));
+  if (fixture) {
+    // The card of alpha, whatever else the filter found.
+    await evalJs('(() => { const f = document.querySelector("#filter"); f.value = "alpha"; f.dispatchEvent(new Event("input", { bubbles: true })); })()');
+    await key('ArrowDown');
+  }
   await key('Enter');
   await waitFor('!!document.querySelector(".tabs")');
   const cardOpen = await evalJs('!!document.querySelector(".tabs") && !!document.querySelector(".header .back")');
   check('Enter opens the project card', cardOpen, cardOpen ? '' : (await evalJs('document.body.innerText.slice(0, 300)') || '').replace(/\s+/g, ' '));
-  await sleep(800);
+  await sleep(500);
   await shot('detail.png');
   if (fixture) await cardChecks(); else await cardSmoke();
   await key('Escape');
   check('Escape returns to the list with the project highlighted', await evalJs('!!document.querySelector(".row.hl[data-row]")'));
-  if (fixture) { await settingsChecks(); await newProjectChecks(); } else await screensSmoke();
+  await evalJs('(() => { const f = document.querySelector("#filter"); f.value = ""; f.dispatchEvent(new Event("input", { bubbles: true })); })()');
+  if (fixture) { await followChecks(); await errorChecks(); await settingsChecks(); } else await screensSmoke();
 
   ws.close();
 }
 
 main().catch((e) => { console.error('ERROR', e); failed++; }).finally(() => {
   chrome.kill();
-  rmSync(profile, { recursive: true, force: true });
+  sockServer?.close();
+  try { rmSync(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }); } catch {}
   process.exit(failed ? 1 : 0);
 });

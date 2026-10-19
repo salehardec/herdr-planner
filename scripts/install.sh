@@ -65,7 +65,7 @@ have() { command -v "$1" >/dev/null 2>&1; }
 # of the tools the planner starts.
 service_path() {
   p="$bin_dir"
-  for tool in herdr-projects herdr claude git; do
+  for tool in herdr-projects herdr claude; do
     t=$(command -v "$tool" 2>/dev/null || true)
     [ -n "$t" ] || continue
     d=$(dirname "$t")

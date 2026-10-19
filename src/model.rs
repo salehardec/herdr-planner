@@ -1,94 +1,178 @@
-//! The project list's pure logic: rows, sorting, chips, text filter, groups
-//! and the workspace-to-project match. Ported from the Tern plugin 0.17.1.
+//! The project list's pure logic: projects built from the board's tasks,
+//! sorting, chips, text filter, groups, the workspace-to-project match and the
+//! totals for the bar. The page mirrors the sorting, chips and sections.
 
 // Reference logic: the list's sorting, chips and sections are mirrored by the page and used here by tests only.
 #![allow(dead_code)]
 
+use crate::board::{Bucket, Task};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
+/// Tasks of a project by stage.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Counts {
+    /// Waiting for an answer, a plan, a choice, a decision on a failed review.
+    pub needs: u32,
+    /// Finished work that waits for the yes that merges it.
+    pub ready: u32,
+    pub failed: u32,
+    /// The reviewer is on it.
     pub review: u32,
     pub working: u32,
-    pub resolved: u32,
-    pub blocked: u32,
-    pub needs: u32,
+    pub queued: u32,
+    pub todo: u32,
+    pub done: u32,
 }
 
 impl Counts {
+    pub fn add(&mut self, b: Bucket) {
+        let slot = match b {
+            Bucket::Needs => &mut self.needs,
+            Bucket::Ready => &mut self.ready,
+            Bucket::Failed => &mut self.failed,
+            Bucket::Review => &mut self.review,
+            Bucket::Working => &mut self.working,
+            Bucket::Queued => &mut self.queued,
+            Bucket::Todo => &mut self.todo,
+            Bucket::Done => &mut self.done,
+        };
+        *slot += 1;
+    }
+
     pub fn total(&self) -> u32 {
-        self.review + self.working + self.resolved + self.blocked + self.needs
+        self.attention() + self.review + self.working + self.queued + self.todo + self.done
+    }
+
+    /// What waits on the user: an answer, a yes, a look at what went wrong.
+    pub fn attention(&self) -> u32 {
+        self.needs + self.ready + self.failed
+    }
+
+    /// Something happens or waits: nothing here is quiet.
+    pub fn active(&self) -> u32 {
+        self.attention() + self.review + self.working + self.queued
     }
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Repo {
-    pub path: String,
-    #[serde(default)]
-    pub machine: String,
-}
-
-/// One thing that needs the user in a project: the coordinator's question,
-/// a thread on a prompt, a broken thread. See `attention`.
+/// One task that waits on the user, in words.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Wait {
-    /// `coordinator`, `blocked`, `failed`, `stuck`, `lost`, `asking` or `unknown`.
-    pub kind: String,
-    /// The thread, empty for the coordinator.
-    pub thread: String,
-    /// In words: «координатор ждёт ответа», «разрешение или вопрос в t-0231».
+    pub id: String,
+    /// `PLN-1: план готов`.
     pub text: String,
-    /// When it began, unix milliseconds; 0 when unknown.
+    /// When it came to this stage, unix milliseconds; 0 when unknown.
     pub since: u64,
 }
 
 /// The waits in words, for a tooltip.
 pub fn wait_hint(waits: &[Wait]) -> String {
-    let mut seen: Vec<&str> = Vec::new();
-    for w in waits {
-        if !seen.contains(&w.text.as_str()) {
-            seen.push(&w.text);
-        }
-    }
-    seen.join("; ")
+    waits.iter().map(|w| w.text.as_str()).collect::<Vec<_>>().join("; ")
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+/// Done tasks the page gets per project; the rest are only counted.
+pub const DONE_SHOWN: usize = 40;
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize)]
 pub struct Project {
+    /// The repo's name on the board.
     pub slug: String,
     pub name: String,
-    /// `active`, `paused` or `archived`.
-    pub status: String,
-    pub goal: Option<String>,
-    pub repos: Vec<Repo>,
+    /// The repo's short key (`PLN`); empty when not known.
+    pub key: String,
+    pub path: String,
     pub counts: Counts,
-    /// Items in `inbox/` other than `done`.
-    pub inbox: u32,
-    /// The highest thread number: the recency signal for the "new" sort.
-    pub activity: u32,
-    /// What needs the user (their count is `counts.needs`).
-    #[serde(default)]
+    /// Its tasks, the ones that need a look first; only the newest done ones.
+    pub tasks: Vec<Task>,
+    /// Done tasks left out of `tasks`.
+    pub done_hidden: u32,
+    /// Tasks that wait on the user, the newest first.
     pub waits: Vec<Wait>,
-    /// When the newest event that needs a look arrived (a coordinator's question, a thread
-    /// that stopped on a prompt or finished), unix milliseconds; 0 when nothing does.
-    #[serde(default)]
+    /// When the newest of them came to its stage, unix milliseconds; 0 when none waits.
     pub attention_since: u64,
-    /// Threads whose pull/merge request is merged or closed: they can be closed. Quiet.
-    #[serde(default)]
-    pub can_close: u32,
-    /// Threads in review whose report is older than the cut-off: forgotten, not counted as review.
-    #[serde(default)]
-    pub forgotten: u32,
-    /// A quiet note about the coordinator (its status says «waits», the question was not recognized).
-    #[serde(default)]
-    pub coordinator_note: String,
+    /// The latest stage change of any task: the recency signal for the "new" sort.
+    pub activity: u64,
+    /// When the newest task under review came to review, unix milliseconds; 0 when none is.
+    pub review_since: u64,
+}
+
+/// The order a project lists its tasks in: what needs the user first, then
+/// what runs, what waits, what is not started, what is done; the newest first inside.
+fn rank(b: Bucket) -> u8 {
+    match b {
+        Bucket::Needs => 0,
+        Bucket::Ready => 1,
+        Bucket::Failed => 2,
+        Bucket::Review => 3,
+        Bucket::Working => 4,
+        Bucket::Queued => 5,
+        Bucket::Todo => 6,
+        Bucket::Done => 7,
+    }
 }
 
 impl Project {
+    /// A project from the tasks the board lists for its repo.
+    pub fn build(slug: &str, key: &str, path: &str, mut tasks: Vec<Task>) -> Project {
+        tasks.sort_by(|a, b| {
+            rank(a.bucket)
+                .cmp(&rank(b.bucket))
+                .then(b.at.cmp(&a.at))
+                .then(b.n.cmp(&a.n))
+        });
+        let mut counts = Counts::default();
+        let mut waits = Vec::new();
+        for t in &tasks {
+            counts.add(t.bucket);
+            if matches!(t.bucket, Bucket::Needs | Bucket::Ready | Bucket::Failed) {
+                waits.push(Wait {
+                    id: t.id.clone(),
+                    text: format!("{}: {}", t.tag, t.label),
+                    since: t.at,
+                });
+            }
+        }
+        waits.sort_by_key(|w| std::cmp::Reverse(w.since));
+        let activity = tasks.iter().map(|t| t.at).max().unwrap_or(0);
+        let attention_since = waits.iter().map(|w| w.since).max().unwrap_or(0);
+        let review_since = tasks
+            .iter()
+            .filter(|t| t.bucket == Bucket::Review)
+            .map(|t| t.at)
+            .max()
+            .unwrap_or(0);
+        let mut seen_done = 0;
+        let before = tasks.len();
+        tasks.retain(|t| {
+            if t.bucket != Bucket::Done {
+                return true;
+            }
+            seen_done += 1;
+            seen_done <= DONE_SHOWN
+        });
+        Project {
+            slug: slug.into(),
+            name: slug.into(),
+            key: key.into(),
+            path: path.into(),
+            counts,
+            done_hidden: (before - tasks.len()) as u32,
+            tasks,
+            waits,
+            attention_since,
+            activity,
+            review_since,
+        }
+    }
+
     pub fn needs_attention(&self) -> bool {
-        self.counts.needs > 0 || self.counts.review > 0 || self.inbox > 0
+        self.counts.attention() > 0
+    }
+
+    /// Nothing waits, runs or is queued.
+    pub fn quiet(&self) -> bool {
+        self.counts.active() == 0
     }
 }
 
@@ -114,16 +198,17 @@ pub fn sort_projects(projects: &mut [Project], mode: Sort) {
             b.needs_attention()
                 .cmp(&a.needs_attention())
                 .then(b.attention_since.cmp(&a.attention_since))
+                .then(b.counts.attention().cmp(&a.counts.attention()))
                 .then(b.counts.review.cmp(&a.counts.review))
-                .then(b.inbox.cmp(&a.inbox))
-                .then((b.status == "active").cmp(&(a.status == "active")))
-                .then(b.counts.resolved.cmp(&a.counts.resolved))
+                .then(b.counts.working.cmp(&a.counts.working))
+                .then(b.activity.cmp(&a.activity))
+                .then(a.slug.cmp(&b.slug))
         }),
-        // "new": the project holding the newest thread leads, oldest threads last.
+        // "new": the project whose tasks moved last leads.
         Sort::New => projects.sort_by(|a, b| {
             b.activity
                 .cmp(&a.activity)
-                .then(b.counts.review.cmp(&a.counts.review))
+                .then(b.counts.attention().cmp(&a.counts.attention()))
                 .then(a.slug.cmp(&b.slug))
         }),
     }
@@ -133,29 +218,31 @@ pub fn sort_projects(projects: &mut [Project], mode: Sort) {
 #[serde(rename_all = "lowercase")]
 pub enum Chip {
     All,
-    Review,
-    Inbox,
-    Idle,
+    /// Something waits on the user.
+    Waiting,
+    /// Something works, is reviewed or queued.
+    Active,
+    Quiet,
 }
 
-pub const CHIPS: [Chip; 4] = [Chip::All, Chip::Review, Chip::Inbox, Chip::Idle];
+pub const CHIPS: [Chip; 4] = [Chip::All, Chip::Waiting, Chip::Active, Chip::Quiet];
 
 impl Chip {
     pub fn label(self) -> &'static str {
         match self {
             Chip::All => "Все",
-            Chip::Review => "Ревью",
-            Chip::Inbox => "Входящие",
-            Chip::Idle => "Пауза",
+            Chip::Waiting => "Ждут",
+            Chip::Active => "В работе",
+            Chip::Quiet => "Тихие",
         }
     }
 
     pub fn matches(self, p: &Project) -> bool {
         match self {
             Chip::All => true,
-            Chip::Review => p.counts.review > 0,
-            Chip::Inbox => p.inbox > 0,
-            Chip::Idle => p.status != "active",
+            Chip::Waiting => p.counts.attention() > 0,
+            Chip::Active => p.counts.review + p.counts.working + p.counts.queued > 0,
+            Chip::Quiet => p.quiet(),
         }
     }
 }
@@ -184,13 +271,7 @@ pub fn text_matches(haystack: &str, needle: &str) -> bool {
 pub fn visible_projects(projects: &[Project], chip: Chip, query: &str, sort: Sort) -> Vec<Project> {
     let mut out: Vec<Project> = projects
         .iter()
-        .filter(|p| {
-            chip.matches(p)
-                && text_matches(
-                    &format!("{} {} {}", p.name, p.slug, p.goal.as_deref().unwrap_or("")),
-                    query,
-                )
-        })
+        .filter(|p| chip.matches(p) && text_matches(&format!("{} {} {}", p.name, p.slug, p.key), query))
         .cloned()
         .collect();
     sort_projects(&mut out, sort);
@@ -487,9 +568,10 @@ pub struct Section {
     pub collapsed: bool,
     pub projects: Vec<Project>,
     pub auto: Vec<bool>,
-    pub needs: u32,
+    /// Tasks that wait on the user in the group.
+    pub waiting: u32,
     pub review: u32,
-    pub inbox: u32,
+    pub working: u32,
 }
 
 /// Projects split into the groups' sections, in the list's group order,
@@ -510,9 +592,9 @@ pub fn group_sections(groups: &Groups, visible: &[Project], show_empty: bool) ->
             name: name.to_string(),
             other,
             collapsed: groups.is_collapsed(name),
-            needs: rows.iter().map(|(p, _)| p.counts.needs).sum(),
+            waiting: rows.iter().map(|(p, _)| p.counts.attention()).sum(),
             review: rows.iter().map(|(p, _)| p.counts.review).sum(),
-            inbox: rows.iter().map(|(p, _)| p.inbox).sum(),
+            working: rows.iter().map(|(p, _)| p.counts.working + p.counts.queued).sum(),
             auto: rows.iter().map(|(_, a)| *a).collect(),
             projects: rows.into_iter().map(|(p, _)| p).collect(),
         });
@@ -527,60 +609,65 @@ pub fn group_sections(groups: &Groups, visible: &[Project], show_empty: bool) ->
 // ---------------------------------------------------------------------------
 // The active herdr workspace
 
-/// The slug `herdr-projects new NAME` would make: lowercase ASCII words joined by `-`.
-pub fn slug_preview(name: &str) -> String {
-    let mut out = String::new();
-    let mut dash = false;
-    for c in name.to_lowercase().chars() {
-        if c.is_ascii_alphanumeric() {
-            out.push(c);
-            dash = false;
-        } else if !dash && !out.is_empty() {
-            out.push('-');
-            dash = true;
+/// Slug of the project a workspace names, or none. In this order:
+/// the task tag the label starts with (`PLN-1 Заголовок`: the key of a repo),
+/// the folder the board opened a space for (`spaces`: folder → workspace id),
+/// then the project's name or slug as the label.
+pub fn project_for_workspace(
+    projects: &[Project],
+    spaces: &[(String, String)],
+    id: &str,
+    label: &str,
+) -> Option<String> {
+    let label = label.trim();
+    if let Some(tag) = label.split_whitespace().next() {
+        if let Some((key, n)) = tag.rsplit_once('-') {
+            if !key.is_empty() && n.bytes().all(|b| b.is_ascii_digit()) && !n.is_empty() {
+                let by_key: Vec<&Project> = projects
+                    .iter()
+                    .filter(|p| !p.key.is_empty() && p.key.eq_ignore_ascii_case(key))
+                    .collect();
+                if let [p] = by_key[..] {
+                    return Some(p.slug.clone());
+                }
+            }
         }
     }
-    out.trim_end_matches('-').to_string()
-}
-
-/// Slug of the project a workspace label names, or none. A display name wins;
-/// two projects with one name are told apart by slug, else the label stays unmatched.
-pub fn project_for_label(projects: &[Project], label: &str) -> Option<String> {
-    let key = lower(label.trim());
-    let named: Vec<&Project> = projects
-        .iter()
-        .filter(|p| lower(p.name.trim()) == key)
-        .collect();
-    if named.len() == 1 {
-        return Some(named[0].slug.clone());
+    if !id.is_empty() {
+        if let Some((path, _)) = spaces.iter().find(|(_, ws)| ws == id) {
+            if let Some(p) = projects.iter().find(|p| &p.path == path) {
+                return Some(p.slug.clone());
+            }
+        }
     }
-    let preview = slug_preview(label);
-    if let Some(p) = named.iter().find(|p| p.slug == preview) {
+    let key = lower(label);
+    let named: Vec<&Project> = projects.iter().filter(|p| lower(p.name.trim()) == key).collect();
+    if let [p] = named[..] {
         return Some(p.slug.clone());
     }
     if named.len() > 1 {
         return None;
     }
-    projects
-        .iter()
-        .find(|p| p.slug == key)
-        .map(|p| p.slug.clone())
+    projects.iter().find(|p| p.slug == key).map(|p| p.slug.clone())
 }
 
-/// What the shell icon shows: attention totals over the projects that are not archived.
+/// What the shell icon shows: totals over the tasks of the board.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 pub struct Summary {
-    /// Things waiting on the user (see `attention`).
+    /// Tasks that wait on the user: `needs` + `ready` + `failed`.
     pub waiting: u32,
-    /// Threads ready for review.
+    pub needs: u32,
+    pub ready: u32,
+    pub failed: u32,
+    /// Tasks under review.
     pub review: u32,
-    /// Items in the projects' `inbox/`.
-    pub inbox: u32,
-    /// Projects counted (not archived).
+    pub working: u32,
+    pub queued: u32,
+    /// Projects counted (repos of the board).
     pub projects: u32,
-    /// When the newest event that needs a look arrived (ms); 0 when none does.
+    /// When the newest task that waits came to its stage (ms); 0 when none does.
     pub attention_since: u64,
-    /// What waits, in words, the newest first: «Alpha: координатор ждёт ответа; …».
+    /// What waits, in words, the newest first: «Alpha: PLN-1: план готов; …».
     pub waiting_hint: String,
 }
 
@@ -588,7 +675,7 @@ pub struct Summary {
 fn by_arrival(a: &Project, b: &Project) -> std::cmp::Ordering {
     b.attention_since
         .cmp(&a.attention_since)
-        .then(b.counts.needs.cmp(&a.counts.needs))
+        .then(b.counts.attention().cmp(&a.counts.attention()))
         .then(b.counts.review.cmp(&a.counts.review))
         .then(b.activity.cmp(&a.activity))
         .then(a.slug.cmp(&b.slug))
@@ -597,16 +684,20 @@ fn by_arrival(a: &Project, b: &Project) -> std::cmp::Ordering {
 pub fn summarize(projects: &[Project]) -> Summary {
     let mut s = Summary::default();
     let mut waiting: Vec<&Project> = Vec::new();
-    for p in projects.iter().filter(|p| p.status != "archived") {
-        s.waiting += p.counts.needs;
+    for p in projects {
+        s.needs += p.counts.needs;
+        s.ready += p.counts.ready;
+        s.failed += p.counts.failed;
         s.review += p.counts.review;
-        s.inbox += p.inbox;
+        s.working += p.counts.working;
+        s.queued += p.counts.queued;
         s.projects += 1;
         s.attention_since = s.attention_since.max(p.attention_since);
-        if p.counts.needs > 0 {
+        if p.counts.attention() > 0 {
             waiting.push(p);
         }
     }
+    s.waiting = s.needs + s.ready + s.failed;
     waiting.sort_by(|a, b| by_arrival(a, b));
     let mut lines: Vec<String> = waiting
         .iter()
@@ -625,74 +716,112 @@ pub fn summarize(projects: &[Project]) -> Summary {
 pub struct OverviewProject {
     pub slug: String,
     pub name: String,
-    pub status: String,
+    /// Tasks that wait on the user (`needs` + `ready` + `failed`).
     pub waiting: u32,
+    pub ready: u32,
+    pub failed: u32,
     pub review: u32,
+    /// Tasks being worked on and queued ones.
     pub working: u32,
-    pub blocked: u32,
-    pub resolved: u32,
-    pub inbox: u32,
+    pub done: u32,
+    /// All tasks of the project, for the progress.
+    pub total: u32,
     /// What waits, in words (empty when nothing does).
     pub wait_hint: String,
-    /// When the newest event that needs a look arrived (ms); 0 when none does.
+    /// When the newest task that waits came to its stage (ms); 0 when none does.
     pub attention_since: u64,
+    /// The time the popup shows: that of the newest waiting task, else of the newest one under review; 0 for the rest.
+    pub since: u64,
+    /// Its tasks that wait, run or are queued, the ones that need the user first.
+    pub tasks: Vec<TaskLine>,
 }
+
+/// A task as one line of the popup.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct TaskLine {
+    pub id: String,
+    pub tag: String,
+    pub title: String,
+    pub bucket: Bucket,
+    pub label: String,
+    pub progress: Option<u32>,
+}
+
+/// Tasks of a project the popup lists under it.
+pub const POPUP_TASKS: usize = 5;
 
 impl OverviewProject {
     fn of(p: &Project) -> Self {
+        let c = &p.counts;
         OverviewProject {
             slug: p.slug.clone(),
             name: p.name.clone(),
-            status: p.status.clone(),
-            waiting: p.counts.needs,
-            review: p.counts.review,
-            working: p.counts.working,
-            blocked: p.counts.blocked,
-            resolved: p.counts.resolved,
-            inbox: p.inbox,
+            waiting: c.attention(),
+            ready: c.ready,
+            failed: c.failed,
+            review: c.review,
+            working: c.working + c.queued,
+            done: c.done,
+            total: c.total(),
             wait_hint: wait_hint(&p.waits),
             attention_since: p.attention_since,
+            since: if c.attention() > 0 {
+                p.attention_since
+            } else if c.review > 0 {
+                p.review_since
+            } else {
+                0
+            },
+            tasks: p
+                .tasks
+                .iter()
+                .filter(|t| !matches!(t.bucket, Bucket::Todo | Bucket::Done))
+                .take(POPUP_TASKS)
+                .map(|t| TaskLine {
+                    id: t.id.clone(),
+                    tag: t.tag.clone(),
+                    title: t.title.clone(),
+                    bucket: t.bucket,
+                    label: t.label.clone(),
+                    progress: t.progress.filter(|_| matches!(t.bucket, Bucket::Working | Bucket::Review)),
+                })
+                .collect(),
         }
     }
 }
 
-/// What the bar popup lists: who waits on the user (the newest first), who has
-/// something to review (the newest first), who works; the projects where nothing
-/// happens are only counted.
+/// What the bar popup lists: who waits on the user (the newest first), whose
+/// work is under review (the newest first), who works; the projects where
+/// nothing happens are only counted.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Overview {
     pub summary: Summary,
     pub waiting: Vec<OverviewProject>,
     pub review: Vec<OverviewProject>,
     pub working: Vec<OverviewProject>,
-    /// Projects with no waiting, review, working or stuck thread.
+    /// Projects with no waiting, reviewed, working or queued task.
     pub quiet: u32,
 }
 
 pub fn overview(projects: &[Project]) -> Overview {
-    let live: Vec<&Project> = projects.iter().filter(|p| p.status != "archived").collect();
-    let mut waiting: Vec<&Project> = live
+    let mut waiting: Vec<&Project> = projects.iter().filter(|p| p.counts.attention() > 0).collect();
+    let mut review: Vec<&Project> = projects
         .iter()
-        .copied()
-        .filter(|p| p.counts.needs > 0)
+        .filter(|p| p.counts.attention() == 0 && p.counts.review > 0)
         .collect();
-    let mut review: Vec<&Project> = live
+    let mut working: Vec<&Project> = projects
         .iter()
-        .copied()
-        .filter(|p| p.counts.needs == 0 && p.counts.review > 0)
+        .filter(|p| p.counts.attention() == 0 && p.counts.review == 0 && p.counts.working + p.counts.queued > 0)
         .collect();
-    let mut working: Vec<&Project> = live
-        .iter()
-        .copied()
-        .filter(|p| {
-            p.counts.needs == 0
-                && p.counts.review == 0
-                && (p.counts.working > 0 || p.counts.blocked > 0)
-        })
-        .collect();
-    let quiet = live.len() - waiting.len() - review.len() - working.len();
+    let quiet = projects.len() - waiting.len() - review.len() - working.len();
     waiting.sort_by(|a, b| by_arrival(a, b));
-    review.sort_by(|a, b| by_arrival(a, b));
+    // Under review: by when the newest of the project's reviews began.
+    review.sort_by(|a, b| {
+        b.review_since
+            .cmp(&a.review_since)
+            .then(b.counts.review.cmp(&a.counts.review))
+            .then(a.slug.cmp(&b.slug))
+    });
     working.sort_by(|a, b| {
         b.counts
             .working
@@ -713,146 +842,147 @@ pub fn overview(projects: &[Project]) -> Overview {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
 
-    fn p(slug: &str, review: u32, inbox: u32, activity: u32, status: &str) -> Project {
-        Project {
-            slug: slug.into(),
-            name: slug.to_uppercase(),
-            status: status.into(),
-            counts: Counts {
-                review,
-                resolved: activity,
-                ..Default::default()
-            },
-            inbox,
-            activity,
-            ..Default::default()
-        }
+    /// A project with `n` tasks in each of the given stages: (state, kind, stage).
+    fn project(slug: &str, key: &str, tasks: &[(&str, &str, &str, u64)]) -> Project {
+        let rows: Vec<Task> = tasks
+            .iter()
+            .enumerate()
+            .map(|(i, (state, kind, stage, at))| {
+                let mut t = crate::board::parse_task(&json!({
+                    "id": format!("{slug}/{}", i + 1), "state": state, "kind": kind, "stage": stage, "title": format!("T{}", i + 1)
+                }))
+                .unwrap();
+                t.at = *at;
+                t.tag = format!("{key}-{}", i + 1);
+                t
+            })
+            .collect();
+        Project::build(slug, key, &format!("/p/{slug}"), rows)
+    }
+
+    const ASK: (&str, &str, &str) = ("blocked", "question", "working");
+    const READY: (&str, &str, &str) = ("blocked", "permission", "approval");
+    const WORK: (&str, &str, &str) = ("working", "", "working");
+    const REVIEW: (&str, &str, &str) = ("working", "", "reviewing");
+    const DONE: (&str, &str, &str) = ("done", "", "done");
+
+    fn t(kind: (&'static str, &'static str, &'static str), at: u64) -> (&'static str, &'static str, &'static str, u64) {
+        (kind.0, kind.1, kind.2, at)
+    }
+
+    #[test]
+    fn a_project_counts_its_tasks_by_stage() {
+        let p = project(
+            "alpha",
+            "ALP",
+            &[t(DONE, 1), t(ASK, 50), t(READY, 70), t(WORK, 10), t(REVIEW, 20), t(DONE, 2)],
+        );
+        let c = p.counts;
+        assert_eq!((c.needs, c.ready, c.review, c.working, c.done), (1, 1, 1, 1, 2));
+        assert_eq!((c.attention(), c.active(), c.total()), (2, 4, 6));
+        // What needs the user first, the newest first inside a stage.
+        let order: Vec<&str> = p.tasks.iter().map(|t| t.id.as_str()).collect();
+        assert_eq!(order, ["alpha/2", "alpha/3", "alpha/5", "alpha/4", "alpha/6", "alpha/1"]);
+        assert_eq!(p.attention_since, 70);
+        assert_eq!(p.activity, 70);
+        assert_eq!(p.waits.iter().map(|w| w.text.as_str()).collect::<Vec<_>>(), ["ALP-3: готова к одобрению", "ALP-2: ждёт ответа"]);
+        assert!(!p.quiet());
+        assert!(project("z", "Z", &[t(DONE, 1)]).quiet());
+        assert!(project("z", "Z", &[]).quiet());
+    }
+
+    #[test]
+    fn only_the_newest_done_tasks_travel() {
+        let many: Vec<_> = (0..DONE_SHOWN as u64 + 5).map(|i| t(DONE, i + 1)).collect();
+        let p = project("alpha", "ALP", &many);
+        assert_eq!(p.counts.done as usize, DONE_SHOWN + 5);
+        assert_eq!(p.tasks.len(), DONE_SHOWN);
+        assert_eq!(p.done_hidden, 5);
+        assert_eq!(p.tasks[0].at, DONE_SHOWN as u64 + 5);
     }
 
     #[test]
     fn sorts_new_and_attention() {
         let mut v = vec![
-            p("a", 0, 0, 5, "active"),
-            p("b", 2, 0, 3, "active"),
-            p("c", 0, 1, 9, "paused"),
+            project("a", "A", &[t(DONE, 500)]),
+            project("b", "B", &[t(ASK, 300)]),
+            project("c", "C", &[t(WORK, 900)]),
         ];
         sort_projects(&mut v, Sort::New);
-        assert_eq!(
-            v.iter().map(|p| p.slug.as_str()).collect::<Vec<_>>(),
-            ["c", "a", "b"]
-        );
+        assert_eq!(v.iter().map(|p| p.slug.as_str()).collect::<Vec<_>>(), ["c", "a", "b"]);
         sort_projects(&mut v, Sort::Attention);
-        assert_eq!(
-            v.iter().map(|p| p.slug.as_str()).collect::<Vec<_>>(),
-            ["b", "c", "a"]
-        );
-    }
-
-    #[test]
-    fn summary_skips_archived() {
-        let mut v = vec![
-            p("a", 2, 1, 5, "active"),
-            p("b", 1, 0, 3, "paused"),
-            p("c", 9, 9, 9, "archived"),
-        ];
-        v[0].counts.needs = 3;
-        v[2].counts.needs = 7;
-        let s = summarize(&v);
-        assert_eq!((s.waiting, s.review, s.inbox, s.projects), (3, 3, 1, 2));
-        assert_eq!(summarize(&[]), Summary::default());
-    }
-
-    fn at(mut p: Project, needs: u32, since: u64) -> Project {
-        p.counts.needs = needs;
-        p.attention_since = since;
-        if needs > 0 {
-            p.waits = vec![Wait {
-                kind: "blocked".into(),
-                thread: "t-1".into(),
-                text: format!("запрос в {}", p.slug),
-                since,
-            }];
-        }
-        p
-    }
-
-    #[test]
-    fn overview_sorts_by_arrival_and_counts_the_quiet() {
-        let mut busy = p("busy", 0, 0, 7, "active");
-        busy.counts.working = 2;
-        let mut stuck = p("stuck", 0, 0, 2, "active");
-        stuck.counts.blocked = 1;
-        let v = vec![
-            p("quiet", 0, 0, 5, "active"),
-            at(p("old-review", 2, 0, 3, "active"), 0, 1000),
-            at(p("wait-old", 0, 0, 1, "active"), 1, 2000),
-            at(p("wait-new", 0, 0, 1, "active"), 2, 9000),
-            at(p("new-review", 1, 0, 1, "active"), 0, 5000),
-            p("gone", 4, 0, 9, "archived"),
-            p("paused", 0, 0, 1, "paused"),
-            busy,
-            stuck,
-            // Both waits and reviews: listed once, with the waits.
-            at(p("both", 3, 0, 4, "active"), 1, 4000),
-        ];
-        let o = overview(&v);
-        let slugs = |l: &[OverviewProject]| l.iter().map(|p| p.slug.clone()).collect::<Vec<_>>();
-        assert_eq!(
-            slugs(&o.waiting),
-            ["wait-new", "both", "wait-old"],
-            "the newest first"
-        );
-        assert_eq!(
-            slugs(&o.review),
-            ["new-review", "old-review"],
-            "the newest first"
-        );
-        assert_eq!(slugs(&o.working), ["busy", "stuck"]);
-        assert_eq!(o.quiet, 2, "quiet and paused; archived is not counted");
-        assert_eq!(o.summary.waiting, 4);
-        assert_eq!(o.summary.attention_since, 9000);
-        assert_eq!(o.waiting[0].wait_hint, "запрос в wait-new");
-        assert_eq!(o.waiting[0].attention_since, 9000);
-        // Everything quiet: nothing is listed.
-        let o = overview(&[p("a", 0, 0, 1, "active"), p("b", 0, 0, 2, "active")]);
-        assert!(o.waiting.is_empty() && o.review.is_empty() && o.working.is_empty());
-        assert_eq!(o.quiet, 2);
-    }
-
-    #[test]
-    fn summary_hint_names_what_waits_newest_first() {
-        let v = vec![
-            at(p("a", 0, 0, 1, "active"), 1, 1000),
-            at(p("b", 0, 0, 2, "active"), 1, 3000),
-            p("c", 0, 0, 3, "active"),
-        ];
-        let s = summarize(&v);
-        assert_eq!(s.waiting_hint, "B: запрос в b\nA: запрос в a");
-        assert_eq!(summarize(&[p("c", 0, 0, 3, "active")]).waiting_hint, "");
-        let mut many: Vec<Project> = (0..7)
-            .map(|i| at(p(&format!("p{i}"), 0, 0, 1, "active"), 1, 100 + i))
-            .collect();
-        many.push(p("z", 0, 0, 1, "active"));
-        assert!(summarize(&many).waiting_hint.ends_with("…и ещё 2"));
+        assert_eq!(v.iter().map(|p| p.slug.as_str()).collect::<Vec<_>>(), ["b", "c", "a"]);
     }
 
     #[test]
     fn chips_and_filter() {
         let v = vec![
-            p("a", 0, 0, 5, "active"),
-            p("b", 2, 0, 3, "active"),
-            p("c", 0, 1, 9, "paused"),
+            project("alpha", "ALP", &[t(DONE, 5)]),
+            project("beta", "BET", &[t(READY, 3)]),
+            project("gamma", "GAM", &[t(WORK, 9)]),
+            project("delta", "DEL", &[]),
         ];
         let n = chip_counts(&v);
-        assert_eq!(n["all"], 3);
-        assert_eq!(n["review"], 1);
-        assert_eq!(n["inbox"], 1);
-        assert_eq!(n["idle"], 1);
-        assert_eq!(visible_projects(&v, Chip::Review, "", Sort::New).len(), 1);
-        assert_eq!(visible_projects(&v, Chip::All, "C", Sort::New)[0].slug, "c");
+        assert_eq!((n["all"], n["waiting"], n["active"], n["quiet"]), (4, 1, 1, 2));
+        assert_eq!(visible_projects(&v, Chip::Waiting, "", Sort::New)[0].slug, "beta");
+        assert_eq!(visible_projects(&v, Chip::All, "GAM", Sort::New)[0].slug, "gamma");
+        assert_eq!(visible_projects(&v, Chip::All, "del", Sort::New).len(), 1);
         assert!(text_matches("Планировщик проектов", "план проект"));
         assert!(!text_matches("abc", "abd"));
+    }
+
+    #[test]
+    fn summary_counts_the_tasks_of_the_board() {
+        let v = vec![
+            project("a", "A", &[t(ASK, 1000), t(READY, 2000), t(REVIEW, 5)]),
+            project("b", "B", &[("error", "", "working", 3000), t(WORK, 1)]),
+            project("c", "C", &[t(DONE, 9)]),
+        ];
+        let s = summarize(&v);
+        assert_eq!((s.needs, s.ready, s.failed, s.waiting), (1, 1, 1, 3));
+        assert_eq!((s.review, s.working, s.projects, s.attention_since), (1, 1, 3, 3000));
+        assert_eq!(s.waiting_hint, "b: B-1: упала\na: A-2: готова к одобрению; A-1: ждёт ответа");
+        assert_eq!(summarize(&[]), Summary::default());
+        assert_eq!(summarize(&v[2..]).waiting_hint, "");
+        let many: Vec<Project> = (0..7).map(|i| project(&format!("p{i}"), "P", &[t(ASK, 100 + i)])).collect();
+        assert!(summarize(&many).waiting_hint.ends_with("…и ещё 2"));
+    }
+
+    #[test]
+    fn overview_lists_each_project_once_and_counts_the_quiet() {
+        let v = vec![
+            project("quiet", "Q", &[t(DONE, 5)]),
+            project("empty", "E", &[]),
+            project("wait-old", "WO", &[t(ASK, 2000)]),
+            project("wait-new", "WN", &[t(READY, 9000), t(WORK, 1)]),
+            project("review-old", "RO", &[t(REVIEW, 1000)]),
+            project("review-new", "RN", &[t(REVIEW, 5000)]),
+            project("busy", "B", &[t(WORK, 7), t(WORK, 8), ("working", "", "queued", 1)]),
+            project("queued", "QU", &[("working", "", "after", 1)]),
+            // Waits and is under review: listed once, with the waits.
+            project("both", "BO", &[t(ASK, 4000), t(REVIEW, 4500)]),
+        ];
+        let o = overview(&v);
+        let slugs = |l: &[OverviewProject]| l.iter().map(|p| p.slug.clone()).collect::<Vec<_>>();
+        assert_eq!(slugs(&o.waiting), ["wait-new", "both", "wait-old"], "the newest first");
+        assert_eq!(slugs(&o.review), ["review-new", "review-old"]);
+        assert_eq!((o.review[0].since, o.review[1].since), (5000, 1000), "a project under review shows when the review began");
+        assert_eq!(o.waiting[0].since, 9000);
+        assert_eq!(o.working[0].since, 0);
+        assert_eq!(slugs(&o.working), ["busy", "queued"]);
+        assert_eq!(o.quiet, 2);
+        assert_eq!(o.summary.waiting, 3);
+        assert_eq!(o.waiting[0].wait_hint, "WN-1: готова к одобрению");
+        assert_eq!((o.waiting[0].waiting, o.waiting[0].total, o.waiting[0].working), (1, 2, 1));
+        assert_eq!(o.working[0].working, 3, "queued tasks count with the working ones");
+        // The popup lists what is going on in a project, what needs the user first; not what is done or not started.
+        let lines: Vec<(&str, Bucket)> = o.waiting[1].tasks.iter().map(|l| (l.tag.as_str(), l.bucket)).collect();
+        assert_eq!(lines, [("BO-1", Bucket::Needs), ("BO-2", Bucket::Review)]);
+        let o = overview(&[project("a", "A", &[]), project("b", "B", &[t(DONE, 1)])]);
+        assert!(o.waiting.is_empty() && o.review.is_empty() && o.working.is_empty());
+        assert_eq!(o.quiet, 2);
     }
 
     #[test]
@@ -898,18 +1028,18 @@ mod tests {
         assert!(g.grouping_on());
 
         let v = vec![
-            p("a", 1, 0, 1, "active"),
-            p("b", 0, 2, 2, "active"),
-            p("z", 0, 0, 3, "active"),
+            project("a", "A", &[t(READY, 1)]),
+            project("b", "B", &[t(REVIEW, 2), t(REVIEW, 3)]),
+            project("z", "Z", &[]),
         ];
         let s = group_sections(&g, &v, true);
         assert_eq!(
             s.iter().map(|s| s.name.as_str()).collect::<Vec<_>>(),
             ["Omarchy", "X", OTHER]
         );
-        assert_eq!(s[0].review, 1);
+        assert_eq!(s[0].waiting, 1);
         assert!(s[1].collapsed && s[1].projects.is_empty());
-        assert_eq!(s[2].inbox, 2);
+        assert_eq!(s[2].review, 2);
         assert_eq!(s[2].projects.len(), 2);
         assert_eq!(group_sections(&g, &v, false).len(), 2);
     }
@@ -994,23 +1124,29 @@ mod tests {
     }
 
     #[test]
-    fn matches_workspace_label() {
+    fn matches_workspace() {
         let mut v = vec![
-            p("apicache", 0, 0, 1, "active"),
-            p("other", 0, 0, 1, "active"),
-            p("dup-a", 0, 0, 1, "active"),
-            p("dup-b", 0, 0, 1, "active"),
+            project("apicache", "APC", &[]),
+            project("other", "OTH", &[]),
+            project("dup-a", "DA", &[]),
+            project("dup-b", "DB", &[]),
         ];
         v[0].name = "APICache".into();
         v[2].name = "Dup".into();
         v[3].name = "Dup".into();
-        assert_eq!(
-            project_for_label(&v, "apicache").as_deref(),
-            Some("apicache")
-        );
-        assert_eq!(project_for_label(&v, "other").as_deref(), Some("other"));
-        assert_eq!(project_for_label(&v, "Dup"), None);
-        assert_eq!(project_for_label(&v, "Nope"), None);
-        assert_eq!(slug_preview("Test Проект X"), "test-x");
+        let spaces = vec![("/p/other".to_string(), "wDC".to_string())];
+        let by = |id: &str, label: &str| project_for_workspace(&v, &spaces, id, label);
+        // The label of a task's space starts with its tag.
+        assert_eq!(by("", "APC-2 Живой счётчик").as_deref(), Some("apicache"));
+        assert_eq!(by("", "apc-12 x").as_deref(), Some("apicache"));
+        assert_eq!(by("", "ZZZ-1 x"), None);
+        // A repo's own space is known by its id.
+        assert_eq!(by("wDC", "herdr-planner").as_deref(), Some("other"));
+        assert_eq!(by("wXX", "herdr-planner"), None);
+        // Or by the name.
+        assert_eq!(by("", "apicache").as_deref(), Some("apicache"));
+        assert_eq!(by("", "other").as_deref(), Some("other"));
+        assert_eq!(by("", "Dup"), None);
+        assert_eq!(by("", "Nope"), None);
     }
 }

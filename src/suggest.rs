@@ -3,13 +3,14 @@
 //! guess once, when it appears), the answer fills only those that are still
 //! without — the user may have picked meanwhile. A manual pick is never
 //! touched; «Разложить заново» forgets only the guesses and asks again.
-//! Ported from the Tern plugin (0.17.1).
+//! Ported from the Tern plugin (0.17.1); the projects are the repos of the board.
 
 use crate::agent::{self, Kind};
 use crate::app::{now_ms, Shared};
 use crate::jsonscan;
+use crate::board::Task;
 use crate::model::{group_name_clean, Project, MAX_GROUPS};
-use crate::sources::tasks;
+use crate::sources::runner::clip;
 use serde_json::Value;
 use std::collections::BTreeMap;
 
@@ -45,7 +46,30 @@ slug — как в списке; group — ровно одно название 
 (короткое название области до 3 слов; близким проектам давай одно и то же новое название). \
 Не уверен — выбери ближайшую группу из списка.";
 
-/// The request: the groups (with their hints) and every project's name and goal.
+/// What a project is about, for the agent: its folder and the titles of its newest tasks.
+fn about(p: &Project) -> String {
+    let mut parts = Vec::new();
+    if !p.path.is_empty() {
+        parts.push(p.path.clone());
+    }
+    let mut titles: Vec<&Task> = p.tasks.iter().collect();
+    titles.sort_by_key(|t| std::cmp::Reverse(t.n));
+    let titles: Vec<String> = titles
+        .iter()
+        .take(4)
+        .map(|t| clip(&t.title.split_whitespace().collect::<Vec<_>>().join(" "), 80))
+        .collect();
+    if !titles.is_empty() {
+        parts.push(format!("задачи: {}", titles.join("; ")));
+    }
+    if parts.is_empty() {
+        "(описания нет)".into()
+    } else {
+        clip(&parts.join(" · "), 400)
+    }
+}
+
+/// The request: the groups (with their hints) and every project's name and what it is about.
 pub fn prompt(list: &[String], projects: &[&Project]) -> String {
     let mut lines = vec!["Группы:".to_string()];
     for name in list {
@@ -59,24 +83,13 @@ pub fn prompt(list: &[String], projects: &[&Project]) -> String {
         });
     }
     lines.push(String::new());
-    lines.push("Проекты (slug | название | цель):".into());
+    lines.push("Проекты (slug | название | о проекте):".into());
     for p in projects {
-        let goal = p
-            .goal
-            .as_deref()
-            .unwrap_or("")
-            .split_whitespace()
-            .collect::<Vec<_>>()
-            .join(" ");
         lines.push(format!(
             "{} | {} | {}",
             p.slug,
             if p.name.is_empty() { &p.slug } else { &p.name },
-            if goal.is_empty() {
-                "(цель не задана)".to_string()
-            } else {
-                tasks::clip(&goal, 300)
-            }
+            about(p)
         ));
     }
     lines.join("\n")
@@ -297,7 +310,7 @@ fn start(app: &Shared) {
         let req = agent::Request {
             system: SYSTEM.into(),
             prompt: prompt(&list, &refs),
-            cwd: app.config.root.display().to_string(),
+            cwd: app.config.data_dir.display().to_string(),
             dirs: vec![],
         };
         let result = match agent::run(kind, &req).await {
@@ -353,11 +366,23 @@ fn apply(app: &Shared, asked: &[Project], assigned: &BTreeMap<String, String>, f
 mod tests {
     use super::*;
 
-    fn p(slug: &str, name: &str, goal: &str) -> Project {
+    /// A project; `about` becomes the title of its one task.
+    fn p(slug: &str, name: &str, about: &str) -> Project {
+        let tasks = if about.is_empty() {
+            Vec::new()
+        } else {
+            vec![Task {
+                id: format!("{slug}/1"),
+                n: 1,
+                title: about.into(),
+                ..Default::default()
+            }]
+        };
         Project {
             slug: slug.into(),
             name: name.into(),
-            goal: (!goal.is_empty()).then(|| goal.to_string()),
+            path: if about.is_empty() { String::new() } else { format!("/p/{slug}") },
+            tasks,
             ..Default::default()
         }
     }
@@ -384,8 +409,8 @@ mod tests {
             text.contains("\n- Своя\n"),
             "a group without a hint is just its name"
         );
-        assert!(text.contains("bar | Бар | Виджет бара Omarchy"));
-        assert!(text.contains("x | x | (цель не задана)"));
+        assert!(text.contains("bar | Бар | /p/bar · задачи: Виджет бара Omarchy"));
+        assert!(text.contains("x | x | (описания нет)"));
     }
 
     #[test]

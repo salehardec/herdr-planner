@@ -7,11 +7,11 @@ import qs.Ui
 
 // Herdr Planner in the bar: one pill with the attention counters of the local
 // herdr-planner service (GET /api/summary); a click opens a popup under it with
-// the projects (GET /api/overview): those with something waiting on you or to
-// review first, then the rest in the planner's groups. Choosing a project
-// focuses its herdr workspace. The planner's page is never opened from here.
-// While the service does not answer the pill is hidden, with nothing written
-// to the log.
+// the projects of the herdr-projects board (GET /api/overview) and their tasks by
+// stage: those with something waiting on you first (an answer, a plan, a yes, a
+// failure), then the ones under review, then the ones at work. Choosing a project
+// opens the full planner on it. While the service does not answer the pill is
+// hidden, with nothing written to the log.
 Panel {
   id: root
   moduleName: "salehardec.herdr-planner"
@@ -33,8 +33,11 @@ Panel {
   property bool online: false
   property int waiting: 0
   property string waitingHint: ""
+  property int ready: 0
+  property int failed: 0
   property int review: 0
-  property int inbox: 0
+  property int working: 0
+  property int queued: 0
   property int projectCount: 0
   readonly property bool attention: waiting > 0 || review > 0
 
@@ -47,9 +50,11 @@ Panel {
   readonly property string tooltip: {
     var parts = []
     parts.push(waiting > 0 ? "ждут тебя: " + waiting : "никто не ждёт")
+    if (ready > 0) parts.push("к одобрению: " + ready)
+    if (failed > 0) parts.push("упали: " + failed)
     parts.push("ревью: " + review)
-    if (inbox > 0) parts.push("входящие: " + inbox)
-    // What exactly waits, the newest first: «Alpha: координатор ждёт ответа».
+    if (working > 0) parts.push("в работе: " + working)
+    // What exactly waits, the newest first: «Alpha: ALP-3: готова к одобрению».
     return "Herdr Planner · " + parts.join(" · ") + (waitingHint !== "" ? "\n" + waitingHint : "")
   }
 
@@ -89,7 +94,10 @@ Panel {
     waiting = data.waiting
     waitingHint = typeof data.waiting_hint === "string" ? data.waiting_hint : ""
     review = data.review
-    inbox = Number(data.inbox) || 0
+    ready = Number(data.ready) || 0
+    failed = Number(data.failed) || 0
+    working = Number(data.working) || 0
+    queued = Number(data.queued) || 0
     projectCount = Number(data.projects) || 0
     return true
   }
@@ -169,7 +177,7 @@ Panel {
     // «Show every project» is always the first row: herdr gives no way to ask
     // whether its sidebar is filtered, so it is offered whenever the list is.
     var out = [
-      { kind: "action", key: "__unfocus", title: "Показать все проекты", sub: "сбросить фильтр боковой панели herdr (unfocus)", letter: "U" },
+      { kind: "action", key: "__unfocus", title: "Показать все проекты", sub: "сбросить фильтр боковой панели herdr", letter: "U" },
       { kind: "action", key: "__open", title: "Полный планировщик", sub: "вкладка herdr-gpui или окно приложения", letter: "O" }
     ]
     var ov = overview
@@ -227,7 +235,7 @@ Panel {
     var row = rows[index]
     if (row.kind === "group") toggleGroup(row.key)
     else if (row.kind === "action") (row.key === "__open" ? openPlanner() : unfocusAll())
-    else focusProject(row.project)
+    else showProject(row.project)
   }
 
   function moveSideways(dx) {
@@ -240,12 +248,12 @@ Panel {
     }
   }
 
-  // `herdr-projects focus <slug>` through the planner service, as the F key does on
-  // its page. The popup closes at once; a refusal comes back as a notification.
-  function sendAction(body, failure) {
+  // A request to the planner service. The popup closes at once; a refusal comes back
+  // as a notification, success runs `then`.
+  function sendAction(body, failure, then) {
     close()
     request("POST", "/api/action", body, function(status, text) {
-      if (status === 200) return
+      if (status === 200) { if (then) then(); return }
       var why = ""
       try { why = String(JSON.parse(text).error || "") } catch (e) { why = "" }
       Quickshell.execDetached(["omarchy-notification-send", "-u", "low",
@@ -253,21 +261,27 @@ Panel {
     })
   }
 
-  function focusProject(project) {
-    sendAction({ kind: "focus", slug: project.slug }, "не удалось перейти к «" + String(project.name || project.slug) + "»")
+  // The planner on this project: the service remembers the request for a few seconds,
+  // the page that is open (or opens) shows the project's card.
+  function showProject(project) {
+    sendAction({ kind: "show", slug: project.slug }, "не удалось открыть «" + String(project.name || project.slug) + "»", launchPlanner)
   }
 
   // The full page: `herdr-planner-open` tries a herdr-gpui tab (when that build has
-  // tabs), else an Omarchy app window. Never the plain system browser, never a click's
-  // side effect on the page. Run by the shell itself, so it has the desktop's environment.
+  // tabs), else an Omarchy app window. Never the plain system browser.
   function openPlanner() {
     close()
+    launchPlanner()
+  }
+
+  // Run by the shell itself, so it has the desktop's environment.
+  function launchPlanner() {
     var home = String(Quickshell.env("HOME") || "")
     Quickshell.execDetached(["sh", "-c",
       "exec \"$1/.local/bin/herdr-planner-open\" 2>/dev/null || exec herdr-planner-open", "sh", home])
   }
 
-  // `herdr-projects unfocus`: the sidebar lists every project again.
+  // The sidebar of herdr lists every agent again.
   function unfocusAll() {
     sendAction({ kind: "unfocus" }, "не удалось показать все проекты")
   }
@@ -411,7 +425,7 @@ Panel {
           width: parent.width
           title: "Herdr Planner"
           meta: root.waiting + " ждут тебя · " + root.review + " на ревью"
-            + (root.inbox > 0 ? " · " + root.inbox + " вх." : "")
+            + (root.working > 0 ? " · " + root.working + " в работе" : "")
           foreground: root.fg
           fontFamily: root.fam
           iconComponent: Component {
@@ -525,7 +539,7 @@ Panel {
     readonly property bool isGroup: row !== null && row.kind === "group"
     readonly property bool isAction: row !== null && row.kind === "action"
     readonly property var project: row !== null && row.kind === "project" ? row.project : null
-    readonly property int total: project ? project.waiting + project.review + project.working + project.blocked + project.resolved : 0
+    readonly property int total: project ? Number(project.total) || 0 : 0
     signal hoverCursor()
     signal activated()
 
@@ -683,23 +697,27 @@ Panel {
           elide: Text.ElideRight
         }
 
-        // What waits, in words (only for projects that wait on the user).
-        Text {
-          textFormat: Text.PlainText
-          width: parent.width
-          visible: line.project !== null && line.project.wait_hint !== ""
-          text: line.project ? String(line.project.wait_hint) : ""
-          color: root.accentC
-          font.family: root.fam
-          font.pixelSize: Style.font.caption
-          elide: Text.ElideRight
+        // The project's tasks by stage, what needs you first: «ALP-3 Название — готова к одобрению».
+        Repeater {
+          model: line.project && line.project.tasks ? line.project.tasks : []
+          delegate: Text {
+            required property var modelData
+            textFormat: Text.PlainText
+            width: parent ? parent.width : 0
+            text: String(modelData.tag) + " " + String(modelData.title) + " — " + String(modelData.label)
+              + (modelData.progress !== null && modelData.progress !== undefined ? " " + modelData.progress + "%" : "")
+            color: (modelData.bucket === "needs" || modelData.bucket === "ready" || modelData.bucket === "failed") ? root.accentC : root.dim
+            font.family: root.fam
+            font.pixelSize: Style.font.caption
+            elide: Text.ElideRight
+          }
         }
 
-        // Progress: threads done out of all threads of the project.
+        // Progress: tasks done out of all tasks of the project.
         Row {
           width: parent.width
           spacing: Style.space(6)
-          visible: line.total > 0 && !(line.project !== null && line.project.wait_hint !== "")
+          visible: line.total > 0
 
           Rectangle {
             id: track
@@ -710,17 +728,17 @@ Panel {
             color: Util.alpha(root.fg, 0.14)
 
             Rectangle {
-              width: line.total > 0 ? Math.max(height, Math.round(track.width * line.project.resolved / line.total)) : 0
+              width: line.total > 0 ? Math.max(height, Math.round(track.width * line.project.done / line.total)) : 0
               height: parent.height
               radius: parent.radius
               color: Util.alpha(root.accentC, 0.85)
-              visible: line.project !== null && line.project.resolved > 0
+              visible: line.project !== null && line.project.done > 0
             }
           }
           Text {
             id: doneText
             textFormat: Text.PlainText
-            text: line.project ? line.project.resolved + "/" + line.total : ""
+            text: line.project ? line.project.done + "/" + line.total : ""
             color: root.dim
             font.family: root.fam
             font.pixelSize: Style.font.caption
@@ -728,24 +746,23 @@ Panel {
         }
       }
 
-      // When the newest event that needs a look arrived.
+      // When the newest task that waits (or, with none, the newest one under review) came to its stage.
       Text {
         textFormat: Text.PlainText
         visible: text !== ""
-        text: line.project && (line.project.waiting > 0 || line.project.review > 0) ? root.ago(line.project.attention_since) : ""
+        text: line.project && (line.project.waiting > 0 || line.project.review > 0) ? root.ago(line.project.since) : ""
         color: root.dim
         font.family: root.fam
         font.pixelSize: Style.font.caption
         Layout.alignment: Qt.AlignVCenter
       }
 
-      // Counters: waiting on you, to review, working, stuck. A zero is not drawn.
+      // Counters: waiting on you (an answer, a yes, a failure), under review, working. A zero is not drawn.
       Repeater {
         model: line.project ? [
           { glyph: "\uf0f3", count: line.project.waiting, tone: "hot" },
           { glyph: "\uf06e", count: line.project.review, tone: "chip" },
-          { glyph: "\uf013", count: line.project.working, tone: "plain" },
-          { glyph: "\uf071", count: line.project.blocked, tone: "bad" }
+          { glyph: "\uf013", count: line.project.working, tone: "plain" }
         ] : []
 
         delegate: Rectangle {

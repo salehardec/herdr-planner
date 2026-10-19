@@ -132,41 +132,32 @@ kbd {
 
 .list.scroll { min-height: 60px; }
 .row .label .num, .row .num { font-family: var(--font-mono); color: var(--subtext); }
-.row.thread .label .num { margin-right: 2px; }
 .row.task.done .label { color: var(--muted); }
+.row.quiet .label .strong { font-weight: 500; }
 .row .icon { white-space: nowrap; }
 
-/* A model badge: the family's tone and always the name beside it. */
-.mdl { display: inline-block; border: 1px solid currentColor; border-radius: 999px; padding: 0 7px; margin-right: 8px; font-size: .92em; line-height: 1.4; }
-.mdl.fam-sonnet { color: var(--blue); }
-.mdl.fam-opus { color: var(--accent); }
-.mdl.fam-haiku { color: var(--green); }
-.mdl.fam-fable { color: var(--yellow); }
-.mdl.fam-deepseek { color: var(--cyan); }
-.mdl.fam-other { color: var(--subtext); }
-.mdl.quiet { color: var(--muted); border-style: dashed; }
+/* The board in one line, under the title. */
+.totals { color: var(--subtext); padding: 2px 0 4px; }
 
-/* An opened thread's block. */
-.outcome { margin: 2px 0 6px 30px; padding: 6px 10px; border-left: 2px solid var(--border); display: flex; flex-direction: column; gap: 2px; }
-.outcome .line { white-space: pre; overflow-x: auto; }
-.outcome .strong { margin-top: 6px; }
-.outcome .actions { margin-top: 6px; }
+/* A stage's heading inside the card's list. */
+.sect { padding: 8px 6px 2px; font-weight: 600; letter-spacing: .01em; }
+.sect:first-child { padding-top: 2px; }
 
 /* The picked task's panel, under the list. */
 .panel { border: 1px solid var(--accent); background: var(--accent-wash); border-radius: 8px; padding: 8px 10px; display: flex; flex-direction: column; gap: 6px; max-height: 45vh; overflow: auto; flex: 0 0 auto; }
 .panel .notes { color: var(--muted); white-space: pre-wrap; }
+.panel .failure { border-left: 2px solid var(--red); padding-left: 8px; display: flex; flex-direction: column; gap: 2px; }
+.panel .finding { padding-left: 14px; }
+.panel .plan { display: flex; flex-direction: column; gap: 2px; }
+.panel .grow { flex: 1; }
+.panel > div:first-child { display: flex; align-items: baseline; gap: 8px; }
 .actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
 .actions .grow { flex: 1; }
 .actions.options { padding-left: 8px; }
 .badge.info { color: var(--blue); }
 .badge.warn { background: var(--yellow); border-color: var(--yellow); color: var(--bg); font-weight: 600; }
-.panel input.ask { width: 100%; background: var(--bg); border: 1px solid var(--border); border-radius: 6px; padding: 5px 8px; outline: none; }
+.panel input.ask { flex: 1; min-width: 0; background: var(--bg); border: 1px solid var(--border); border-radius: 6px; padding: 5px 8px; outline: none; }
 .panel input.ask:focus { border-color: var(--accent); }
-.qa { border-top: 1px solid var(--border); padding-top: 4px; }
-.md p { margin: 2px 0; }
-.md ul { margin: 2px 0; padding-left: 20px; }
-.md code, .md pre { font-family: var(--font-mono); background: var(--surface); border-radius: 4px; padding: 0 4px; }
-.md pre { padding: 6px 8px; overflow-x: auto; margin: 4px 0; }
 .spin { display: inline-block; animation: spin 1.2s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
 .note.success { color: var(--green); }
@@ -184,22 +175,3 @@ kbd {
 .gedit { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 0 6px 8px; }
 .gedit input { flex: 1 1 220px; background: var(--surface); border: 1px solid var(--border); border-radius: 6px; padding: 4px 8px; outline: none; }
 .gedit input:focus { border-color: var(--accent); }
-
-/* The new-project form: label, field, badges; the folder browser under the folder. */
-.nform { padding: 2px 6px; }
-.nrow { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; padding: 3px 0; }
-.nrow.sub { padding-left: 26px; }
-.nrow .k { color: var(--muted); flex: 0 0 74px; }
-.nrow input { flex: 1 1 260px; min-width: 0; background: var(--surface); border: 1px solid var(--border); border-radius: 6px; padding: 4px 8px; outline: none; }
-.nrow input:focus { border-color: var(--accent); }
-.nrow input[readonly] { opacity: .7; }
-.nform .actions { padding: 4px 0; }
-.nform .actions .k { color: var(--muted); }
-.hint-line { padding-left: 82px; }
-.browse { margin: 2px 0 6px 82px; padding: 6px 8px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); display: flex; flex-direction: column; gap: 2px; }
-.brow-head { padding-bottom: 2px; border-bottom: 1px solid var(--border); margin-bottom: 2px; }
-.brow { display: grid; grid-template-columns: 18px 1fr; gap: 8px; padding: 1px 6px; border-radius: 6px; cursor: pointer; border: 1px solid transparent; }
-.brow:hover { background: var(--active); }
-.brow.hl { background: var(--accent-wash); border-color: var(--accent); }
-.brow .icon { color: var(--accent); text-align: center; }
-.badge.warn:hover { filter: brightness(1.1); }

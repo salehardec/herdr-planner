@@ -1,178 +1,80 @@
 #!/usr/bin/env node
-// A self-contained world for the page checks: a projects root with ten
-// projects (some of them only there to arrive at different times), real git repositories and worktrees, and stand-ins for the
-// binaries the planner calls (`herdr-projects`, `herdr`, `claude`) that log
-// what they were asked and never touch a real coordinator or sidebar.
+// A self-contained world for the page checks: the data folder of a herdr-projects
+// board (repos, keys, spaces, task records) with a dozen projects whose tasks stand
+// in every stage the board knows, and stand-ins for the binaries the planner calls
+// (`herdr-projects`, `herdr`, `claude`) that log what they were asked and touch
+// no real board, coordinator or sidebar.
 //
 //   node scripts/fixture.mjs DIR        builds DIR (replacing what is there)
-//   HERDR_PROJECTS_BIN=DIR/bin/herdr-projects HERDR_BIN=DIR/bin/herdr \
-//   PATH=DIR/bin:$PATH FIXTURE_DIR=DIR herdr-planner --root DIR/root --port N
+//   HERDR_PROJECTS_BIN=DIR/bin/herdr-projects HERDR_BIN=DIR/bin/herdr HERDR_SOCKET_PATH=DIR/herdr.sock \
+//   PATH=DIR/bin:$PATH FIXTURE_DIR=DIR herdr-planner --data DIR/board --port N
 //
-// What the stand-ins do is in `bin/`; their logs are `DIR/log/*.jsonl`.
+// The tasks the stand-in `herdr-projects` lists are DIR/state/board.json (it changes
+// them when a command is run: approve, retry, …); its logs are `DIR/log/*.jsonl`.
 
-import { execFileSync } from 'node:child_process';
 import { chmodSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 
 const dir = resolve(process.argv[2] || '');
 if (!process.argv[2]) { console.error('usage: node scripts/fixture.mjs DIR'); process.exit(2); }
 rmSync(dir, { recursive: true, force: true });
-for (const d of ['root', 'repos', 'worktrees', 'bin', 'log', 'state', 'data']) mkdirSync(join(dir, d), { recursive: true });
+for (const d of ['board', 'bin', 'log', 'state', 'data', 'repos']) mkdirSync(join(dir, d), { recursive: true });
 
 const write = (path, text) => { mkdirSync(join(path, '..'), { recursive: true }); writeFileSync(path, text); };
-const git = (cwd, ...args) => execFileSync('git', args, {
-  cwd, stdio: 'pipe',
-  env: { ...process.env, GIT_AUTHOR_NAME: 'T', GIT_AUTHOR_EMAIL: 't@t', GIT_COMMITTER_NAME: 'T', GIT_COMMITTER_EMAIL: 't@t' },
-});
+const minutesAgo = (m) => Date.now() - m * 60000;
 
-// --- the repository of `alpha`: main with a squash-merged PR, three worktrees
-const repo = join(dir, 'repos/alpha');
-mkdirSync(repo, { recursive: true });
-git(repo, 'init', '-q', '-b', 'main');
-write(join(repo, 'README.md'), '# alpha\n');
-git(repo, 'add', '.'); git(repo, 'commit', '-qm', 'Initial commit');
-write(join(repo, 'export.txt'), 'экспорт\n');
-git(repo, 'add', '.');
-git(repo, 'commit', '-qm', 'Экспорт отчёта (#7)', '-m', 'Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>\nCo-Authored-By: Anna Petrova <anna@example.com>');
-const wt = (name, branch) => { const p = join(dir, 'worktrees', name); git(repo, 'worktree', 'add', '-q', '-b', branch, p); return p; };
-const w5 = wt('t-0005', 'hp/alpha/t-0005-1');   // working: a commit and files not committed
-write(join(w5, 'src/a.rs'), 'fn a() {}\n'); write(join(w5, 'src/b.rs'), 'fn b() {}\n');
-git(w5, 'add', '.'); git(w5, 'commit', '-qm', 'Добавить a и b', '-m', 'Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>');
-write(join(w5, 'notes.txt'), 'wip\n'); write(join(w5, 'src/a.rs'), 'fn a() { 1 }\n');
-const w3 = wt('t-0003', 'hp/alpha/t-0003-1');   // ready for review: a PR open
-write(join(w3, 'docs.md'), 'docs\n'); git(w3, 'add', '.'); git(w3, 'commit', '-qm', 'Документация');
-const w8 = wt('t-0008', 'hp/alpha/t-0008-1');   // finished, worktree kept: its trailers come from the branch
-write(join(w8, 'x.txt'), 'x\n'); git(w8, 'add', '.'); git(w8, 'commit', '-qm', 'Икс', '-m', 'Co-Authored-By: Claude Haiku 5.5 <noreply@anthropic.com>');
-
-// --- repositories the «Новый проект» form finds: a git one with a subfolder, a plain one, a hidden one
-const delta = join(dir, 'repos/delta');
-mkdirSync(delta, { recursive: true });
-git(delta, 'init', '-q', '-b', 'main');
-write(join(delta, 'src/lib.rs'), 'fn main() {}\n');
-git(delta, 'add', '.'); git(delta, 'commit', '-qm', 'Initial commit');
-mkdirSync(join(dir, 'repos/plain'), { recursive: true });
-write(join(dir, 'repos/.hidden/x'), '');
-
-// --- the projects
-const project = (slug, name, goal, repos = '', status) => write(join(dir, 'root', slug, 'PROJECT.md'),
-  `+++\nname = "${name}"\ngoal = "${goal}"\n${status ? `status = "${status}"\n` : ''}${repos}+++\n\n# Instructions\n`);
-project('alpha', 'Alpha', 'Проект для проверки карточки', `[[repos]]\npath = "${repo}"\n\n[[repos]]\npath = "/srv/alpha-mac"\nmachine = "mac"\n`);
-project('beta', 'Beta', 'Пустой проект на паузе', '', 'paused');
-project('gamma', 'Gamma', 'Только задачи', `[[repos]]\npath = "${repo}"\n`);
-write(join(dir, 'root/alpha/TASKS.md'), `# Tasks
-
-## Backlog
-- [ ] Починить экспорт отчёта (claude-sonnet)
-  Заметки: экспорт падает на пустом файле.
-  Смотреть export.txt.
-- [ ] Добавить **тёмную** тему
-- [ ] (me) Выпустить ключ API
-- [ ] Миграция базы (claude-opus) · t-0005
-- [x] Готовая задача (2026-10-01)
-`);
-write(join(dir, 'root/gamma/TASKS.md'), '# Tasks\n\n- [ ] Единственная задача гаммы\n');
-const report = (slug, id, text) => write(join(dir, 'root', slug, 'threads', `${id}.md`), text);
-report('alpha', 't-0001', 'PR: https://github.com/o/alpha/pull/7\n\n## Report\n\n**Что сделано.**\n\nЭкспорт отчёта готов, PR слит, тесты зелёные.\n\n## Next\n\nУдалить ворктри\n');
-// A report of a thread the list does not name: it only makes alpha the project with the newest thread number (the order of the «новые» sort).
-report('alpha', 't-0012', '## Report\n\nЧерновик.\n');
-report('alpha', 't-0004', '## Report\n\nСравнил три варианта и выбрал второй: он проще в поддержке.\n\n## Next\n');
-
-// --- threads as `thread list --json` prints them
-const base = { agent: 'claude', branch: '', base: 'origin/main', worktree_path: '', cwd: '', kind: 'worktree', pr: '', pr_state: '', profile: 'claude-sonnet', profile_args: [], machine: '', remote_profile: false, repo, error: '', launched_at: '2026-10-14T05:00:00Z', percent: null, activity: '', next: [], created: '', updated: '', rank: 4, status: 'open', note: 'working', group: 'Working' };
-const threads = [
-  { id: 't-0007', title: 'Сбой запуска при старте', group: 'Waiting on you', status: 'failed', note: 'failed: herdr: timed out', error: 'herdr: timed out waiting for the pane to appear', launched_at: '', branch: 'hp/alpha/t-0007-1' },
-  { id: 't-0005', title: 'Миграция базы', percent: 40, activity: 'Writing migration', branch: 'hp/alpha/t-0005-1', worktree_path: w5, cwd: w5 },
-  { id: 't-0003', title: 'Документация', group: 'Ready for review', note: 'pane closed', profile: 'claude-haiku', pr: 'https://github.com/o/alpha/pull/12', pr_state: 'OPEN', branch: 'hp/alpha/t-0003-1', worktree_path: w3, cwd: w3 },
-  { id: 't-0002', title: 'Разбор логов во вкладке', group: 'Idle', note: 'idle', kind: 'tab', cwd: repo, profile: 'pi', agent: 'pi' },
-  { id: 't-0001', title: 'Экспорт отчёта', group: 'Resolved', status: 'resolved', note: 'merged', pr: 'https://github.com/o/alpha/pull/7', pr_state: 'MERGED', branch: 'hp/alpha/t-0001-1', cwd: join(dir, 'worktrees/gone') },
-  { id: 't-0004', title: 'Выбор подхода', group: 'Resolved', status: 'resolved', note: 'manual', profile: 'deepseek-flash', agent: 'omp', branch: '' },
-  { id: 't-0006', title: 'Не запустился и закрыт', group: 'Resolved', status: 'resolved', note: 'manual', error: 'herdr: timed out', launched_at: '', branch: '' },
-  { id: 't-0008', title: 'Икс', group: 'Resolved', status: 'resolved', note: 'manual', branch: 'hp/alpha/t-0008-1', worktree_path: w8, cwd: w8, profile: 'claude-opus' },
-].map((t) => ({ ...base, ...t }));
-write(join(dir, 'data/threads-alpha.json'), JSON.stringify(threads, null, 1));
-
-// --- projects that need a look, each arrived at another time (minutes ago, newest first):
-//   kappa   2 min  the coordinator reported «Waiting for you»
-//   zeta    5 min  a thread is `done` but left «Waiting for you»: review, not a bell
-//   iota   10 min  a thread stopped on a prompt (blocked)
-//   eps    40 min  a thread is ready for review
-//   alpha 180 min  a thread did not start (its updated time)
-// plus lambda (its coordinator said «Waiting for you», then went on working: nothing waits),
-// theta (works) and eta (nothing happens).
-const minutesAgo = (m) => new Date(Date.now() - m * 60000);
-const iso = (d) => d.toISOString().replace(/\.\d+Z$/, 'Z');
-threads.find((t) => t.id === 't-0007').updated = iso(minutesAgo(180));
-write(join(dir, 'data/threads-alpha.json'), JSON.stringify(threads, null, 1));
-const one = (slug, t) => write(join(dir, 'data', `threads-${slug}.json`), JSON.stringify([{ ...base, ...t }], null, 1));
-project('kappa', 'Kappa', 'Координатор ждёт ответа');
-project('zeta', 'Zeta', 'Тред закончил, а в отчёте остался Waiting for you');
-project('iota', 'Iota', 'Тред стоит на запросе');
-project('eps', 'Epsilon', 'Тред на ревью');
-project('lambda', 'Lambda', 'Координатор уже продолжил работу');
-project('theta', 'Theta', 'Идёт работа');
-project('eta', 'Eta', 'Ничего не происходит');
-one('zeta', { id: 't-0001', title: 'Закончил и ушёл на ревью', group: 'Waiting on you', note: 'done', last_state: 'done', activity: 'Waiting for you', percent: 95, last_state_change: iso(minutesAgo(5)), rank: 1 });
-one('iota', { id: 't-0001', title: 'Ждёт разрешения на команду', group: 'Waiting on you', note: 'blocked', last_state: 'blocked', last_state_change: iso(minutesAgo(10)), rank: 1 });
-one('eps', { id: 't-0001', title: 'Готов к ревью', group: 'Ready for review', note: 'done', last_state: 'done', last_report_change: iso(minutesAgo(40)), last_state_change: iso(minutesAgo(41)), rank: 2 });
-one('theta', { id: 't-0001', title: 'Работает', percent: 30, activity: 'Writing' });
-// The coordinators: a live pane (state of the ticker), the pane's own report (.progress) and the session
-// transcript the planner reads to see what was asked last (CLAUDE_CONFIG_DIR/projects/<cwd>/<session>.jsonl).
-const claudeDir = join(dir, 'claude');
-const say = (kind, text) => JSON.stringify({ type: kind, message: { role: kind, content: kind === 'assistant' ? [{ type: 'text', text }] : text } });
-const coordinator = (slug, pane, status, activity, minutes, lines = []) => {
-  const cwd = join(dir, 'root', slug);
-  const session = `sess-${slug}`;
-  write(join(dir, 'root', slug, '.state/coordinator.json'), JSON.stringify({ socket: '/fixture/herdr.sock', pane_id: pane, cwd }));
-  write(join(dir, 'root', slug, '.state/coordinators.json'), JSON.stringify([{ pane_id: pane, agent: 'claude', agent_session: session, agent_status: status }]));
-  write(join(dir, 'root/.progress', `${pane.replace(':', '_')}-fixture.json`), JSON.stringify({ socket: '/fixture/herdr.sock', pane_id: pane, activity, percent: null, reported_at: Math.floor((Date.now() - minutes * 60000) / 1000) }));
-  write(join(claudeDir, 'projects', cwd.replace(/[^A-Za-z0-9]/g, '-'), `${session}.jsonl`), lines.join('\n') + '\n');
+// --- the repos of the board and their keys
+const repos = {
+  alpha: 'ALP', beta: 'BET', gamma: 'GAM', kappa: 'KAP', zeta: 'ZET', iota: 'IOT', eps: 'EPS', rho: 'RHO', theta: 'THE', eta: 'ETA', sigma: 'SIG',
 };
-coordinator('kappa', 'w90:p1', 'idle', 'Waiting for you', 2, [say('user', 'что дальше?'), say('assistant', 'Нашёл рутину cost-review.\n\nЗапускать ли тред по расходам или подождать?')]);
-coordinator('lambda', 'w91:p1', 'working', 'Waiting for you', 20, [say('assistant', 'Запускать ли тред?')]);
-// «Waiting for you», but nothing is asked: a plain «жду указаний»; a question the user answered since;
-// a question mark the agent calls rhetorical; a question whose check fails.
-coordinator('mu', 'w92:p1', 'idle', 'Waiting for you', 30, [say('user', 'ок'), say('assistant', 'Хорошо, жду ваших указаний.')]);
-coordinator('nu', 'w93:p1', 'idle', 'Waiting for you', 31, [say('assistant', 'Запускать ли тред?'), say('user', 'нет')]);
-coordinator('omi', 'w94:p1', 'idle', 'Waiting for you', 32, [say('assistant', 'Хорошо, ничего не меняю. Нужно что-то ещё?')]);
-coordinator('xi', 'w95:p1', 'idle', 'Waiting for you', 33, [say('assistant', 'Запустить FAIL-AGENT сейчас?')]);
-for (const [slug, name, goal] of [['mu', 'Mu', 'Координатор просто простаивает'], ['nu', 'Nu', 'Пользователь уже ответил'], ['omi', 'Omicron', 'Риторический вопрос'], ['xi', 'Xi', 'Проверка вопроса не удалась']]) project(slug, name, goal);
-// --- finished threads and their merge requests (GitLab: the state comes from the fake `glab`)
-const mrReport = (slug, id, n, extra = '') => write(join(dir, 'root', slug, 'threads', `${id}.md`), `PR: https://gitlab.example/g/${slug}/-/merge_requests/${n}\n\n## Report\n\nMR: https://gitlab.example/g/${slug}/-/merge_requests/${n}\n${extra}\n## Next\n\nПосмотреть\n`);
-project('pi', 'Pi', 'Треды в ревью: свежие, слитые, старые, просмотренные');
-const hoursAgo = (h) => iso(new Date(Date.now() - h * 3600000));
-const review = (id, title, h, extra = {}) => ({ id, title, group: 'Ready for review', note: 'done', last_state: 'done', report_hash: 'h-' + id, last_report_change: hoursAgo(h), last_state_change: hoursAgo(h), rank: 2, ...extra });
-write(join(dir, 'data/threads-pi.json'), JSON.stringify([
-  review('t-0001', 'Свежее, MR открыт', 3),
-  review('t-0002', 'Свежее, MR слит', 4),
-  review('t-0003', 'Забытое, без MR', 24 * 5),
-  review('t-0004', 'Старое, но MR слит', 24 * 6),
-  review('t-0005', 'Просмотрено', 5, { acked_report_hash: 'h-t-0005' }),
-  review('t-0006', 'Свежее, glab не отвечает', 1),
-  review('t-0007', 'Старое, glab не отвечает', 24 * 4),
-  review('t-0008', 'PR на GitHub слит', 2, { pr: 'https://github.com/o/pi/pull/3', pr_state: 'MERGED' }),
-].map((t) => ({ ...base, ...t })), null, 1));
-mrReport('pi', 't-0001', 10); mrReport('pi', 't-0002', 11); mrReport('pi', 't-0004', 12); mrReport('pi', 't-0006', 13); mrReport('pi', 't-0007', 13);
-write(join(dir, 'data/mr-state.json'), JSON.stringify({ 10: 'opened', 11: 'merged', 12: 'merged', 13: 'FAIL' }));
-// The ticker is alive (pid 1 always is): without it the coordinators' state is not trusted.
-write(join(dir, 'root/.ticker.lock'), JSON.stringify({ pid: 1 }));
-write(join(dir, 'data/profiles.json'), JSON.stringify({
-  'claude-sonnet': { agent: 'claude', args: ['--model', 'claude-sonnet-5-5', '--effort', 'high'], name: 'claude-sonnet' },
-  'claude-haiku': { agent: 'claude', args: ['--model', 'claude-haiku-5-5'], name: 'claude-haiku' },
-  'claude-opus': { agent: 'claude', args: ['--model', 'claude-opus-5-5'], name: 'claude-opus' },
-  'deepseek-flash': { agent: 'omp', args: ['--model', 'deepseek/deepseek-v4-flash'], name: 'deepseek-flash' },
-  pi: { agent: 'pi', args: [], name: 'pi' },
-}, null, 1));
+const board = join(dir, 'board');
+write(join(board, 'repos.json'), JSON.stringify(Object.fromEntries(Object.keys(repos).map((r) => [r, join(dir, 'repos', r)]))));
+write(join(board, 'repo-keys.json'), JSON.stringify({ upgraded: true, had: Object.fromEntries(Object.entries(repos).map(([r, k]) => [k, r])) }));
+write(join(board, 'spaces.json'), JSON.stringify({ [`/fixture/herdr.sock|${join(dir, 'repos/kappa')}`]: 'wK1' }));
 
-write(join(dir, 'data/profile-list.txt'), `Profiles (built-ins: the agent CLIs installed and signed in here: pi, claude, omp):
-  claude         claude · model claude-opus-5-5 · effort medium — Координатор
-  claude-haiku   claude · model claude-haiku-5-5 · effort high — Лёгкий тред
-  claude-sonnet  claude · model claude-sonnet-5-5 · effort high — Тред по умолчанию
-  pi             pi · default model  (built-in)
+// --- the tasks, as `herdr-projects list --json` prints them; `minutes` is how long ago each came to its stage
+const rows = [];
+const task = (repo, n, minutes, row) => {
+  rows.push({ id: `${repo}/${n}`, app: 'claude', ...row });
+  write(join(board, 'tasks', repo, String(n), 'task.json'), JSON.stringify({ id: `${repo}/${n}`, at: minutesAgo(minutes) }));
+};
+const done = (repo, n, minutes, title, extra = {}) => task(repo, n, minutes, { state: 'done', stage: 'done', title, msg: 'Merged', ...extra });
+const passed = { findings: [{ id: 'F1', severity: 'minor', subject: 'Название кнопки можно короче', where: 'ui/button.rs:12', proof: '', preexisting: false }], meets: true, gate: 'major', pass: true };
+const failedReview = { findings: [{ id: 'F1', severity: 'critical', subject: 'Кэш не сбрасывается при смене отчёта', where: 'cache.rs:40', proof: 'тест cache_reset падает', preexisting: false }, { id: 'F2', severity: 'major', subject: 'Нет теста на пустой отчёт', where: '', proof: '', preexisting: false }], meets: false, gate: 'major', pass: false };
 
-Defaults for new projects: thread_profile = claude-sonnet, coordinator_profile = claude
-Allowed for threads in projects without their own list: claude-sonnet, claude-haiku
-Allowed for the coordinator in projects without their own list: claude
-`);
+done('alpha', 1, 180, 'Экспорт отчёта', { pr: 'https://github.com/o/alpha/pull/7', review: passed, reviewRound: 1 });
+task('alpha', 2, 6, { state: 'blocked', kind: 'question', stage: 'working', title: 'Схема экспорта', msg: 'Какую схему брать: старую или новую?' });
+task('alpha', 3, 20, { state: 'blocked', kind: 'permission', stage: 'plan', title: 'План миграции', msg: 'Plan ready' });
+task('alpha', 4, 12, { state: 'blocked', kind: 'permission', stage: 'approval', title: 'Тёмная тема', msg: 'Pass · 1 minor', pr: 'https://github.com/o/alpha/pull/12', review: passed, reviewRound: 1 });
+task('alpha', 5, 30, { state: 'blocked', kind: 'permission', stage: 'approval', title: 'Кэш отчётов', msg: 'Review failed · 1 critical, 1 major', review: failedReview, reviewRound: 2 });
+task('alpha', 6, 2, { state: 'working', stage: 'working', title: 'Миграция базы', msg: 'Writing migration', progress: 40, eta: 12 });
+task('alpha', 7, 4, { state: 'working', stage: 'reviewing', title: 'Документация', msg: 'Under review', progress: 55, reviewRound: 1 });
+task('alpha', 8, 50, { state: 'error', stage: 'working', title: 'Сбой сборки', msg: 'The build failed' });
+task('alpha', 9, 8, { state: 'working', stage: 'queued', title: 'Очередь за слотом', msg: 'Waiting for a free slot', queue: 1 });
+task('alpha', 10, 9, { state: 'working', stage: 'after', title: 'После девятой', msg: 'queued after ALP-9' });
+task('alpha', 11, 400, { state: 'idle', stage: 'todo', title: 'Заметка на потом', msg: '' });
+task('alpha', 14, 45, { state: 'blocked', kind: 'permission', stage: 'approval', title: 'Ещё один кэш', msg: 'Review failed · 1 critical, 1 major', review: failedReview, reviewRound: 1 });
+task('alpha', 12, 60, { state: 'blocked', stage: 'pick', title: 'Три варианта', msg: 'Pick one of 3' });
+done('alpha', 13, 7200, 'Старое дело');
+done('gamma', 1, 3000, 'Единственное сделанное');
+task('gamma', 2, 3000, { state: 'idle', stage: 'todo', title: 'Задача гаммы', msg: '' });
+task('kappa', 1, 2, { state: 'blocked', kind: 'question', stage: 'working', title: 'Запускать ли расходы', msg: 'Запускать ли тред по расходам или подождать?' });
+task('zeta', 1, 5, { state: 'blocked', kind: 'permission', stage: 'approval', title: 'Готово к вливанию', msg: 'Not reviewed' });
+task('iota', 1, 10, { state: 'blocked', stage: 'nosummary', title: 'Остановился без итога', msg: 'The agent stopped without a summary' });
+task('eps', 1, 40, { state: 'working', stage: 'reviewing', title: 'Ревью давно', msg: 'Under review', reviewRound: 1 });
+task('rho', 1, 8, { state: 'working', stage: 'reviewing', title: 'Ревью недавно', msg: 'Under review', reviewRound: 1 });
+task('theta', 1, 1, { state: 'working', stage: 'working', title: 'Идёт работа', msg: 'Writing', progress: 30 });
+// Stages the list does not tell apart by their words alone: a stop by hand, a stop at a limit, work whose checks fail, a reviewer that asks.
+task('sigma', 1, 100, { state: 'idle', stage: 'stopped', title: 'Остановлена вручную', msg: 'Stopped' });
+task('sigma', 2, 100, { state: 'blocked', stage: 'stopped', title: 'Остановлена лимитом', msg: 'Stopped at a limit' });
+task('sigma', 3, 101, { state: 'blocked', kind: 'permission', stage: 'approval', title: 'Проверки PR не прошли', msg: "The pull request's checks fail", pr: 'https://github.com/o/sigma/pull/5', review: passed, reviewRound: 1 });
+task('sigma', 4, 102, { state: 'blocked', stage: 'reviewneeds', title: 'Ревьюеру нужен ты', msg: 'The reviewer needs you' });
+done('eta', 1, 900, 'Сделано раз');
+done('eta', 2, 800, 'Сделано два');
+// A repo the board lists tasks of although it is not in repos.json (a repo of another machine, or one just removed).
+task('orphan', 1, 15, { state: 'idle', stage: 'todo', title: 'Задача без репозитория', msg: '' });
+write(join(dir, 'state/board.json'), JSON.stringify({ rows, keys: { ...repos, orphan: 'ORP' } }, null, 1));
+write(join(dir, 'state/workspace.json'), JSON.stringify(null));
 
 // --- stand-ins
 const bin = (name, body) => { const p = join(dir, 'bin', name); write(p, `#!/usr/bin/env node\n${body}`); chmodSync(p, 0o755); };
@@ -182,110 +84,78 @@ const readStdin = () => { try { return fs.readFileSync(0, 'utf8'); } catch { ret
 const sleep = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 `;
 bin('herdr-projects', `${prelude}
-const argv = process.argv.slice(2); const i = argv.indexOf('--root'); if (i >= 0) argv.splice(i, 2);
-const [cmd, ...rest] = argv;
-const opened = (slug) => fs.existsSync(path.join(D, 'state', 'opened-' + slug));
-const created = () => { try { return fs.readFileSync(path.join(D, 'state', 'created'), 'utf8').split('\\n').filter(Boolean); } catch { return []; } };
+const argv = process.argv.slice(2); const [cmd, ...rest] = argv;
+const file = path.join(D, 'state', 'board.json');
+const world = () => JSON.parse(fs.readFileSync(file, 'utf8'));
+const save = (w) => fs.writeFileSync(file, JSON.stringify(w, null, 1));
+const tag = (w, id) => { const [repo, n] = [id.slice(0, id.lastIndexOf('/')), id.slice(id.lastIndexOf('/') + 1)]; return w.keys[repo] ? w.keys[repo] + '-' + n : '#' + n; };
+const find = (w, id) => w.rows.find((r) => r.id === id);
+if (cmd !== 'list' && cmd !== 'details') log('calls.jsonl', { argv, data: process.env.HERDR_PROJECTS_DATA_DIR || null });
 if (cmd === 'list') {
-  console.log('alpha\\tactive\\tWaiting on you: 1, Ready for review: 1, Working: 1, Resolved: 4\\nbeta\\tpaused\\tno threads\\ngamma\\tactive\\tno threads'
-    + '\\nkappa\\tactive\\tResolved: 1\\nzeta\\tactive\\tWaiting on you: 1\\niota\\tactive\\tWaiting on you: 1\\neps\\tactive\\tReady for review: 1\\nlambda\\tactive\\tWorking: 1\\ntheta\\tactive\\tWorking: 1\\neta\\tactive\\tResolved: 2\\nmu\\tactive\\tResolved: 1\\nnu\\tactive\\tResolved: 1\\nomi\\tactive\\tResolved: 1\\nxi\\tactive\\tResolved: 1\\npi\\tactive\\tReady for review: 8' + created().map((s) => '\\n' + s + '\\tactive\\tno threads').join(''));
-} else if (cmd === 'profile' && rest[0] === 'list') {
-  console.log(fs.readFileSync(path.join(D, 'data', 'profile-list.txt'), 'utf8'));
-} else if (cmd === 'new') {
-  // The arguments as the planner sends them: new --repo=P[@M] ... --goal=G ... -- NAME
-  const dd = rest.indexOf('--'); const name = dd >= 0 ? rest.slice(dd + 1).join(' ') : rest[0];
-  log('new.jsonl', { argv: rest });
-  const slug = name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
-  const repos = rest.filter((a) => a.startsWith('--repo=')).map((a) => a.slice(7));
-  const goal = (rest.find((a) => a.startsWith('--goal=')) || '--goal=').slice(7);
-  if (!slug) { console.error('empty slug'); process.exit(1); }
-  if (fs.existsSync(path.join(D, 'data', 'refuse-new'))) { console.error('herdr-projects: refusing to create ' + slug); process.exit(1); }
-  const root = process.argv[process.argv.indexOf('--root') + 1];
-  fs.mkdirSync(path.join(root, slug), { recursive: true });
-  const toml = repos.map((r) => { const [p, m] = r.split(/@(?=[^/@]*$)/); return '[[repos]]\\npath = "' + p + '"\\n' + (m ? 'machine = "' + m + '"\\n' : ''); }).join('\\n');
-  fs.writeFileSync(path.join(root, slug, 'PROJECT.md'), '+++\\nname = "' + name + '"\\ngoal = "' + goal + '"\\n' + toml + '+++\\n');
-  fs.appendFileSync(path.join(D, 'state', 'created'), slug + '\\n');
-  console.log('created \`' + slug + '\` in ' + root);
-} else if (cmd === 'set') {
-  log('set.jsonl', { argv: rest });
-} else if (cmd === 'thread' && rest[0] === 'list') {
-  const f = path.join(D, 'data', 'threads-' + rest[1] + '.json');
-  console.log(fs.existsSync(f) ? fs.readFileSync(f, 'utf8') : '[]');
-} else if (cmd === 'profile' && rest[0] === 'resolve') {
-  const p = JSON.parse(fs.readFileSync(path.join(D, 'data', 'profiles.json'), 'utf8'))[rest[1]];
-  if (!p) { console.error('unknown profile ' + rest[1]); process.exit(1); }
-  console.log(JSON.stringify(p));
-} else if (cmd === 'assignable') {
-  console.log('me: the user\\nProfiles here: claude-sonnet, claude-opus, deepseek-flash\\n@mac: pi (1 profile)');
-} else if (cmd === 'coordinator' && rest[0] === 'prompt') {
-  const slug = rest[1]; const text = readStdin();
-  log('prompts.jsonl', { slug, text, opened: opened(slug) });
-  if (fs.existsSync(path.join(D, 'data', 'refuse-' + slug))) { console.error('the coordinator of ' + slug + ' refuses prompts'); process.exit(1); }
-  if (!opened(slug)) { console.error('no coordinator of ' + slug + ' can take a prompt right now; \`open ' + slug + '\` starts one'); process.exit(1); }
-} else if (cmd === 'open') {
-  log('opens.jsonl', { slug: rest[0] });
-  sleep(700);
-  fs.writeFileSync(path.join(D, 'state', 'opened-' + rest[0]), '');
-} else if (cmd === 'focus') {
-  log('focus.jsonl', { slug: rest[0] });
-} else if (cmd === 'unfocus') {
-  log('unfocus.jsonl', { argv: rest });
+  if (fs.existsSync(path.join(D, 'data', 'list-fails'))) { console.error('herdr-projects: the board is locked'); process.exit(1); }
+  if (fs.existsSync(path.join(D, 'data', 'list-garbage'))) { console.log('this is not json'); process.exit(0); }
+  const w = world();
+  log('lists.jsonl', { argv, data: process.env.HERDR_PROJECTS_DATA_DIR || null });
+  if (argv.includes('--json')) console.log(JSON.stringify(w.rows));
+  else console.log(w.rows.map((r) => tag(w, r.id).padEnd(9) + ' ' + String(r.state).padEnd(8) + ' [' + r.app + ']  ' + r.title + (r.msg ? '  · ' + r.msg : '')).join('\\n'));
+} else if (cmd === 'details') {
+  const w = world(); const r = find(w, rest[0]);
+  log('details.jsonl', { argv });
+  if (!r) { console.error('No task ' + rest[0]); process.exit(1); }
+  const n = rest[0].slice(rest[0].lastIndexOf('/') + 1);
+  const out = {
+    task: { id: r.id, title: r.title, stage: r.stage, msg: r.msg || '', description: 'Описание задачи ' + r.title },
+    failure: r.state === 'error' ? { stage: 'agent', title: 'Сборка упала', detail: 'npm test: 3 failed\\n<script>alert(1)</script>', next: 'Повторить: агент получит ошибку.', agentCanFix: true } : null,
+    review: r.review || null, reviews: r.review ? Array.from({ length: r.reviewRound || 1 }, () => ({})) : [],
+    agent: r.app, handovers: [], research: false, report: null,
+    plan: r.stage === 'plan' ? { text: '1. Снять копию базы\\n2. Прогнать миграцию\\n3. Проверить откат' } : null,
+    pr: r.pr || null, worktree: '/fixture/worktrees/work-' + n, branch: 'work/' + n,
+    limits: { time: { limit: 'none', usedMs: 240000, used: '4m' }, tokens: { limit: 'none', used: 0, total: 0 } },
+  };
+  console.log(JSON.stringify(out));
+} else if (['approve', 'review', 'retry', 'delegate', 'stop', 'tell'].includes(cmd)) {
+  const w = world(); const r = find(w, rest[0]);
+  if (!r) { console.error('No task ' + rest[0]); process.exit(1); }
+  const refuse = path.join(D, 'data', 'refuse');
+  if (fs.existsSync(refuse)) { console.error('herdr-projects: cannot ' + cmd + ' ' + rest[0] + ': the merge has a conflict'); process.exit(1); }
+  const t = tag(w, r.id);
+  if (cmd === 'approve') {
+    if (r.stage === 'plan') Object.assign(r, { state: 'working', kind: undefined, stage: 'working', msg: 'Building', progress: 1 });
+    else Object.assign(r, { state: 'done', kind: undefined, stage: 'done', msg: 'Merged' });
+    console.log(t + ': approved' + (rest.includes('--anyway') ? ' anyway' : ''));
+  } else if (cmd === 'review') {
+    Object.assign(r, { state: 'working', kind: undefined, stage: 'working', msg: 'Fixing what the review found', progress: 10 });
+    console.log(t + ': the review went back to the agent');
+  } else if (cmd === 'retry') {
+    Object.assign(r, { state: 'working', stage: 'working', msg: 'Trying again', progress: 5 });
+    console.log(t + ': the error went back to the agent');
+  } else if (cmd === 'delegate') {
+    Object.assign(r, { state: 'working', stage: 'working', msg: 'Just started', progress: 0 });
+    console.log(t + ': started, an agent is on it');
+  } else if (cmd === 'stop') {
+    Object.assign(r, { state: 'idle', stage: 'todo', msg: 'Stopped' });
+    console.log(t + ': stopped');
+  } else {
+    console.log(t + ': sent');
+  }
+  save(w);
 } else { console.error('fixture herdr-projects: unsupported ' + argv.join(' ')); process.exit(2); }
 `);
 bin('herdr', `${prelude}
 const argv = process.argv.slice(2);
-if (argv[0] === 'workspace') { console.log(JSON.stringify({ result: { workspaces: [] } })); }
-else if (argv[0] === 'machine' && argv[1] === 'list') {
-  console.log(fs.existsSync(path.join(D, 'data', 'no-machines')) ? '[]' : JSON.stringify([{ label: 'mac', enabled: true }, { label: 'old', enabled: false }, { label: 'nas', enabled: true }]));
-}
-else if (argv[0] === 'worktree' && argv[1] === 'open') {
-  const at = argv.indexOf('--path'); const p = at >= 0 ? argv[at + 1] : '';
-  log('herdr.jsonl', { argv });
-  if (!p || !fs.existsSync(p)) { console.error('no such worktree'); process.exit(1); }
+if (argv[0] === 'workspace' && argv[1] === 'list') {
+  const f = JSON.parse(fs.readFileSync(path.join(D, 'state', 'workspace.json'), 'utf8'));
+  console.log(JSON.stringify({ result: { workspaces: f ? [{ focused: true, label: f.label + '\\u2800', workspace_id: f.id }] : [{ focused: false, label: 'other', workspace_id: 'w0' }] } }));
 } else { console.error('fixture herdr: unsupported ' + argv.join(' ')); process.exit(2); }
-`);
-bin('glab', `${prelude}
-// glab api --hostname H projects/<group%2Fproject>/merge_requests/N: the state comes from data/mr-state.json
-const argv = process.argv.slice(2); log('glab.jsonl', { argv });
-const m = /merge_requests\\/(\\d+)$/.exec(argv[argv.length - 1] || '');
-const st = m && JSON.parse(fs.readFileSync(path.join(D, 'data', 'mr-state.json'), 'utf8'))[m[1]];
-if (argv[0] !== 'api' || !st || st === 'FAIL') { console.error('glab: 401 Unauthorized'); process.exit(1); }
-console.log(JSON.stringify({ state: st, iid: Number(m[1]) }));
 `);
 bin('claude', `${prelude}
 const argv = process.argv.slice(2); const prompt = readStdin();
 const entry = { argv, prompt, cwd: process.cwd() };
-if (prompt.includes('Последний ответ ассистента:')) {
-  // The coordinator's last answer: does it ask something that is still open?
-  const text = prompt.split('<<<')[1] || ''; log('ask.jsonl', { text, argv });
-  if (text.includes('FAIL-AGENT')) { console.error('the fake agent fails'); process.exit(1); }
-  sleep(300);
-  if (text.includes('Нужно что-то ещё?')) console.log('{"asks": false, "what": ""}');
-  else console.log('{"asks": true, "what": "' + (/([^.!?\\n]*\\?)/.exec(text) || ['', 'вопрос'])[1].trim() + '"}');
-} else if (prompt.includes('Задачи бэклога:')) {
-  // The freshness check: the first answer says «частично» for the export task and «сделано» (with a file)
-  // for the theme one; after a new commit the export task is no longer a worry.
-  const f = path.join(D, 'state', 'fresh-count'); const n = (fs.existsSync(f) ? Number(fs.readFileSync(f, 'utf8')) : 0) + 1;
-  fs.writeFileSync(f, String(n)); log('fresh.jsonl', { ...entry, n });
-  if (fs.existsSync(path.join(D, 'data', 'fresh-fails'))) { console.error('the fake agent fails'); process.exit(1); }
-  sleep(n === 1 ? 2500 : 600);
-  const rows = [...prompt.matchAll(/^(\\d+)\\. (.*)$/gm)].map((m) => {
-    const text = m[2]; const row = { n: Number(m[1]), v: 'actual', why: 'нужна' };
-    if (/экспорт/.test(text)) Object.assign(row, n === 1 ? { v: 'partial', why: 'часть экспорта уже есть в export.txt' } : { v: 'actual', why: 'не сделано' });
-    if (/тёмную/.test(text)) Object.assign(row, { v: 'done', why: 'тема уже есть', proof: 'export.txt' });
-    if (/Единственная/.test(text)) Object.assign(row, { v: 'done', why: 'кажется, есть', proof: 'нет/такого/файла.rs' });
-    return row;
-  });
-  console.log('Проверил по коду.\\n\`\`\`json\\n' + JSON.stringify(rows) + '\\n\`\`\`');
-} else if (prompt.includes('Проекты (slug | название | цель):')) {
+if (prompt.includes('Проекты (slug | название | о проекте):')) {
   log('groups.jsonl', entry); sleep(300);
-  const slugs = prompt.split('Проекты (slug | название | цель):')[1].split('\\n').map((l) => l.split(' | ')[0].trim()).filter(Boolean);
+  const slugs = prompt.split('Проекты (slug | название | о проекте):')[1].split('\\n').map((l) => l.split(' | ')[0].trim()).filter(Boolean);
   const group = (s) => (s === 'delta' ? 'Новая область' : s.startsWith('a') ? 'Omarchy' : s.startsWith('b') ? 'Личное' : 'ИИ-инфраструктура');
   console.log('Вот раскладка:\\n' + JSON.stringify(slugs.map((slug) => ({ slug, group: group(slug) }))));
-} else {
-  log('claude.jsonl', entry);
-  sleep(1200);
-  console.log('Ответ из теста: **готово**.\\n\\n- первый пункт\\n- второй пункт с \`кодом\`\\n\\n<script>alert(1)</script>');
-}
+} else { log('claude.jsonl', entry); console.log('ok'); }
 `);
 console.log(dir);

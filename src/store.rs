@@ -1,11 +1,16 @@
-//! Saved state: groups, settings, answers and sent marks, freshness verdicts.
-//! One JSON file under `$XDG_STATE_HOME/herdr-planner/`; on first run the
-//! Tern plugin's saved block state is imported (see `import_tern`).
+//! Saved state: the groups of projects and the settings. One JSON file under
+//! `$XDG_STATE_HOME/herdr-planner/`; on first run the Tern plugin's saved
+//! block state is imported (see `import_tern`).
+//!
+//! The file also held what belonged to the old TASKS.md path (answers, sent
+//! marks, freshness verdicts, the new-project folder). The planner no longer
+//! reads those, but it does not throw them away: every key it does not know is
+//! carried through a save as it was.
 
 use crate::model::Groups;
-use serde::{Deserialize, Deserializer, Serialize};
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::collections::{BTreeMap, HashSet};
+use std::collections::BTreeMap;
 use std::path::Path;
 
 /// One setting of the settings screen: the table below drives the screen, the
@@ -21,42 +26,20 @@ pub struct SettingDef {
 
 const ON_OFF: &[(&str, &str)] = &[("on", "вкл"), ("off", "выкл")];
 
-pub static SETTING_DEFS: [SettingDef; 4] = [
+pub static SETTING_DEFS: [SettingDef; 2] = [
     SettingDef {
         key: "agent",
         label: "Дешёвый агент",
-        hint: "Отвечает на «Задать вопрос», проверяет актуальность задач и раскладывает проекты по группам. Только чтение файлов.",
+        hint: "Раскладывает проекты по группам. Только чтение файлов.",
         default: "haiku",
         options: &[("haiku", "Claude Haiku 5.5"), ("deepseek", "DeepSeek Flash (omp)")],
     },
     SettingDef {
-        key: "autocheck",
-        label: "Автопроверка актуальности",
-        hint: "Сверяет задачи бэклога открытого проекта с main его репозитория: после новых коммитов, при открытии проекта, для новых задач. Ничего не удаляет.",
-        default: "on",
-        options: ON_OFF,
-    },
-    SettingDef {
         key: "autogroup",
         label: "Автопредложение групп",
-        hint: "Дешёвый агент раскладывает проекты без группы по областям (по имени и цели), один раз на проект. Ручной выбор не трогает.",
+        hint: "Дешёвый агент раскладывает проекты без группы по областям (по имени, пути и названиям задач), один раз на проект. Ручной выбор не трогает.",
         default: "on",
         options: ON_OFF,
-    },
-    SettingDef {
-        key: "review_stale",
-        label: "Забытое ревью",
-        hint: "Тред в ревью, чей отчёт старше этого срока, не считается ревью (значок, окошко): он «забыт» и показан серым на странице. «выкл» — не отсекать.",
-        default: "3",
-        options: &[
-            ("1", "1 день"),
-            ("2", "2 дня"),
-            ("3", "3 дня"),
-            ("5", "5 дней"),
-            ("7", "7 дней"),
-            ("14", "14 дней"),
-            ("0", "выкл"),
-        ],
     },
 ];
 
@@ -71,19 +54,18 @@ pub struct Settings {
     /// `haiku` or `deepseek`.
     pub agent: String,
     /// `on` / `off`.
-    pub autocheck: String,
     pub autogroup: String,
-    /// Days after which a thread's unread report stops counting as review; `0` = never.
-    pub review_stale: String,
+    /// Settings of earlier versions, kept as they were.
+    #[serde(flatten)]
+    pub other: BTreeMap<String, Value>,
 }
 
 impl Default for Settings {
     fn default() -> Self {
         Self {
             agent: "haiku".into(),
-            autocheck: "on".into(),
             autogroup: "on".into(),
-            review_stale: "3".into(),
+            other: BTreeMap::new(),
         }
     }
 }
@@ -92,9 +74,7 @@ impl Settings {
     fn slot(&mut self, key: &str) -> Option<&mut String> {
         match key {
             "agent" => Some(&mut self.agent),
-            "autocheck" => Some(&mut self.autocheck),
             "autogroup" => Some(&mut self.autogroup),
-            "review_stale" => Some(&mut self.review_stale),
             _ => None,
         }
     }
@@ -102,9 +82,7 @@ impl Settings {
     pub fn get(&self, key: &str) -> &str {
         match key {
             "agent" => &self.agent,
-            "autocheck" => &self.autocheck,
             "autogroup" => &self.autogroup,
-            "review_stale" => &self.review_stale,
             _ => "",
         }
     }
@@ -119,11 +97,6 @@ impl Settings {
             }
             _ => false,
         }
-    }
-
-    /// The review cut-off in milliseconds; 0 when it is off.
-    pub fn review_stale_ms(&self) -> u64 {
-        self.review_stale.parse::<u64>().unwrap_or(3) * 86_400_000
     }
 
     /// Saved values that are no longer valid fall back to the default.
@@ -142,87 +115,14 @@ impl Settings {
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
-pub struct QaEntry {
-    pub q: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub a: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub error: Option<String>,
-    /// Asked and not answered yet; never survives a restart.
-    #[serde(skip_serializing_if = "std::ops::Not::not")]
-    pub pending: bool,
-}
-
-/// What the freshness check said about one task at one commit of main.
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-#[serde(default)]
-pub struct Verdict {
-    /// The commit of main the verdict is for.
-    pub head: String,
-    /// `actual`, `partial` or `done`.
-    pub v: String,
-    pub why: String,
-    /// For `done`: the file in the repository that does the task.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub proof: Option<String>,
-}
-
-/// One project's cached freshness verdicts, by task text.
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-#[serde(default)]
-pub struct FreshCache {
-    /// The commit of main checked last.
-    pub head: Option<String>,
-    #[serde(deserialize_with = "lenient_map")]
-    pub verdicts: BTreeMap<String, Verdict>,
-    /// «Оставить»: task text → the commit of main the badge is hidden at.
-    #[serde(deserialize_with = "lenient_map")]
-    pub kept: BTreeMap<String, String>,
-}
-
-/// A map that tolerates what Lua makes of an empty table (`[]`) and drops the
-/// entries that do not fit.
-fn lenient_map<'de, D, V>(d: D) -> Result<BTreeMap<String, V>, D::Error>
-where
-    D: Deserializer<'de>,
-    V: serde::de::DeserializeOwned,
-{
-    Ok(match Value::deserialize(d)? {
-        Value::Object(m) => m
-            .into_iter()
-            .filter_map(|(k, x)| serde_json::from_value(x).ok().map(|x| (k, x)))
-            .collect(),
-        _ => BTreeMap::new(),
-    })
-}
-
-/// The key of a task's answers and «sent» mark: the project, a line break,
-/// the task text. A task text is one line, so keys from before 0.15.4 of the
-/// plugin (text only) are told apart by the missing line break.
-pub fn mem_key(slug: &str, text: &str) -> String {
-    format!("{slug}\n{text}")
-}
-
-fn legacy_key(key: &str) -> bool {
-    !key.contains('\n')
-}
-
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-#[serde(default)]
 pub struct State {
     pub groups: Groups,
     pub settings: Settings,
-    /// Questions and answers by `slug\ntext` (legacy keys: text only).
-    pub qa: BTreeMap<String, Vec<QaEntry>>,
-    /// «sent to the coordinator» marks by the same key.
-    pub sent: BTreeMap<String, Value>,
-    /// Freshness verdicts by slug (format as the plugin's `dash.save`).
-    #[serde(deserialize_with = "lenient_map")]
-    pub fresh: BTreeMap<String, FreshCache>,
-    /// The folder the "new project" browser opened last.
-    pub last_dir: Option<String>,
     /// Where the state came from on first run, for the record.
     pub imported_from: Option<String>,
+    /// Keys of earlier versions (`qa`, `sent`, `fresh`, `last_dir`), carried through as they were.
+    #[serde(flatten)]
+    pub legacy: BTreeMap<String, Value>,
 }
 
 /// Lua tables arrive as JSON objects or arrays: an empty `collapsed` or
@@ -271,19 +171,11 @@ impl State {
     pub fn normalize(mut self) -> Self {
         self.groups = Groups::normalize(Some(std::mem::take(&mut self.groups)));
         self.settings = self.settings.normalize();
-        for cache in self.fresh.values_mut() {
-            let ok = |v: &str| ["actual", "partial", "done"].contains(&v);
-            cache.verdicts.retain(|_, e| ok(&e.v) && !e.head.is_empty());
-        }
-        // An answer still pending when the plugin stopped never arrives.
-        for list in self.qa.values_mut() {
-            list.retain(|e| e.a.is_some() || e.error.is_some());
-        }
-        self.qa.retain(|_, l| !l.is_empty());
         self
     }
 
-    /// Reads the plugin's saved form (`dash.save`): the same keys, Lua-shaped.
+    /// Reads the plugin's saved form (`dash.save`): the groups and the settings
+    /// (the rest of it belonged to TASKS.md and is not taken over).
     pub fn from_plugin_json(v: &Value) -> State {
         let mut s = State::default();
         if let Some(g) = v.get("groups") {
@@ -292,70 +184,7 @@ impl State {
         if let Some(x) = v.get("settings") {
             s.settings = serde_json::from_value(x.clone()).unwrap_or_default();
         }
-        if let Some(Value::Object(qa)) = v.get("qa") {
-            for (k, list) in qa {
-                let entries: Vec<QaEntry> =
-                    serde_json::from_value(list.clone()).unwrap_or_default();
-                s.qa.insert(k.clone(), entries);
-            }
-        }
-        if let Some(Value::Object(sent)) = v.get("sent") {
-            s.sent = sent.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
-        }
-        if let Some(fresh) = v.get("fresh") {
-            s.fresh = lenient_map(fresh.clone()).unwrap_or_default();
-        }
-        s.last_dir = v.get("last_dir").and_then(|x| x.as_str()).map(String::from);
         s.normalize()
-    }
-
-    /// The answers of one task, newest first.
-    pub fn qa_list(&mut self, slug: &str, text: &str) -> &mut Vec<QaEntry> {
-        self.qa.entry(mem_key(slug, text)).or_default()
-    }
-
-    /// Only a TASKS.md that was read and has tasks counts: an empty read may
-    /// be a file being rewritten.
-    pub fn trusted(tasks: usize, read: bool) -> bool {
-        read && tasks > 0
-    }
-
-    /// After a trusted read of `slug`'s TASKS.md (`texts`: the tasks, done
-    /// ones too): keys of the old shape are copied to it, its keys for tasks
-    /// that are gone are dropped. `read` is the set of projects read so far;
-    /// once it covers `all`, the old keys go for good.
-    pub fn settle(
-        &mut self,
-        slug: &str,
-        texts: &HashSet<String>,
-        read: &mut HashSet<String>,
-        all: &[String],
-    ) {
-        let prefix = format!("{slug}\n");
-        fn settle_map<V: Clone>(
-            map: &mut BTreeMap<String, V>,
-            slug: &str,
-            prefix: &str,
-            texts: &HashSet<String>,
-        ) {
-            let copies: Vec<(String, V)> = map
-                .iter()
-                .filter(|(k, _)| legacy_key(k) && texts.contains(*k))
-                .filter(|(k, _)| !map.contains_key(&mem_key(slug, k)))
-                .map(|(k, v)| (mem_key(slug, k), v.clone()))
-                .collect();
-            map.extend(copies);
-            map.retain(|k, _| {
-                legacy_key(k) || !k.starts_with(prefix) || texts.contains(&k[prefix.len()..])
-            });
-        }
-        settle_map(&mut self.qa, slug, &prefix, texts);
-        settle_map(&mut self.sent, slug, &prefix, texts);
-        read.insert(slug.to_string());
-        if !all.is_empty() && all.iter().all(|p| read.contains(p)) {
-            self.qa.retain(|k, _| !legacy_key(k));
-            self.sent.retain(|k, _| !legacy_key(k));
-        }
     }
 
     pub fn load(path: &Path) -> Option<State> {
@@ -384,9 +213,7 @@ mod tests {
         let v: Value = serde_json::from_str(r#"{
             "groups":{"configured":true,"list":["Omarchy","ЯНАО"],"assign":{"omarchy":{"auto":true,"g":"Omarchy"},"x":{"auto":false,"g":"Nope"}},"collapsed":["ЯНАО"],"on":true},
             "settings":{"agent":"deepseek","autocheck":"maybe","autogroup":"off"},
-            "qa":{"slug\ntask":[{"q":"a?","a":"b"},{"q":"pending"}],"legacy":[{"q":"x","error":"e"}]},
-            "sent":{"slug\ntask":true},
-            "fresh":{"apicache":{"head":"abc","kept":[],"verdicts":{"Задача":{"head":"abc","v":"partial","why":"часть"},"Мусор":{"head":"abc","v":"???"}}}},
+            "qa":{"slug\ntask":[{"q":"a?","a":"b"}]},
             "last_dir":"/home/u/Projects"
         }"#).unwrap();
         let s = State::from_plugin_json(&v);
@@ -395,106 +222,69 @@ mod tests {
         assert_eq!(s.groups.group_of("x").0, "Прочее");
         assert!(s.groups.is_collapsed("ЯНАО"));
         assert_eq!(s.groups.on, Some(true));
+        assert_eq!((s.settings.agent.as_str(), s.settings.autogroup.as_str()), ("deepseek", "off"));
         let lua_empty: Value = serde_json::from_str(r#"{"groups":{"configured":true,"list":["A"],"assign":{"p":{"auto":true,"g":"A"}},"collapsed":{}}}"#).unwrap();
         let s2 = State::from_plugin_json(&lua_empty);
         assert_eq!(s2.groups.group_of("p"), ("A".to_string(), true));
-        assert_eq!(s.settings.agent, "deepseek");
-        assert_eq!(s.settings.autocheck, "on");
-        assert_eq!(s.qa["slug\ntask"].len(), 1);
-        assert_eq!(s.qa["legacy"][0].error.as_deref(), Some("e"));
-        assert_eq!(s.sent.len(), 1);
-        assert_eq!(s.fresh["apicache"].head.as_deref(), Some("abc"));
-        assert_eq!(s.fresh["apicache"].verdicts["Задача"].v, "partial");
-        assert!(!s.fresh["apicache"].verdicts.contains_key("Мусор"));
-        assert!(s.fresh["apicache"].kept.is_empty());
-        assert_eq!(s.last_dir.as_deref(), Some("/home/u/Projects"));
+        assert_eq!(s2.settings, Settings::default());
     }
 
     #[test]
-    fn settle_keeps_current_tasks_and_migrates_old_keys() {
-        let mut s = State::default();
-        s.qa.insert(
-            "a\nkeep".into(),
-            vec![QaEntry {
-                q: "q".into(),
-                a: Some("x".into()),
-                ..Default::default()
-            }],
-        );
-        s.qa.insert("a\ngone".into(), vec![]);
-        s.qa.insert("b\nother".into(), vec![]);
-        s.qa.insert(
-            "old".into(),
-            vec![QaEntry {
-                q: "o".into(),
-                a: Some("y".into()),
-                ..Default::default()
-            }],
-        );
-        s.sent.insert("a\nkeep".into(), Value::Bool(true));
-        s.sent.insert("a\ngone".into(), Value::Bool(true));
-        let mut read = HashSet::new();
-        let texts: HashSet<String> = ["keep".to_string(), "old".to_string()].into();
-        s.settle("a", &texts, &mut read, &["a".into(), "b".into()]);
-        assert!(s.qa.contains_key("a\nkeep"));
-        assert!(
-            !s.qa.contains_key("a\ngone"),
-            "a task that is gone loses its answers"
-        );
-        assert!(
-            s.qa.contains_key("b\nother"),
-            "other projects are not touched"
-        );
-        assert!(
-            s.qa.contains_key("a\nold"),
-            "the old key is copied to the project that has the text"
-        );
-        assert!(
-            s.qa.contains_key("old"),
-            "…and stays until every project was read"
-        );
-        assert!(!s.sent.contains_key("a\ngone"));
-        s.settle("b", &HashSet::new(), &mut read, &["a".into(), "b".into()]);
-        assert!(
-            !s.qa.contains_key("old"),
-            "every project read: the old key goes"
-        );
-        assert!(!s.qa.contains_key("b\nother"));
-        assert!(State::trusted(2, true) && !State::trusted(0, true) && !State::trusted(2, false));
+    fn settings_validate_and_fall_back() {
+        let mut s = Settings::default();
+        assert!(s.set("agent", "deepseek"));
+        assert!(!s.set("agent", "gpt"));
+        assert!(!s.set("autocheck", "on"), "a setting that is gone");
+        assert_eq!(s.agent, "deepseek");
+        s.autogroup = "maybe".into();
+        let s = s.normalize();
+        assert_eq!(s.autogroup, "on");
+        assert_eq!(s.get("nope"), "");
     }
 
+    /// The state of an earlier version keeps its groups and its settings, and what
+    /// belonged to TASKS.md stays in the file as it was.
     #[test]
-    fn pending_answers_do_not_survive() {
-        let mut s = State::default();
-        s.qa_list("a", "t").push(QaEntry {
-            q: "wait".into(),
-            pending: true,
-            ..Default::default()
-        });
-        s.qa_list("a", "t").push(QaEntry {
-            q: "done".into(),
-            a: Some("ok".into()),
-            ..Default::default()
-        });
-        let json = serde_json::to_string(&s).unwrap();
-        let back: State = serde_json::from_str(&json).unwrap();
-        let back = back.normalize();
-        assert_eq!(back.qa["a\nt"].len(), 1);
-        assert_eq!(back.qa["a\nt"][0].q, "done");
-        assert!(!serde_json::to_string(&back.qa["a\nt"][0])
-            .unwrap()
-            .contains("pending"));
+    fn an_old_state_file_keeps_everything_through_a_save() {
+        let dir = std::env::temp_dir().join(format!("herdr-planner-state-{}", std::process::id()));
+        let file = dir.join("state.json");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(&file, r#"{
+            "groups":{"configured":true,"list":["Omarchy"],"assign":{"a":{"g":"Omarchy","auto":false}},"collapsed":[],"on":true},
+            "settings":{"agent":"deepseek","autocheck":"off","autogroup":"on","review_stale":"7"},
+            "qa":{"a\nзадача":[{"q":"вопрос","a":"ответ"}]},
+            "sent":{"a\nзадача":true},
+            "fresh":{"a":{"head":"abc"}},
+            "last_dir":"/home/u/Projects",
+            "imported_from":"/x/daemon.state"
+        }"#).unwrap();
+        let st = State::load(&file).unwrap();
+        assert_eq!(st.groups.group_of("a"), ("Omarchy".to_string(), false));
+        assert!(st.groups.grouping_on());
+        assert_eq!(st.settings.agent, "deepseek");
+        assert_eq!(st.imported_from.as_deref(), Some("/x/daemon.state"));
+        st.save(&file).unwrap();
+        let back: Value = serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
+        assert_eq!(back["qa"]["a\nзадача"][0]["a"], "ответ");
+        assert_eq!(back["sent"]["a\nзадача"], true);
+        assert_eq!(back["fresh"]["a"]["head"], "abc");
+        assert_eq!(back["last_dir"], "/home/u/Projects");
+        assert_eq!(back["settings"]["review_stale"], "7");
+        assert_eq!(back["settings"]["agent"], "deepseek");
+        assert_eq!(State::load(&file).unwrap(), st);
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
     fn round_trips_through_file() {
-        let dir = std::env::temp_dir().join(format!("herdr-planner-test-{}", std::process::id()));
-        let path = dir.join("state.json");
-        let mut s = State::default().normalize();
-        s.groups.assign("a", "Omarchy", false);
-        s.save(&path).unwrap();
-        let back = State::load(&path).unwrap();
-        assert_eq!(back, s);
+        let dir = std::env::temp_dir().join(format!("herdr-planner-store-{}", std::process::id()));
+        let file = dir.join("state.json");
+        let mut st = State::default().normalize();
+        st.groups.assign("apicache", "Omarchy", true);
+        st.settings.set("autogroup", "off");
+        st.save(&file).unwrap();
+        assert_eq!(State::load(&file).unwrap(), st);
+        assert!(State::load(&dir.join("missing.json")).is_none());
         std::fs::remove_dir_all(dir).unwrap();
     }
 }

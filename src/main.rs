@@ -5,16 +5,11 @@ mod actions;
 mod agent;
 mod api;
 mod app;
-mod attention;
-mod cards;
+mod board;
 mod config;
-mod coordask;
-mod fresh;
 mod import_tern;
 mod jsonscan;
 mod model;
-mod mrstate;
-mod newproject;
 mod poller;
 mod sources;
 mod store;
@@ -28,7 +23,7 @@ async fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.iter().any(|a| a == "--help" || a == "-h") {
         println!(
-            "herdr-planner [--port N] [--root DIR]\n\nПланировщик проектов herdr-projects на http://127.0.0.1:PORT (по умолчанию {}).\nНастройки: ~/.config/herdr-planner/config.toml (port, root); состояние: ~/.local/state/herdr-planner/state.json.",
+            "herdr-planner [--port N] [--data DIR]\n\nПланировщик проектов на доске herdr-projects: http://127.0.0.1:PORT (по умолчанию {}).\nНастройки: ~/.config/herdr-planner/config.toml (port, data); состояние: ~/.local/state/herdr-planner/state.json.",
             config::DEFAULT_PORT
         );
         return;
@@ -81,10 +76,10 @@ async fn main() {
         }
     };
     println!(
-        "herdr-planner {} на http://{}  (проекты: {}; настройки: {})",
+        "herdr-planner {} на http://{}  (доска: {}; настройки: {})",
         app::VERSION,
         addr,
-        cfg.root.display(),
+        cfg.data_dir.display(),
         cfg.config_file.display()
     );
     let router = api::router(shared);

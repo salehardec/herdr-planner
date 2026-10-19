@@ -1,207 +1,83 @@
-//! Background work: the project list every 20 s (or on demand), the focused
+//! Background work: the board's tasks every 20 s (or on demand), the focused
 //! herdr workspace every 3 s, the theme files every 2 s. Each loop publishes
 //! on the event bus; nothing here blocks a request.
 
 use crate::app::{now_ms, Shared, Snapshot, Workspace, REFRESH_SECS, THEME_SECS, WORKSPACE_SECS};
-use crate::attention;
-use crate::model::{project_for_label, Project};
-use crate::mrstate::{self, MrState};
-use crate::sources::threads::{self, Thread};
-use crate::sources::{list, project_md, runner, workspace};
+use crate::board::{self, Task};
+use crate::model::{project_for_workspace, Project};
+use crate::sources::{repos, runner, workspace};
 use crate::theme;
-use std::collections::HashMap;
-use std::path::Path;
+use std::collections::BTreeMap;
 use std::time::Duration;
 
-/// Items in `inbox/` other than `done`.
-pub fn inbox_count(dir: &Path) -> u32 {
-    std::fs::read_dir(dir.join("inbox"))
-        .map(|rd| rd.flatten().filter(|e| e.file_name() != "done").count() as u32)
-        .unwrap_or(0)
-}
-
-/// The highest thread number a project holds: its recency signal.
-pub fn newest_thread(dir: &Path) -> u32 {
-    std::fs::read_dir(dir.join("threads"))
-        .map(|rd| {
-            rd.flatten()
-                .filter_map(|e| {
-                    let name = e.file_name().to_string_lossy().into_owned();
-                    let digits: String = name
-                        .strip_prefix("t-")?
-                        .chars()
-                        .take_while(|c| c.is_ascii_digit())
-                        .collect();
-                    digits.parse::<u32>().ok()
-                })
-                .max()
-                .unwrap_or(0)
+/// The projects of the board: its repos, each with the tasks `list` shows for it.
+/// Tasks come from `herdr-projects list --json`; their tags (`PLN-1`) from the
+/// plain `list` that prints the same tasks in the same order.
+pub fn assemble(
+    mut tasks: Vec<Task>,
+    repos: &BTreeMap<String, String>,
+    keys: &BTreeMap<String, String>,
+) -> Vec<Project> {
+    let mut by_repo: BTreeMap<String, Vec<Task>> = BTreeMap::new();
+    let mut tag_keys: BTreeMap<String, String> = BTreeMap::new();
+    for t in tasks.drain(..) {
+        if let Some((key, _)) = t.tag.rsplit_once('-') {
+            tag_keys.insert(t.repo.clone(), key.to_string());
+        }
+        by_repo.entry(t.repo.clone()).or_default().push(t);
+    }
+    let mut slugs: Vec<String> = repos.keys().chain(by_repo.keys()).cloned().collect();
+    slugs.sort();
+    slugs.dedup();
+    slugs
+        .into_iter()
+        .map(|slug| {
+            let key = tag_keys
+                .get(&slug)
+                .or_else(|| keys.get(&slug))
+                .map(String::as_str)
+                .unwrap_or("");
+            let path = repos.get(&slug).map(String::as_str).unwrap_or("");
+            let tasks = by_repo.remove(&slug).unwrap_or_default();
+            Project::build(&slug, key, path, tasks)
         })
-        .unwrap_or(0)
-}
-
-/// Fills a project from its folder: PROJECT.md, inbox, threads.
-pub fn enrich(p: &mut Project, dir: &Path) {
-    if let Ok(text) = std::fs::read_to_string(dir.join("PROJECT.md")) {
-        let md = project_md::parse(&text);
-        if let Some(n) = md.name {
-            p.name = n;
-        }
-        p.goal = md.goal;
-        p.repos = md.repos;
-    }
-    p.inbox = inbox_count(dir);
-    p.activity = newest_thread(dir);
-}
-
-pub async fn read_projects(app: &Shared) -> Result<Vec<Project>, String> {
-    let argv = runner::argv([
-        app.config.herdr_projects.as_str(),
-        "--root",
-        &app.config.root.display().to_string(),
-        "list",
-        "--all",
-    ]);
-    let out = runner::run(&argv, None, Duration::from_secs(20)).await?;
-    if !out.ok() {
-        return Err(out.error());
-    }
-    let mut projects = list::parse_list(&out.stdout);
-    let root = app.config.root.clone();
-    // Folder reads are quick but synchronous: off the runtime's workers.
-    projects = tokio::task::spawn_blocking(move || {
-        for p in &mut projects {
-            enrich(p, &root.join(&p.slug));
-        }
-        projects
-    })
-    .await
-    .map_err(|e| e.to_string())?;
-    rebuild_attention(app, &mut projects).await;
-    Ok(projects)
-}
-
-/// herdr-projects' «Waiting on you» and «Ready for review» counts are not signals
-/// by themselves: this rebuilds `needs`, `review` and the waits of every project
-/// (see `attention`, `coordask`, `mrstate`).
-async fn rebuild_attention(app: &Shared, projects: &mut [Project]) {
-    let root = app.config.root.clone();
-    let (records, alive) = tokio::task::spawn_blocking(move || {
-        (
-            attention::read_progress(&root),
-            attention::ticker_alive(&root),
-        )
-    })
-    .await
-    .unwrap_or_default();
-    let stale_ms = app.state.lock().unwrap().settings.review_stale_ms();
-    for p in projects.iter_mut() {
-        if p.status == "archived" {
-            continue;
-        }
-        let dir = app.config.root.join(&p.slug);
-        // A dead ticker leaves the coordinators' state as it was: not a signal.
-        let candidate = if alive {
-            attention::coordinator_candidate(&dir, &records)
-        } else {
-            None
-        };
-        let coordinator = match candidate {
-            Some(c) => coordinator_state(app, &p.slug, &c),
-            None => attention::Coordinator::No,
-        };
-        let listed = if p.counts.needs > 0 || p.counts.review > 0 {
-            thread_list(app, &p.slug).await
-        } else {
-            Some(Vec::new())
-        };
-        let mr = match &listed {
-            Some(list) => mr_states(app, &p.slug, list).await,
-            None => HashMap::new(),
-        };
-        let env = attention::Env {
-            now: now_ms(),
-            stale_ms,
-            mr: &mr,
-        };
-        attention::apply(p, coordinator, listed.as_deref(), &env);
-    }
-}
-
-/// Whether the coordinator that reported `Waiting for you` really asks something.
-fn coordinator_state(app: &Shared, slug: &str, c: &attention::Candidate) -> attention::Coordinator {
-    use crate::coordask::{self, Verdict};
-    let unclear =
-        |why: &str| attention::Coordinator::Unclear(format!("координатор: статус ждёт, {why}"));
-    if c.agent != "claude" || c.session.is_empty() {
-        return unclear("вопрос не распознан");
-    }
-    let Some(claude) = coordask::claude_dir() else {
-        return unclear("вопрос не распознан");
-    };
-    let path = coordask::transcript_path(&claude, &c.cwd, &c.session);
-    match coordask::verdict(app, slug, &path) {
-        Some(Verdict::No) => attention::Coordinator::No,
-        Some(Verdict::Asks(what)) => attention::Coordinator::Asks(crate::model::Wait {
-            kind: "coordinator".into(),
-            thread: String::new(),
-            text: what,
-            since: c.since,
-        }),
-        Some(Verdict::Unclear(_)) => unclear("вопрос не распознан"),
-        None => unclear("проверяю, есть ли вопрос"),
-    }
-}
-
-/// The state of the merge request each finished thread's report names (GitLab),
-/// for the threads herdr-projects shows in review or waiting. See `mrstate`.
-pub async fn mr_states(app: &Shared, slug: &str, list: &[Thread]) -> HashMap<String, MrState> {
-    let dir = app.config.root.join(slug).join("threads");
-    let ids: Vec<String> = list
-        .iter()
-        .filter(|t| {
-            !t.closed()
-                && matches!(
-                    t.group.as_str(),
-                    "Ready for review" | "Waiting on you" | "Needs you"
-                )
-        })
-        .filter(|t| t.pr_number().is_none())
-        .map(|t| t.id.clone())
-        .collect();
-    let refs = tokio::task::spawn_blocking(move || {
-        ids.into_iter()
-            .filter_map(|id| {
-                let text = std::fs::read_to_string(dir.join(format!("{id}.md"))).ok()?;
-                Some((id, mrstate::find_mr(&text)?))
-            })
-            .collect::<Vec<_>>()
-    })
-    .await
-    .unwrap_or_default();
-    refs.into_iter()
-        .map(|(id, mr)| (id, mrstate::state(app, &mr)))
         .collect()
 }
 
-async fn thread_list(app: &Shared, slug: &str) -> Option<Vec<Thread>> {
-    let argv = runner::argv([
-        app.config.herdr_projects.as_str(),
-        "--root",
-        &app.config.root.display().to_string(),
-        "thread",
-        "list",
-        slug,
-        "--json",
-    ]);
-    let out = runner::run(&argv, None, Duration::from_secs(20))
-        .await
-        .ok()?;
-    if !out.ok() {
-        return None;
+pub async fn read_projects(app: &Shared) -> Result<Vec<Project>, String> {
+    let timeout = Duration::from_secs(20);
+    let (json, plain) = tokio::join!(
+        app.board(&["list", "--json"], timeout),
+        app.board(&["list"], timeout)
+    );
+    let json = json?;
+    if !json.ok() {
+        return Err(json.error());
     }
-    let groups = threads::parse_threads(&out.stdout).ok()?;
-    Some(groups.into_iter().flat_map(|g| g.threads).collect())
+    let mut tasks = board::parse_list(&json.stdout)?;
+    if let Ok(plain) = plain {
+        if plain.ok() {
+            board::apply_tags(&mut tasks, &board::plain_tags(&plain.stdout));
+        }
+    }
+    let dir = app.config.data_dir.clone();
+    let app2 = app.clone();
+    // File reads are quick but synchronous: off the runtime's workers.
+    let (projects, spaces) = tokio::task::spawn_blocking(move || {
+        let repos = repos::read_repos(&dir);
+        let keys = repos::read_keys(&dir);
+        let ids: Vec<String> = tasks.iter().map(|t| t.id.clone()).collect();
+        let refs: Vec<&str> = ids.iter().map(String::as_str).collect();
+        let times = app2.times.lock().unwrap().times(&dir, &refs);
+        for t in &mut tasks {
+            t.at = times.get(&t.id).copied().unwrap_or(0);
+        }
+        (assemble(tasks, &repos, &keys), repos::read_spaces(&dir))
+    })
+    .await
+    .map_err(|e| e.to_string())?;
+    *app.spaces.write().unwrap() = spaces;
+    Ok(projects)
 }
 
 pub async fn refresh_once(app: &Shared) {
@@ -242,15 +118,22 @@ pub async fn refresh_loop(app: Shared) {
     }
 }
 
-/// Re-matches the known label against the (new) project list.
-fn sync_workspace(app: &Shared) {
+/// The project a workspace (id and label) names, among the current projects.
+fn workspace_slug(app: &Shared, id: Option<&str>, label: Option<&str>) -> Option<String> {
+    let label = label?;
     let projects = app.snapshot.read().unwrap().projects.clone();
-    let mut ws = app.workspace.write().unwrap();
-    let slug = ws
-        .label
-        .as_deref()
-        .and_then(|l| project_for_label(&projects, l));
-    ws.slug = slug;
+    let spaces = app.spaces.read().unwrap().clone();
+    project_for_workspace(&projects, &spaces, id.unwrap_or(""), label)
+}
+
+/// Re-matches the known workspace against the (new) project list.
+fn sync_workspace(app: &Shared) {
+    let (id, label) = {
+        let ws = app.workspace.read().unwrap();
+        (ws.id.clone(), ws.label.clone())
+    };
+    let slug = workspace_slug(app, id.as_deref(), label.as_deref());
+    app.workspace.write().unwrap().slug = slug;
 }
 
 pub async fn workspace_loop(app: Shared) {
@@ -258,19 +141,21 @@ pub async fn workspace_loop(app: Shared) {
     loop {
         if let Ok(out) = runner::run(&argv, None, Duration::from_secs(5)).await {
             if out.ok() {
-                let label = workspace::focused_label(&out.stdout);
+                let (id, label) = match workspace::focused(&out.stdout) {
+                    Some((id, label)) => (Some(id), Some(label)),
+                    None => (None, None),
+                };
                 let changed = {
-                    let projects = app.snapshot.read().unwrap().projects.clone();
+                    let slug = workspace_slug(&app, id.as_deref(), label.as_deref());
                     let mut ws = app.workspace.write().unwrap();
                     let same = ws.label.as_deref().map(str::to_lowercase)
-                        == label.as_deref().map(str::to_lowercase);
+                        == label.as_deref().map(str::to_lowercase)
+                        && ws.id == id;
                     if same {
                         false
                     } else {
-                        let slug = label
-                            .as_deref()
-                            .and_then(|l| project_for_label(&projects, l));
                         *ws = Workspace {
+                            id,
                             label,
                             slug,
                             seq: ws.seq + 1,
@@ -322,32 +207,29 @@ pub async fn theme_loop(app: Shared) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::board::parse_list;
 
     #[test]
-    fn reads_a_project_folder() {
-        let dir = std::env::temp_dir().join(format!("herdr-planner-proj-{}", std::process::id()));
-        std::fs::create_dir_all(dir.join("inbox/done")).unwrap();
-        std::fs::create_dir_all(dir.join("threads")).unwrap();
-        std::fs::write(dir.join("inbox/one.md"), "").unwrap();
-        std::fs::write(dir.join("threads/t-0003.md"), "").unwrap();
-        std::fs::write(dir.join("threads/t-0012.md"), "").unwrap();
-        std::fs::write(dir.join("threads/notes"), "").unwrap();
-        std::fs::write(
-            dir.join("PROJECT.md"),
-            "+++\nname = \"Имя\"\ngoal = \"Цель\"\n[[repos]]\npath = \"/r\"\n+++\n",
+    fn projects_are_the_repos_of_the_board_with_their_tasks() {
+        let mut tasks = parse_list(
+            r#"[{"id":"alpha/1","state":"done"},{"id":"alpha/2","state":"blocked","kind":"question"},{"id":"remote/7","state":"idle"}]"#,
         )
         .unwrap();
-        let mut p = Project {
-            slug: "x".into(),
-            name: "x".into(),
-            ..Default::default()
-        };
-        enrich(&mut p, &dir);
-        assert_eq!(p.name, "Имя");
-        assert_eq!(p.goal.as_deref(), Some("Цель"));
-        assert_eq!(p.inbox, 1);
-        assert_eq!(p.activity, 12);
-        assert_eq!(p.repos.len(), 1);
-        std::fs::remove_dir_all(dir).unwrap();
+        board::apply_tags(&mut tasks, &["ALP-1".into(), "ALP-2".into(), "#7".into()]);
+        let repos = BTreeMap::from([
+            ("alpha".to_string(), "/p/alpha".to_string()),
+            ("beta".to_string(), "/p/beta".to_string()),
+        ]);
+        let keys = BTreeMap::from([
+            ("beta".to_string(), "BET".to_string()),
+            ("alpha".to_string(), "OLD".to_string()),
+        ]);
+        let v = assemble(tasks, &repos, &keys);
+        let names: Vec<&str> = v.iter().map(|p| p.slug.as_str()).collect();
+        assert_eq!(names, ["alpha", "beta", "remote"], "a repo with tasks that the board does not list is still shown");
+        assert_eq!(v[0].key, "ALP", "the key the board prints wins over the record of old keys");
+        assert_eq!((v[0].path.as_str(), v[0].counts.done, v[0].counts.needs), ("/p/alpha", 1, 1));
+        assert_eq!((v[1].key.as_str(), v[1].tasks.len()), ("BET", 0));
+        assert_eq!((v[2].key.as_str(), v[2].path.as_str(), v[2].counts.todo), ("", "", 1));
     }
 }

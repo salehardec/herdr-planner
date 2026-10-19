@@ -1,13 +1,10 @@
 //! HTTP: the embedded page, the JSON API and the SSE event stream.
 
-use crate::actions::{self, Failure};
+use crate::actions::{self, Failure, TaskReq};
 use crate::app::{Event, Shared};
-use crate::cards;
 use crate::model::{self, summarize, OTHER};
-use crate::newproject;
-use crate::sources::runner;
-use crate::{fresh, suggest};
-use axum::extract::{Path, Query, Request, State};
+use crate::suggest;
+use axum::extract::{Query, Request, State};
 use axum::http::{header, StatusCode};
 use axum::middleware::{self, Next};
 use axum::response::sse::{self, KeepAlive, Sse};
@@ -27,7 +24,6 @@ pub const APP_JS: &str = include_str!("../web/app.js");
 pub const UTIL_JS: &str = include_str!("../web/util.js");
 pub const CARD_JS: &str = include_str!("../web/card.js");
 pub const SETTINGS_JS: &str = include_str!("../web/settings.js");
-pub const NEW_JS: &str = include_str!("../web/new.js");
 
 pub fn router(app: Shared) -> Router {
     Router::new()
@@ -37,7 +33,6 @@ pub fn router(app: Shared) -> Router {
         .route("/util.js", get(util_js))
         .route("/card.js", get(card_js))
         .route("/settings.js", get(settings_js))
-        .route("/new.js", get(new_js))
         .route("/api/snapshot", get(snapshot))
         .route("/api/summary", get(summary))
         .route("/api/overview", get(overview))
@@ -46,19 +41,9 @@ pub fn router(app: Shared) -> Router {
         .route("/api/refresh", post(refresh))
         .route("/api/groups", post(groups))
         .route("/api/settings", post(settings))
-        .route("/api/new/options", get(new_options))
-        .route("/api/browse", get(browse))
-        .route("/api/complete", get(complete))
-        .route("/api/new", post(new_project))
         .route("/api/action", post(action))
-        .route("/api/project/{slug}", get(project))
-        .route("/api/project/{slug}/thread/{id}", get(thread_detail))
-        .route("/api/project/{slug}/thread/{id}/worktree", post(worktree))
-        .route("/api/project/{slug}/assignable", get(assignable))
-        .route("/api/project/{slug}/solve", post(solve))
-        .route("/api/project/{slug}/remove", post(remove))
-        .route("/api/project/{slug}/ask", post(ask))
-        .route("/api/project/{slug}/fresh-keep", post(fresh_keep))
+        .route("/api/task", get(task_details))
+        .route("/api/task/action", post(task_action))
         .layer(middleware::from_fn(local_only))
         .with_state(app)
 }
@@ -85,8 +70,8 @@ pub fn host_is_local(host: &str) -> bool {
 /// The server listens on 127.0.0.1 only, but a web page on another site can
 /// still reach it through the browser: by a DNS name that is made to point
 /// here (the Host header then names that site), or by a cross-site request
-/// (the Origin header names it). Both are refused; the card can send prompts
-/// to coordinators and start agents, so this matters.
+/// (the Origin header names it). Both are refused; the page can approve
+/// merges and start agents on the board, so this matters.
 async fn local_only(req: Request, next: Next) -> Response {
     let headers = req.headers();
     let host_ok = headers
@@ -145,10 +130,6 @@ async fn settings_js() -> Response {
     asset("text/javascript; charset=utf-8", SETTINGS_JS)
 }
 
-async fn new_js() -> Response {
-    asset("text/javascript; charset=utf-8", NEW_JS)
-}
-
 async fn snapshot(State(app): State<Shared>) -> Json<Value> {
     Json(serde_json::to_value(app.full()).unwrap_or(Value::Null))
 }
@@ -166,10 +147,14 @@ async fn summary(State(app): State<Shared>) -> Json<Value> {
     };
     Json(json!({
         "waiting": s.waiting,
+        "needs": s.needs,
+        "ready": s.ready,
+        "failed": s.failed,
         "waiting_hint": s.waiting_hint,
         "attention_since": s.attention_since,
         "review": s.review,
-        "inbox": s.inbox,
+        "working": s.working,
+        "queued": s.queued,
         "projects": s.projects,
         "updated": updated,
         "loading": loading,
@@ -325,7 +310,7 @@ async fn settings(State(app): State<Shared>, Json(r): Json<SettingReq>) -> Respo
         let was = st.settings.get(&r.key).to_string();
         if !st.settings.set(&r.key, &r.value) {
             drop(st);
-            return failure((400, "неизвестная настройка или значение".into()));
+            return failure(Failure(400, "неизвестная настройка или значение".into()));
         }
         was
     };
@@ -345,42 +330,25 @@ struct Action {
     slug: String,
 }
 
-/// `focus` runs `herdr-projects focus <slug>`, `open` runs `herdr-projects
-/// open <slug>` (starts the coordinator in the project's workspace), `unfocus`
-/// runs `herdr-projects unfocus` (the sidebar shows every project again; no slug).
+/// `unfocus`: the herdr sidebar lists every agent again (see `actions::unfocus`).
+/// `show` (slug): the bar popup asks the page to open that project's card.
 async fn action(State(app): State<Shared>, Json(a): Json<Action>) -> Response {
-    let sub = match a.kind.as_str() {
-        "focus" => "focus",
-        "open" => "open",
-        "unfocus" => "unfocus",
-        _ => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(json!({"error": "неизвестное действие"})),
-            )
-                .into_response()
+    match a.kind.as_str() {
+        "unfocus" => match actions::unfocus(&app).await {
+            Ok(()) => Json(json!({"ok": true})).into_response(),
+            Err(e) => failure(Failure(502, e)),
+        },
+        "show" => {
+            let known = app.snapshot.read().unwrap().projects.iter().any(|p| p.slug == a.slug);
+            if !known {
+                return failure(Failure(404, "такого проекта нет на доске".into()));
+            }
+            let show = crate::app::Show { slug: a.slug, at: crate::app::now_ms() };
+            *app.show.lock().unwrap() = Some(show.clone());
+            app.emit("show", &show);
+            Json(json!({"ok": true})).into_response()
         }
-    };
-    if sub != "unfocus" && (a.slug.is_empty() || a.slug.starts_with('-')) {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(json!({"error": "нет проекта"})),
-        )
-            .into_response();
-    }
-    let root = app.config.root.display().to_string();
-    let mut parts = vec![app.config.herdr_projects.as_str(), "--root", &root, sub];
-    if sub != "unfocus" {
-        parts.push(&a.slug);
-    }
-    let argv = runner::argv(parts);
-    match runner::run(&argv, None, Duration::from_secs(30)).await {
-        Ok(out) if out.ok() => {
-            app.refresh_now.notify_one();
-            Json(json!({"ok": true, "stdout": out.stdout.trim()})).into_response()
-        }
-        Ok(out) => (StatusCode::BAD_GATEWAY, Json(json!({"error": out.error()}))).into_response(),
-        Err(e) => (StatusCode::BAD_GATEWAY, Json(json!({"error": e}))).into_response(),
+        _ => failure(Failure(400, "неизвестное действие".into())),
     }
 }
 
@@ -389,163 +357,26 @@ fn failure(f: Failure) -> Response {
     (status, Json(json!({"error": f.1}))).into_response()
 }
 
-fn bad_slug() -> Response {
-    failure((400, "нет проекта".into()))
-}
-
-/// The project card's data: the project, its tasks, its threads (with git
-/// lines and model badges), saved answers and «sent» marks.
-async fn project(State(app): State<Shared>, Path(slug): Path<String>) -> Response {
-    if !cards::valid_slug(&slug) {
-        return bad_slug();
-    }
-    Json(cards::build(&app, &slug).await).into_response()
-}
-
-/// An opened thread: its git in full (diff stat, last commits, files not committed).
-async fn thread_detail(
-    State(app): State<Shared>,
-    Path((slug, id)): Path<(String, String)>,
-) -> Response {
-    if !cards::valid_slug(&slug) {
-        return bad_slug();
-    }
-    match cards::thread_detail(&app, &slug, &id).await {
-        Ok(v) => Json(v).into_response(),
-        Err(e) => failure((404, e)),
-    }
-}
-
-/// `w`: opens the thread's worktree in herdr.
-async fn worktree(State(app): State<Shared>, Path((slug, id)): Path<(String, String)>) -> Response {
-    if !cards::valid_slug(&slug) {
-        return bad_slug();
-    }
-    match cards::open_worktree(&app, &slug, &id).await {
-        Ok(()) => Json(json!({"ok": true})).into_response(),
-        Err(e) => failure((502, e)),
-    }
-}
-
-/// The profiles a task of the project can be handed to.
-async fn assignable(State(app): State<Shared>, Path(slug): Path<String>) -> Response {
-    if !cards::valid_slug(&slug) {
-        return bad_slug();
-    }
-    match cards::assignable(&app, &slug).await {
-        Ok(a) => Json(json!({"profiles": a.profiles, "error": null})).into_response(),
-        Err(e) => Json(json!({"profiles": [], "error": e})).into_response(),
-    }
-}
-
 #[derive(Deserialize)]
-struct TaskReq {
+struct IdQuery {
     #[serde(default)]
-    task: String,
-    /// «Убрать» on a freshness badge: the verdict goes into the request.
-    #[serde(default)]
-    fresh: bool,
-    #[serde(default)]
-    profile: Option<String>,
-    #[serde(default)]
-    question: String,
+    id: String,
 }
 
-fn done(r: Result<(), Failure>) -> Response {
-    match r {
-        Ok(()) => Json(json!({"ok": true})).into_response(),
-        Err(f) => failure(f),
-    }
-}
-
-/// «Решить»: the coordinator is asked to take the task (the project is
-/// opened first when it is not).
-async fn solve(
-    State(app): State<Shared>,
-    Path(slug): Path<String>,
-    Json(r): Json<TaskReq>,
-) -> Response {
-    done(actions::solve(&app, &slug, &r.task, r.profile.as_deref()).await)
-}
-
-/// «Не решать»: the coordinator is asked to remove the line from TASKS.md.
-async fn remove(
-    State(app): State<Shared>,
-    Path(slug): Path<String>,
-    Json(r): Json<TaskReq>,
-) -> Response {
-    done(actions::remove(&app, &slug, &r.task, r.fresh).await)
-}
-
-/// «Оставить»: the freshness badge stays hidden until main gets a new commit.
-async fn fresh_keep(
-    State(app): State<Shared>,
-    Path(slug): Path<String>,
-    Json(r): Json<TaskReq>,
-) -> Response {
-    if !cards::valid_slug(&slug) {
-        return bad_slug();
-    }
-    if fresh::keep(&app, &slug, &r.task) {
-        app.emit("card", &json!({ "slug": slug }));
-        Json(json!({"ok": true})).into_response()
-    } else {
-        failure((409, "проект ещё не проверялся".into()))
-    }
-}
-
-/// The «Новый проект» form's lists: machines and profiles.
-async fn new_options(State(app): State<Shared>) -> Json<Value> {
-    Json(newproject::options(&app).await)
-}
-
-#[derive(Deserialize)]
-struct PathQuery {
-    #[serde(default)]
-    path: String,
-    #[serde(default)]
-    start: Option<String>,
-}
-
-/// The folder browser: `path` is the folder, or with `start` the field's text
-/// from which a starting folder is found.
-async fn browse(State(app): State<Shared>, Query(q): Query<PathQuery>) -> Response {
-    let last_dir = app.state.lock().unwrap().last_dir.clone();
-    let start = q.start.is_some();
-    let result = tokio::task::spawn_blocking(move || {
-        newproject::browse(&q.path, start, last_dir.as_deref())
-    })
-    .await
-    .unwrap_or_else(|e| Err(e.to_string()));
-    match result {
-        Ok(v) => Json(v).into_response(),
-        Err(e) => failure((400, e)),
-    }
-}
-
-/// Tab in the «Папка» field.
-async fn complete(Query(q): Query<PathQuery>) -> Response {
-    let v = tokio::task::spawn_blocking(move || newproject::complete(&q.path))
-        .await
-        .unwrap_or(Value::Null);
-    Json(v).into_response()
-}
-
-/// Creates the project (`herdr-projects new`); the page opens it afterwards.
-async fn new_project(State(app): State<Shared>, Json(r): Json<newproject::NewReq>) -> Response {
-    match newproject::create(&app, &r).await {
+/// A task's details from the board: the stage, the message, the review, the branch and pull request.
+async fn task_details(State(app): State<Shared>, Query(q): Query<IdQuery>) -> Response {
+    match actions::details(&app, &q.id).await {
         Ok(v) => Json(v).into_response(),
         Err(f) => failure(f),
     }
 }
 
-/// «Задать вопрос»: the cheap agent answers in the background.
-async fn ask(
-    State(app): State<Shared>,
-    Path(slug): Path<String>,
-    Json(r): Json<TaskReq>,
-) -> Response {
-    done(actions::ask(&app, &slug, &r.task, &r.question).await)
+/// A command of the board for one task: `approve`, `review`, `retry`, `delegate`, `stop`, `tell`.
+async fn task_action(State(app): State<Shared>, Json(r): Json<TaskReq>) -> Response {
+    match actions::run_task_action(&app, &r).await {
+        Ok(v) => Json(v).into_response(),
+        Err(f) => failure(f),
+    }
 }
 
 #[cfg(test)]

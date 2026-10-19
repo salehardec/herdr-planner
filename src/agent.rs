@@ -1,12 +1,8 @@
 //! The cheap agent: one place that knows how to run a one-shot, read-only
-//! model. Questions about a task, the backlog freshness check and the group
-//! suggestion (stage 3) all go through it. Stage 2 uses it for questions.
-
-// The freshness check and the group suggestion (stage 3) use the rest.
-#![allow(dead_code)]
+//! model. The group suggestion goes through it.
 
 use crate::sources::runner::{self, Output};
-use crate::sources::tasks;
+use crate::sources::runner::clip;
 use std::time::Duration;
 
 pub const HAIKU_MODEL: &str = "claude-haiku-5-5";
@@ -28,12 +24,6 @@ impl Kind {
         }
     }
 
-    pub fn short(self) -> &'static str {
-        match self {
-            Kind::Haiku => "Haiku 5.5",
-            Kind::Deepseek => "DeepSeek Flash",
-        }
-    }
 }
 
 /// One request: a system prompt, the prompt itself, the folder to run in and
@@ -119,7 +109,7 @@ pub async fn run(kind: Kind, req: &Request) -> Result<String, String> {
     } else if out.ok() {
         Err("агент ответил пустотой".into())
     } else {
-        Err(tasks::clip(
+        Err(clip(
             &out.error().split_whitespace().collect::<Vec<_>>().join(" "),
             300,
         ))
