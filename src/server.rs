@@ -1,6 +1,6 @@
 //! HTTP: the page, the JSON API, login and the board commands behind it.
 
-use crate::app::{self, details, refresh, run_board, Shared};
+use crate::app::{self, details, refresh, run_board, save_todo, Shared, TodoItem};
 use crate::auth::{self, cookie_value, peer_ip, LoginError, COOKIE};
 use crate::board::{self, Status};
 use crate::config::now_ms;
@@ -13,11 +13,23 @@ use axum::{Json, Router};
 use serde::Deserialize;
 use serde_json::json;
 use std::net::{IpAddr, SocketAddr};
+use std::process::Stdio;
 use std::time::Duration;
+use tokio::process::Command;
+use tokio::time::timeout;
 
 const INDEX: &str = include_str!("../web/index.html");
 const APP_CSS: &str = include_str!("../web/app.css");
 const APP_JS: &str = include_str!("../web/app.js");
+const WORLD_JS: &str = include_str!("../web/world.js");
+const CAMERA_JS: &str = include_str!("../web/camera.js");
+const LAYOUT_JS: &str = include_str!("../web/layout.js");
+const REQUESTS_JS: &str = include_str!("../web/requests.js");
+/// three.js is vendored at a versioned path so the page may cache it for a year.
+const THREE_JS: &str = include_str!("../web/vendor/three.module.js");
+const THREE_CORE_JS: &str = include_str!("../web/vendor/three.core.js");
+const ORBIT_JS: &str = include_str!("../web/vendor/OrbitControls.js");
+const CSS2D_JS: &str = include_str!("../web/vendor/CSS2DRenderer.js");
 const LOGIN: &str = include_str!("../web/login.html");
 const LOGIN_CSS: &str = include_str!("../web/login.css");
 const LOGIN_JS: &str = include_str!("../web/login.js");
@@ -28,6 +40,7 @@ pub fn router(app: Shared) -> Router {
         .route("/api/state", get(api_state))
         .route("/api/summary", get(api_summary))
         .route("/api/details", get(api_details))
+        .route("/api/coordinator/screen", get(api_coordinator_screen))
         .route("/api/action", post(api_action))
         .route("/api/chat", post(api_chat))
         .route("/api/refresh", post(api_refresh))
@@ -48,6 +61,38 @@ pub fn router(app: Shared) -> Router {
         .route(
             "/app.js",
             get(|| async { asset(APP_JS, "text/javascript; charset=utf-8") }),
+        )
+        .route(
+            "/world.js",
+            get(|| async { asset(WORLD_JS, "text/javascript; charset=utf-8") }),
+        )
+        .route(
+            "/camera.js",
+            get(|| async { asset(CAMERA_JS, "text/javascript; charset=utf-8") }),
+        )
+        .route(
+            "/layout.js",
+            get(|| async { asset(LAYOUT_JS, "text/javascript; charset=utf-8") }),
+        )
+        .route(
+            "/requests.js",
+            get(|| async { asset(REQUESTS_JS, "text/javascript; charset=utf-8") }),
+        )
+        .route(
+            "/vendor/0.186.1/three.module.js",
+            get(|| async { asset_cached(THREE_JS, "text/javascript; charset=utf-8") }),
+        )
+        .route(
+            "/vendor/0.186.1/three.core.js",
+            get(|| async { asset_cached(THREE_CORE_JS, "text/javascript; charset=utf-8") }),
+        )
+        .route(
+            "/vendor/0.186.1/OrbitControls.js",
+            get(|| async { asset_cached(ORBIT_JS, "text/javascript; charset=utf-8") }),
+        )
+        .route(
+            "/vendor/0.186.1/CSS2DRenderer.js",
+            get(|| async { asset_cached(CSS2D_JS, "text/javascript; charset=utf-8") }),
         )
         .route(
             "/login.css",
@@ -99,6 +144,21 @@ async fn headers_middleware(req: axum::extract::Request, next: Next) -> Response
 fn asset(body: &'static str, mime: &'static str) -> Response {
     (
         [(header::CONTENT_TYPE, HeaderValue::from_static(mime))],
+        body,
+    )
+        .into_response()
+}
+
+/// A vendored file whose path carries its version: safe to keep for a year.
+fn asset_cached(body: &'static str, mime: &'static str) -> Response {
+    (
+        [
+            (header::CONTENT_TYPE, HeaderValue::from_static(mime)),
+            (
+                header::CACHE_CONTROL,
+                HeaderValue::from_static("public, max-age=31536000, immutable"),
+            ),
+        ],
         body,
     )
         .into_response()
@@ -281,6 +341,158 @@ async fn api_details(State(app): State<Shared>, Query(q): Query<DetailsQuery>) -
     }
 }
 
+#[derive(Deserialize)]
+struct ScreenQuery {
+    target: Option<String>,
+    /// `reviewer` selects the board's `<agent>-r` reviewer pane; otherwise the worker.
+    role: Option<String>,
+}
+
+/// The text an agent shows in its own terminal, through `herdr agent read`.
+/// Without herdr the planner says so; it never pretends to see the dialog.
+async fn api_coordinator_screen(
+    State(app): State<Shared>,
+    Query(q): Query<ScreenQuery>,
+) -> Response {
+    let target = q.target.as_deref().unwrap_or("coordinator");
+    let name = match agent_name(target, q.role.as_deref()) {
+        Ok(name) => name,
+        Err(e) => return error(StatusCode::BAD_REQUEST, e),
+    };
+    let running = app.cfg.herdr_socket.exists();
+    if !running {
+        return Json(json!({
+            "ok": false,
+            "running": false,
+            "target": name,
+            "error": "herdr не запущен: диалог видно только в окне агента"
+        }))
+        .into_response();
+    }
+    match run_herdr(
+        &[
+            "agent", "read", &name, "--source", "visible", "--lines", "40", "--format", "text",
+        ],
+        Duration::from_secs(8),
+    )
+    .await
+    {
+        Ok(out) => Json(json!({
+            "ok": true,
+            "running": true,
+            "target": name,
+            "text": clip(out),
+        }))
+        .into_response(),
+        Err(e) => (
+            StatusCode::BAD_GATEWAY,
+            Json(json!({"ok": false, "running": true, "target": name, "error": e})),
+        )
+            .into_response(),
+    }
+}
+
+/// `sw-coordinator` for the Coordinator, `sw-<repo>-<n>` for a task's agent.
+fn agent_name(target: &str, role: Option<&str>) -> Result<String, String> {
+    if target == "coordinator" {
+        return Ok("sw-coordinator".into());
+    }
+    let id = target;
+    if !board::valid_id(id) || !id.contains('/') {
+        return Err("bad task id".into());
+    }
+    let base = format!("sw-{}-{}", board::repo_of(id), board::number_of(id));
+    // The board keeps a task's reviewer in `<worker>-r` (finish/review_once.rs).
+    if role == Some("reviewer") {
+        Ok(format!("{base}-r"))
+    } else {
+        Ok(base)
+    }
+}
+
+fn valid_todo_id(id: &str) -> bool {
+    !id.is_empty()
+        && id.len() <= 80
+        && id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_'))
+}
+
+fn valid_repo(repo: &str) -> bool {
+    !repo.is_empty()
+        && repo.len() <= 200
+        && repo
+            .chars()
+            .all(|c| c.is_alphanumeric() || matches!(c, '-' | '_' | '.' | '/'))
+}
+
+/// A God's-list text, made one line; the board's `add` takes it as a title.
+fn todo_text(text: &str) -> Result<String, String> {
+    let t = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    if t.is_empty() {
+        return Err("пустое дело".into());
+    }
+    if t.chars().count() > 400 {
+        return Err("дело длиннее 400 символов".into());
+    }
+    if t.starts_with('-') {
+        return Err("дело не может начинаться с «-»".into());
+    }
+    Ok(t)
+}
+
+fn valid_key(k: &str) -> bool {
+    matches!(
+        k,
+        "up" | "down"
+            | "left"
+            | "right"
+            | "enter"
+            | "esc"
+            | "tab"
+            | "space"
+            | "backspace"
+            | "y"
+            | "n"
+    ) || (k.len() == 1 && k.chars().all(|c| c.is_ascii_digit()))
+}
+
+/// Runs the herdr CLI (`HERDR_BIN` overrides the binary name for checks).
+async fn run_herdr(args: &[&str], wait: Duration) -> Result<String, String> {
+    let bin = std::env::var("HERDR_BIN")
+        .ok()
+        .filter(|v| !v.is_empty())
+        .unwrap_or_else(|| "herdr".to_string());
+    let mut cmd = Command::new(&bin);
+    cmd.args(args)
+        .env("NO_COLOR", "1")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true);
+    let out = match timeout(wait, cmd.output()).await {
+        Err(_) => {
+            return Err(format!(
+                "{bin} {}: no answer in {}s",
+                args.join(" "),
+                wait.as_secs()
+            ))
+        }
+        Ok(Err(e)) => return Err(format!("{bin}: {e}")),
+        Ok(Ok(o)) => o,
+    };
+    let stdout = String::from_utf8_lossy(&out.stdout).to_string();
+    let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
+    if !out.status.success() {
+        return Err(if stderr.is_empty() {
+            format!("{bin} {}: exit {}", args.join(" "), out.status)
+        } else {
+            stderr
+        });
+    }
+    Ok(stdout)
+}
+
 async fn api_refresh(State(app): State<Shared>) -> Response {
     refresh(&app).await;
     Json(json!({"ok": true})).into_response()
@@ -289,6 +501,10 @@ async fn api_refresh(State(app): State<Shared>) -> Response {
 #[derive(Deserialize)]
 struct ChatBody {
     text: String,
+    /// PLN-6: pictures in the chat. Accepted and ignored for now.
+    #[serde(default)]
+    #[allow(dead_code)]
+    attachments: Vec<serde_json::Value>,
 }
 
 async fn api_chat(
@@ -341,6 +557,16 @@ struct ActionBody {
     scope: Option<String>,
     repo: Option<String>,
     kind: Option<String>,
+    /// The complete `after` set for a task; empty means `--clear`.
+    after: Option<Vec<String>>,
+    /// An attempt letter for `pick`.
+    letter: Option<String>,
+    /// Keys for `herdr agent send-keys`.
+    keys: Option<Vec<String>>,
+    /// `coordinator` or a task id, for `keys` and the screen endpoint.
+    target: Option<String>,
+    /// `reviewer` asks for `<agent>-r`; the worker is the default.
+    role: Option<String>,
 }
 
 async fn api_action(
@@ -383,13 +609,179 @@ async fn api_action(
         "retry" => run_id(&app, &body, &["retry"], 60).await,
         "review" => run_id(&app, &body, &["review"], 60).await,
         "stop" => run_id(&app, &body, &["stop"], 30).await,
+        "fix" => run_id(&app, &body, &["fix"], 60).await,
+        "finish" => run_id(&app, &body, &["finish"], 60).await,
         "archive" => run_id(&app, &body, &["archive"], 30).await,
         "restore" => run_id(&app, &body, &["restore"], 30).await,
+        "pick" => {
+            let id = match task_id(&body) {
+                Ok(id) => id,
+                Err(e) => return error(StatusCode::BAD_REQUEST, e),
+            };
+            let letter = body.letter.as_deref().unwrap_or("");
+            if !board::valid_letter(letter) {
+                return error(StatusCode::BAD_REQUEST, "bad attempt letter");
+            }
+            run_board(&app.cfg, &["pick", id, letter], Duration::from_secs(60)).await
+        }
+        "after" => {
+            let id = match task_id(&body) {
+                Ok(id) => id,
+                Err(e) => return error(StatusCode::BAD_REQUEST, e),
+            };
+            let Some(refs) = body.after.clone() else {
+                return error(
+                    StatusCode::BAD_REQUEST,
+                    "after needs the list of tasks; an empty list clears the wait",
+                );
+            };
+            if let Some(bad) = refs.iter().find(|r| !board::valid_ref(r)) {
+                return error(
+                    StatusCode::BAD_REQUEST,
+                    format!("bad task reference: {bad}"),
+                );
+            }
+            let joined = refs.join(",");
+            let mut args: Vec<&str> = vec!["after", id];
+            if refs.is_empty() {
+                args.push("--clear");
+            } else {
+                args.push(&joined);
+            }
+            app.force_after
+                .store(true, std::sync::atomic::Ordering::SeqCst);
+            run_board(&app.cfg, &args, Duration::from_secs(30)).await
+        }
+        "todo-add" => {
+            let text = match todo_text(body.text.as_deref().unwrap_or("")) {
+                Ok(t) => t,
+                Err(e) => return error(StatusCode::BAD_REQUEST, e),
+            };
+            let mut snap = app.snapshot.write().await;
+            let id = format!("t{}-{}", now_ms(), snap.todo.len() + 1);
+            snap.todo.push(TodoItem {
+                id,
+                text,
+                at: now_ms(),
+            });
+            let todo = snap.todo.clone();
+            drop(snap);
+            save_todo(&app.cfg, &todo);
+            return Json(json!({"ok": true, "todo": todo})).into_response();
+        }
+        "todo-update" => {
+            let id = body.id.as_deref().unwrap_or("");
+            if !valid_todo_id(id) {
+                return error(StatusCode::BAD_REQUEST, "bad todo id");
+            }
+            let text = match todo_text(body.text.as_deref().unwrap_or("")) {
+                Ok(t) => t,
+                Err(e) => return error(StatusCode::BAD_REQUEST, e),
+            };
+            let mut snap = app.snapshot.write().await;
+            let Some(item) = snap.todo.iter_mut().find(|x| x.id == id) else {
+                return error(StatusCode::NOT_FOUND, "no such todo item");
+            };
+            item.text = text;
+            let todo = snap.todo.clone();
+            drop(snap);
+            save_todo(&app.cfg, &todo);
+            return Json(json!({"ok": true, "todo": todo})).into_response();
+        }
+        "todo-remove" => {
+            let id = body.id.as_deref().unwrap_or("");
+            if !valid_todo_id(id) {
+                return error(StatusCode::BAD_REQUEST, "bad todo id");
+            }
+            let mut snap = app.snapshot.write().await;
+            let before = snap.todo.len();
+            snap.todo.retain(|x| x.id != id);
+            if snap.todo.len() == before {
+                return error(StatusCode::NOT_FOUND, "no such todo item");
+            }
+            let todo = snap.todo.clone();
+            drop(snap);
+            save_todo(&app.cfg, &todo);
+            return Json(json!({"ok": true, "todo": todo})).into_response();
+        }
+        "todo-create" => {
+            let id = body.id.as_deref().unwrap_or("");
+            if !valid_todo_id(id) {
+                return error(StatusCode::BAD_REQUEST, "bad todo id");
+            }
+            let repo = body.repo.as_deref().unwrap_or("").trim().to_string();
+            if !valid_repo(&repo) {
+                return error(StatusCode::BAD_REQUEST, "bad universe name");
+            }
+            let (item, known) = {
+                let snap = app.snapshot.read().await;
+                (
+                    snap.todo.iter().find(|x| x.id == id).cloned(),
+                    snap.projects.iter().any(|p| p.name == repo),
+                )
+            };
+            let Some(item) = item else {
+                return error(StatusCode::NOT_FOUND, "no such todo item");
+            };
+            if !known {
+                return error(
+                    StatusCode::BAD_REQUEST,
+                    format!("нет такой вселенной: {repo}"),
+                );
+            }
+            let title = match todo_text(&item.text) {
+                Ok(t) => t,
+                Err(e) => return error(StatusCode::BAD_REQUEST, e),
+            };
+            match run_board(
+                &app.cfg,
+                &["add", title.as_str(), "--repo", repo.as_str()],
+                Duration::from_secs(60),
+            )
+            .await
+            {
+                Ok(out) => {
+                    let todo = {
+                        let mut snap = app.snapshot.write().await;
+                        snap.todo.retain(|x| x.id != id);
+                        let todo = snap.todo.clone();
+                        todo
+                    };
+                    save_todo(&app.cfg, &todo);
+                    refresh(&app).await;
+                    return Json(json!({"ok": true, "out": clip(out), "todo": todo, "repo": repo}))
+                        .into_response();
+                }
+                Err(e) => return error(StatusCode::BAD_GATEWAY, e),
+            }
+        }
+        "keys" => {
+            let target = body.target.as_deref().unwrap_or("coordinator");
+            let name = match agent_name(target, body.role.as_deref()) {
+                Ok(name) => name,
+                Err(e) => return error(StatusCode::BAD_REQUEST, e),
+            };
+            let keys = body.keys.clone().unwrap_or_default();
+            if keys.is_empty() || keys.len() > 12 {
+                return error(StatusCode::BAD_REQUEST, "give one to twelve keys");
+            }
+            if let Some(bad) = keys.iter().find(|k| !valid_key(k)) {
+                return error(StatusCode::BAD_REQUEST, format!("key not allowed: {bad}"));
+            }
+            let mut args: Vec<&str> = vec!["agent", "send-keys", &name];
+            args.extend(keys.iter().map(String::as_str));
+            return match run_herdr(&args, Duration::from_secs(10)).await {
+                Ok(out) => Json(json!({"ok": true, "out": clip(out)})).into_response(),
+                Err(e) => error(StatusCode::BAD_GATEWAY, e),
+            };
+        }
         "delegate" => {
             let id = match task_id(&body) {
                 Ok(id) => id,
                 Err(e) => return error(StatusCode::BAD_REQUEST, e),
             };
+            app.force_after
+                .store(true, std::sync::atomic::Ordering::SeqCst);
             run_board(
                 &app.cfg,
                 &["delegate", id, "--now"],
@@ -567,6 +959,54 @@ mod tests {
         assert!(!client_is_local(proxy, &h));
         let local = forwarded("127.0.0.1");
         assert!(client_is_local(proxy, &local));
+    }
+
+    #[test]
+    fn only_known_keys_reach_send_keys() {
+        assert!(valid_key("enter"));
+        assert!(valid_key("esc"));
+        assert!(valid_key("up"));
+        assert!(valid_key("y"));
+        assert!(valid_key("7"));
+        assert!(!valid_key("rm"));
+        assert!(!valid_key("shift+tab"));
+        assert!(!valid_key("-1"));
+        assert!(!valid_key(""));
+        assert!(!valid_key("1; rm -rf /"));
+    }
+
+    #[test]
+    fn todo_text_is_one_safe_title() {
+        assert_eq!(
+            todo_text("  Починить   кэш \n отчётов ").unwrap(),
+            "Починить кэш отчётов"
+        );
+        assert!(todo_text("").is_err());
+        assert!(todo_text("   ").is_err());
+        assert!(todo_text("--all").is_err());
+        assert!(todo_text(&"x".repeat(401)).is_err());
+        assert!(valid_todo_id("t1792407710774-1"));
+        assert!(!valid_todo_id("../../etc"));
+        assert!(!valid_todo_id(""));
+        assert!(valid_repo("herdr-planner"));
+        assert!(valid_repo("vm-str:ela/3") == false);
+        assert!(!valid_repo(""));
+    }
+
+    #[test]
+    fn agent_names_follow_the_board() {
+        assert_eq!(agent_name("coordinator", None).unwrap(), "sw-coordinator");
+        assert_eq!(agent_name("alpha/6", None).unwrap(), "sw-alpha-6");
+        assert_eq!(
+            agent_name("alpha/6", Some("reviewer")).unwrap(),
+            "sw-alpha-6-r"
+        );
+        assert_eq!(
+            agent_name("herdr-planner/7", None).unwrap(),
+            "sw-herdr-planner-7"
+        );
+        assert!(agent_name("--all", None).is_err());
+        assert!(agent_name("nothing", None).is_err());
     }
 
     #[test]

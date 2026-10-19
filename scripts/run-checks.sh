@@ -21,7 +21,12 @@ AUTH_SERVER=
 trap '[ -z "$SERVER" ] || kill "$SERVER" 2>/dev/null || true; [ -z "$AUTH_SERVER" ] || kill "$AUTH_SERVER" 2>/dev/null || true; rm -rf "$FX"' EXIT INT TERM
 node scripts/fixture.mjs "$FX" >/dev/null
 mkdir -p "$FX/cfg/herdr-planner" "$FX/state"
-PORT=$((7600 + $$ % 300))
+# A stale server on a PID-derived port would answer instead of ours: ask the
+# kernel for a free one (Node is already required by the page checks).
+free_port() {
+  node -e 'const net=require("net");const start=+process.argv[1];let p=start;const tryOne=()=>{const s=net.createServer();s.once("error",()=>{s.close();p++;if(p<start+300)tryOne();else process.exit(1);});s.once("listening",()=>s.close(()=>console.log(p)));s.listen(p,"127.0.0.1");};tryOne();' "$1"
+}
+PORT=$(free_port 7600)
 FIXTURE_DIR="$FX" \
   HERDR_PROJECTS_BIN="$FX/bin/herdr-projects" \
   HERDR_SOCKET_PATH="$FX/herdr.sock" \
@@ -37,7 +42,7 @@ done
 FIXTURE="$FX" HERDR_PLANNER_TARGET_DIR="$TARGET" node scripts/ui-check.mjs "http://127.0.0.1:$PORT" ${SHOTS:+"$SHOTS"}
 
 # A second server with a password: the login, the cookie and the limit.
-AUTH_PORT=$((PORT + 400))
+AUTH_PORT=$(free_port $((PORT + 1)))
 mkdir -p "$FX/cfg-auth"
 HASH=$(printf 'secret\n' | "$TARGET/debug/herdr-planner" hash-password)
 printf '%s' "$HASH" | XDG_CONFIG_HOME="$FX/cfg-auth" "$TARGET/debug/herdr-planner" set-auth --user me --listen 127.0.0.1 >/dev/null

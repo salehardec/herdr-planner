@@ -470,6 +470,125 @@ pub fn apply_tags(tasks: &mut [Task], tags: &[String]) {
     }
 }
 
+/// One `after` dependency: `to` waits for `from`. A `far` link names a task
+/// on another machine (or a tag this board cannot resolve) in `from`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+pub struct Link {
+    pub from: String,
+    pub to: String,
+    /// `waiting` (the task is not done yet), `done` (it is), `far` (another machine /
+    /// an archived task / an unknown tag).
+    pub kind: String,
+    /// How to name `from` in the world: a tag for an archived task, a machine ref for far.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub label: String,
+}
+
+/// `herdr-projects after ID` prints `ID: waits for TAG (done), TAG`, or
+/// `ID: is to wait for TAG`, or `ID: waits for nothing`. Returns the tags it
+/// names, without the `(done)` markers.
+pub fn parse_after(stdout: &str) -> Vec<String> {
+    let line = stdout.lines().find(|l| !l.trim().is_empty()).unwrap_or("");
+    let mut rest = if let Some(at) = line.find(" is to wait for ") {
+        &line[at + " is to wait for ".len()..]
+    } else if let Some(at) = line.find(" waits for ") {
+        &line[at + " waits for ".len()..]
+    } else {
+        return Vec::new();
+    };
+    for cut in [
+        "; it starts by itself",
+        ", from when it is delegated",
+        ", so it starts now",
+        ". It waits for you:",
+        " and starts by itself",
+    ] {
+        if let Some(at) = rest.find(cut) {
+            rest = &rest[..at];
+        }
+    }
+    let rest = rest.trim().trim_end_matches('.');
+    if rest.is_empty() || rest == "nothing" || rest.starts_with("nothing ") {
+        return Vec::new();
+    }
+    rest.split(',')
+        .map(|item| {
+            item.trim()
+                .strip_suffix(" (done)")
+                .unwrap_or(item.trim())
+                .trim()
+                .to_string()
+        })
+        .filter(|tag| !tag.is_empty())
+        .collect()
+}
+
+/// A task id or a task of another machine (`vm-str:ELA-3`) that `after` may be
+/// given. Tags are not accepted here: the gesture and the API speak ids.
+pub fn valid_ref(r: &str) -> bool {
+    if valid_id(r) && r.contains('/') {
+        return true;
+    }
+    let Some((label, rest)) = r.split_once(':') else {
+        return false;
+    };
+    !label.is_empty()
+        && label.len() <= 64
+        && label
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+        && !rest.is_empty()
+        && rest.len() <= 200
+        && rest
+            .chars()
+            .all(|c| c.is_alphanumeric() || matches!(c, '-' | '_' | '.' | '/' | '@' | '#'))
+}
+
+/// A task's attempts letter, as `herdr-projects pick` takes it.
+pub fn valid_letter(letter: &str) -> bool {
+    letter.len() == 1 && letter.chars().all(|c| c.is_ascii_alphabetic())
+}
+
+/// Turns what `after ID` said into the world's links. `tasks` may hold the
+/// active and archived rows: an archived predecessor is still a done one.
+pub fn links_from(after: &BTreeMap<String, Vec<String>>, tasks: &[Task]) -> Vec<Link> {
+    let by_tag: BTreeMap<&str, &Task> = tasks
+        .iter()
+        .filter(|t| valid_tag(&t.tag))
+        .map(|t| (t.tag.as_str(), t))
+        .collect();
+    let mut out: Vec<Link> = Vec::new();
+    for (to, tags) in after {
+        for tag in tags {
+            let (from, kind, label) = match by_tag.get(tag.as_str()) {
+                Some(t) if !t.archived => (
+                    t.id.clone(),
+                    if t.status == Status::Done {
+                        "done"
+                    } else {
+                        "waiting"
+                    },
+                    t.tag.clone(),
+                ),
+                // An archived task is still a real id the board accepts: draw it as
+                // a far/star node, but keep its id so later link edits can resend it.
+                Some(t) => (t.id.clone(), "far", t.tag.clone()),
+                None => (tag.clone(), "far", tag.clone()),
+            };
+            let link = Link {
+                from,
+                to: to.clone(),
+                kind: kind.to_string(),
+                label,
+            };
+            if !out.contains(&link) {
+                out.push(link);
+            }
+        }
+    }
+    out
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Serialize)]
 pub struct Project {
     pub name: String,
@@ -590,6 +709,10 @@ pub struct Details {
     pub plan: Value,
     pub report: Value,
     pub pr: Value,
+    /// Attempts of a `pick` task, with what each one came to.
+    pub attempts: Value,
+    pub comparison: Value,
+    pub picked: Value,
     pub reports_dir: String,
 }
 
@@ -615,6 +738,9 @@ pub fn parse_details(stdout: &str, reports_dir: &str) -> Result<Details, String>
         plan: v.get("plan").cloned().unwrap_or(Value::Null),
         report: v.get("report").cloned().unwrap_or(Value::Null),
         pr: v.get("pr").cloned().unwrap_or(Value::Null),
+        attempts: v.get("attempts").cloned().unwrap_or(Value::Null),
+        comparison: v.get("comparison").cloned().unwrap_or(Value::Null),
+        picked: v.get("picked").cloned().unwrap_or(Value::Null),
         reports_dir: reports_dir.to_string(),
     })
 }
@@ -903,6 +1029,123 @@ mod tests {
         assert_eq!(d.agent, "omp");
         assert_eq!(d.worktree, "/tmp/w");
         assert_eq!(d.reports_dir, "/tmp/reports");
+    }
+
+    #[test]
+    fn after_output_becomes_tags() {
+        assert_eq!(parse_after("alpha/10: waits for ALP-9"), vec!["ALP-9"]);
+        assert_eq!(
+            parse_after("alpha/10: waits for ALP-9 (done), ALP-3"),
+            vec!["ALP-9", "ALP-3"]
+        );
+        assert_eq!(
+            parse_after("alpha/11: is to wait for ALP-9, ALP-3"),
+            vec!["ALP-9", "ALP-3"]
+        );
+        assert_eq!(
+            parse_after("alpha/10: waits for ALP-9; it starts by itself once that is done"),
+            vec!["ALP-9"]
+        );
+        assert_eq!(
+            parse_after("alpha/10: is to wait for ALP-9, from when it is delegated"),
+            vec!["ALP-9"]
+        );
+        assert_eq!(
+            parse_after("alpha/10: waits for ALP-9. It waits for you: ALP-9 failed"),
+            vec!["ALP-9"]
+        );
+        assert_eq!(
+            parse_after("alpha/11: waits for nothing"),
+            Vec::<String>::new()
+        );
+        assert_eq!(
+            parse_after("alpha/11: waits for nothing, so it starts now"),
+            Vec::<String>::new()
+        );
+        assert_eq!(
+            parse_after("alpha/12: waits for vm-str:ELA-3"),
+            vec!["vm-str:ELA-3"]
+        );
+        assert!(parse_after("").is_empty());
+        assert!(parse_after("No task PLN-999").is_empty());
+    }
+
+    #[test]
+    fn links_resolve_tags_and_mark_the_unknown() {
+        let mut tasks = parse_list(
+            r#"[
+                {"id":"a/1","state":"done","stage":"done"},
+                {"id":"a/2","state":"working","stage":"after","msg":"queued after A-1"},
+                {"id":"a/4","state":"working","stage":"working"},
+                {"id":"b/1","state":"working","stage":"working"}
+            ]"#,
+        )
+        .unwrap();
+        apply_tags(
+            &mut tasks,
+            &["A-1".into(), "A-2".into(), "A-4".into(), "B-1".into()],
+        );
+        let mut after = BTreeMap::new();
+        after.insert("a/2".to_string(), vec!["A-1".to_string()]);
+        after.insert(
+            "a/4".to_string(),
+            vec!["B-1".to_string(), "vm-str:ELA-3".to_string()],
+        );
+        let links = links_from(&after, &tasks);
+        assert_eq!(links.len(), 3);
+        assert_eq!(
+            links[0],
+            Link {
+                from: "a/1".into(),
+                to: "a/2".into(),
+                kind: "done".into(),
+                label: "A-1".into()
+            }
+        );
+        assert_eq!(
+            links[1],
+            Link {
+                from: "b/1".into(),
+                to: "a/4".into(),
+                kind: "waiting".into(),
+                label: "B-1".into()
+            }
+        );
+        assert_eq!(
+            links[2],
+            Link {
+                from: "vm-str:ELA-3".into(),
+                to: "a/4".into(),
+                kind: "far".into(),
+                label: "vm-str:ELA-3".into()
+            }
+        );
+        // An archived predecessor is not drawn as a planet, but keeps its id so a
+        // later link edit may resend it.
+        let mut archived = tasks[0].clone();
+        archived.archived = true;
+        let one = vec![archived];
+        let a = &links_from(&after, &one)[0];
+        assert_eq!(
+            (a.kind.as_str(), a.from.as_str(), a.label.as_str()),
+            ("far", "a/1", "A-1")
+        );
+    }
+
+    #[test]
+    fn after_refs_and_letters_are_safe() {
+        assert!(valid_ref("alpha/11"));
+        assert!(valid_ref("vm-str:ELA-3"));
+        assert!(valid_ref("vm-str:ela/3"));
+        assert!(!valid_ref("ALP-9"));
+        assert!(!valid_ref("--clear"));
+        assert!(!valid_ref("vm-str:"));
+        assert!(!valid_ref(":ELA-3"));
+        assert!(!valid_ref("a b/1"));
+        assert!(valid_letter("B"));
+        assert!(!valid_letter("BB"));
+        assert!(!valid_letter("1"));
+        assert!(!valid_letter(""));
     }
 
     #[test]

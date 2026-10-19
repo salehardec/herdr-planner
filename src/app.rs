@@ -1,17 +1,20 @@
 //! The planner's one process: the board snapshot the page reads, the journal
 //! of what changed, the Coordinator's standing line and the details cache.
 
-use crate::board::{self, Details, Project, Status, Summary, Task};
+use crate::board::{self, Details, Link, Project, Status, Summary, Task};
 use crate::config::{now_ms, AppConfig};
 use crate::coordinator::{self, CoordinatorView};
 use crate::theme::{self, Theme};
 use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, VecDeque};
+use serde_json::Value;
+use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::process::Stdio;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::process::Command;
 use tokio::sync::{Mutex, RwLock};
+use tokio::task::JoinSet;
 use tokio::time::timeout;
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -62,6 +65,14 @@ pub struct CoordinatorState {
     pub source: String,
 }
 
+/// One item of the God's own list: an idea that is not on the board yet.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct TodoItem {
+    pub id: String,
+    pub text: String,
+    pub at: u64,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct Snapshot {
     pub version: String,
@@ -72,6 +83,12 @@ pub struct Snapshot {
     pub archived: Vec<Task>,
     pub projects: Vec<Project>,
     pub summary: Summary,
+    /// `after` dependencies, read from the board and cached between refreshes.
+    pub links: Vec<Link>,
+    /// Reserved for subscription limits (PLN-5): always `null` here.
+    pub limits: Value,
+    /// The God's own list: ideas to drop into a universe as a new task.
+    pub todo: Vec<TodoItem>,
     pub journal: Vec<JournalEntry>,
     pub coordinator: CoordinatorState,
     pub theme: Theme,
@@ -103,6 +120,14 @@ struct SavedJournal {
     entries: Vec<JournalEntry>,
 }
 
+#[derive(Debug, Default)]
+pub struct AfterCache {
+    /// The snapshot sequence the cached map belongs to.
+    pub at_seq: u64,
+    /// Task id → tags it waits for, from `herdr-projects after <id>`.
+    pub map: BTreeMap<String, Vec<String>>,
+}
+
 pub struct App {
     pub cfg: AppConfig,
     pub snapshot: RwLock<Snapshot>,
@@ -112,6 +137,9 @@ pub struct App {
     pub details: Mutex<HashMap<String, (u64, Details)>>,
     pub refresh_lock: Mutex<()>,
     pub action_lock: Mutex<()>,
+    pub after: Mutex<AfterCache>,
+    /// `after`/`delegate` changed a wait: read the waits at the next refresh.
+    pub force_after: AtomicBool,
 }
 
 pub type Shared = Arc<App>;
@@ -132,6 +160,9 @@ impl App {
             archived: Vec::new(),
             projects: Vec::new(),
             summary: Summary::default(),
+            links: Vec::new(),
+            limits: Value::Null,
+            todo: load_todo(&cfg),
             journal: Vec::new(),
             coordinator: CoordinatorState {
                 view: CoordinatorView::default(),
@@ -169,12 +200,27 @@ impl App {
             details: Mutex::new(HashMap::new()),
             refresh_lock: Mutex::new(()),
             action_lock: Mutex::new(()),
+            after: Mutex::new(AfterCache::default()),
+            force_after: AtomicBool::new(false),
         })
     }
 }
 
 fn state_json_path(cfg: &AppConfig, name: &str) -> std::path::PathBuf {
     cfg.state_dir.join(name)
+}
+
+fn load_todo(cfg: &AppConfig) -> Vec<TodoItem> {
+    std::fs::read_to_string(state_json_path(cfg, "todo.json"))
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_default()
+}
+
+pub fn save_todo(cfg: &AppConfig, todo: &[TodoItem]) {
+    if let Ok(s) = serde_json::to_string(todo) {
+        write_state(state_json_path(cfg, "todo.json"), &s);
+    }
 }
 
 fn load_chat(cfg: &AppConfig) -> ChatState {
@@ -319,6 +365,31 @@ pub async fn refresh(app: &Shared) {
     }
     *app.chat.lock().await = chat;
 
+    let seq = app.snapshot.read().await.seq + 1;
+    let read = match &json {
+        Ok(text) => board::parse_list(text),
+        Err(e) => Err(e.clone()),
+    };
+
+    // The waits are read outside the snapshot lock: each is a board process,
+    // and a slow one must not keep the page from reading the snapshot.
+    let (active, archived, links) = match read {
+        Ok(mut tasks) => {
+            if let Ok(plain) = &plain {
+                let tags = board::plain_tags(plain);
+                board::apply_tags(&mut tasks, &tags);
+            }
+            let (archived, active): (Vec<Task>, Vec<Task>) =
+                tasks.into_iter().partition(|t| t.archived);
+            let after = poll_after(app, seq, &active).await;
+            let mut all = active.clone();
+            all.extend(archived.iter().cloned());
+            let links = board::links_from(&after, &all);
+            (Ok(active), archived, links)
+        }
+        Err(e) => (Err(e), Vec::new(), Vec::new()),
+    };
+
     let mut snap = app.snapshot.write().await;
     snap.at = now;
     snap.seq += 1;
@@ -329,36 +400,67 @@ pub async fn refresh(app: &Shared) {
         source: "herdr-projects coordinator · последние строки окна Координатора".into(),
     };
 
-    match json {
-        Ok(text) => match board::parse_list(&text) {
-            Ok(mut tasks) => {
-                if let Ok(plain) = &plain {
-                    let tags = board::plain_tags(plain);
-                    board::apply_tags(&mut tasks, &tags);
-                }
-                let (archived, active): (Vec<Task>, Vec<Task>) =
-                    tasks.into_iter().partition(|t| t.archived);
-                let projects = board::projects(&active);
-                let summary = board::summary(&active, &archived, &projects);
-                let mut journal = app.journal.lock().await;
-                update_journal(&mut journal, &active, now);
-                save_journal(cfg, &journal);
-                let entries: Vec<JournalEntry> = journal.entries.iter().cloned().collect();
-                snap.journal = entries;
-                snap.tasks = active;
-                snap.archived = archived;
-                snap.projects = projects;
-                snap.summary = summary;
-                snap.board = BoardStatus {
-                    ok: true,
-                    error: String::new(),
-                    stale_at: 0,
-                };
-            }
-            Err(e) => stale(&mut snap, e, now),
-        },
+    match active {
+        Ok(active) => {
+            let projects = board::projects(&active);
+            let summary = board::summary(&active, &archived, &projects);
+            let mut journal = app.journal.lock().await;
+            update_journal(&mut journal, &active, now);
+            save_journal(cfg, &journal);
+            let entries: Vec<JournalEntry> = journal.entries.iter().cloned().collect();
+            snap.journal = entries;
+            snap.tasks = active;
+            snap.archived = archived;
+            snap.projects = projects;
+            snap.summary = summary;
+            snap.links = links;
+            snap.board = BoardStatus {
+                ok: true,
+                error: String::new(),
+                stale_at: 0,
+            };
+        }
         Err(e) => stale(&mut snap, e, now),
     }
+}
+
+/// Reads `herdr-projects after <id>` for every active, unfinished task. Six
+/// processes at a time; if there are more than 24 tasks the walk runs every
+/// third refresh unless an `after`/`delegate` action asked for it right away.
+/// A failed read keeps what was known for that task.
+async fn poll_after(app: &Shared, seq: u64, tasks: &[Task]) -> BTreeMap<String, Vec<String>> {
+    let ids: Vec<String> = tasks
+        .iter()
+        .filter(|t| !t.archived && t.status != Status::Done)
+        .map(|t| t.id.clone())
+        .collect();
+    let mut cache = app.after.lock().await;
+    let force = app.force_after.swap(false, Ordering::SeqCst);
+    let every = if ids.len() > 24 { 3 } else { 1 };
+    if !force && cache.at_seq != 0 && seq.saturating_sub(cache.at_seq) < every {
+        return cache.map.clone();
+    }
+    let mut next = cache.map.clone();
+    next.retain(|id, _| ids.iter().any(|x| x == id));
+    for chunk in ids.chunks(6) {
+        let mut set = JoinSet::new();
+        for id in chunk {
+            let cfg = app.cfg.clone();
+            let id = id.clone();
+            set.spawn(async move {
+                let out = run_board(&cfg, &["after", id.as_str()], Duration::from_secs(8)).await;
+                (id, out)
+            });
+        }
+        while let Some(joined) = set.join_next().await {
+            if let Ok((id, Ok(out))) = joined {
+                next.insert(id, board::parse_after(&out));
+            }
+        }
+    }
+    cache.map = next.clone();
+    cache.at_seq = seq;
+    next
 }
 
 fn stale(snap: &mut Snapshot, error: String, now: u64) {

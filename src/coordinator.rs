@@ -17,6 +17,9 @@ pub struct CoordinatorView {
     pub status: String,
     /// The lines after the standing line, trimmed.
     pub reply: String,
+    /// The Coordinator shows a dialog on its own screen (`state == blocked`):
+    /// it waits for a person, not for a turn.
+    pub dialog: bool,
     pub error: String,
     /// A message was just sent and its answer has not arrived yet.
     pub busy: bool,
@@ -47,17 +50,24 @@ pub fn parse(stdout: &str) -> CoordinatorView {
     while rest.last().is_some_and(|l| l.trim().is_empty()) {
         rest.pop();
     }
+    let dialog = status == "blocked";
     CoordinatorView {
         status_line,
         status,
         reply: rest.join("\n"),
+        dialog,
         ..CoordinatorView::default()
     }
 }
 
-/// Whether the standing line says the Coordinator is on something.
+/// Whether the standing line says the Coordinator is on something. `blocked`
+/// is not work: it shows a dialog and waits for the human.
 pub fn is_busy(status: &str) -> bool {
-    !(status.is_empty() || status == "idle" || status == "stopped" || status == "off")
+    !(status.is_empty()
+        || status == "idle"
+        || status == "stopped"
+        || status == "off"
+        || status == "blocked")
 }
 
 #[cfg(test)]
@@ -105,5 +115,20 @@ mod tests {
         assert!(!is_busy("idle"));
         assert!(!is_busy("stopped"));
         assert!(!is_busy(""));
+        assert!(
+            !is_busy("blocked"),
+            "a dialog waits for the human, not for a turn"
+        );
+    }
+
+    #[test]
+    fn blocked_means_a_dialog_on_its_screen() {
+        let c = parse("Coordinator: blocked · claude · claude-opus-5-5 · medium\n\nMay I remove the old branches?");
+        assert_eq!(c.status, "blocked");
+        assert!(c.dialog);
+        assert!(!c.busy);
+        assert_eq!(c.reply, "May I remove the old branches?");
+        assert!(!parse("Coordinator: idle · claude\n").dialog);
+        assert!(!parse("").dialog);
     }
 }

@@ -23,51 +23,71 @@
     <symbol id="g-folder" viewBox="0 0 16 16"><path d="M1.8 4.4a1 1 0 0 1 1-1h3.2l1.5 1.8h5.7a1 1 0 0 1 1 1v6a1 1 0 0 1-1 1H2.8a1 1 0 0 1-1-1z"/></symbol>
     <symbol id="g-ext" viewBox="0 0 16 16"><path d="M9 2.8h4.2V7M13 3 7.4 8.6M11.2 9.6v3.2H3.2v-8h3.2"/></symbol>
     <symbol id="g-planner" viewBox="0 0 16 16"><rect x="2" y="2.4" width="5" height="5" rx="1"/><rect x="9" y="2.4" width="5" height="3" rx="1"/><rect x="2" y="9.4" width="5" height="4.2" rx="1"/><rect x="9" y="7.4" width="5" height="6.2" rx="1"/></symbol>
-  <symbol id="g-archive" viewBox="0 0 16 16"><rect x="2" y="3" width="12" height="3" rx=".8"/><path d="M3 6v6.2a.8.8 0 0 0 .8.8h8.4a.8.8 0 0 0 .8-.8V6M6.2 9h3.6"/></symbol>
+    <symbol id="g-archive" viewBox="0 0 16 16"><rect x="2" y="3" width="12" height="3" rx=".8"/><path d="M3 6v6.2a.8.8 0 0 0 .8.8h8.4a.8.8 0 0 0 .8-.8V6M6.2 9h3.6"/></symbol>
     <symbol id="g-refresh" viewBox="0 0 16 16"><path d="M13.2 6.4A5.4 5.4 0 1 0 13 9.8"/><path d="M13.4 3.2v3.4H10"/></symbol>
     <symbol id="g-logout" viewBox="0 0 16 16"><path d="M9.4 2.8H3.6v10.4h5.8M7.4 8h6.2M11 5.6 13.4 8 11 10.4"/></symbol>
     <symbol id="g-help" viewBox="0 0 16 16"><circle cx="8" cy="8" r="5.8"/><path d="M6.6 6.3a1.5 1.5 0 1 1 2.2 1.2c-.5.3-.8.7-.8 1.2"/><circle cx="8" cy="11.1" r=".2" fill="currentColor"/></symbol>
     <symbol id="g-send" viewBox="0 0 16 16"><path d="M2.4 8h10M8.6 4.2 12.4 8l-3.8 3.8"/></symbol>
     <symbol id="g-close" viewBox="0 0 16 16"><path d="m4 4 8 8M12 4l-8 8"/></symbol>
+    <symbol id="g-link" viewBox="0 0 16 16"><path d="M6.2 9.8 9.8 6.2M5.4 7.4 3.9 8.9a2.6 2.6 0 0 0 3.7 3.7l1.5-1.5M10.6 8.6l1.5-1.5a2.6 2.6 0 0 0-3.7-3.7L6.9 4.9"/></symbol>
+    <symbol id="g-bell" viewBox="0 0 16 16"><path d="M8 2.2a4 4 0 0 1 4 4v3l1.2 2H2.8L4 9.2v-3a4 4 0 0 1 4-4zM6.6 13a1.5 1.5 0 0 0 2.8 0"/></symbol>
+    <symbol id="g-universe" viewBox="0 0 16 16"><circle cx="8" cy="8" r="2"/><ellipse cx="8" cy="8" rx="6.4" ry="2.6" transform="rotate(-24 8 8)"/></symbol>
+    <symbol id="g-list" viewBox="0 0 16 16"><path d="M5.2 4h8M5.2 8h8M5.2 12h8"/><circle cx="2.8" cy="4" r=".7" fill="currentColor"/><circle cx="2.8" cy="8" r=".7" fill="currentColor"/><circle cx="2.8" cy="12" r=".7" fill="currentColor"/></symbol>
+    <symbol id="g-screen" viewBox="0 0 16 16"><rect x="1.8" y="2.8" width="12.4" height="8.4" rx="1.2"/><path d="M5.6 14h4.8M8 11.2V14"/></symbol>
   </defs>
 </svg>
 
-<section class="win" id="win" aria-label="Herdr Planner">
-  <header class="top" id="top"></header>
+<div class="win" id="win">
+  <div class="scene-wrap" id="scene-wrap">
+    <canvas id="scene" aria-label="Трёхмерный мир доски"></canvas>
+    <div class="labels" id="labels"></div>
+  </div>
+
+  <div class="nogl" id="nogl" hidden>
+    <b>WebGL недоступен — показан список мира.</b>
+    <span>Сцена выключена, но все вселенные, задачи и действия работают: навигатор открыт, панели на месте.</span>
+  </div>
+
+  <header class="hud" id="hud"></header>
   <div id="banner"></div>
-  <div class="main" id="main">
-    <svg class="threads" id="threads" aria-hidden="true"><g id="g-th"></g><g id="g-pk"></g></svg>
-    <div class="cols2">
-      <div class="col left" id="colL"></div>
-      <div class="core" id="core">
-        <div class="core-lab lbl"><span>Локальная сессия</span><span>herdr-projects coordinator</span></div>
-        <div class="mascot-wrap">
-          <svg class="mascot" id="mascot" viewBox="0 0 140 120" aria-hidden="true"></svg>
-          <div class="mname">Координатор</div>
-          <div class="mstate" id="mstate">готов</div>
-        </div>
-        <div class="console" id="console">
-          <div class="c-head lbl"><span>Консоль · чат с Координатором</span><span id="cstate">● готов</span></div>
-          <div class="c-log clamp" id="clog" aria-live="polite"></div>
-          <form class="c-in" id="ask" autocomplete="off">
-            <span class="pr">›</span>
-            <textarea id="ask-in" rows="1" placeholder="Сказать Координатору: «заведи задачу…», «как дела по APC?»" aria-label="Сообщение Координатору"></textarea>
-            <button class="send" type="submit" id="send" data-ready="false" aria-label="Отправить"><kbd style="font:inherit">↵</kbd><span class="sendlbl"> отправить</span></button>
-          </form>
-        </div>
-        <div class="chips" id="chips"></div>
-      </div>
-      <div class="col right" id="colR"></div>
+
+  <aside class="focus" id="focus" aria-label="Фокус" hidden></aside>
+  <section class="drawer" id="drawer-log" aria-label="Журнал доски" hidden></section>
+  <section class="drawer" id="drawer-wait" aria-label="Ждёт тебя" hidden></section>
+  <section class="drawer" id="drawer-nav" aria-label="Навигатор мира" role="tree" hidden></section>
+
+  <div class="todo-dock" id="todo-dock">
+    <div class="todo" id="todo">
+      <div class="t-head lbl"><span>Дела божьи</span><span id="todo-count">0</span></div>
+      <div class="t-list" id="todo-list"></div>
+      <form class="t-new" id="todo-new" autocomplete="off">
+        <input id="todo-in" placeholder="Новое дело…" maxlength="400" aria-label="Новое дело божье">
+        <button class="btn" type="submit">Добавить</button>
+      </form>
+      <div class="hint">Перетащи дело во вселенную — оно станет там планетой.</div>
     </div>
   </div>
-  <div class="lanes">
-    <section class="lane" id="laneLog"></section>
-    <section class="lane" id="laneQ"></section>
-    <section class="lane" id="laneF"></section>
+
+  <div class="console-dock" id="console-dock">
+    <div class="console" id="console">
+      <div class="c-head lbl"><span>Консоль · чат с Координатором</span><span id="cstate">● готов</span></div>
+      <div class="c-log" id="clog" aria-live="polite"></div>
+      <div class="c-dialog" id="cdialog" hidden></div>
+      <div class="c-variants" id="cvariants" hidden></div>
+      <form class="c-in" id="ask" autocomplete="off">
+        <span class="pr">›</span>
+        <textarea id="ask-in" rows="1" placeholder="Сказать Координатору: «заведи задачу…», «как дела по APC?»" aria-label="Сообщение Координатору"></textarea>
+        <button class="send" type="submit" id="send" data-ready="false" aria-label="Отправить"><kbd style="font:inherit">↵</kbd><span class="sendlbl"> отправить</span></button>
+      </form>
+      <div class="c-attach" id="attach" hidden></div>
+    </div>
   </div>
-  <div class="ghosts" id="ghosts" aria-hidden="true"></div>
+
   <div class="toasts" id="toasts" role="status"></div>
-</section>
-<script src="/app.js"></script>
+  <div class="help" id="help" hidden></div>
+  <div class="sr" id="live" aria-live="polite"></div>
+</div>
+
+<script type="module" src="/app.js"></script>
 </body>
 </html>

@@ -1,14 +1,15 @@
 #!/usr/bin/env node
-// Checks of the dashboard in headless Chromium over the DevTools protocol.
+// Checks of the 3D world in headless Chromium over the DevTools protocol.
 // No dependencies (Node 22+ has WebSocket). With the server running:
 //   FIXTURE=DIR node scripts/ui-check.mjs http://127.0.0.1:7117 [screenshot-dir]
 // `scripts/run-checks.sh` starts the server on the world of scripts/fixture.mjs.
 // The fixture's logs are the witness for every board command.
 
 import { spawn } from 'node:child_process';
-import { mkdtempSync, writeFileSync, readFileSync, existsSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, readFileSync, existsSync, unlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { parseOptions } from '../web/requests.js';
 
 const base = process.argv[2] || 'http://127.0.0.1:7117';
 const shots = process.argv[3] || null;
@@ -28,6 +29,10 @@ function check(name, ok, extra = '') {
   console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}${extra ? ' — ' + extra : ''}`);
   if (!ok) failed++;
 }
+check('plain bullets are not answer options', parseOptions('Сделал:\n- обновил README\n- поправил тесты\n\nВсё ок? Это всё.').length === 0);
+check('bullets under a question are not options', parseOptions('Что делаем?\n- один\n- два').length === 0);
+check('numbered options after the question are answers', JSON.stringify(parseOptions('Что делаем?\n1) **Да**\n2) `Нет`')) === JSON.stringify([{ label: '1)', value: 'Да' }, { label: '2)', value: 'Нет' }]));
+
 async function waitForChrome() {
   for (let i = 0; i < 60; i++) {
     try { const r = await fetch(`http://127.0.0.1:${port}/json/version`); if (r.ok) return; } catch {}
@@ -38,6 +43,10 @@ async function waitForChrome() {
 
 let ws; let id = 0; const pending = new Map(); const errors = [];
 const send = (method, params = {}) => new Promise((r) => { const i = ++id; pending.set(i, r); ws.send(JSON.stringify({ id: i, method, params })); });
+const keyText = async (ch) => {
+  await send('Input.dispatchKeyEvent', { type: 'keyDown', text: ch, key: ch });
+  await send('Input.dispatchKeyEvent', { type: 'keyUp', key: ch });
+};
 const evalJs = async (expr) => {
   const reply = await Promise.race([
     send('Runtime.evaluate', { expression: expr, returnByValue: true, awaitPromise: true }),
@@ -65,6 +74,26 @@ const calls = (file = 'commands.jsonl') => {
 };
 const lastCall = (file = 'commands.jsonl') => calls(file).at(-1);
 const stateApi = () => evalJs('fetch("/api/state").then(r => r.json())');
+const fly = async (target) => { await evalJs(`world.flyTo(${JSON.stringify(target)})`); await sleep(250); };
+const debug = () => evalJs('window.world ? world.debug() : null');
+const LAB_STATS = `(() => {
+  const els = [...document.querySelectorAll('.lbl3d[data-id^="alpha/"]')];
+  const rects = els.map((e) => ({ id: e.dataset.id, cls: e.className, r: e.getBoundingClientRect(), p: world.screenOf(e.dataset.id) }));
+  const chips = rects.filter((x) => x.cls.split(' ').includes('compact'));
+  let overlaps = 0; const over = [];
+  for (let i = 0; i < chips.length; i++) for (let j = i + 1; j < chips.length; j++) {
+    const a = chips[i].r, b = chips[j].r;
+    if (Math.min(a.right, b.right) - Math.max(a.left, b.left) > 2 && Math.min(a.bottom, b.bottom) - Math.max(a.top, b.top) > 2) { overlaps++; over.push([chips[i].id, chips[j].id]); }
+  }
+  const below = rects.filter((x) => x.p && x.r.bottom > x.p.y + 2).map((x) => x.id);
+  const full = rects.filter((x) => { const c = x.cls.split(' '); return !c.includes('compact') && !c.includes('dot'); }).length;
+  return { count: rects.length, overlaps, over, below, full, camera: world.debug().camera, view: world.debug().view };
+})()`;
+async function waitLog(pred, ms = 8000) {
+  const end = Date.now() + ms;
+  while (Date.now() < end) { if (pred()) return true; await sleep(120); }
+  return false;
+}
 
 await waitForChrome();
 const tabs = await (await fetch(`http://127.0.0.1:${port}/json/list`)).json();
@@ -74,187 +103,289 @@ await new Promise((r) => { ws.onopen = r; });
 ws.onmessage = (e) => {
   const m = JSON.parse(e.data);
   if (m.id && pending.has(m.id)) { pending.get(m.id)(m); pending.delete(m.id); }
-  else if (m.method === 'Runtime.exceptionThrown') errors.push(m.params.exceptionDetails?.text || 'exception');
+  else if (m.method === 'Runtime.exceptionThrown') errors.push(m.params.exceptionDetails?.exception?.description || m.params.exceptionDetails?.text || 'exception');
   else if (m.method === 'Runtime.consoleAPICalled' && m.params.type === 'error') errors.push(m.params.args?.map((a) => a.value || a.description).join(' '));
-  else if (m.method === 'Log.entryAdded' && m.params.entry.level === 'error') errors.push(m.params.entry.text);
+  else if (m.method === 'Log.entryAdded' && m.params.entry.level === 'error') {
+    // A 502 from a refused board command is the expected answer to a bad link;
+    // the page shows the board's words in a toast, not a JavaScript error.
+    if (!String(m.params.entry.text).includes('Failed to load resource')) errors.push(m.params.entry.text);
+  }
 };
 await send('Runtime.enable');
 await send('Log.enable');
 await send('Page.enable');
 await send('Page.navigate', { url: base + '/' });
-await sleep(1800);
+await sleep(2200);
+check('the world starts', await waitFor('window.world && world.debug().planets > 0', 12000));
+check('the page has a title and no console errors', (await evalJs('document.title')).includes('Herdr Planner') && errors.length === 0, errors.slice(0, 2).join('; '));
+check('the world fills the viewport', await evalJs('Math.abs(document.querySelector("#win").getBoundingClientRect().width - innerWidth) < 2'));
 
-check('the page has a title and no console errors', (await evalJs('document.title')) === 'Herdr Planner' && errors.length === 0, errors.slice(0, 2).join('; '));
-check('the dashboard fills the viewport', await evalJs('Math.abs(document.querySelector(".win").getBoundingClientRect().width - innerWidth) < 2'));
-check('every active task is a card', (await evalJs('document.querySelectorAll(".col .card").length')) === 15, String(await evalJs('document.querySelectorAll(".col .card").length')));
-const statuses = await evalJs('[...new Set([...document.querySelectorAll(".col .card")].map(c => c.dataset.s))].sort()');
-check('the seven card statuses are drawn', ['failed', 'plan', 'queued', 'ready', 'review', 'waiting', 'working'].every((s) => statuses.includes(s)), statuses.join(','));
-check('the header counts waiting, projects and quiet ones', /ЖДУТ ТЕБЯ\s+9/i.test(await text('#top')) && /ПРОЕКТОВ\s+4/i.test(await text('#top')) && /ТИХИХ\s+1/i.test(await text('#top')), (await text('#top')).replace(/\s+/g, ' ').slice(0, 220));
+const d0 = await debug();
+check('WebGL is on', d0?.webgl === true, JSON.stringify(d0 && { simple: d0.simple, fps: d0.fps }));
+check('every active task is a planet', d0?.planets === 17, String(d0?.planets));
+check('the seven active statuses are drawn', ['failed', 'plan', 'queued', 'ready', 'review', 'waiting', 'working'].every((s) => d0?.statuses.includes(s)), (d0?.statuses || []).join(','));
+check('universes are projects, quiet ones marked', d0?.universes === 5 && d0?.quiet === 1, JSON.stringify({ u: d0?.universes, q: d0?.quiet }));
+check('the board dependencies are links', d0?.links.some((l) => l.from === 'alpha/9' && l.to === 'alpha/10') && d0?.links.some((l) => l.from === 'alpha/4' && l.to === 'gamma/1'), JSON.stringify(d0?.links));
+check('the HUD counts requests and universes', /ЖДУТ ТЕБЯ\s+11/i.test(await text('#hud')) && /ВСЕЛЕННЫХ\s+4/i.test(await text('#hud')) && /ТИХИХ\s+1/i.test(await text('#hud')), (await text('#hud')).replace(/\s+/g, ' ').slice(0, 240));
+await shot('world-overview.png');
 
-// Threads must not leave the visible column or cross the bottom lanes.
-const offscreen = await evalJs(`(() => {
-  document.querySelectorAll('.col').forEach((c) => { c.scrollTop = c.scrollHeight; });
-  layoutThreads();
-  const out = [];
-  document.querySelectorAll('.col').forEach((col) => {
-    const cr = col.getBoundingClientRect();
-    col.querySelectorAll('.group').forEach((g) => {
-      const h = g.querySelector('.ghead').getBoundingClientRect();
-      if (h.bottom <= cr.top + 1 || h.top >= cr.bottom - 1) out.push(g.dataset.repo);
-    });
-  });
-  return out;
+// The God's todo: a list near the chat; a drag into a universe makes a planet.
+check('the God has a todo list near the chat', await evalJs('document.querySelectorAll("#todo-list .todo-item").length === 2'), await evalJs('document.querySelectorAll("#todo-list .todo-item").length'));
+await evalJs('document.querySelector("#todo-in").value = "Проверить деплой"; document.querySelector("#todo-new").requestSubmit()');
+check('a new todo item is kept', await waitFor('document.querySelectorAll("#todo-list .todo-item").length === 3', 6000));
+const todoFile = () => JSON.parse(readFileSync(join(fixture, 'state', 'herdr-planner', 'todo.json'), 'utf8'));
+check('the todo list is on the server', todoFile().some((x) => x.text === 'Проверить деплой'));
+const rowsBefore = (await stateApi()).tasks.length + (await stateApi()).archived.length;
+await evalJs(`(() => {
+  const lab = document.querySelector('.lbl3d.uni[data-universe="alpha"]');
+  const dt = new DataTransfer(); dt.setData('text/plain', 't1');
+  lab.dispatchEvent(new DragEvent('dragover', { bubbles: true, cancelable: true, dataTransfer: dt }));
+  lab.dispatchEvent(new DragEvent('drop', { bubbles: true, cancelable: true, dataTransfer: dt }));
+  return true;
 })()`);
-check('scrolling leaves projects with their headers out of view', offscreen.length > 0, JSON.stringify(offscreen));
-check('threads of scrolled-out projects are hidden', await evalJs(`(${JSON.stringify(offscreen)}).every((repo) => {
-  const g = document.querySelector('#g-th g[data-repo="' + repo + '"]');
-  return !g || g.style.display === 'none';
-})`));
-check('no thread is drawn over the bottom lanes', !(await evalJs(`(() => {
-  const l = document.querySelector('.lanes').getBoundingClientRect();
-  return [...document.querySelectorAll('#g-th path, #g-pk path')].some((p) => {
-    const r = p.getBoundingClientRect();
-    return r.width + r.height > 0 && r.bottom > l.top && r.top < l.bottom;
-  });
-})()`)));
-await evalJs('document.querySelectorAll(".col").forEach((c) => { c.scrollTop = 0; }); layoutThreads(); true');
-await sleep(250);
-check('a ready card offers "Одобрить"', (await text('.card[data-id="alpha/4"]')).includes('Одобрить'));
-check('a failed card offers "Повторить"', (await text('.card[data-id="alpha/8"]')).includes('Повторить'));
-check('a waiting card offers "Ответить"', (await text('.card[data-id="alpha/2"]')).includes('Ответить'));
-check('a plan card offers "Одобрить план"', (await text('.card[data-id="alpha/3"]')).includes('Одобрить план'));
-check('old done tasks fold into "Сделано ещё"', /Сделано ещё 2/.test(await text('.group[data-repo="alpha"]')));
+check('dropping a todo into a universe creates a task', await waitFor(`fetch('/api/state').then(r=>r.json()).then(s => s.tasks.some(t => t.repo === 'alpha' && t.title === 'Починить кэш отчётов'))`, 15000), JSON.stringify(lastCall()));
+check('the board received add with the universe', calls().some((c) => c.argv[0] === 'add' && c.argv.includes('--repo') && c.argv.includes('alpha')), JSON.stringify(lastCall()));
+check('the created task is a new planet', await waitFor(`(${JSON.stringify(false)}) || fetch('/api/state').then(r=>r.json()).then(s => s.tasks.some(t => t.repo === 'alpha' && t.title === 'Починить кэш отчётов')) && world.debug().planets === 18`, 15000), String((await debug())?.planets));
+check('the dropped item leaves the todo list', await evalJs('document.querySelectorAll("#todo-list .todo-item").length === 2') && !todoFile().some((x) => x.id === 't1'));
+const rowsAfter = (await stateApi()).tasks.length + (await stateApi()).archived.length;
+check('the board grew by one task', rowsAfter === rowsBefore + 1, `${rowsBefore} -> ${rowsAfter}`);
 
-// Focus and details.
-await click('.card[data-id="alpha/6"]');
-check('a card opens the focus lane', await waitFor('document.querySelector("#laneF").innerText.includes("Миграция базы")'));
-check('focus shows the worktree and the branch', await waitFor('document.querySelector("#laneF").innerText.includes("worktrees") && document.querySelector("#laneF").innerText.includes("work/6")'));
+// Editing and removing an item.
+await evalJs(`(() => { const s = document.querySelector('[data-todo-text="t2"]'); s.dispatchEvent(new MouseEvent('dblclick', { bubbles: true })); return true; })()`);
+await evalJs(`(() => { const i = document.querySelector('.todo-item .edit'); if (!i) return false; i.value = 'Тёмная тема и настройки'; i.dispatchEvent(new Event('input', { bubbles: true })); return true; })()`);
+await sleep(5200);
+check('a todo editor survives the 4-second refresh', await evalJs('!!document.querySelector(".todo-item .edit") && document.activeElement.classList.contains("edit")'), JSON.stringify({ input: await evalJs('!!document.querySelector(".todo-item .edit")'), active: await evalJs('document.activeElement.className') }));
+await evalJs(`(() => { const i = document.querySelector('.todo-item .edit'); if (!i) return false; i.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })); return true; })()`);
+let editedTodo = false;
+for (let i = 0; i < 40 && !editedTodo; i++) { if (todoFile().some((x) => x.text === 'Тёмная тема и настройки')) editedTodo = true; else await sleep(150); }
+check('a todo item can be edited', editedTodo, JSON.stringify(todoFile()));
+await evalJs('document.querySelector("[data-act=\"todo-del\"][data-todo-id=\"t2\"]").click()');
+await waitFor('document.querySelector(\'[data-todo-text="t2"]\')?.textContent.includes("Тёмная тема и настройки")', 4000);
+const removedTodo = await evalJs('(() => { const b = document.querySelector(\'[data-act="todo-del"][data-todo-id="t2"]\'); if (!b) return false; b.click(); return true; })()');
+check('a todo item can be removed', removedTodo && await waitFor('document.querySelectorAll("#todo-list .todo-item").length === 1', 5000), JSON.stringify({ removedTodo, n: await evalJs('document.querySelectorAll("#todo-list .todo-item").length'), todo: todoFile() }));
+
+// Labels: the full label of a planet carries the key and the question itself.
+await fly('alpha/2');
+const labelOk = await waitFor(`(() => {
+  const e = document.querySelector('.lbl3d[data-id="alpha/2"]');
+  return !!e && e.textContent.includes('ALP-2') && e.textContent.includes('Какую схему брать');
+})()`, 7000);
+check('a planet label carries its key and question', labelOk, JSON.stringify({ ids: await evalJs('[...document.querySelectorAll(".lbl3d[data-id]")].map(e=>e.dataset.id).slice(0,30)'), d: await debug() }));
+
+// A text answer survives the 4-second refresh, and the rest of the typing is
+// still text: a lost focus would turn 'д' into link mode.
+await fly('alpha/3');
+await click('#focus [data-act="answer"]');
+check('"return with remarks" focuses the answer field', await waitFor('document.activeElement.id === "tell"', 4000), await evalJs('document.activeElement.id'));
+await send('Input.insertText', { text: 'верни пла' });
+await sleep(5200);
+check('the answer field keeps focus across a refresh', await evalJs('document.activeElement.id === "tell"'), await evalJs('document.activeElement.tagName + "/" + (document.activeElement.id || "")'));
+await keyText('д');
+check('typing after a refresh stays in the field', await evalJs('document.querySelector("#tell").value.endsWith("д")'), await evalJs('document.querySelector("#tell").value'));
+check('a lost letter does not turn on link mode', await evalJs('plannerDebug().linkMode === false'));
+check('a lost letter opens no drawers and keeps Focus', await evalJs('document.querySelector("#drawer-log").hidden && document.querySelector("#drawer-wait").hidden && document.querySelector("#drawer-nav").hidden && !document.querySelector("#focus").hidden'));
+await evalJs('(() => { const i = document.querySelector("#tell"); i.value = ""; i.dispatchEvent(new Event("input", { bubbles: true })); return true; })()');
+// Fly to a working task: focus shows title, worktree and branch.
+await fly('alpha/6');
+check('a flight opens the focus panel with details', await waitFor('document.querySelector("#focus").innerText.includes("Миграция базы") && document.querySelector("#focus").innerText.includes("worktrees") && document.querySelector("#focus").innerText.includes("work/6")', 8000), (await text('#focus')).replace(/\s+/g, ' ').slice(0, 200));
 check('focus offers the agent message field', await evalJs('!!document.querySelector("#tell")'));
+await shot('world-focus.png');
+await evalJs('document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }))');
+check('Esc returns to the overview', await waitFor('world.debug().view === "overview"', 3000), await evalJs('world.debug().view'));
 
-// A confirmation belongs to one task and one command: arming approve must
-// not let a single click on «Всё равно влить» merge anything.
-await click('.card[data-id="alpha/4"]');
-await click('#laneF [data-act="approve"]');
-check('approve arms visibly', (await text('#laneF [data-act="approve"]')).includes('Подтвердить'));
-await click('#laneF [data-act="anyway"]');
+// A confirmation belongs to one task and one command.
+await fly('alpha/4');
+await click('#focus [data-act="approve"]');
+check('approve arms visibly', (await text('#focus [data-act="approve"]')).includes('Подтвердить'));
+await click('#focus [data-act="anyway"]');
 check('anyway does not reuse the approve arm', !calls().some((c) => c.argv[0] === 'approve' && c.argv[1] === 'alpha/4'), JSON.stringify(lastCall()));
-check('anyway has its own visible confirmation', (await text('#laneF [data-act="anyway"]')).includes('Подтвердить «всё равно»'));
+check('anyway has its own visible confirmation', (await text('#focus [data-act="anyway"]')).includes('Подтвердить «всё равно»'));
 
-// Approve needs two clicks; the server also refuses a bare approve.
 const bare = await fetch(base + '/api/action', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ action: 'approve', id: 'alpha/3' }) });
 check('the API refuses an approval without confirmation', bare.status === 400, String(bare.status));
 const bareAnyway = await fetch(base + '/api/action', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ action: 'anyway', id: 'alpha/5' }) });
 check('the API refuses anyway without confirmation', bareAnyway.status === 400, String(bareAnyway.status));
 const badId = await fetch(base + '/api/action', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ action: 'retry', id: '--all/1' }) });
 check('a malformed task id is a 400, not a gateway error', badId.status === 400, String(badId.status));
-await click('.card[data-id="alpha/4"]');
-await click('.card[data-id="alpha/4"] .btn.go');
-check('approve arms on the first click', await waitFor('document.querySelector(\'.card[data-id="alpha/4"] .btn.go\')?.textContent.includes("Подтвердить")'));
+await fly('alpha/4');
+await click('#focus [data-act="approve"]');
+check('approve arms on the first click', await waitFor('document.querySelector(\'#focus [data-act="approve"]\')?.textContent.includes("Подтвердить")'));
 await sleep(700);
-await click('.card[data-id="alpha/4"] .btn.go');
-check('the second click runs herdr-projects approve', await waitFor('fetch("/api/state").then(r=>r.json()).then(s => s.tasks.find(t => t.id === "alpha/4")?.status === "done")', 10000));
-check('the done card appears fresh after approval', await waitFor('!!document.querySelector(\'.card.s-done[data-id="alpha/4"]\')', 5000));
+await click('#focus [data-act="approve"]');
+check('the second click runs herdr-projects approve', await waitFor('fetch("/api/state").then(r=>r.json()).then(s => s.tasks.find(t => t.id === "alpha/4")?.status === "done")', 12000));
 check('the board received approve', calls().some((c) => c.argv[0] === 'approve' && c.argv[1] === 'alpha/4'), JSON.stringify(lastCall()));
 
-// «Всё равно влить» shows its confirmation, and a double-click does not
-// confirm it; the same card's «Ответить» never becomes an empty armed button.
-await click('.card[data-id="alpha/5"]');
-await click('#laneF [data-act="anyway"]');
-check('anyway arms on the first click', (await text('#laneF [data-act="anyway"]')).includes('Подтвердить «всё равно»'));
+// «Всё равно влить» shows its confirmation; a double click does not confirm it.
+await fly('alpha/5');
+await click('#focus [data-act="anyway"]');
+check('anyway arms on the first click', (await text('#focus [data-act="anyway"]')).includes('Подтвердить «всё равно»'));
 const anywayBefore = calls().filter((c) => c.argv[0] === 'approve' && c.argv[1] === 'alpha/5').length;
-await evalJs('document.querySelector("#laneF [data-act=\\"anyway\\"]").click(); document.querySelector("#laneF [data-act=\\"anyway\\"]").click(); true');
+await evalJs('document.querySelector("#focus [data-act=\\"anyway\\"]").click(); document.querySelector("#focus [data-act=\\"anyway\\"]").click(); true');
 await sleep(120);
 check('a double-click does not send anyway', calls().filter((c) => c.argv[0] === 'approve' && c.argv[1] === 'alpha/5').length === anywayBefore, JSON.stringify(lastCall()));
-check('arming anyway keeps the card action readable', (await text('.card[data-id="alpha/5"] .btn.go')).includes('Ответить'), await text('.card[data-id="alpha/5"] .btn.go'));
 await sleep(700);
-await click('#laneF [data-act="anyway"]');
-check('the confirmed click runs approve --anyway', await waitFor('fetch("/api/state").then(r=>r.json()).then(s => s.tasks.find(t => t.id === "alpha/5")?.status === "done")', 10000));
+await click('#focus [data-act="anyway"]');
+check('the confirmed click runs approve --anyway', await waitFor('fetch("/api/state").then(r=>r.json()).then(s => s.tasks.find(t => t.id === "alpha/5")?.status === "done")', 12000));
 check('the board received approve --anyway', calls().some((c) => c.argv[0] === 'approve' && c.argv[1] === 'alpha/5' && c.argv[2] === '--anyway'), JSON.stringify(lastCall()));
 
-// Focus actions: stop/retry and a message to the agent.
-await click('.card[data-id="alpha/8"]');
-await click('#laneF .f-actions [data-act="retry"]');
-check('retry reaches the board', await waitFor('fetch("/api/state").then(r=>r.json()).then(s => s.tasks.find(t => t.id === "alpha/8")?.status === "working")', 10000));
-await click('.card[data-id="alpha/2"]');
+// Focus actions: fix/finish, retry and a message to the agent.
+await fly('alpha/8');
+await click('#focus [data-act="retry"]');
+check('retry reaches the board', await waitFor('fetch("/api/state").then(r=>r.json()).then(s => s.tasks.find(t => t.id === "alpha/8")?.status === "working")', 12000));
+await fly('alpha/2');
 await evalJs('document.querySelector("#tell").value = "старую"; document.querySelector("[data-act=\\"tell-agent\\"]").click()');
-const told = (text) => calls().some((c) => c.argv[0] === 'tell' && c.argv[1] === 'alpha/2' && c.argv[2] === '--' && c.argv[3] === text);
+const told = (t) => calls().some((c) => c.argv[0] === 'tell' && c.argv[1] === 'alpha/2' && c.argv[2] === '--' && c.argv[3] === t);
 for (let i = 0; i < 60 && !told('старую'); i++) await sleep(150);
 check('a message to the agent reaches herdr-projects tell', told('старую'), JSON.stringify(lastCall()));
 const dashTell = await api('/api/action', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ action: 'tell', id: 'alpha/2', text: '-- hi' }) });
 check('a message starting with -- is passed as text, not an option', dashTell[0] === 200 && told('-- hi'), JSON.stringify(lastCall()));
 
-// Yazi is local: the fake terminal receives yazi plus the worktree.
-await click('.card[data-id="alpha/6"]');
-await click('#laneF [data-act="files"]');
+// A permission request: the prepared text is editable and goes through tell.
+await fly('alpha/16');
+check('a permission request shows its full text', (await text('#focus')).includes('удалить девять старых веток'), (await text('#focus')).slice(0, 80));
+await click('#focus [data-act="perm-allow"]');
+check('a permission button prepares an editable answer', (await evalJs('document.querySelector("#tell")?.value')) === 'Да, разрешаю.');
+await evalJs('document.querySelector("[data-act=\\"tell-agent\\"]").click()');
+for (let i = 0; i < 40 && !calls().some((c) => c.argv[0] === 'tell' && c.argv[1] === 'alpha/16' && c.argv[3] === 'Да, разрешаю.'); i++) await sleep(150);
+check('the prepared permission answer reaches the board', calls().some((c) => c.argv[0] === 'tell' && c.argv[1] === 'alpha/16' && c.argv[3] === 'Да, разрешаю.'), JSON.stringify(lastCall()));
+
+// Pick one attempt.
+await fly('delta/3');
+check('a pick request lists the attempts', await waitFor('document.querySelectorAll("#focus .pick").length === 3', 8000), await evalJs('document.querySelectorAll("#focus .pick").length'));
+await click('#focus [data-act="pick"][data-letter="B"]');
+for (let i = 0; i < 50 && !calls().some((c) => c.argv[0] === 'pick' && c.argv[1] === 'delta/3' && c.argv[2] === 'B'); i++) await sleep(150);
+check('choosing an attempt reaches herdr-projects pick', calls().some((c) => c.argv[0] === 'pick' && c.argv[1] === 'delta/3' && c.argv[2] === 'B'), JSON.stringify(lastCall()));
+check('the picked task leaves the request list', await waitFor('fetch("/api/state").then(r=>r.json()).then(s => !s.tasks.some(t => t.id === "delta/3" && t.status === "waiting"))', 12000));
+
+// Fix and finish are real board commands.
+await fly('sigma/1');
+await click('#focus [data-act="fix"]');
+check('fix reaches the board', await waitFor('fetch("/api/state").then(r=>r.json()).then(s => s.tasks.find(t => t.id === "sigma/1")?.status === "working")', 12000));
+await api('/api/action', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ action: 'finish', id: 'sigma/1' }) });
+check('finish reaches the board', await waitFor('fetch("/api/state").then(r=>r.json()).then(s => s.tasks.find(t => t.id === "sigma/1")?.status === "done")', 12000));
+check('the board logged fix and finish', calls().some((c) => c.argv[0] === 'fix') && calls().some((c) => c.argv[0] === 'finish'), JSON.stringify(calls().slice(-2)));
+
+// Links: draw, refuse a circle, refuse an unknown task, remove, undo.
+await evalJs('world.connect("alpha/11", "alpha/6")');
+check('a drawn link reaches herdr-projects after', await waitFor(`fetch('/api/state').then(r=>r.json()).then(s => s.links.some(l => l.from === 'alpha/6' && l.to === 'alpha/11'))`, 12000), JSON.stringify((await debug())?.links));
+
+// A wait on an archived task keeps its id; later link edits must not send its tag.
+await evalJs('world.connect("alpha/11", "gamma/2")');
+check('a wait on an archived task is drawn as a far star', await waitFor(`fetch('/api/state').then(r=>r.json()).then(s => s.links.some(l => l.from === 'gamma/2' && l.to === 'alpha/11' && l.kind === 'far' && l.label === 'GAM-2'))`, 12000), JSON.stringify((await debug())?.links));
+await evalJs('world.connect("alpha/11", "alpha/9")');
+check('a later link edit keeps the archived wait', await waitFor(`fetch('/api/state').then(r=>r.json()).then(s => s.links.some(l => l.from === 'alpha/9' && l.to === 'alpha/11') && s.links.some(l => l.from === 'gamma/2' && l.to === 'alpha/11'))`, 12000), JSON.stringify((await debug())?.links));
+check('the after call carries the archived id, not its tag', await waitLog(() => calls().some((c) => c.argv[0] === 'after' && c.argv[1] === 'alpha/11' && String(c.argv[2]).includes('gamma/2')), 8000), JSON.stringify(lastCall()));
+check('no bad task reference for the archived wait', !(await evalJs('[...document.querySelectorAll(".toast")].some(t => t.innerText.includes("bad task reference"))')));
+
+const circleBefore = calls().filter((c) => c.argv[0] === 'after').length;
+await evalJs('world.connect("alpha/9", "alpha/10")');
+check('a circle is refused with the board words', await waitFor('[...document.querySelectorAll(".toast")].some(t => t.innerText.includes("wait on each other"))', 8000), await text('.toast'));
+check('a refused circle writes no after', calls().filter((c) => c.argv[0] === 'after').length === circleBefore, JSON.stringify(lastCall()));
+await evalJs('world.connect("alpha/11", "zeta/9")');
+check('an unknown task is refused', await waitFor('[...document.querySelectorAll(".toast")].some(t => t.innerText.includes("No task zeta/9"))', 8000), await evalJs('[...document.querySelectorAll(".toast")].map(t => t.innerText).join(" | ")'));
+check('an unknown task writes no after', calls().filter((c) => c.argv[0] === 'after').length === circleBefore, JSON.stringify(lastCall()));
+await fly('alpha/11');
+check('focus lists the link and offers removal', await waitFor('!!document.querySelector(\'#focus [data-act="after-remove"][data-from="alpha/6"]\')', 5000));
+await click('#focus [data-act="after-remove"][data-from="alpha/6"]');
+check('removing a link clears that wait, keeps the others', await waitFor(`fetch('/api/state').then(r=>r.json()).then(s => !s.links.some(l => l.from === 'alpha/6' && l.to === 'alpha/11') && s.links.some(l => l.from === 'gamma/2' && l.to === 'alpha/11') && s.links.some(l => l.from === 'alpha/9' && l.to === 'alpha/11'))`, 12000), JSON.stringify((await debug())?.links));
+check('the board received after with the remaining waits', await waitLog(() => calls().some((c) => c.argv[0] === 'after' && c.argv[1] === 'alpha/11' && String(c.argv[2]).includes('gamma/2') && !String(c.argv[2]).includes('alpha/6')), 8000), JSON.stringify(lastCall()));
+await evalJs('(() => { const t = [...document.querySelectorAll(".toast")].at(-1); const b = t && t.querySelector(".undo"); if (b) b.click(); return !!b; })()');
+check('undo restores the previous wait', await waitFor(`fetch('/api/state').then(r=>r.json()).then(s => s.links.some(l => l.from === 'alpha/6' && l.to === 'alpha/11'))`, 12000), JSON.stringify((await debug())?.links));
+
+// Coordinator: options from its words, then a dialog on its screen.
+check('the Coordinator offers answer options', await waitFor('document.querySelectorAll("#cvariants .btn").length === 2', 6000), await evalJs('document.querySelectorAll("#cvariants .btn").length'));
+await click('#cvariants .btn:nth-child(2)');
+check('an option is sent as coordinator tell', await waitLog(() => calls('coordinator.jsonl').some((c) => c.text === 'Разобрать «Ждёт тебя»'), 8000), JSON.stringify(lastCall('coordinator.jsonl')));
+
+writeFileSync(join(fixture, 'state', 'coordinator-dialog'), '1');
+writeFileSync(join(fixture, 'state', 'dialog.txt'), '❯ May I remove the old branches?\n  1. Yes\n  2. No');
+check('a Coordinator dialog is shown in the chat', await waitFor('!document.querySelector("#cdialog").hidden && document.querySelector("#cdialog").innerText.includes("May I remove the old branches")', 12000), await text('#cdialog'));
+await click('#cdialog [data-act="keys"][data-keys="enter"]');
+check('a key reaches herdr agent send-keys', await waitLog(() => calls('keys.jsonl').some((c) => c.target === 'sw-coordinator' && c.keys.includes('enter')), 8000), JSON.stringify(lastCall('keys.jsonl')));
+// The reviewer's pane is '<agent>-r', not the worker's.
+await fly('sigma/2');
+check('a reviewneeds request offers the reviewer screen', await waitFor('!!document.querySelector(\'#focus [data-act="screen"][data-role="reviewer"]\')', 6000));
+await click('#focus [data-act="screen"][data-role="reviewer"]');
+check('the reviewer screen is read from the -r agent', await waitLog(() => calls('herdr.jsonl').some((c) => c.argv[0] === 'agent' && c.argv[1] === 'read' && c.argv[2] === 'sw-sigma-2-r'), 8000), JSON.stringify(calls('herdr.jsonl').slice(-2)));
+check('reviewer keys go to the -r agent', await waitFor('!!document.querySelector(\'#focus [data-act="keys"][data-keys="enter"][data-role="reviewer"]\')', 5000));
+await click('#focus [data-act="keys"][data-keys="enter"][data-role="reviewer"]');
+check('reviewer send-keys names the -r agent', await waitLog(() => calls('keys.jsonl').some((c) => c.target === 'sw-sigma-2-r' && c.keys.includes('enter')), 8000), JSON.stringify(calls('keys.jsonl').slice(-2)));
+unlinkSync(join(fixture, 'state', 'coordinator-dialog'));
+
+// Yazi is local; a non-loopback page is remote and only shows the path.
+await fly('alpha/6');
+await click('#focus [data-act="files"]');
 for (let i = 0; i < 25 && !calls('terminal.jsonl').some((c) => c.argv[0] === 'yazi' && c.argv[1].includes('worktrees')); i++) await sleep(150);
 check('the folder button opens yazi in the worktree', calls('terminal.jsonl').some((c) => c.argv[0] === 'yazi' && c.argv[1].includes('worktrees')), JSON.stringify(lastCall('terminal.jsonl')));
 
-// A non-loopback host is a remote client: file actions show the path instead
-// of starting a terminal on the machine with the board.
 const remoteURL = `${new URL(base).protocol}//remote.test:${new URL(base).port}/`;
 const terminalsBefore = calls('terminal.jsonl').length;
 await send('Page.navigate', { url: remoteURL });
-await sleep(1600);
-check('a non-loopback page is a remote client', await evalJs('state.local') === false);
-await click('.card[data-id="alpha/6"]');
-check('a remote page still loads task details', await waitFor('document.querySelector("#laneF").innerText.includes("worktrees")', 5000));
-await click('#laneF [data-act="files"]');
+await sleep(2200);
+check('a non-loopback page is a remote client', await waitFor('window.plannerDebug && plannerDebug().local === false', 5000), JSON.stringify(await evalJs('window.plannerDebug && plannerDebug()')));
+await fly('alpha/6');
+await click('#focus [data-act="files"]');
 check('a remote file button shows the path', await waitFor('document.querySelector(".toast")?.innerText.includes("worktrees")', 5000), await text('.toast'));
 check('a remote file button does not start yazi', calls('terminal.jsonl').length === terminalsBefore);
+await fly('alpha/2');
+await evalJs('document.querySelector("#tell").value = "удалённый ответ"; document.querySelector("[data-act=\\"tell-agent\\"]").click()');
+check('a remote client answers a question', await waitLog(() => calls().some((c) => c.argv[0] === 'tell' && c.argv[1] === 'alpha/2' && c.argv[3] === 'удалённый ответ'), 8000), JSON.stringify(lastCall()));
 await send('Page.navigate', { url: base + '/' });
-await sleep(1600);
+await sleep(800);
+check('the world is back after the remote visit', await waitFor('window.world && world.debug().planets > 0 && world.debug().labels > 0', 20000), JSON.stringify({ d: await debug(), labels: await evalJs('document.querySelectorAll(".lbl3d").length') }));
 
-// Filters.
-await click('[data-filter="failed"]');
-check('a status chip dims the rest', await evalJs('document.querySelectorAll(".card.dim").length > 0'));
-await click('[data-filter="failed"]');
+// Universe view: keys above planets, not full labels over them.
+await evalJs('world.flyTo("alpha"); world.select(null); true');
+await sleep(1500);
+const lab = await evalJs(LAB_STATS);
+check('a universe view shows compact planet labels', lab && lab.count > 5 && lab.full <= 1, JSON.stringify(lab));
+check('planet labels do not overlap each other', lab && lab.overlaps === 0, JSON.stringify(lab));
+check('planet labels sit above their planets', lab && lab.below.length === 0, JSON.stringify(lab));
+
+// Zooming in part-way must not turn every nearby planet into a full label.
+await evalJs('world.zoomBy(0.6); world.select(null); true');
+await sleep(1000);
+const zoomed = await evalJs(LAB_STATS);
+check('zooming into a universe keeps full labels to one', zoomed && zoomed.full <= 1, JSON.stringify(zoomed));
+check('zoomed labels do not overlap', zoomed && zoomed.overlaps === 0, JSON.stringify(zoomed));
+check('zoomed labels stay above their planets', zoomed && zoomed.below.length === 0, JSON.stringify(zoomed));
+await evalJs('world.orbitBy(1.1, 0.4); true');
+await sleep(1000);
+const low = await evalJs(LAB_STATS);
+check('a low-angle view keeps full labels to one', low && low.full <= 1, JSON.stringify(low));
+check('a low-angle view does not pile labels', low && low.overlaps === 0, JSON.stringify(low));
+check('a low-angle view leaves planets visible', low && low.below.length === 0, JSON.stringify(low));
+
+// Filters, archive and restore.
+check('a stage filter button exists', await click('[data-stage="review"]'));
+check('a stage filter dims the rest', await waitFor('world.debug().dim > 0 && document.querySelectorAll(".lbl3d.dim").length > 0', 8000), JSON.stringify({ d: await debug(), dom: await evalJs('document.querySelectorAll(".lbl3d.dim").length') }));
 await click('[data-stage="review"]');
-check('a stage filters and shows its pressed state', (await evalJs('document.querySelector(\'[data-stage="review"]\').getAttribute("aria-pressed")')) === 'true');
-await click('[data-stage="review"]');
-
-// Chat: the fake Coordinator answers.
-await evalJs('document.querySelector("#ask-in").value = "проверка чата"; document.querySelector("#ask").requestSubmit()');
-check('the chat sends coordinator tell', await waitFor(`fetch('/api/state').then(r => r.json()).then(s => s.coordinator.last_sent === 'проверка чата')`, 8000));
-check('the Coordinator answer is shown in the console', await waitFor('document.querySelector("#clog").innerText.includes("Принял")', 10000));
-const helpChat = await api('/api/chat', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ text: '--help' }) });
-check('a Coordinator message starting with -- is literal', helpChat[0] === 200 && calls('coordinator.jsonl').some((c) => c.text === '--help'), JSON.stringify(lastCall('coordinator.jsonl')));
-
-// Archive: one project's done tasks, then every done task, view and restore.
-const beforeProject = await stateApi();
-const projectDone = beforeProject.tasks.filter((t) => t.repo === 'alpha' && t.status === 'done').map((t) => t.id);
-await click('.group[data-repo="alpha"] [data-archive-repo]');
-check('a project archives only its own done tasks', projectDone.length > 0 && await waitFor(`fetch('/api/state').then(r=>r.json()).then(s => ${JSON.stringify(projectDone)}.every(id => s.archived.some(t => t.id === id)))`, 12000), JSON.stringify(projectDone));
-check('other projects keep their done tasks', await waitFor(`fetch('/api/state').then(r=>r.json()).then(s => s.tasks.some(t => t.repo !== 'alpha' && t.status === 'done'))`));
-const before = await stateApi();
-await click('[data-act="archive-done-all"]');
-check('"убрать сделанные" archives every done task', await waitFor(`fetch('/api/state').then(r=>r.json()).then(s => s.archived.filter(t => t.archived).length === ${before.archived.length + before.summary.done})`, 12000));
-const archived = await stateApi();
-check('the archive grew by the done tasks', archived.archived.length === before.archived.length + before.summary.done, `${archived.archived.length}`);
 await click('[data-act="archive-view"]');
-check('the archive view lists tasks', await waitFor(`document.querySelectorAll('.arc-row').length === ${archived.archived.length}`));
+check('the archive view lists tasks', await waitFor('document.querySelectorAll(".arc-row").length > 0', 5000), await evalJs('document.querySelectorAll(".arc-row").length'));
+const archivedBefore = await stateApi();
 await click('.arc-row [data-act="restore"]');
-check('restore returns a task to the board', await waitFor(`fetch('/api/state').then(r=>r.json()).then(s => s.archived.length === ${archived.archived.length - 1})`, 8000));
+check('restore returns a task to the board', await waitFor(`fetch('/api/state').then(r=>r.json()).then(s => s.archived.length === ${archivedBefore.archived.length - 1})`, 8000));
 await click('[data-act="archive-close"]');
 
 // Theme changes are picked up without a reload.
 writeFileSync(join(fixture, 'theme', 'colors.toml'), readFileSync(join(fixture, 'theme', 'colors.toml'), 'utf8').replace('accent = "#dfa360"', 'accent = "#ff0000"'));
-check('a theme rewrite changes the accent without a reload', await waitFor(`getComputedStyle(document.documentElement).getPropertyValue('--c-accent').trim() === '#ff0000'`, 12000));
+check('a theme rewrite changes the world palette', await waitFor(`world.debug().palette.accent === '#ff0000'`, 14000), JSON.stringify((await debug())?.palette));
 
-// Layout modes.
-await send('Emulation.setDeviceMetricsOverride', { width: 900, height: 900, screenWidth: 900, screenHeight: 900, deviceScaleFactor: 1, mobile: false });
-await sleep(400); await evalJs('window.dispatchEvent(new Event("resize")); true'); await sleep(800);
-check('below 1120px the window is stacked', await evalJs('document.querySelector(".win").classList.contains("stacked")'), `innerWidth=${await evalJs('innerWidth')}, win=${await evalJs('document.querySelector(".win").getBoundingClientRect().width')}, mq=${await evalJs('matchMedia("(max-width:1120px)").matches')}`);
+// Narrow: canvas full screen, panels are overlays, chat docks.
 await send('Emulation.setDeviceMetricsOverride', { width: 620, height: 900, screenWidth: 620, screenHeight: 900, deviceScaleFactor: 1, mobile: false });
-await sleep(400); await evalJs('window.dispatchEvent(new Event("resize")); true'); await sleep(800);
-check('below 860px the window is narrow', await evalJs('document.querySelector(".win").classList.contains("narrow")'), `innerWidth=${await evalJs('innerWidth')}, win=${await evalJs('document.querySelector(".win").getBoundingClientRect().width')}, mq=${await evalJs('matchMedia("(max-width:1120px)").matches')}`);
+await sleep(500); await evalJs('window.dispatchEvent(new Event("resize")); true'); await sleep(900);
+check('below 900px the world is narrow', await evalJs('document.querySelector("#win").classList.contains("narrow")'), `innerWidth=${await evalJs('innerWidth')}`);
+check('the canvas keeps the whole screen', await evalJs('Math.abs(document.querySelector("#scene").getBoundingClientRect().width - innerWidth) < 2'));
+check('the chat docks at the bottom on a narrow screen', await evalJs('document.querySelector("#console").parentElement.id === "console-dock"'));
+await shot('world-narrow.png');
 await send('Emulation.clearDeviceMetricsOverride');
 await sleep(400);
 
 await send('Page.navigate', { url: base + '/?calm' });
-await sleep(1600);
-check('?calm turns motion off', await evalJs('document.querySelector(".win").classList.contains("calm") && getComputedStyle(document.querySelector(".card") || document.body).animationName === "none"'));
+await sleep(2200);
+check('?calm turns the world simple', await evalJs('world.debug().simple === true && document.querySelector("#win").classList.contains("calm")'));
+await shot('world-calm.png');
 check('no console errors after the whole run', errors.length === 0, errors.slice(0, 3).join('; '));
-await shot('dashboard.png');
 ws.close();
 chrome.kill();
 process.exit(failed ? 1 : 0);

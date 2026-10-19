@@ -73,7 +73,7 @@ await sleep(900);
 await evaluate('document.querySelector("#user").value = "me"; document.querySelector("#pass").value = "secret"; document.querySelector("#login").requestSubmit()');
 let loggedIn = false;
 for (let i = 0; i < 50; i++) {
-  if (await evaluate('location.pathname === "/" && !!document.querySelector("#top") && document.querySelectorAll(".card").length > 0')) { loggedIn = true; break; }
+  if (await evaluate('location.pathname === "/" && !!document.querySelector("#hud") && !!window.world && world.debug().planets > 0')) { loggedIn = true; break; }
   await sleep(200);
 }
 check('the browser logs in and sees the dashboard', loggedIn);
