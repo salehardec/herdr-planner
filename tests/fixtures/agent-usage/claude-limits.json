@@ -1,0 +1,21 @@
+{
+  "fetchedAtMs": 1792413615000,
+  "limits": [
+    {
+      "label": "Session (5-hour)",
+      "percent": 0.21,
+      "resetsAt": "2026-10-19T13:09:59.677596+00:00"
+    },
+    {
+      "label": "Weekly (7-day)",
+      "percent": 0.91,
+      "resetsAt": "2026-10-20T04:59:59.677621+00:00"
+    },
+    {
+      "label": "Fable Weekly",
+      "percent": 0.97,
+      "resetsAt": "2026-10-20T04:59:59.677815+00:00",
+      "title": "Fable Weekly"
+    }
+  ]
+}

@@ -43,6 +43,12 @@ async function waitForChrome() {
 
 let ws; let id = 0; const pending = new Map(); const errors = [];
 const send = (method, params = {}) => new Promise((r) => { const i = ++id; pending.set(i, r); ws.send(JSON.stringify({ id: i, method, params })); });
+let lastNavAt = 0;
+const navigate = async (url, ms) => {
+  lastNavAt = Date.now();
+  await send('Page.navigate', { url });
+  await sleep(ms);
+};
 const keyText = async (ch) => {
   await send('Input.dispatchKeyEvent', { type: 'keyDown', text: ch, key: ch });
   await send('Input.dispatchKeyEvent', { type: 'keyUp', key: ch });
@@ -76,6 +82,7 @@ const lastCall = (file = 'commands.jsonl') => calls(file).at(-1);
 const stateApi = () => evalJs('fetch("/api/state").then(r => r.json())');
 const fly = async (target) => { await evalJs(`world.flyTo(${JSON.stringify(target)})`); await sleep(250); };
 const debug = () => evalJs('window.world ? world.debug() : null');
+const clearToasts = () => evalJs('document.querySelector("#toasts").replaceChildren(); true');
 const LAB_STATS = `(() => {
   const els = [...document.querySelectorAll('.lbl3d[data-id^="alpha/"]')];
   const rects = els.map((e) => ({ id: e.dataset.id, cls: e.className, r: e.getBoundingClientRect(), p: world.screenOf(e.dataset.id) }));
@@ -88,6 +95,23 @@ const LAB_STATS = `(() => {
   const below = rects.filter((x) => x.p && x.r.bottom > x.p.y + 2).map((x) => x.id);
   const full = rects.filter((x) => { const c = x.cls.split(' '); return !c.includes('compact') && !c.includes('dot'); }).length;
   return { count: rects.length, overlaps, over, below, full, camera: world.debug().camera, view: world.debug().view };
+})()`;
+const LIMITS_FIT = `(() => {
+  const p = document.querySelector('.pop.limits');
+  if (!p) return { ok: false };
+  const r = p.getBoundingClientRect();
+  const hit = (x, y) => { const h = document.elementFromPoint(x, y); return !!h && p.contains(h); };
+  const inView = r.left >= 0 && r.top >= 0 && r.right <= innerWidth + 1 && r.bottom <= innerHeight + 1;
+  const topHit = hit(r.left + r.width / 2, r.top + 8);
+  const bottomHit = hit(r.left + r.width / 2, r.bottom - 8);
+  const atBottom = document.elementFromPoint(r.left + r.width / 2, r.bottom - 8);
+  return {
+    ok: inView && topHit && bottomHit, inView, topHit, bottomHit,
+    top: Math.round(r.top), bottom: Math.round(r.bottom), vh: innerHeight,
+    bottomEl: atBottom ? atBottom.tagName + '.' + atBottom.className : null,
+    focusHidden: document.querySelector('#focus').hidden,
+    rect: [Math.round(r.left), Math.round(r.top), Math.round(r.width), Math.round(r.height)],
+  };
 })()`;
 async function waitLog(pred, ms = 8000) {
   const end = Date.now() + ms;
@@ -103,7 +127,14 @@ await new Promise((r) => { ws.onopen = r; });
 ws.onmessage = (e) => {
   const m = JSON.parse(e.data);
   if (m.id && pending.has(m.id)) { pending.get(m.id)(m); pending.delete(m.id); }
-  else if (m.method === 'Runtime.exceptionThrown') errors.push(m.params.exceptionDetails?.exception?.description || m.params.exceptionDetails?.text || 'exception');
+  else if (m.method === 'Runtime.exceptionThrown') {
+    // An evaluated fetch can be cut off by the page navigation that follows a
+    // check; that abort is harness noise, not a page error. Keep every other
+    // failure, and only forgive it for a short window around a navigation.
+    const text = m.params.exceptionDetails?.exception?.description || m.params.exceptionDetails?.text || 'exception';
+    const navigationAbort = String(text).includes('Failed to fetch') && Date.now() - lastNavAt < 4000;
+    if (!navigationAbort) errors.push(text);
+  }
   else if (m.method === 'Runtime.consoleAPICalled' && m.params.type === 'error') errors.push(m.params.args?.map((a) => a.value || a.description).join(' '));
   else if (m.method === 'Log.entryAdded' && m.params.entry.level === 'error') {
     // A 502 from a refused board command is the expected answer to a bad link;
@@ -114,8 +145,7 @@ ws.onmessage = (e) => {
 await send('Runtime.enable');
 await send('Log.enable');
 await send('Page.enable');
-await send('Page.navigate', { url: base + '/' });
-await sleep(2200);
+await navigate(base + '/', 2200);
 check('the world starts', await waitFor('window.world && world.debug().planets > 0', 12000));
 check('the page has a title and no console errors', (await evalJs('document.title')).includes('Herdr Planner') && errors.length === 0, errors.slice(0, 2).join('; '));
 check('the world fills the viewport', await evalJs('Math.abs(document.querySelector("#win").getBoundingClientRect().width - innerWidth) < 2'));
@@ -128,6 +158,54 @@ check('universes are projects, quiet ones marked', d0?.universes === 5 && d0?.qu
 check('the board dependencies are links', d0?.links.some((l) => l.from === 'alpha/9' && l.to === 'alpha/10') && d0?.links.some((l) => l.from === 'alpha/4' && l.to === 'gamma/1'), JSON.stringify(d0?.links));
 check('the HUD counts requests and universes', /ЖДУТ ТЕБЯ\s+11/i.test(await text('#hud')) && /ВСЕЛЕННЫХ\s+4/i.test(await text('#hud')) && /ТИХИХ\s+1/i.test(await text('#hud')), (await text('#hud')).replace(/\s+/g, ' ').slice(0, 240));
 await shot('world-overview.png');
+
+// Subscription limits: Omarchy's records are in the fixture, the HUD chip
+// names the tightest window, the world draws one arc per agent with limits,
+// and the panel keeps every window with its reset and freshness.
+check('the HUD has a limits chip', await waitFor('!!document.querySelector("#hud-limits")', 8000), await text('#hud-limits'));
+const limitsDebug = await debug();
+check('one world arc per agent with limits', limitsDebug?.limitArcs === 1, JSON.stringify(limitsDebug && { arcs: limitsDebug.limitArcs, crit: limitsDebug.limitCrit }));
+check('a 95%+ window makes the halo critical', limitsDebug?.limitCrit === true, JSON.stringify(limitsDebug && { crit: limitsDebug.limitCrit }));
+const chipText = (await text('#hud-limits')).replace(/\s+/g, ' ');
+check('the chip names the worst window and its remainder', /3\s*%/.test(chipText) && /Fable Weekly/.test(chipText), chipText);
+await clearToasts();
+await click('#hud-limits');
+check('the limits panel opens', await waitFor('!!document.querySelector(".pop.limits")', 3000));
+// The panel must be seen, not merely present: Focus is open on load and the
+// HUD used to be a stacking context that kept the popover underneath it.
+const limitsBox = await evalJs(`(() => {
+  const p = document.querySelector('.pop.limits');
+  if (!p) return { ok: false };
+  const r = p.getBoundingClientRect();
+  const hit = (x, y) => { const h = document.elementFromPoint(x, y); return !!h && p.contains(h); };
+  const x = r.left + r.width / 2, y = r.top + r.height / 2;
+  const chip = document.querySelector('#hud-limits');
+  const cr = chip.getBoundingClientRect();
+  const chipHit = document.elementFromPoint(cr.left + cr.width / 2, cr.top + cr.height / 2);
+  const inView = r.left >= 0 && r.top >= 0 && r.right <= innerWidth + 1 && r.bottom <= innerHeight + 1;
+  return {
+    inView, top: hit(x, r.top + 8), center: hit(x, y), bottom: hit(r.right - 8, r.bottom - 8),
+    chip: !!chipHit && (chipHit === chip || chip.contains(chipHit)),
+    rect: [Math.round(r.left), Math.round(r.top), Math.round(r.width), Math.round(r.height)],
+    focusOpen: !document.querySelector('#focus').hidden,
+  };
+})()`);
+check('the limits panel is above Focus and fully in view', limitsBox.inView && limitsBox.top && limitsBox.center && limitsBox.bottom, JSON.stringify(limitsBox));
+check('the open limits panel does not cover its own chip', limitsBox.chip === true, JSON.stringify(limitsBox));
+const limitsText = (await text('.pop.limits')).replace(/\s+/g, ' ');
+check('the panel lists Claude, omp and pi', /Claude/.test(limitsText) && /OMP/.test(limitsText) && /Pi/.test(limitsText), limitsText.slice(0, 240));
+check('remaining is the inverse of the used share', /осталось 79 %/.test(limitsText) && /осталось 9 %/.test(limitsText) && /осталось 3 %/.test(limitsText), limitsText.slice(0, 260));
+check('reset shows local time and the hours left', /сброс \d\d:\d\d · через \d+ ч/.test(limitsText), limitsText.slice(0, 260));
+check('a later reset carries its date', /сброс \d\d\.\d\d, \d\d:\d\d/.test(limitsText), limitsText.slice(0, 260));
+check('80% is a warning and 95% is critical', (await evalJs('document.querySelectorAll(".lim-win.warn").length')) === 1 && (await evalJs('document.querySelectorAll(".lim-win.crit").length')) === 1);
+check('omp and pi honestly say there is no data', (await text('.lim-agent[data-agent="omp"]')).includes('нет данных') && (await text('.lim-agent[data-agent="pi"]')).includes('нет данных') && limitsText.includes('API keys · no subscription'));
+check('an old record is marked stale', (await evalJs('document.querySelectorAll(".lim-agent.stale").length')) === 1 && limitsText.toLowerCase().includes('устарело'));
+check('every agent reports when its numbers were refreshed', (limitsText.match(/обновлено /g) || []).length === 3, limitsText.slice(0, 260));
+await shot('world-limits.png');
+const limitsAlert = await api('/api/limits');
+check('the bar alert names the worst live window', limitsAlert[0] === 200 && limitsAlert[1].level === 'crit' && limitsAlert[1].worst.label === 'Fable Weekly' && limitsAlert[1].worst.remaining_percent === 3, JSON.stringify(limitsAlert[1]));
+await keyText('q');
+check('Q closes the limits panel', await waitFor('!document.querySelector(".pop.limits")', 3000));
 
 // The God's todo: a list near the chat; a drag into a universe makes a planet.
 check('the God has a todo list near the chat', await evalJs('document.querySelectorAll("#todo-list .todo-item").length === 2'), await evalJs('document.querySelectorAll("#todo-list .todo-item").length'));
@@ -289,7 +367,16 @@ check('focus lists the link and offers removal', await waitFor('!!document.query
 await click('#focus [data-act="after-remove"][data-from="alpha/6"]');
 check('removing a link clears that wait, keeps the others', await waitFor(`fetch('/api/state').then(r=>r.json()).then(s => !s.links.some(l => l.from === 'alpha/6' && l.to === 'alpha/11') && s.links.some(l => l.from === 'gamma/2' && l.to === 'alpha/11') && s.links.some(l => l.from === 'alpha/9' && l.to === 'alpha/11'))`, 12000), JSON.stringify((await debug())?.links));
 check('the board received after with the remaining waits', await waitLog(() => calls().some((c) => c.argv[0] === 'after' && c.argv[1] === 'alpha/11' && String(c.argv[2]).includes('gamma/2') && !String(c.argv[2]).includes('alpha/6')), 8000), JSON.stringify(lastCall()));
-await evalJs('(() => { const t = [...document.querySelectorAll(".toast")].at(-1); const b = t && t.querySelector(".undo"); if (b) b.click(); return !!b; })()');
+// Target the removal toast by its text: other toasts (a refused circle, an
+// unknown task) can still be on screen, and an undo must not be lost because
+// the last node happened to be one of them.
+const undoClicked = await evalJs(`(() => {
+  const t = [...document.querySelectorAll(".toast")].reverse().find((n) => n.innerText.startsWith("ALP-11: начнётся после GAM-2, ALP-9") && n.querySelector(".undo"));
+  const b = t && t.querySelector(".undo");
+  if (b) b.click();
+  return !!b;
+})()`);
+check('the removal toast has an undo', undoClicked === true);
 check('undo restores the previous wait', await waitFor(`fetch('/api/state').then(r=>r.json()).then(s => s.links.some(l => l.from === 'alpha/6' && l.to === 'alpha/11'))`, 12000), JSON.stringify((await debug())?.links));
 
 // Coordinator: options from its words, then a dialog on its screen.
@@ -320,9 +407,9 @@ check('the folder button opens yazi in the worktree', calls('terminal.jsonl').so
 
 const remoteURL = `${new URL(base).protocol}//remote.test:${new URL(base).port}/`;
 const terminalsBefore = calls('terminal.jsonl').length;
-await send('Page.navigate', { url: remoteURL });
-await sleep(2200);
+await navigate(remoteURL, 2200);
 check('a non-loopback page is a remote client', await waitFor('window.plannerDebug && plannerDebug().local === false', 5000), JSON.stringify(await evalJs('window.plannerDebug && plannerDebug()')));
+check('a remote page still shows the limits chip', await waitFor('document.querySelector("#hud-limits")?.innerText.includes("3%")', 8000), await text('#hud-limits'));
 await fly('alpha/6');
 await click('#focus [data-act="files"]');
 check('a remote file button shows the path', await waitFor('document.querySelector(".toast")?.innerText.includes("worktrees")', 5000), await text('.toast'));
@@ -330,8 +417,7 @@ check('a remote file button does not start yazi', calls('terminal.jsonl').length
 await fly('alpha/2');
 await evalJs('document.querySelector("#tell").value = "удалённый ответ"; document.querySelector("[data-act=\\"tell-agent\\"]").click()');
 check('a remote client answers a question', await waitLog(() => calls().some((c) => c.argv[0] === 'tell' && c.argv[1] === 'alpha/2' && c.argv[3] === 'удалённый ответ'), 8000), JSON.stringify(lastCall()));
-await send('Page.navigate', { url: base + '/' });
-await sleep(800);
+await navigate(base + '/', 800);
 check('the world is back after the remote visit', await waitFor('window.world && world.debug().planets > 0 && world.debug().labels > 0', 20000), JSON.stringify({ d: await debug(), labels: await evalJs('document.querySelectorAll(".lbl3d").length') }));
 
 // Universe view: keys above planets, not full labels over them.
@@ -377,12 +463,35 @@ await sleep(500); await evalJs('window.dispatchEvent(new Event("resize")); true'
 check('below 900px the world is narrow', await evalJs('document.querySelector("#win").classList.contains("narrow")'), `innerWidth=${await evalJs('innerWidth')}`);
 check('the canvas keeps the whole screen', await evalJs('Math.abs(document.querySelector("#scene").getBoundingClientRect().width - innerWidth) < 2'));
 check('the chat docks at the bottom on a narrow screen', await evalJs('document.querySelector("#console").parentElement.id === "console-dock"'));
+// Focus is a z-index:40 overlay at this width; the limits panel must beat it.
+await fly('alpha/6');
+check('Focus is open on a narrow screen', await waitFor('!document.querySelector("#focus").hidden', 5000));
+await clearToasts();
+await click('#hud-limits');
+check('the limits panel opens on a narrow screen', await waitFor('!!document.querySelector(".pop.limits")', 3000));
+const narrowLimits = await evalJs(LIMITS_FIT);
+check('the limits panel is above open Focus on a narrow screen', narrowLimits.ok === true && narrowLimits.focusHidden === false, JSON.stringify(narrowLimits));
+check('the first window is reachable on a narrow screen', (await text('.pop.limits')).includes('Session (5-hour)') && (await evalJs('document.querySelector(".pop.limits").scrollTop === 0')));
+await click('#hud-limits');
+check('the chip closes the narrow limits panel', await waitFor('!document.querySelector(".pop.limits")', 3000));
 await shot('world-narrow.png');
+
+// A phone-width viewport is the remote case the task asks to keep working.
+await send('Emulation.setDeviceMetricsOverride', { width: 500, height: 900, screenWidth: 500, screenHeight: 900, deviceScaleFactor: 1, mobile: false });
+await sleep(400); await evalJs('window.dispatchEvent(new Event("resize")); true'); await sleep(700);
+await fly('alpha/6');
+await waitFor('!document.querySelector("#focus").hidden', 5000);
+await clearToasts();
+await click('#hud-limits');
+check('the limits panel opens at phone width', await waitFor('!!document.querySelector(".pop.limits")', 3000));
+const phoneLimits = await evalJs(LIMITS_FIT);
+check('the limits panel is above open Focus at phone width', phoneLimits.ok === true && phoneLimits.focusHidden === false, JSON.stringify(phoneLimits));
+await click('#hud-limits');
+await waitFor('!document.querySelector(".pop.limits")', 3000);
 await send('Emulation.clearDeviceMetricsOverride');
 await sleep(400);
 
-await send('Page.navigate', { url: base + '/?calm' });
-await sleep(2200);
+await navigate(base + '/?calm', 2200);
 check('?calm turns the world simple', await evalJs('world.debug().simple === true && document.querySelector("#win").classList.contains("calm")'));
 await shot('world-calm.png');
 check('no console errors after the whole run', errors.length === 0, errors.slice(0, 3).join('; '));

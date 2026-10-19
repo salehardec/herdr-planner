@@ -24,6 +24,10 @@ Panel {
   property bool online: false
   property bool tls: false
   property bool probing: false
+  // The dashboard reads Omarchy's usage records and answers with the worst
+  // limit; the bar only needs to say that something is nearly used up.
+  property string limitLevel: ""
+  property string limitHint: ""
   property color fg: root.barForeground
   readonly property string fam: Style.font.family
   readonly property real pillMargin: Style.space(3)
@@ -34,6 +38,7 @@ Panel {
   implicitHeight: slotHeight || Style.space(26)
   readonly property bool tooltipHovered: area.containsMouse
   readonly property string tooltip: "Herdr Planner · " + (online ? "открыть панель" : "сервис не отвечает — нажмите, чтобы запустить")
+    + (limitLevel === "" ? "" : " · " + limitHint + (limitLevel === "crit" ? " — почти исчерпано" : " — мало осталось"))
 
   function probe(scheme) {
     var xhr = new XMLHttpRequest()
@@ -44,14 +49,52 @@ Panel {
         root.online = true
         root.tls = (scheme === "https")
         root.probing = false
+        root.fetchLimits(scheme)
       } else if (scheme === "http") {
         probe("https")
       } else {
         root.online = false
         root.probing = false
+        root.limitLevel = ""
+        root.limitHint = ""
       }
     }
     xhr.open("GET", scheme + "://127.0.0.1:" + root.port + "/login")
+    xhr.send()
+  }
+
+  // /api/limits is public on loopback (the service protects it for remote
+  // callers), so the widget needs no session. A missing or older service
+  // simply leaves no dot.
+  function fetchLimits(scheme) {
+    var xhr = new XMLHttpRequest()
+    xhr.timeout = 2500
+    xhr.onreadystatechange = function() {
+      if (xhr.readyState !== XMLHttpRequest.DONE) return
+      if (xhr.status !== 200) {
+        root.limitLevel = ""
+        root.limitHint = ""
+        return
+      }
+      try {
+        var data = JSON.parse(xhr.responseText)
+        var worst = data && data.worst
+        var level = data && String(data.level || "")
+        if (!worst || (level !== "warn" && level !== "crit")) {
+          root.limitLevel = ""
+          root.limitHint = ""
+          return
+        }
+        root.limitLevel = level
+        root.limitHint = String(worst.agent || "") + " · " + String(worst.label || "")
+          + ": осталось " + Math.round(Number(worst.remaining_percent) || 0) + "%"
+          + (data.stale === true ? " (данные устарели)" : "")
+      } catch (e) {
+        root.limitLevel = ""
+        root.limitHint = ""
+      }
+    }
+    xhr.open("GET", scheme + "://127.0.0.1:" + root.port + "/api/limits")
     xhr.send()
   }
 
@@ -126,6 +169,17 @@ Panel {
         Layout.preferredHeight: Style.space(6)
         radius: Style.space(3)
         color: root.online ? Color.accent : Util.alpha(root.fg, 0.35)
+        Layout.alignment: Qt.AlignVCenter
+        Behavior on color { ColorAnimation { duration: 160 } }
+      }
+      // A subscription window is at 80% or more: one extra dot in the
+      // bar's urgent color (brighter when it is past 95%).
+      Rectangle {
+        visible: root.limitLevel !== ""
+        Layout.preferredWidth: Style.space(5)
+        Layout.preferredHeight: Style.space(5)
+        radius: Style.space(2.5)
+        color: root.limitLevel === "crit" ? Color.urgent : Util.alpha(Color.urgent, 0.6)
         Layout.alignment: Qt.AlignVCenter
         Behavior on color { ColorAnimation { duration: 160 } }
       }

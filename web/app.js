@@ -232,6 +232,22 @@ const timeOf = (ms) => {
   const d = new Date(ms);
   return pad(d.getHours()) + ':' + pad(d.getMinutes());
 };
+const dayTimeOf = (ms) => {
+  if (!ms) return '';
+  const d = new Date(ms), n = new Date();
+  const time = timeOf(ms);
+  return d.getFullYear() === n.getFullYear() && d.getMonth() === n.getMonth() && d.getDate() === n.getDate()
+    ? time
+    : `${pad(d.getDate())}.${pad(d.getMonth() + 1)}, ${time}`;
+};
+const untilText = (ms) => {
+  const left = Number(ms) - Date.now();
+  if (left <= 0) return 'сброс прошёл';
+  if (left < 3600000) return 'через ' + Math.max(1, Math.round(left / 60000)) + ' мин';
+  if (left < 86400000) return 'через ' + Math.round(left / 3600000) + ' ч';
+  return 'через ' + Math.round(left / 86400000) + ' д';
+};
+const money = (n) => Number(n || 0).toLocaleString('ru-RU', { maximumFractionDigits: 2 });
 const keysHTML = (text) => esc(text).replace(/\b([A-Z][A-Z0-9]{1,6}-\d+)\b/g, (m) => `<button class="k" data-tag="${m}" type="button">${m}</button>`);
 const linkLabel = (l) => l.label || (l.kind === 'far' ? l.from : tagOf(l.from));
 const remoteLink = (l) => l.kind === 'far' && String(l.from).includes(':');
@@ -333,9 +349,11 @@ function renderTop() {
   }).join('');
   const pop = state.pop === 'quiet'
     ? `<div class="pop"><b>Тихие вселенные</b> — без активных задач, на внешнем кольце.<div class="qlist">${quiet.length ? quiet.map((p) => `<span class="qp">${esc(p.name)} <em>${p.done} сделано</em></span>`).join('') : '<span class="qp">нет</span>'}</div></div>`
-    : state.pop === 'herdr'
+      : state.pop === 'herdr'
       ? `<div class="pop"><b>Планировщик работает отдельно от herdr.</b> Данные и действия идут напрямую в <code>herdr-projects</code>. Экран диалога и клавиши доступны только при запущенном herdr${state.herdr.running ? ', и он сейчас запущен' : '; сейчас он не запущен'}. Файлы открываются в yazi${state.local ? '' : ' только на машине с доской'}.</div>`
-      : '';
+      : state.pop === 'limits'
+        ? limitsPopHTML()
+        : '';
   const cur = world.current || { kind: 'overview', universe: null, id: null };
   const sel = state.sel ? task(state.sel) : null;
   const crumbs = [`<button data-crumb="overview" type="button">Мир</button>`];
@@ -369,12 +387,32 @@ function renderTop() {
       <button class="tool" data-act="simple" aria-pressed="${state.simple}" type="button" title="Меньше эффектов, рендер по требованию">${gl('planner')}Упрощённый</button>
       <button class="tool" data-act="notify" aria-pressed="${state.notify}" type="button" title="Уведомление и звук на новый запрос">${gl('bell')}Уведомления</button>
       <button class="tool" data-act="help" type="button">${gl('help')}Клавиши</button>
-      <span class="tool" id="hud-limits" hidden title="Лимиты подписок: место PLN-5"></span>
+      ${limitsChipHTML()}
       ${state.auth.required ? `<span class="who">${esc(state.auth.user)}</span><button class="tool" data-act="logout" type="button">${gl('logout')}Выйти</button>` : ''}
-    </div>
-    ${pop}`;
+    </div>`;
+  // Popovers live outside the HUD: .hud is a z-index:10 stacking context, so
+  // a popover inside it cannot rise above .focus (z-index:20).
+  $('pop').innerHTML = pop;
+  placePop();
   $('banner').innerHTML = state.board.ok ? '' : `<div class="banner"><span>${gl('failed')}</span><span class="sp">Доска не отвечает — показаны данные от ${timeOf(state.board.stale_at) || '—'}; действия выключены.</span><button class="tool" data-act="refresh" type="button">${gl('refresh')}Повторить</button></div>`;
   document.title = (s.attention ? `(${s.attention}) ` : '') + 'Herdr Planner';
+}
+
+/// Desktop popovers hang below the HUD; the limits one starts under its chip,
+/// so it never covers the control that closes it. On a narrow screen CSS
+/// anchors it to the bottom of the viewport instead.
+function placePop() {
+  const host = $('pop');
+  const el = host && host.querySelector('.pop');
+  if (!el) return;
+  el.style.top = '';
+  el.style.right = '';
+  if (state.pop !== 'limits' || innerWidth <= 900) return;
+  const chip = $('hud-limits');
+  if (!chip) return;
+  const r = chip.getBoundingClientRect();
+  el.style.top = Math.round(r.bottom + 5) + 'px';
+  el.style.right = Math.max(8, Math.round(innerWidth - r.right)) + 'px';
 }
 
 function plural(n, one, few, many) {
@@ -382,6 +420,89 @@ function plural(n, one, few, many) {
   if (m10 === 1 && m100 !== 11) return one;
   if (m10 >= 2 && m10 <= 4 && (m100 < 12 || m100 > 14)) return few;
   return many;
+}
+
+/* ───────── subscription limits ───────── */
+
+function limitsAgents() {
+  return state.limits && Array.isArray(state.limits.agents) ? state.limits.agents : [];
+}
+
+function limitsWorst() {
+  const now = Date.now();
+  let worst = null;
+  for (const agent of limitsAgents()) {
+    for (const window of (Array.isArray(agent.limits) ? agent.limits : [])) {
+      // A window whose reset has passed describes an allowance that is no
+      // longer being spent; the next scrape will fill in the new one.
+      if (window.resets_at_ms && window.resets_at_ms <= now) continue;
+      if (!worst || window.percent > worst.window.percent) worst = { agent, window };
+    }
+  }
+  return worst;
+}
+
+function limitsChipHTML() {
+  const open = state.pop === 'limits';
+  const worst = limitsWorst();
+  if (!worst) {
+    return `<button class="tool" id="hud-limits" data-pop="limits" aria-pressed="${open}" type="button" title="Лимиты подписок: нет данных">${gl('limit')}Лимиты <span class="lim-none">нет данных</span></button>`;
+  }
+  const remaining = Math.max(0, 100 - Math.round(worst.window.percent * 100));
+  const level = worst.window.severity === 'crit' ? ' lim-crit' : worst.window.severity === 'warn' ? ' lim-warn' : '';
+  const stale = worst.agent.stale ? ' · данные устарели' : '';
+  return `<button class="tool${level}" id="hud-limits" data-pop="limits" aria-pressed="${open}" type="button" title="${esc(worst.agent.name)} · ${esc(worst.window.label)}: осталось ${remaining}%${stale}">${gl('limit')}Лимиты <b>${remaining}%</b> <span class="lim-ag">${esc(worst.agent.name)} · ${esc(worst.window.label)}</span></button>`;
+}
+
+function limitWindowHTML(w) {
+  const used = Math.max(0, Math.min(100, Math.round(Number(w.percent || 0) * 100)));
+  const remaining = 100 - used;
+  const severity = w.severity === 'crit' ? 'crit' : w.severity === 'warn' ? 'warn' : 'ok';
+  const reset = w.resets_at_ms
+    ? `сброс ${dayTimeOf(w.resets_at_ms)} · ${untilText(w.resets_at_ms)}`
+    : 'время сброса не сообщено';
+  return `<div class="lim-win ${severity}">
+    <div class="lim-t"><span class="lim-label">${esc(w.label)}</span><b>осталось ${remaining} %</b></div>
+    <div class="lim-bar" role="progressbar" aria-label="${esc(w.label)}" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${used}" title="использовано ${used} %"><i style="--w:${used}%"></i></div>
+    <div class="lim-meta"><span>${esc(reset)}</span></div>
+  </div>`;
+}
+
+function limitBalanceHTML(b) {
+  const currency = esc(b.currency || 'USD');
+  const estimated = b.estimated ? '<span class="lim-est">оценка</span>' : '';
+  const funded = Number(b.funded) > 0 ? `<span>из ${money(b.funded)} ${currency}</span>` : '';
+  return `<div class="lim-bal"><span>остаток</span><b>${money(b.remaining)} ${currency}</b>${estimated}${funded}</div>`;
+}
+
+function limitAgentHTML(agent) {
+  const windows = Array.isArray(agent.limits) ? agent.limits : [];
+  const level = windows.reduce((lv, w) => (w.severity === 'crit' || lv === 'crit' ? 'crit' : w.severity === 'warn' || lv === 'warn' ? 'warn' : 'ok'), 'ok');
+  const stale = agent.stale === true;
+  const staleMin = Math.max(1, Math.round((Number(state.limits && state.limits.stale_after_secs) || 1800) / 60));
+  const tier = agent.tier ? `<span class="lim-tier">${esc(agent.tier)}</span>` : '';
+  const badge = stale ? `<span class="lim-stale" title="Данные старше ${staleMin} мин">устарело</span>` : '';
+  const status = agent.status && (windows.length || agent.balance) ? `<div class="lim-status">${esc(agent.status)}</div>` : '';
+  const none = !windows.length && !agent.balance ? `<div class="lim-none-body">${esc(agent.note || 'нет данных')}</div>` : '';
+  const updated = agent.updated_at_ms
+    ? `обновлено ${dayTimeOf(agent.updated_at_ms)}`
+    : 'время обновления неизвестно';
+  return `<div class="lim-agent ${level}${stale ? ' stale' : ''}" data-agent="${esc(agent.id)}">
+    <div class="lim-head"><b>${esc(agent.name)}</b>${tier}<span class="sp"></span>${badge}</div>
+    ${status}
+    ${windows.map(limitWindowHTML).join('')}
+    ${agent.balance ? limitBalanceHTML(agent.balance) : ''}
+    ${none}
+    <div class="lim-foot">${esc(updated)}</div>
+  </div>`;
+}
+
+function limitsPopHTML() {
+  const agents = limitsAgents();
+  const rows = agents.length
+    ? agents.map(limitAgentHTML).join('')
+    : '<div class="none">Omarchy ещё не записал данные о лимитах.</div>';
+  return `<div class="pop limits"><div class="lim-pop-head"><b>Лимиты подписок</b><span>остаток по окнам</span></div><div class="lim-list">${rows}</div></div>`;
 }
 
 /* ───────── requests ───────── */
@@ -676,6 +797,7 @@ function renderHelp() {
     ['F', 'панель «Фокус»'],
     ['J / W', 'журнал / «Ждёт тебя»'],
     ['A', 'архив'],
+    ['Q', 'лимиты подписок: остаток, окна и сброс'],
     ['L', 'режим связи: тянуть линию мышью'],
     ['T', 'дела божьи: список рядом с чатом, перетащи дело во вселенную'],
     ['Shift + перетащить', 'связь без режима L: от ждущей планеты к той, что раньше'],
@@ -1344,7 +1466,7 @@ document.addEventListener('keydown', (e) => {
   if (e.key === 'n' || e.key === 'N' || e.key === 'т' || e.key === 'Т') { togglePanel('nav'); return; }
   if (e.key === 'a' || e.key === 'A' || e.key === 'ф' || e.key === 'Ф') { state.archiveOpen = true; state.panels.focus = true; renderFocus(); renderTop(); return; }
   if (e.key === 't' || e.key === 'T' || e.key === 'е' || e.key === 'Е') { act('todo'); return; }
-  if (e.key === 'q' || e.key === 'Q' || e.key === 'й' || e.key === 'Й') { toast('Лимиты подписок появятся в PLN-5'); return; }
+  if (e.key === 'q' || e.key === 'Q' || e.key === 'й' || e.key === 'Й') { e.preventDefault(); state.pop = state.pop === 'limits' ? null : 'limits'; renderTop(); return; }
   if (e.key === '?') { state.panels.help = !state.panels.help; renderHelp(); return; }
 });
 

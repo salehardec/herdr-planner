@@ -10,6 +10,7 @@ mod config;
 mod coordinator;
 mod server;
 mod theme;
+mod usage;
 
 use app::{refresh, Shared};
 use config::AppConfig;

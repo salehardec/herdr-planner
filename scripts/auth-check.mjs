@@ -23,6 +23,10 @@ const json = async (r) => ({ status: r.status, body: await r.json().catch(() => 
 
 const noAuth = await get('/api/state');
 check('API without a session is 401', noAuth.status === 401, String(noAuth.status));
+const localLimits = await get('/api/limits');
+check('the local bar can read limits without a session', localLimits.status === 200 && (await localLimits.json()).level === 'ok', String(localLimits.status));
+const remoteLimits = await get('/api/limits', null, { headers: { 'x-forwarded-for': '203.0.113.5' } });
+check('a remote caller needs a session for limits', remoteLimits.status === 401, String(remoteLimits.status));
 const root = await get('/');
 check('the page redirects to /login', root.status >= 300 && root.status < 400 && (root.headers.get('location') || '').includes('/login'), `${root.status} ${root.headers.get('location')}`);
 const loginPage = await get('/login');
@@ -72,7 +76,9 @@ await send('Page.navigate', { url: base + '/' });
 await sleep(900);
 await evaluate('document.querySelector("#user").value = "me"; document.querySelector("#pass").value = "secret"; document.querySelector("#login").requestSubmit()');
 let loggedIn = false;
-for (let i = 0; i < 50; i++) {
+// The 3D world compiles its shaders under SwiftShader; login plus the first
+// frame can take longer than the old flat page.
+for (let i = 0; i < 150; i++) {
   if (await evaluate('location.pathname === "/" && !!document.querySelector("#hud") && !!window.world && world.debug().planets > 0')) { loggedIn = true; break; }
   await sleep(200);
 }
@@ -90,6 +96,8 @@ for (const attr of ['HttpOnly', 'Secure', 'SameSite=Strict', 'Path=/']) check(`t
 const cookie = setCookie.split(';')[0];
 const authed = await get('/api/state', cookie);
 check('the session opens the API', authed.status === 200, String(authed.status));
+const remoteAuthed = await get('/api/limits', cookie, { headers: { 'x-forwarded-for': '203.0.113.5' } });
+check('a logged-in remote caller reads limits', remoteAuthed.status === 200, String(remoteAuthed.status));
 
 for (let i = 0; i < 5; i++) await fetch(base + '/api/login', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ user: 'me', password: 'wrong' }) });
 const limited = await json(await fetch(base + '/api/login', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ user: 'me', password: 'secret' }) }));

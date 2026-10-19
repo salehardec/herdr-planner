@@ -1,0 +1,17 @@
+{
+  "id": "pi",
+  "name": "Pi",
+  "ready": true,
+  "usageStatusText": "API keys · no subscription",
+  "totalPrompts": 27028,
+  "totalSessions": 202,
+  "activeDays": 16,
+  "todayPrompts": 55,
+  "todaySessions": 1,
+  "todayTotalTokens": 3631930,
+  "todayTokensByModel": { "example/small": 3631930 },
+  "recentDays": [],
+  "modelUsage": {},
+  "hasLocalStats": true,
+  "hasPromptStats": true
+}

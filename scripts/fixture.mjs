@@ -12,13 +12,13 @@
 //   OMARCHY_THEME_DIR=DIR/theme XDG_STATE_HOME=DIR/state XDG_CONFIG_HOME=DIR/cfg
 //   PATH=DIR/bin:$PATH herdr-planner --port N --data DIR/board
 
-import { chmodSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 
 const dir = resolve(process.argv[2] || '');
 if (!process.argv[2]) { console.error('usage: node scripts/fixture.mjs DIR'); process.exit(2); }
 rmSync(dir, { recursive: true, force: true });
-for (const d of ['board', 'bin', 'log', 'state', 'cfg', 'theme', 'worktrees', 'reports']) mkdirSync(join(dir, d), { recursive: true });
+for (const d of ['board', 'bin', 'log', 'state', 'cfg', 'cache', 'theme', 'worktrees', 'reports']) mkdirSync(join(dir, d), { recursive: true });
 
 const write = (path, text) => { mkdirSync(join(path, '..'), { recursive: true }); writeFileSync(path, text); };
 const keys = { alpha: 'ALP', beta: 'BET', gamma: 'GAM', delta: 'DEL', sigma: 'SIG' };
@@ -290,6 +290,39 @@ cyan = "#5bcbcb"
 blue = "#77b0e9"
 magenta = "#da8fbf"
 `);
+// Omarchy's agent usage records: Claude has real subscription windows, omp
+// and pi are API-key agents and must stay honestly empty. Pi's record is old
+// enough to exercise the stale marking.
+const usageAt = Date.now();
+const inHours = (hours) => new Date(usageAt + hours * 3600 * 1000).toISOString();
+const claudeLimits = [
+  { label: 'Session (5-hour)', percent: 0.21, resetsAt: inHours(2) },
+  // 30 hours guarantees another calendar day, so the page must add a date.
+  { label: 'Weekly (7-day)', percent: 0.91, resetsAt: inHours(30) },
+  { label: 'Fable Weekly', percent: 0.97, resetsAt: inHours(30), title: 'Fable Weekly' },
+];
+const usageDir = join(dir, 'state', 'omarchy', 'agents', 'usage');
+write(join(usageDir, 'claude.json'), JSON.stringify({
+  schemaVersion: 1, id: 'claude', name: 'Claude Code', updatedAt: new Date(usageAt).toISOString(),
+  ready: true, hasLocalStats: true, tierLabel: 'Max 5x', usageStatusText: '', limits: claudeLimits,
+  todayPrompts: 0, todaySessions: 0, todayTotalTokens: 0, todayTokensByModel: {}, recentDays: [],
+  totalPrompts: 0, totalSessions: 0, activeDays: 0, activeDates: [], modelUsage: {},
+}));
+for (const [id, name] of [['omp', 'OMP'], ['pi', 'Pi']]) {
+  write(join(usageDir, `${id}.json`), JSON.stringify({
+    id, name, ready: true, usageStatusText: 'API keys · no subscription',
+    totalPrompts: 0, totalSessions: 0, activeDays: 0, todayPrompts: 0, todaySessions: 0,
+    todayTotalTokens: 0, todayTokensByModel: {}, recentDays: [], modelUsage: {},
+    hasLocalStats: true, hasPromptStats: true,
+  }));
+}
+write(join(dir, 'cache', 'omarchy', 'agent-usage', 'claude-limits.json'), JSON.stringify({
+  fetchedAtMs: usageAt,
+  limits: claudeLimits,
+}));
+const old = new Date(usageAt - 2 * 3600 * 1000);
+utimesSync(join(usageDir, 'pi.json'), old, old);
+
 write(join(dir, 'theme.name'), 'Fixture Night');
 write(join(dir, 'herdr.sock'), '');
 console.log(dir);

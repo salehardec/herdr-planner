@@ -4,6 +4,7 @@ use crate::app::{self, details, refresh, run_board, save_todo, Shared, TodoItem}
 use crate::auth::{self, cookie_value, peer_ip, LoginError, COOKIE};
 use crate::board::{self, Status};
 use crate::config::now_ms;
+use crate::usage;
 use axum::extract::{ConnectInfo, Query, State};
 use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
 use axum::middleware::{self, Next};
@@ -54,6 +55,9 @@ pub fn router(app: Shared) -> Router {
         .route("/", get(index))
         .route("/login", get(login_page))
         .route("/api/login", post(api_login))
+        // The Omarchy bar widget is local and has no login cookie; only a
+        // non-loopback caller must authenticate for this small summary.
+        .route("/api/limits", get(api_limits))
         .route(
             "/app.css",
             get(|| async { asset(APP_CSS, "text/css; charset=utf-8") }),
@@ -302,6 +306,21 @@ async fn api_logout(State(app): State<Shared>, headers: HeaderMap) -> Response {
 
 async fn api_state(State(app): State<Shared>) -> Json<app::Snapshot> {
     Json(app.snapshot.read().await.clone())
+}
+
+/// Just enough for the bar widget to draw a dot: the worst limit and whether
+/// it is stale, never the board's tasks or chat.
+async fn api_limits(
+    State(app): State<Shared>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+) -> Response {
+    let local = client_is_local(addr, &headers);
+    if app.auth.required && !local && !authed(&app, &headers) {
+        return error(StatusCode::UNAUTHORIZED, "login required");
+    }
+    let snap = app.snapshot.read().await;
+    Json(usage::alert(&snap.limits)).into_response()
 }
 
 async fn api_summary(State(app): State<Shared>) -> Json<serde_json::Value> {

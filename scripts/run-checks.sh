@@ -32,7 +32,7 @@ FIXTURE_DIR="$FX" \
   HERDR_SOCKET_PATH="$FX/herdr.sock" \
   OMARCHY_THEME_DIR="$FX/theme" \
   PATH="$FX/bin:$PATH" \
-  XDG_STATE_HOME="$FX/state" XDG_CONFIG_HOME="$FX/cfg" \
+  XDG_STATE_HOME="$FX/state" XDG_CONFIG_HOME="$FX/cfg" XDG_CACHE_HOME="$FX/cache" \
   "$TARGET/debug/herdr-planner" --port "$PORT" --data "$FX/board" >"$FX/server.log" 2>&1 &
 SERVER=$!
 for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
@@ -51,7 +51,7 @@ FIXTURE_DIR="$FX" \
   HERDR_SOCKET_PATH="$FX/herdr.sock" \
   OMARCHY_THEME_DIR="$FX/theme" \
   PATH="$FX/bin:$PATH" \
-  XDG_STATE_HOME="$FX/state-auth" XDG_CONFIG_HOME="$FX/cfg-auth" \
+  XDG_STATE_HOME="$FX/state-auth" XDG_CONFIG_HOME="$FX/cfg-auth" XDG_CACHE_HOME="$FX/cache" \
   "$TARGET/debug/herdr-planner" --port "$AUTH_PORT" --data "$FX/board" >"$FX/server-auth.log" 2>&1 &
 AUTH_SERVER=$!
 for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do

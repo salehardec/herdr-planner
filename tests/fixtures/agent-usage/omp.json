@@ -1,0 +1,17 @@
+{
+  "id": "omp",
+  "name": "OMP",
+  "ready": true,
+  "usageStatusText": "API keys · no subscription",
+  "totalPrompts": 3929,
+  "totalSessions": 43,
+  "activeDays": 9,
+  "todayPrompts": 1298,
+  "todaySessions": 11,
+  "todayTotalTokens": 251703564,
+  "todayTokensByModel": { "deepseek-v4-flash": 251703564 },
+  "recentDays": [],
+  "modelUsage": {},
+  "hasLocalStats": true,
+  "hasPromptStats": true
+}

@@ -5,8 +5,8 @@ use crate::board::{self, Details, Link, Project, Status, Summary, Task};
 use crate::config::{now_ms, AppConfig};
 use crate::coordinator::{self, CoordinatorView};
 use crate::theme::{self, Theme};
+use crate::usage::{self, Usage};
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::process::Stdio;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -85,8 +85,8 @@ pub struct Snapshot {
     pub summary: Summary,
     /// `after` dependencies, read from the board and cached between refreshes.
     pub links: Vec<Link>,
-    /// Reserved for subscription limits (PLN-5): always `null` here.
-    pub limits: Value,
+    /// Subscription limits and balances from Omarchy's agent usage records.
+    pub limits: Usage,
     /// The God's own list: ideas to drop into a universe as a new task.
     pub todo: Vec<TodoItem>,
     pub journal: Vec<JournalEntry>,
@@ -147,6 +147,7 @@ pub type Shared = Arc<App>;
 impl App {
     pub fn new(cfg: AppConfig) -> Shared {
         let theme = theme::load();
+        let usage = usage::read();
         let snapshot = Snapshot {
             version: VERSION.to_string(),
             at: 0,
@@ -161,7 +162,7 @@ impl App {
             projects: Vec::new(),
             summary: Summary::default(),
             links: Vec::new(),
-            limits: Value::Null,
+            limits: usage,
             todo: load_todo(&cfg),
             journal: Vec::new(),
             coordinator: CoordinatorState {
@@ -336,6 +337,7 @@ pub async fn refresh(app: &Shared) {
 
     let now = now_ms();
     let theme = theme::load();
+    let usage = usage::read();
     let chat_before = app.chat.lock().await.clone();
     let mut chat = chat_before.clone();
 
@@ -394,6 +396,7 @@ pub async fn refresh(app: &Shared) {
     snap.at = now;
     snap.seq += 1;
     snap.theme = theme;
+    snap.limits = usage;
     snap.herdr.running = cfg.herdr_socket.exists();
     snap.coordinator = CoordinatorState {
         view: coord_view,

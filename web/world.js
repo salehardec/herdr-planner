@@ -49,7 +49,7 @@ export function createWorld({ canvas, labelsEl, simple = false, reduced = false 
   let scene = null;
   let labelRenderer = null;
   let cam = null;
-  let data = { tasks: [], projects: [], links: [], selected: null, filter: null, fresh: {}, attention: 0, coordinator: {}, showQuiet: true };
+  let data = { tasks: [], projects: [], links: [], selected: null, filter: null, fresh: {}, attention: 0, coordinator: {}, showQuiet: true, limits: null };
   let layout = { universes: [], positions: new Map(), god: { x: 0, y: 0, z: 0 } };
   let palette = {};
   let mode = 'dark';
@@ -416,6 +416,9 @@ export function createWorld({ canvas, labelsEl, simple = false, reduced = false 
       godHalo.material.needsUpdate = true;
     }
     if (stars) stars.material.color.set(mode === 'light' ? colors.fg : (colors['fg-bright'] || colors.fg));
+    // Arcs and satellites own their materials, so a theme change recreates
+    // them from the new palette.
+    if (data.limits) setLimits(data.limits);
     if (chatObject) requestRender();
     dirty = true;
     requestRender();
@@ -506,6 +509,9 @@ export function createWorld({ canvas, labelsEl, simple = false, reduced = false 
     updateFilter();
     updateFresh(prevStatus);
     if (data.selected) select(data.selected, false);
+    // Satellites were just recreated with their program colours; give the
+    // agents with limits their arc colour back.
+    if (data.limits) setLimits(data.limits);
   }
 
   function buildGodLabel() {
@@ -652,7 +658,7 @@ export function createWorld({ canvas, labelsEl, simple = false, reduced = false 
       sm.scale.setScalar(0.55);
       sm.userData.ownMat = true;
       g.add(sm);
-      satellites.push({ mesh: sm, planet: entry, angle0: (hash(p.id) % 360) / 360 * Math.PI * 2, radius: p.size + 1.9 });
+      satellites.push({ mesh: sm, planet: entry, app, angle0: (hash(p.id) % 360) / 360 * Math.PI * 2, radius: p.size + 1.9 });
     }
 
     // Beacon to God for what waits for the human.
@@ -884,11 +890,82 @@ export function createWorld({ canvas, labelsEl, simple = false, reduced = false 
     return true;
   }
 
-  /// PLN-5 hook: draw subscription arcs around God. Nothing to draw yet.
+  /// Subscription rings around God: one sector per agent, filled by the
+  /// remaining share of its most-consumed live window. 80 % used turns the
+  /// sector yellow, 95 % red and makes the halo flicker; agent satellites
+  /// wear the same colour. The HUD names every window; the world shows the
+  /// one closest to exhaustion.
   function setLimits(limits) {
+    data.limits = limits || null;
     if (!limitsGroup) return;
-    if (!limits) { clearGroup(limitsGroup); return; }
-    // Filled by PLN-5: RingGeometry sectors per agent, colour and fill from `limits`.
+    clearGroup(limitsGroup);
+    const agents = limits && Array.isArray(limits.agents) ? limits.agents : [];
+    let slot = 0;
+    let critical = false;
+    const live = [];
+    for (const agent of agents) {
+      const worst = worstWindow(agent);
+      if (!worst) continue;
+      live.push({ agent, worst });
+      // Outside the 60-unit halo, still well inside the 190-unit universe ring.
+      const radius = 68 + slot * 9;
+      const remaining = clamp(1 - Number(worst.percent || 0), 0, 1);
+      const severity = worst.severity === 'crit' ? 'crit' : worst.severity === 'warn' ? 'warn' : 'ok';
+      const key = severity === 'crit' ? 'red' : severity === 'warn' ? 'yellow' : (AGENT_COLOR[agent.id] || 'accent');
+      const color = palette[key] || palette.accent || '#ffffff';
+      const dim = agent.stale ? 0.45 : 1;
+      if (severity === 'crit') critical = true;
+
+      const track = new THREE.Mesh(
+        new THREE.RingGeometry(radius, radius + 1.5, 64, 1),
+        new THREE.MeshBasicMaterial({
+          color: palette.muted || '#806f64', transparent: true, opacity: 0.16 * dim,
+          side: THREE.DoubleSide, depthWrite: false,
+        }),
+      );
+      track.rotation.x = -Math.PI / 2;
+      track.userData.ownGeo = true;
+      track.userData.ownMat = true;
+
+      const arc = new THREE.Mesh(
+        new THREE.RingGeometry(radius, radius + 2.1, 96, 1, Math.PI / 2, Math.PI * 2 * remaining),
+        new THREE.MeshBasicMaterial({
+          color, transparent: true, opacity: 0.9 * dim,
+          side: THREE.DoubleSide, depthWrite: false, blending: THREE.AdditiveBlending,
+        }),
+      );
+      arc.rotation.x = -Math.PI / 2;
+      arc.userData.ownGeo = true;
+      arc.userData.ownMat = true;
+      arc.userData.agent = agent.id;
+      arc.userData.severity = severity;
+
+      limitsGroup.add(track, arc);
+      slot++;
+    }
+    if (godHalo) godHalo.userData.limitCrit = critical;
+
+    // Satellites inherit their agent's arc colour; an agent with no limit
+    // data keeps its program colour.
+    for (const sat of satellites) {
+      const entry = live.find((x) => String(x.agent.id) === sat.app);
+      const severity = entry ? entry.worst.severity : '';
+      const key = entry
+        ? (severity === 'crit' ? 'red' : severity === 'warn' ? 'yellow' : (AGENT_COLOR[sat.app] || 'accent'))
+        : (AGENT_COLOR[sat.app] || 'fg');
+      sat.mesh.material.color.set(palette[key] || '#ffffff');
+    }
+    requestRender();
+  }
+
+  function worstWindow(agent) {
+    const now = Date.now();
+    const windows = (Array.isArray(agent && agent.limits) ? agent.limits : [])
+      // A window whose reset has passed is no longer being spent; the next
+      // Omarchy scan replaces it. Skip it here for the same reason the HUD
+      // chip and /api/limits do.
+      .filter((w) => !w.resets_at_ms || w.resets_at_ms > now);
+    return windows.reduce((best, w) => (!best || Number(w.percent) > Number(best.percent) ? w : best), null);
   }
 
   /** Where a planet is on screen (for checks and the app's own placement). */
@@ -1212,9 +1289,12 @@ export function createWorld({ canvas, labelsEl, simple = false, reduced = false 
     // God: pulse when busy, glow when a dialog waits.
     if (godHalo) {
       const busy = !!godHalo.userData.busy;
-      const pulse = moving && busy ? 1 + Math.sin(t * 4.2) * 0.08 : 1;
+      const limitCrit = !!godHalo.userData.limitCrit;
+      const pulse = moving && (busy || limitCrit) ? 1 + Math.sin(t * 4.2) * 0.08 : 1;
       godHalo.scale.setScalar(120 * pulse);
-      godHalo.material.opacity = godHalo.userData.dialog ? 0.95 : busy ? 0.75 + Math.sin(t * 4.2) * 0.12 : 0.8;
+      godHalo.material.opacity = godHalo.userData.dialog ? 0.95
+        : busy ? 0.75 + Math.sin(t * 4.2) * 0.12
+          : limitCrit ? 0.8 + Math.sin(t * 3.4) * 0.14 : 0.8;
     }
     // Light packets from God to the universes while the Coordinator works.
     const busy = !!(data.coordinator && (data.coordinator.busy || data.coordinator.status === 'working'));
@@ -1378,6 +1458,8 @@ export function createWorld({ canvas, labelsEl, simple = false, reduced = false 
       attention: Number(data.attention) || 0,
       fps: lastFps,
       labels: labels.size,
+      limitArcs: limitsGroup ? limitsGroup.children.filter((c) => c.userData.agent).length : 0,
+      limitCrit: !!(godHalo && godHalo.userData.limitCrit),
       filter: data.filter,
       dim: [...labels.values()].filter((p) => p.el && p.el.classList.contains('dim')).length,
       camera: cam ? { x: Math.round(cam.camera.position.x), y: Math.round(cam.camera.position.y), z: Math.round(cam.camera.position.z) } : null,
