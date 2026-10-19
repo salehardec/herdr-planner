@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="ru" data-mode="__MODE__">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark light">
+<title>Herdr Planner · вход</title>
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="/login.css">
+<style>__THEME__</style>
+</head>
+<body>
+<main class="login">
+  <div class="lbl">HERDR-PROJECTS · ДОСКА</div>
+  <h1>Herdr Planner</h1>
+  <p class="sub">Дашборд доски проектов. Вход нужен, чтобы открыть его с другой машины.</p>
+  <form id="login" autocomplete="on">
+    <label>Пользователь
+      <input id="user" name="user" autocomplete="username" required autofocus spellcheck="false">
+    </label>
+    <label>Пароль
+      <input id="pass" name="password" type="password" autocomplete="current-password" required>
+    </label>
+    <button id="go" type="submit">Войти</button>
+    <p class="err" id="err" role="alert"></p>
+  </form>
+  <p class="hint">На машине с доской откройте <code>http://127.0.0.1:7117</code> — там вход не нужен, если пароль не задан.</p>
+</main>
+<script src="/login.js"></script>
+</body>
+</html>

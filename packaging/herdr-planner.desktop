@@ -2,8 +2,8 @@
 Type=Application
 Name=Herdr Planner
 Name[ru]=Планировщик проектов
-Comment=Dashboard of herdr-projects in the herdr-gpui theme
-Comment[ru]=Дашборд проектов herdr-projects в теме herdr-gpui
+Comment=Standalone dashboard of the herdr-projects board
+Comment[ru]=Отдельный дашборд доски herdr-projects в цветах темы Omarchy
 Exec=@OPEN@
 Icon=herdr-planner
 Terminal=false

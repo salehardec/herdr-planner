@@ -1,106 +1,244 @@
-//! Herdr Planner: a local web dashboard for herdr-projects, in the herdr-gpui
-//! theme. One binary: the server, the data sources and the embedded page.
+//! Herdr Planner: a standalone dashboard of the herdr-projects board.
+//!
+//! One binary: the HTTP(S) server, the board poller and the embedded page.
+//! It does not need herdr or herdr-gpui to run.
 
-mod actions;
-mod agent;
-mod api;
 mod app;
+mod auth;
 mod board;
 mod config;
-mod import_tern;
-mod jsonscan;
-mod model;
-mod poller;
-mod sources;
-mod store;
-mod suggest;
+mod coordinator;
+mod server;
 mod theme;
 
-use std::net::{Ipv4Addr, SocketAddr};
+use app::{refresh, Shared};
+use config::AppConfig;
+use std::io::Read;
+use std::net::{SocketAddr, ToSocketAddrs};
+use std::time::Duration;
+
+fn help() {
+    println!(
+        "herdr-planner [--listen ADDR] [--port N] [--data DIR]
+
+  Запускает дашборд доски herdr-projects на http://127.0.0.1:7117 (или https,
+  когда в конфиге есть tls_cert и tls_key). Без password_hash слушает только
+  loopback; чтобы открыть с другой машины, задайте пароль:
+      scripts/install.sh password --listen 0.0.0.0
+
+  Файл настроек: ~/.config/herdr-planner/config.toml
+  Состояние (журнал, чат): ~/.local/state/herdr-planner/
+
+  Служебные команды:
+      herdr-planner hash-password        прочитать пароль из stdin и напечатать Argon2id-хеш
+      herdr-planner set-auth [--user U] [--listen A]
+                                         записать хеш из stdin (и логин/адрес) в конфиг
+      herdr-planner set-tls --cert F --key F
+                                         записать пути сертификата и ключа в конфиг
+"
+    );
+}
+
+fn read_stdin_trimmed() -> Result<String, String> {
+    let mut s = String::new();
+    std::io::stdin()
+        .read_to_string(&mut s)
+        .map_err(|e| e.to_string())?;
+    Ok(s.trim_end_matches(['\r', '\n']).to_string())
+}
+
+fn flag(args: &[String], name: &str) -> Option<String> {
+    args.iter()
+        .position(|a| a == name)
+        .and_then(|i| args.get(i + 1))
+        .cloned()
+}
+
+fn socket_addr(listen: &str, port: u16) -> Result<SocketAddr, String> {
+    let host = listen.trim();
+    let hostport = if host.contains(':') && !host.starts_with('[') {
+        format!("[{host}]:{port}")
+    } else {
+        format!("{host}:{port}")
+    };
+    hostport
+        .to_socket_addrs()
+        .map_err(|e| format!("{hostport}: {e}"))?
+        .next()
+        .ok_or_else(|| format!("{hostport}: no address"))
+}
 
 #[tokio::main]
 async fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.iter().any(|a| a == "--help" || a == "-h") {
-        println!(
-            "herdr-planner [--port N] [--data DIR]\n\nПланировщик проектов на доске herdr-projects: http://127.0.0.1:PORT (по умолчанию {}).\nНастройки: ~/.config/herdr-planner/config.toml (port, data); состояние: ~/.local/state/herdr-planner/state.json.",
-            config::DEFAULT_PORT
-        );
+        help();
         return;
     }
     if args.iter().any(|a| a == "--version" || a == "-V") {
         println!("herdr-planner {}", app::VERSION);
         return;
     }
-    let cfg = config::AppConfig::load(&args);
-
-    // Saved state, or the Tern plugin's on first run.
-    let state = match store::State::load(&cfg.state_file) {
-        Some(s) => s,
-        None => {
-            let imported = import_tern::import(&import_tern::default_path());
-            let s = imported.unwrap_or_default().normalize();
-            if let Err(e) = s.save(&cfg.state_file) {
-                eprintln!(
-                    "herdr-planner: не сохранилось состояние {}: {}",
-                    cfg.state_file.display(),
-                    e
-                );
+    if args.iter().any(|a| a == "hash-password") {
+        match read_stdin_trimmed().and_then(|p| {
+            if p.is_empty() {
+                Err("empty password".to_string())
+            } else {
+                config::hash_password(&p)
             }
-            if let Some(from) = &s.imported_from {
-                eprintln!("herdr-planner: состояние плагина Tern перенесено из {from}");
+        }) {
+            Ok(hash) => println!("{hash}"),
+            Err(e) => {
+                eprintln!("herdr-planner hash-password: {e}");
+                std::process::exit(2);
             }
-            s
         }
-    };
-
-    let theme = theme::load();
-    if let Some(e) = &theme.error {
-        eprintln!("herdr-planner: тема herdr-gpui не прочитана ({e}), показана запасная");
+        return;
     }
-    let shared = app::App::new(cfg.clone(), state, theme);
+    if args.iter().any(|a| a == "set-auth") {
+        let hash = match read_stdin_trimmed() {
+            Ok(h) if h.starts_with("$argon2") || h.starts_with("$2") => h,
+            Ok(_) => {
+                eprintln!("herdr-planner set-auth: expected an Argon2 or bcrypt hash on stdin");
+                std::process::exit(2);
+            }
+            Err(e) => {
+                eprintln!("herdr-planner set-auth: {e}");
+                std::process::exit(2);
+            }
+        };
+        let cfg = AppConfig::load(&args);
+        let user = flag(&args, "--user").unwrap_or(cfg.user);
+        let listen = flag(&args, "--listen");
+        match config::set_auth(&cfg.config_file, &user, &hash, listen.as_deref()) {
+            Ok(()) => println!(
+                "herdr-planner: login for «{user}» written to {}",
+                cfg.config_file.display()
+            ),
+            Err(e) => {
+                eprintln!("herdr-planner set-auth: {e}");
+                std::process::exit(2);
+            }
+        }
+        return;
+    }
+    if args.iter().any(|a| a == "set-tls") {
+        let cfg = AppConfig::load(&args);
+        let (Some(cert), Some(key)) = (flag(&args, "--cert"), flag(&args, "--key")) else {
+            eprintln!("herdr-planner set-tls: --cert and --key are required");
+            std::process::exit(2);
+        };
+        match config::set_tls(&cfg.config_file, &cert, &key) {
+            Ok(()) => println!(
+                "herdr-planner: TLS certificate written to {}",
+                cfg.config_file.display()
+            ),
+            Err(e) => {
+                eprintln!("herdr-planner set-tls: {e}");
+                std::process::exit(2);
+            }
+        }
+        return;
+    }
 
-    tokio::spawn(poller::refresh_loop(shared.clone()));
-    tokio::spawn(poller::workspace_loop(shared.clone()));
-    tokio::spawn(poller::theme_loop(shared.clone()));
-
-    let addr = SocketAddr::from((Ipv4Addr::LOCALHOST, cfg.port));
-    let listener = match tokio::net::TcpListener::bind(addr).await {
-        Ok(l) => l,
-        Err(e) => {
+    let cfg = AppConfig::load(&args);
+    if !cfg.auth_required() && !cfg.is_loopback() {
+        eprintln!(
+            "herdr-planner: {} is not a loopback address, but no password_hash is set.\n\
+             Set one with `scripts/install.sh password --listen {}` (or keep 127.0.0.1).",
+            cfg.listen, cfg.listen
+        );
+        std::process::exit(1);
+    }
+    if cfg.auth_required() && !cfg.is_loopback() && cfg.tls().is_none() {
+        eprintln!(
+            "herdr-planner: warning: listening on {} over plain HTTP. The session cookie \
+             is Secure, so a remote browser will not keep it; configure tls_cert/tls_key \
+             or put a TLS proxy (or Tailscale Serve) in front.",
+            cfg.listen
+        );
+    }
+    if let Some((cert, key)) = cfg.tls() {
+        if !cert.exists() || !key.exists() {
             eprintln!(
-                "herdr-planner: порт {} занят или недоступен: {}",
-                cfg.port, e
+                "herdr-planner: TLS files missing: {} / {}",
+                cert.display(),
+                key.display()
             );
             std::process::exit(1);
         }
+    }
+
+    let addr = match socket_addr(&cfg.listen, cfg.port) {
+        Ok(a) => a,
+        Err(e) => {
+            eprintln!("herdr-planner: {e}");
+            std::process::exit(1);
+        }
+    };
+    let app = app::App::new(cfg.clone());
+    // The first read happens before the socket opens: the page never starts empty.
+    refresh(&app).await;
+    let loop_app: Shared = app.clone();
+    tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(Duration::from_secs(4)).await;
+            refresh(&loop_app).await;
+        }
+    });
+
+    let scheme = if cfg.tls().is_some() { "https" } else { "http" };
+    let shown = if cfg.listen.contains(':') {
+        format!("[{0}]:{1}", cfg.listen, cfg.port)
+    } else {
+        format!("{}:{}", cfg.listen, cfg.port)
     };
     println!(
-        "herdr-planner {} на http://{}  (доска: {}; настройки: {})",
+        "herdr-planner {} on {scheme}://{shown}  (board: {}; login: {}; tls: {})",
         app::VERSION,
-        addr,
         cfg.data_dir.display(),
-        cfg.config_file.display()
+        if cfg.auth_required() { "on" } else { "off" },
+        if cfg.tls().is_some() { "on" } else { "off" }
     );
-    let router = api::router(shared);
-    axum::serve(listener, router)
+
+    let router = server::router(app);
+    if let Some((cert, key)) = cfg.tls() {
+        let tls = match axum_server::tls_rustls::RustlsConfig::from_pem_file(cert, key).await {
+            Ok(t) => t,
+            Err(e) => {
+                eprintln!("herdr-planner: TLS: {e}");
+                std::process::exit(1);
+            }
+        };
+        if let Err(e) = axum_server::bind_rustls(addr, tls)
+            .serve(router.into_make_service_with_connect_info::<SocketAddr>())
+            .await
+        {
+            eprintln!("herdr-planner: {e}");
+            std::process::exit(1);
+        }
+    } else {
+        let listener = match tokio::net::TcpListener::bind(addr).await {
+            Ok(l) => l,
+            Err(e) => {
+                eprintln!("herdr-planner: {addr}: {e}");
+                std::process::exit(1);
+            }
+        };
+        if let Err(e) = axum::serve(
+            listener,
+            router.into_make_service_with_connect_info::<SocketAddr>(),
+        )
         .with_graceful_shutdown(shutdown_signal())
         .await
-        .expect("server");
+        {
+            eprintln!("herdr-planner: {e}");
+            std::process::exit(1);
+        }
+    }
 }
 
-/// Ctrl-C, or SIGTERM from `systemctl stop`: finish the open requests, then exit.
-/// Open event streams (the page's SSE) never end by themselves, so after a short
-/// grace the process leaves anyway.
 async fn shutdown_signal() {
-    wait_for_signal().await;
-    tokio::spawn(async {
-        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-        std::process::exit(0);
-    });
-}
-
-async fn wait_for_signal() {
     let ctrl_c = async {
         let _ = tokio::signal::ctrl_c().await;
     };
@@ -113,4 +251,8 @@ async fn wait_for_signal() {
         }
         Err(_) => ctrl_c.await,
     }
+    tokio::spawn(async {
+        tokio::time::sleep(Duration::from_secs(2)).await;
+        std::process::exit(0);
+    });
 }

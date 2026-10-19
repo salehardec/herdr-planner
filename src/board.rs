@@ -1,91 +1,132 @@
-//! Tasks of the herdr-projects board, as `herdr-projects list --json` prints
-//! them, and where each one stands: the bucket the planner files it under.
+//! The herdr-projects board, as `herdr-projects list --all --json` and plain
+//! `list --all` print it, and the eight statuses the dashboard shows.
 //!
-//! The board decides the stage of a task; the planner only reads it. The
-//! rules below follow the board's own grouping (`needs you`, `ready to
-//! approve`, `working`, `to do`, `done`), refined with the stages the planner
-//! wants apart: a task that failed, one under review, one queued.
+//! The board owns the real stage of a task. This module only turns its words
+//! (`state`, `stage`, `kind`, `review`) into the dashboard's status, which is
+//! the same for a card, a badge, a thread and a test.
 
 use serde::Serialize;
 use serde_json::Value;
+use std::collections::BTreeMap;
 
-/// Where a task stands, in the order it needs the user.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
-pub enum Bucket {
-    /// A question, a permission, a login, a plan, a choice, a failed review.
-    Needs,
-    /// Finished work that passed its review and waits for the user's yes.
-    Ready,
-    /// Went wrong: an error, a stop without a summary.
+pub enum Status {
+    Waiting,
     Failed,
-    /// The reviewer is on it.
+    Ready,
+    Plan,
     Review,
-    /// The agent (or the board's own step) is on it.
     Working,
-    /// Waits for a free slot or for other tasks (`--after`).
     Queued,
-    /// Nobody has started it.
-    #[default]
-    Todo,
-    /// Finished.
     Done,
 }
 
+impl Status {
+    pub fn key(self) -> &'static str {
+        match self {
+            Status::Waiting => "waiting",
+            Status::Failed => "failed",
+            Status::Ready => "ready",
+            Status::Plan => "plan",
+            Status::Review => "review",
+            Status::Working => "working",
+            Status::Queued => "queued",
+            Status::Done => "done",
+        }
+    }
 
-/// What the current review said, in short.
+    /// The badge's words, exactly as the mockup has them.
+    pub fn label(self) -> &'static str {
+        match self {
+            Status::Waiting => "Ждёт тебя",
+            Status::Failed => "Упала",
+            Status::Ready => "К одобрению",
+            Status::Plan => "План готов",
+            Status::Review => "На ревью",
+            Status::Working => "В работе",
+            Status::Queued => "В очереди",
+            Status::Done => "Сделано",
+        }
+    }
+
+    pub fn urgency(self) -> u8 {
+        match self {
+            Status::Waiting => 0,
+            Status::Failed => 1,
+            Status::Ready => 2,
+            Status::Plan => 3,
+            Status::Review => 4,
+            Status::Working => 5,
+            Status::Queued => 6,
+            Status::Done => 7,
+        }
+    }
+
+    pub fn needs_you(self) -> bool {
+        matches!(
+            self,
+            Status::Waiting | Status::Failed | Status::Ready | Status::Plan
+        )
+    }
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Serialize)]
 pub struct ReviewBrief {
-    /// Passed the board's gate; none for a review from before the gate that gave no verdict.
+    /// The board's gate said yes; none when a review from before the gate gave no verdict.
     pub pass: Option<bool>,
-    /// `1 critical, 1 major`; empty when it found nothing.
+    pub meets: Option<bool>,
+    /// `1 critical, 2 major`.
     pub tally: String,
+    pub text: String,
+    pub checks: Vec<String>,
+    pub by: String,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize)]
 pub struct Task {
-    /// `repo/number`, the board's own name for it.
     pub id: String,
     pub repo: String,
     pub n: u64,
-    /// `PLN-1`: the repo's key and the number; `#1` for a repo without a key.
+    /// `PLN-3`, from plain `list`.
     pub tag: String,
     pub title: String,
     pub state: String,
     pub kind: String,
     pub stage: String,
-    /// What the task says now (the board's `msg`).
+    /// The board's current line (its `msg`).
     pub msg: String,
-    /// The program that works on it.
     pub app: String,
     pub progress: Option<u32>,
     pub eta: Option<u32>,
     pub pr: String,
-    pub research: bool,
-    /// Its place in the queue for a free slot.
-    pub queue: Option<u32>,
     pub review: Option<ReviewBrief>,
     pub round: u32,
-    pub bucket: Bucket,
-    /// Where it stands, in words: «план готов», «ждёт ответа», «на ревью».
+    pub queue: Option<u32>,
+    pub status: Status,
+    /// The dashboard's badge: «Ждёт тебя», «К одобрению», …
     pub label: String,
-    /// The finished work failed its review: it may still be approved, anyway.
+    /// The board's own words: «ждёт ответа», «в очереди, №2».
+    pub board_label: String,
+    /// Finished work whose review failed (the board may still let it through with `--anyway`).
     pub review_failed: bool,
-    /// Finished work the board will not merge by a plain yes: its pull request's checks fail, the merge
-    /// failed or the branch is behind main. The list does not say which; the board's own words do.
+    /// Finished work the board will not merge by a plain yes.
     pub merge_blocked: bool,
-    /// When it came to this stage, unix milliseconds; 0 when not known.
-    pub at: u64,
-    /// The board commands the page may offer for it.
+    pub archived: bool,
+    /// The board commands the page may offer.
     pub actions: Vec<&'static str>,
 }
 
-/// The repo of a task id: everything before the number (`herdr-planner/1`).
+impl Default for Status {
+    fn default() -> Self {
+        Status::Queued
+    }
+}
+
 pub fn repo_of(id: &str) -> &str {
     id.rsplit_once('/').map_or(id, |(repo, _)| repo)
 }
 
-/// The number of a task id, 0 when there is none.
 pub fn number_of(id: &str) -> u64 {
     id.rsplit_once('/')
         .and_then(|(_, n)| n.parse().ok())
@@ -102,6 +143,15 @@ pub fn valid_id(id: &str) -> bool {
             .all(|c| c.is_alphanumeric() || matches!(c, '/' | '-' | '_' | '.' | ':' | '@'))
 }
 
+/// A task tag the page may put in `data-*` and a URL (`PLN-3`); ids are separate.
+pub fn valid_tag(tag: &str) -> bool {
+    !tag.is_empty()
+        && tag.len() <= 40
+        && tag
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_'))
+}
+
 fn s<'a>(v: &'a Value, key: &str) -> &'a str {
     v.get(key).and_then(Value::as_str).unwrap_or("")
 }
@@ -113,15 +163,23 @@ fn num(v: &Value, key: &str) -> Option<u32> {
         .map(|n| n.round() as u32)
 }
 
-/// A review is tagged when it lists findings and says whether the change does what was asked.
-fn tagged(rv: &Value) -> bool {
-    rv.get("findings").is_some_and(Value::is_array) && rv.get("meets").is_some_and(Value::is_boolean)
+fn is_archived(v: &Value) -> bool {
+    v.get("archivedAt").map(|x| !x.is_null()).unwrap_or(false)
 }
 
-/// `1 critical, 2 major`: the findings of the task's own, the worst first.
+fn tagged(rv: &Value) -> bool {
+    rv.get("findings").is_some_and(Value::is_array)
+        && rv.get("meets").is_some_and(Value::is_boolean)
+}
+
 fn tally(rv: &Value) -> String {
     let mut counts = [0u32; 4];
-    for f in rv.get("findings").and_then(Value::as_array).into_iter().flatten() {
+    for f in rv
+        .get("findings")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
         if f.get("preexisting").and_then(Value::as_bool) == Some(true) {
             continue;
         }
@@ -143,135 +201,199 @@ fn tally(rv: &Value) -> String {
         .join(", ")
 }
 
-/// The verdict and tally of a review object (the board's `review`).
 pub fn review_brief(rv: &Value) -> Option<ReviewBrief> {
     if !rv.is_object() {
         return None;
     }
+    let text = s(rv, "text").to_string();
+    let checks = rv
+        .get("checks")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .map(String::from)
+        .collect();
+    let by = s(rv, "by").to_string();
     if tagged(rv) {
-        let pass = rv.get("pass").and_then(Value::as_bool);
         return Some(ReviewBrief {
-            pass,
+            pass: rv.get("pass").and_then(Value::as_bool),
+            meets: rv.get("meets").and_then(Value::as_bool),
             tally: tally(rv),
+            text,
+            checks,
+            by,
         });
     }
-    // A review from before the gate: a score and a merge advice.
     let recommend = rv.get("recommend").and_then(Value::as_bool);
     let score = rv.get("score").and_then(Value::as_i64);
     Some(ReviewBrief {
         pass: recommend,
+        meets: recommend,
         tally: score.map(|n| format!("{n}/5")).unwrap_or_default(),
+        text,
+        checks,
+        by,
     })
 }
 
-/// Whether what a finished task says is the board's word for a merge that cannot go through
-/// (failing checks, a failed merge, a branch behind main). The list gives only the message.
 pub fn says_merge_blocked(msg: &str) -> bool {
     let m = msg.to_lowercase();
-    ["checks fail", "checks did not pass", "merge fail", "conflict", "behind", "cannot merge", "could not merge", "did not go through", "not up to date"]
-        .iter()
-        .any(|w| m.contains(w))
+    [
+        "checks fail",
+        "checks did not pass",
+        "merge fail",
+        "conflict",
+        "behind",
+        "cannot merge",
+        "could not merge",
+        "did not go through",
+        "not up to date",
+    ]
+    .iter()
+    .any(|w| m.contains(w))
 }
 
-/// The stage of a task and the words for it. `state` is the board's own
-/// (`idle`, `working`, `blocked`, `done`, `error`), `stage` its position on the way.
-pub fn classify(t: &Task) -> (Bucket, String) {
+/// The board's own, more specific words for a task.
+pub fn board_label(t: &Task) -> String {
     let state = t.state.as_str();
     let stage = t.stage.as_str();
     if state == "done" {
-        return (Bucket::Done, "сделана".into());
+        return "сделана".into();
     }
     if state == "error" || stage == "failed" || stage == "nosummary" {
-        let word = if stage == "nosummary" {
-            "остановилась без итога"
+        return if stage == "nosummary" {
+            "остановилась без итога".into()
         } else {
-            "упала"
+            "упала".into()
         };
-        return (Bucket::Failed, word.into());
     }
     if stage == "pick" {
-        return (Bucket::Needs, "выбери вариант".into());
+        return "выбери вариант".into();
     }
-    // Stopped by hand it is a task nobody works on; stopped at a limit it waits for the user to go on.
     if stage == "stopped" {
         return if state == "blocked" {
-            (Bucket::Needs, "остановлена на лимите".into())
+            "остановлена на лимите".into()
         } else {
-            (Bucket::Todo, "остановлена".into())
+            "остановлена".into()
         };
     }
     if state == "blocked" {
         if stage == "reviewneeds" {
-            return (Bucket::Needs, "ревьюеру нужен ты".into());
+            return "ревьюеру нужен ты".into();
         }
         if stage == "plan" {
-            return (Bucket::Needs, "план готов".into());
+            return "план готов".into();
         }
         if stage == "approval" {
             if t.review_failed {
-                return (Bucket::Needs, "ревью не прошло".into());
+                return "ревью не прошло".into();
             }
             if t.merge_blocked {
-                return (Bucket::Needs, "нельзя влить".into());
+                return "нельзя влить".into();
             }
             if t.kind == "permission" {
-                return (Bucket::Ready, "готова к одобрению".into());
+                return "готова к одобрению".into();
             }
         }
-        let word = match t.kind.as_str() {
-            "question" => "ждёт ответа",
-            "permission" => "ждёт разрешения",
-            "auth" => "нужен вход",
-            _ => "ждёт тебя",
+        return match t.kind.as_str() {
+            "question" => "ждёт ответа".into(),
+            "permission" => "ждёт разрешения".into(),
+            "auth" => "нужен вход".into(),
+            _ => "ждёт тебя".into(),
         };
-        return (Bucket::Needs, word.into());
     }
     if state == "working" {
         return match stage {
-            "queued" => (
-                Bucket::Queued,
-                match t.queue {
-                    Some(n) if n > 0 => format!("в очереди, №{n}"),
-                    _ => "в очереди".into(),
-                },
-            ),
-            "after" => (Bucket::Queued, "ждёт другие задачи".into()),
-            "reviewing" => (Bucket::Review, "на ревью".into()),
-            "starting" => (Bucket::Working, "запускается".into()),
-            "setup" => (Bucket::Working, "готовит окружение".into()),
-            "checking" => (Bucket::Working, "проверка".into()),
-            "pushing" => (Bucket::Working, "отправляет".into()),
-            "merging" => (Bucket::Working, "вливается".into()),
-            _ => (Bucket::Working, "в работе".into()),
+            "queued" => match t.queue {
+                Some(n) if n > 0 => format!("в очереди, №{n}"),
+                _ => "в очереди".into(),
+            },
+            "after" => "ждёт другие задачи".into(),
+            "reviewing" => "на ревью".into(),
+            "starting" => "запускается".into(),
+            "setup" => "готовит окружение".into(),
+            "checking" => "проверка".into(),
+            "pushing" => "отправляет".into(),
+            "merging" => "вливается".into(),
+            _ => "в работе".into(),
         };
     }
-    (Bucket::Todo, "не начата".into())
+    "не начата".into()
 }
 
-/// The board commands the page offers for a task in this bucket.
-pub fn actions_for(t: &Task) -> Vec<&'static str> {
-    match t.bucket {
-        Bucket::Needs if t.stage == "plan" => vec!["approve", "tell"],
-        Bucket::Needs if t.review_failed => vec!["review", "anyway", "tell"],
-        Bucket::Needs if t.merge_blocked && t.review.is_some() => vec!["anyway", "review", "tell"],
-        Bucket::Needs if t.merge_blocked => vec!["anyway", "tell"],
-        Bucket::Needs if t.stage == "pick" => vec![],
-        Bucket::Needs if t.stage == "stopped" => vec!["retry", "tell"],
-        Bucket::Needs => vec!["tell", "stop"],
-        // The list does not show a failing pull request or a merge that cannot go through: «всё равно» is always at hand.
-        Bucket::Ready if t.review.is_some() => vec!["approve", "anyway", "review", "tell"],
-        Bucket::Ready => vec!["approve", "anyway", "tell"],
-        Bucket::Failed => vec!["retry", "tell", "stop"],
-        Bucket::Review | Bucket::Working | Bucket::Queued => vec!["tell", "stop"],
-        Bucket::Todo => vec!["delegate"],
-        Bucket::Done => vec![],
+/// The dashboard status for a parsed task.
+pub fn classify(t: &Task) -> Status {
+    let state = t.state.as_str();
+    let stage = t.stage.as_str();
+    if state == "done" {
+        return Status::Done;
+    }
+    if state == "error" || stage == "failed" || stage == "nosummary" {
+        return Status::Failed;
+    }
+    if stage == "pick" {
+        return Status::Waiting;
+    }
+    if stage == "stopped" {
+        return if state == "blocked" {
+            Status::Waiting
+        } else {
+            Status::Queued
+        };
+    }
+    if state == "blocked" {
+        if stage == "reviewneeds" {
+            return Status::Waiting;
+        }
+        if stage == "plan" {
+            return Status::Plan;
+        }
+        if stage == "approval" {
+            if t.review_failed || t.merge_blocked {
+                return Status::Waiting;
+            }
+            if t.kind == "permission" {
+                return Status::Ready;
+            }
+        }
+        return Status::Waiting;
+    }
+    if state == "working" {
+        return match stage {
+            "queued" | "after" => Status::Queued,
+            "reviewing" => Status::Review,
+            _ => Status::Working,
+        };
+    }
+    // `idle`, `todo`, a stop by hand, or no state at all: nobody is on it.
+    Status::Queued
+}
+
+fn actions_for(t: &Task) -> Vec<&'static str> {
+    match t.status {
+        Status::Waiting if t.stage == "pick" => vec![],
+        Status::Waiting if t.stage == "stopped" => vec!["retry", "tell"],
+        Status::Waiting if t.review_failed => vec!["review", "anyway", "tell"],
+        Status::Waiting if t.merge_blocked => vec!["anyway", "review", "tell"],
+        Status::Waiting => vec!["answer", "tell", "stop"],
+        Status::Failed => vec!["retry", "tell", "stop"],
+        Status::Ready => vec!["approve", "anyway", "review", "tell"],
+        Status::Plan => vec!["approve", "tell"],
+        Status::Review | Status::Working => vec!["tell", "stop"],
+        Status::Queued => vec!["delegate", "tell"],
+        Status::Done => vec!["archive"],
     }
 }
 
-/// One row of `list --json`; none for something that is not a task.
+/// One row of `list --json`; none for something that is not a task or is an attempt.
 pub fn parse_task(v: &Value) -> Option<Task> {
     let id = s(v, "id");
-    if id.is_empty() || !id.contains('/') {
+    if id.is_empty() || !id.contains('/') || !valid_id(id) {
+        return None;
+    }
+    let stage = s(v, "stage");
+    if stage == "tried" {
         return None;
     }
     let review = v.get("review").and_then(review_brief);
@@ -283,7 +405,7 @@ pub fn parse_task(v: &Value) -> Option<Task> {
         title: s(v, "title").to_string(),
         state: s(v, "state").to_string(),
         kind: s(v, "kind").to_string(),
-        stage: s(v, "stage").to_string(),
+        stage: stage.to_string(),
         msg: s(v, "msg").to_string(),
         app: s(v, "app").to_string(),
         progress: num(v, "progress").map(|n| n.min(100)),
@@ -293,58 +415,208 @@ pub fn parse_task(v: &Value) -> Option<Task> {
             Some(Value::Number(n)) => n.to_string(),
             _ => String::new(),
         },
-        research: v.get("research").and_then(Value::as_bool) == Some(true),
         queue: num(v, "queue"),
         round: num(v, "reviewRound").unwrap_or(0),
+        archived: is_archived(v),
+        review,
         ..Task::default()
     };
-    // The board holds work that failed its review under `needs you`, not `ready`.
-    t.review_failed = t.stage == "approval" && review.as_ref().is_some_and(|r| r.pass == Some(false));
+    t.review_failed = t.stage == "approval"
+        && t.review
+            .as_ref()
+            .is_some_and(|r| r.pass == Some(false) || r.meets == Some(false));
     t.merge_blocked = t.stage == "approval" && !t.review_failed && says_merge_blocked(&t.msg);
-    t.review = review;
-    // An attempt of a task stays with its task.
-    if t.stage == "tried" {
-        return None;
-    }
-    let (bucket, label) = classify(&t);
-    t.bucket = bucket;
-    t.label = label;
+    t.status = classify(&t);
+    t.label = t.status.label().to_string();
+    t.board_label = board_label(&t);
     t.actions = actions_for(&t);
     Some(t)
 }
 
-/// The tasks of `list --json`. A reply that is not a list is an error; a row that is not a task is skipped.
+/// Parses `list --all --json`; a non-list or broken JSON is an error.
 pub fn parse_list(stdout: &str) -> Result<Vec<Task>, String> {
     let v: Value = serde_json::from_str(stdout.trim())
-        .map_err(|e| format!("herdr-projects list --json ответил не JSON: {e}"))?;
+        .map_err(|e| format!("herdr-projects list --all --json: {e}"))?;
     let Some(rows) = v.as_array() else {
-        return Err("herdr-projects list --json ответил не списком".into());
+        return Err("herdr-projects list --all --json: not a list".into());
     };
     Ok(rows.iter().filter_map(parse_task).collect())
 }
 
-/// The first word of each line of plain `list`, which is the task's tag (`PLN-1`),
-/// in the order of `list --json`.
+/// The first word of each line of plain `list --all`: the task's tag (`PLN-1`).
 pub fn plain_tags(stdout: &str) -> Vec<String> {
     stdout
         .lines()
-        .filter_map(|l| l.split_whitespace().next())
-        .map(String::from)
+        .filter_map(|l| {
+            let first = l.split_whitespace().next()?;
+            if first == "(archived)" {
+                None
+            } else {
+                Some(first.to_string())
+            }
+        })
         .collect()
 }
 
-/// Gives each task its tag from plain `list`, whose lines come in the same order.
-/// A tag whose number is not the task's is not believed.
+/// Gives each task its tag from plain `list --all`, which prints the same rows in the same order.
 pub fn apply_tags(tasks: &mut [Task], tags: &[String]) {
     if tags.len() != tasks.len() {
         return;
     }
     for (t, tag) in tasks.iter_mut().zip(tags) {
-        // `PLN-1` or `#1`: it ends with the task's own number.
-        if tag.len() > 1 && tag.rsplit(['-', '#']).next() == Some(t.n.to_string().as_str()) {
+        if valid_tag(tag) && tag.rsplit(['-', '#']).next() == Some(t.n.to_string().as_str()) {
             t.tag = tag.clone();
         }
     }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize)]
+pub struct Project {
+    pub name: String,
+    pub key: String,
+    pub active: u32,
+    pub done: u32,
+    pub total: u32,
+    pub statuses: BTreeMap<String, u32>,
+    /// No task is being worked on: the board is quiet here.
+    pub quiet: bool,
+}
+
+/// Projects of the visible tasks, with a quiet project for a repo whose every task is done.
+pub fn projects(tasks: &[Task]) -> Vec<Project> {
+    let mut map: BTreeMap<String, Project> = BTreeMap::new();
+    for t in tasks {
+        let p = map.entry(t.repo.clone()).or_insert_with(|| Project {
+            name: t.repo.clone(),
+            ..Project::default()
+        });
+        p.total += 1;
+        *p.statuses.entry(t.status.key().to_string()).or_insert(0) += 1;
+        if t.status == Status::Done {
+            p.done += 1;
+        } else {
+            p.active += 1;
+        }
+        if p.key.is_empty() && valid_tag(&t.tag) && t.tag.contains('-') {
+            p.key = t.tag.split('-').next().unwrap_or("").to_string();
+        }
+    }
+    for p in map.values_mut() {
+        if p.key.is_empty() {
+            p.key = p
+                .name
+                .chars()
+                .filter(|c| c.is_ascii_alphanumeric())
+                .take(3)
+                .collect::<String>()
+                .to_ascii_uppercase();
+        }
+        p.quiet = p.active == 0;
+    }
+    map.into_values().collect()
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize)]
+pub struct Summary {
+    pub projects: u32,
+    pub active_projects: u32,
+    pub quiet_projects: u32,
+    pub tasks: u32,
+    pub done: u32,
+    pub archived: u32,
+    pub attention: u32,
+    pub waiting: u32,
+    pub failed: u32,
+    pub ready: u32,
+    pub plan: u32,
+    pub review: u32,
+    pub working: u32,
+    pub queued: u32,
+}
+
+pub fn summary(tasks: &[Task], archived: &[Task], projects: &[Project]) -> Summary {
+    let mut s = Summary {
+        archived: archived.len() as u32,
+        ..Summary::default()
+    };
+    for t in tasks {
+        s.tasks += 1;
+        match t.status {
+            Status::Waiting => s.waiting += 1,
+            Status::Failed => s.failed += 1,
+            Status::Ready => s.ready += 1,
+            Status::Plan => s.plan += 1,
+            Status::Review => s.review += 1,
+            Status::Working => s.working += 1,
+            Status::Queued => s.queued += 1,
+            Status::Done => s.done += 1,
+        }
+    }
+    s.attention = s.waiting + s.failed + s.ready + s.plan;
+    s.projects = projects.len() as u32;
+    s.active_projects = projects.iter().filter(|p| !p.quiet).count() as u32;
+    s.quiet_projects = projects.iter().filter(|p| p.quiet).count() as u32;
+    s
+}
+
+/// `worker.agent` from `herdr-projects show --task ID`: `omp/deepseek/deepseek-v4-flash`.
+pub fn show_agent(stdout: &str) -> String {
+    for line in stdout.lines() {
+        let mut it = line.split_whitespace();
+        if it.next() == Some("worker.agent") || line.contains("worker.agent") {
+            let fields: Vec<&str> = line.split_whitespace().collect();
+            if let Some(i) = fields.iter().position(|f| *f == "worker.agent") {
+                return fields.get(i + 1).copied().unwrap_or("").to_string();
+            }
+        }
+    }
+    String::new()
+}
+
+/// The body of `herdr-projects details ID`, with the few derived paths the page needs.
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct Details {
+    pub id: String,
+    pub task: Value,
+    pub failure: Value,
+    pub review: Value,
+    pub reviews: Value,
+    pub agent: String,
+    pub agent_model: String,
+    pub worktree: String,
+    pub branch: String,
+    pub after: Value,
+    pub limits: Value,
+    pub plan: Value,
+    pub report: Value,
+    pub pr: Value,
+    pub reports_dir: String,
+}
+
+pub fn parse_details(stdout: &str, reports_dir: &str) -> Result<Details, String> {
+    let v: Value =
+        serde_json::from_str(stdout.trim()).map_err(|e| format!("herdr-projects details: {e}"))?;
+    if !v.is_object() {
+        return Err("herdr-projects details: not an object".into());
+    }
+    let id = v.get("task").map(|t| s(t, "id")).unwrap_or("").to_string();
+    Ok(Details {
+        id,
+        task: v.get("task").cloned().unwrap_or(Value::Null),
+        failure: v.get("failure").cloned().unwrap_or(Value::Null),
+        review: v.get("review").cloned().unwrap_or(Value::Null),
+        reviews: v.get("reviews").cloned().unwrap_or(Value::Null),
+        agent: s(&v, "agent").to_string(),
+        agent_model: String::new(),
+        worktree: s(&v, "worktree").to_string(),
+        branch: s(&v, "branch").to_string(),
+        after: v.get("after").cloned().unwrap_or(Value::Null),
+        limits: v.get("limits").cloned().unwrap_or(Value::Null),
+        plan: v.get("plan").cloned().unwrap_or(Value::Null),
+        report: v.get("report").cloned().unwrap_or(Value::Null),
+        pr: v.get("pr").cloned().unwrap_or(Value::Null),
+        reports_dir: reports_dir.to_string(),
+    })
 }
 
 #[cfg(test)]
@@ -357,124 +629,198 @@ mod tests {
     }
 
     #[test]
-    fn id_parts() {
-        assert_eq!(repo_of("herdr-planner/1"), "herdr-planner");
-        assert_eq!(number_of("herdr-planner/12"), 12);
-        assert_eq!(number_of("x"), 0);
-        assert!(valid_id("apicache/2"));
-        assert!(valid_id("vm-str:ELA/3"));
-        assert!(!valid_id("--now"));
-        assert!(!valid_id("a b"));
-        assert!(!valid_id(""));
+    fn statuses_are_the_mockups_eight() {
+        assert_eq!(Status::Waiting.label(), "Ждёт тебя");
+        assert_eq!(Status::Failed.label(), "Упала");
+        assert_eq!(Status::Ready.label(), "К одобрению");
+        assert_eq!(Status::Plan.label(), "План готов");
+        assert_eq!(Status::Review.label(), "На ревью");
+        assert_eq!(Status::Working.label(), "В работе");
+        assert_eq!(Status::Queued.label(), "В очереди");
+        assert_eq!(Status::Done.label(), "Сделано");
+        assert_eq!(Status::Waiting.urgency(), 0);
+        assert_eq!(Status::Done.urgency(), 7);
+        assert!(Status::Waiting.needs_you() && Status::Plan.needs_you());
+        assert!(!Status::Working.needs_you());
     }
 
     #[test]
-    fn working_and_review() {
-        let t = task(json!({"id":"p/1","state":"working","stage":"working","title":"T","progress":4,"app":"claude","msg":"Reading"}));
-        assert_eq!((t.bucket, t.label.as_str()), (Bucket::Working, "в работе"));
+    fn working_review_and_queued() {
+        let t = task(
+            json!({"id":"p/1","state":"working","stage":"working","title":"T","progress":4,"app":"claude","msg":"Reading"}),
+        );
+        assert_eq!(
+            (t.status, t.board_label.as_str()),
+            (Status::Working, "в работе")
+        );
         assert_eq!(t.progress, Some(4));
+        assert_eq!(t.label, "В работе");
         assert_eq!(t.actions, vec!["tell", "stop"]);
-        let t = task(json!({"id":"p/2","state":"working","stage":"reviewing","reviewRound":1}));
-        assert_eq!(t.bucket, Bucket::Review);
-        assert_eq!(t.round, 1);
-        let t = task(json!({"id":"p/3","state":"working","stage":"merging"}));
-        assert_eq!((t.bucket, t.label.as_str()), (Bucket::Working, "вливается"));
-    }
 
-    #[test]
-    fn queued_and_after() {
-        let t = task(json!({"id":"p/1","state":"working","stage":"queued","queue":2}));
-        assert_eq!((t.bucket, t.label.as_str()), (Bucket::Queued, "в очереди, №2"));
-        let t = task(json!({"id":"p/1","state":"working","stage":"after","msg":"queued after PLN-3"}));
-        assert_eq!((t.bucket, t.label.as_str()), (Bucket::Queued, "ждёт другие задачи"));
+        let t = task(json!({"id":"p/2","state":"working","stage":"reviewing","reviewRound":1}));
+        assert_eq!(t.status, Status::Review);
+        assert_eq!(t.board_label, "на ревью");
+        assert_eq!(t.round, 1);
+
+        let t = task(json!({"id":"p/3","state":"working","stage":"queued","queue":2}));
+        assert_eq!(
+            (t.status, t.board_label.as_str()),
+            (Status::Queued, "в очереди, №2")
+        );
+        assert_eq!(t.actions, vec!["delegate", "tell"]);
+
+        let t =
+            task(json!({"id":"p/4","state":"working","stage":"after","msg":"queued after P-3"}));
+        assert_eq!(
+            (t.status, t.board_label.as_str()),
+            (Status::Queued, "ждёт другие задачи")
+        );
     }
 
     #[test]
     fn what_waits_for_the_user() {
         let q = task(json!({"id":"p/1","state":"blocked","kind":"question","stage":"working"}));
-        assert_eq!((q.bucket, q.label.as_str()), (Bucket::Needs, "ждёт ответа"));
-        let perm = task(json!({"id":"p/1","state":"blocked","kind":"permission","stage":"working"}));
-        assert_eq!((perm.bucket, perm.label.as_str()), (Bucket::Needs, "ждёт разрешения"));
+        assert_eq!(
+            (q.status, q.board_label.as_str()),
+            (Status::Waiting, "ждёт ответа")
+        );
+        assert_eq!(q.actions, vec!["answer", "tell", "stop"]);
+
+        let perm =
+            task(json!({"id":"p/1","state":"blocked","kind":"permission","stage":"working"}));
+        assert_eq!(perm.board_label, "ждёт разрешения");
         let auth = task(json!({"id":"p/1","state":"blocked","kind":"auth","stage":"working"}));
-        assert_eq!(auth.label, "нужен вход");
-        let plan = task(json!({"id":"p/1","state":"blocked","kind":"permission","stage":"plan"}));
-        assert_eq!((plan.bucket, plan.label.as_str()), (Bucket::Needs, "план готов"));
-        assert_eq!(plan.actions, vec!["approve", "tell"]);
+        assert_eq!(auth.board_label, "нужен вход");
+
         let pick = task(json!({"id":"p/1","state":"blocked","stage":"pick"}));
-        assert_eq!((pick.bucket, pick.label.as_str()), (Bucket::Needs, "выбери вариант"));
+        assert_eq!(
+            (pick.status, pick.board_label.as_str()),
+            (Status::Waiting, "выбери вариант")
+        );
         assert!(pick.actions.is_empty());
+
+        let stopped = task(json!({"id":"p/1","state":"idle","stage":"stopped"}));
+        assert_eq!(
+            (stopped.status, stopped.board_label.as_str()),
+            (Status::Queued, "остановлена")
+        );
+        let limit = task(json!({"id":"p/1","state":"blocked","stage":"stopped"}));
+        assert_eq!(
+            (limit.status, limit.board_label.as_str()),
+            (Status::Waiting, "остановлена на лимите")
+        );
+        assert_eq!(limit.actions, vec!["retry", "tell"]);
     }
 
     #[test]
-    fn ready_to_approve_and_a_failed_review() {
-        let ok = task(json!({"id":"p/1","state":"blocked","kind":"permission","stage":"approval",
-            "review":{"findings":[{"severity":"minor","subject":"x"}],"meets":true,"pass":true}}));
-        assert_eq!((ok.bucket, ok.label.as_str()), (Bucket::Ready, "готова к одобрению"));
+    fn plan_ready_and_failed_review() {
+        let plan = task(json!({"id":"p/1","state":"blocked","kind":"permission","stage":"plan"}));
+        assert_eq!(
+            (plan.status, plan.board_label.as_str()),
+            (Status::Plan, "план готов")
+        );
+        assert_eq!(plan.actions, vec!["approve", "tell"]);
+
+        let ok = task(
+            json!({"id":"p/1","state":"blocked","kind":"permission","stage":"approval",
+            "review":{"findings":[{"severity":"minor"}],"meets":true,"pass":true,"text":"ok"}}),
+        );
+        assert_eq!(
+            (ok.status, ok.board_label.as_str()),
+            (Status::Ready, "готова к одобрению")
+        );
         assert_eq!(ok.review.as_ref().unwrap().tally, "1 minor");
         assert_eq!(ok.actions, vec!["approve", "anyway", "review", "tell"]);
-        let none = task(json!({"id":"p/1","state":"blocked","kind":"permission","stage":"approval"}));
-        assert_eq!(none.bucket, Bucket::Ready);
-        assert_eq!(none.actions, vec!["approve", "anyway", "tell"]);
-        let bad = task(json!({"id":"p/1","state":"blocked","kind":"permission","stage":"approval",
-            "review":{"findings":[{"severity":"critical"},{"severity":"major"},{"severity":"major","preexisting":true}],"meets":false,"pass":false}}));
-        assert_eq!((bad.bucket, bad.label.as_str()), (Bucket::Needs, "ревью не прошло"));
+
+        let none =
+            task(json!({"id":"p/1","state":"blocked","kind":"permission","stage":"approval"}));
+        assert_eq!(none.status, Status::Ready);
+
+        let bad = task(
+            json!({"id":"p/1","state":"blocked","kind":"permission","stage":"approval",
+            "review":{"findings":[{"severity":"critical"},{"severity":"major"},{"severity":"major","preexisting":true}],"meets":false,"pass":false}}),
+        );
+        assert_eq!(
+            (bad.status, bad.board_label.as_str()),
+            (Status::Waiting, "ревью не прошло")
+        );
         assert!(bad.review_failed);
         assert_eq!(bad.review.as_ref().unwrap().tally, "1 critical, 1 major");
         assert_eq!(bad.actions, vec!["review", "anyway", "tell"]);
-        // A review from before the gate.
-        let old = task(json!({"id":"p/1","state":"blocked","kind":"permission","stage":"approval","review":{"score":2,"recommend":false}}));
+
+        let old = task(
+            json!({"id":"p/1","state":"blocked","kind":"permission","stage":"approval","review":{"score":2,"recommend":false}}),
+        );
         assert!(old.review_failed);
         assert_eq!(old.review.unwrap().tally, "2/5");
     }
 
     #[test]
-    fn work_the_board_will_not_merge_by_a_plain_yes() {
-        let checks = task(json!({"id":"p/1","state":"blocked","kind":"permission","stage":"approval","msg":"GitHub checks failed","review":{"findings":[],"meets":true,"pass":true}}));
-        assert_eq!((checks.bucket, checks.label.as_str()), (Bucket::Needs, "нельзя влить"));
+    fn merge_blocked_words() {
+        let checks = task(
+            json!({"id":"p/1","state":"blocked","kind":"permission","stage":"approval","msg":"GitHub checks failed","review":{"findings":[],"meets":true,"pass":true}}),
+        );
+        assert_eq!(
+            (checks.status, checks.board_label.as_str()),
+            (Status::Waiting, "нельзя влить")
+        );
         assert!(checks.merge_blocked && !checks.review_failed);
         assert_eq!(checks.actions, vec!["anyway", "review", "tell"]);
-        let board_words = task(json!({"id":"p/1","state":"blocked","kind":"permission","stage":"approval","msg":"The pull request's checks fail"}));
-        assert_eq!((board_words.bucket, board_words.actions.clone()), (Bucket::Needs, vec!["anyway", "tell"]));
-        let behind = task(json!({"id":"p/1","state":"blocked","kind":"permission","stage":"approval","msg":"Behind main: could not bring it up to date"}));
-        assert_eq!(behind.bucket, Bucket::Needs);
-        // A plain message stays ready, and then «всё равно» is offered next to «одобрить».
-        let plain = task(json!({"id":"p/1","state":"blocked","kind":"permission","stage":"approval","msg":"Pass · 1 minor"}));
-        assert_eq!(plain.bucket, Bucket::Ready);
-        assert!(plain.actions.contains(&"anyway"));
-        // The words only count at the approval stage.
-        assert!(!task(json!({"id":"p/1","state":"working","stage":"working","msg":"fixing the merge conflict"})).merge_blocked);
+
+        let plain = task(
+            json!({"id":"p/1","state":"blocked","kind":"permission","stage":"approval","msg":"Pass · 1 minor"}),
+        );
+        assert_eq!(plain.status, Status::Ready);
+        assert!(!plain.merge_blocked);
     }
 
     #[test]
-    fn stopped_tasks_and_the_reviewer_asking() {
-        let by_hand = task(json!({"id":"p/1","state":"idle","stage":"stopped","msg":"Stopped"}));
-        assert_eq!((by_hand.bucket, by_hand.label.as_str(), by_hand.actions.clone()), (Bucket::Todo, "остановлена", vec!["delegate"]));
-        let limit = task(json!({"id":"p/1","state":"blocked","stage":"stopped","msg":"Stopped at a limit"}));
-        assert_eq!((limit.bucket, limit.label.as_str(), limit.actions.clone()), (Bucket::Needs, "остановлена на лимите", vec!["retry", "tell"]));
-        let rn = task(json!({"id":"p/1","state":"blocked","stage":"reviewneeds"}));
-        assert_eq!((rn.bucket, rn.label.as_str()), (Bucket::Needs, "ревьюеру нужен ты"));
-    }
-
-    #[test]
-    fn failed_todo_done() {
+    fn failed_done_and_nothing_started() {
         let e = task(json!({"id":"p/1","state":"error","stage":"working"}));
-        assert_eq!((e.bucket, e.label.as_str()), (Bucket::Failed, "упала"));
+        assert_eq!(
+            (e.status, e.board_label.as_str()),
+            (Status::Failed, "упала")
+        );
         assert_eq!(e.actions, vec!["retry", "tell", "stop"]);
+
         let n = task(json!({"id":"p/1","state":"blocked","stage":"nosummary"}));
-        assert_eq!((n.bucket, n.label.as_str()), (Bucket::Failed, "остановилась без итога"));
+        assert_eq!(
+            (n.status, n.board_label.as_str()),
+            (Status::Failed, "остановилась без итога")
+        );
+
         let todo = task(json!({"id":"p/1","state":"idle","stage":"todo"}));
-        assert_eq!((todo.bucket, todo.actions.clone()), (Bucket::Todo, vec!["delegate"]));
-        let done = task(json!({"id":"p/1","state":"done","stage":"done","pr":"https://github.com/o/r/pull/7"}));
-        assert_eq!((done.bucket, done.pr.as_str()), (Bucket::Done, "https://github.com/o/r/pull/7"));
-        assert!(done.actions.is_empty());
-        // No state at all is a task nobody started.
-        assert_eq!(task(json!({"id":"p/9"})).bucket, Bucket::Todo);
+        assert_eq!(
+            (todo.status, todo.board_label.as_str()),
+            (Status::Queued, "не начата")
+        );
+        assert_eq!(todo.actions, vec!["delegate", "tell"]);
+
+        let done = task(
+            json!({"id":"p/1","state":"done","stage":"done","pr":"https://github.com/o/r/pull/7"}),
+        );
+        assert_eq!(
+            (done.status, done.pr.as_str()),
+            (Status::Done, "https://github.com/o/r/pull/7")
+        );
+        assert_eq!(done.actions, vec!["archive"]);
+        assert_eq!(done.label, "Сделано");
     }
 
     #[test]
-    fn parses_a_list_and_skips_what_is_not_a_task() {
-        let list = parse_list(r#"[{"id":"a/1","state":"done"},{"nope":1},{"id":"a/2","state":"idle","stage":"tried"},{"id":"b/3","state":"idle"}]"#).unwrap();
-        assert_eq!(list.iter().map(|t| t.id.as_str()).collect::<Vec<_>>(), ["a/1", "b/3"]);
+    fn archived_rows_and_attempts_are_handled() {
+        let list = parse_list(
+            r#"[
+            {"id":"a/1","state":"done","stage":"done"},
+            {"id":"a/2","state":"done","stage":"done","archivedAt":1792407710774},
+            {"id":"a/3","state":"idle","stage":"tried"},
+            {"nope":1}
+        ]"#,
+        )
+        .unwrap();
+        assert_eq!(list.len(), 2);
+        assert!(!list[0].archived);
+        assert!(list[1].archived);
         assert!(parse_list("not json").is_err());
         assert!(parse_list("{}").is_err());
         assert!(parse_list("[]").unwrap().is_empty());
@@ -482,17 +828,91 @@ mod tests {
 
     #[test]
     fn tags_come_from_plain_list_in_the_same_order() {
-        let mut tasks = parse_list(r#"[{"id":"a/1","state":"done"},{"id":"b/12","state":"idle"}]"#).unwrap();
-        assert_eq!(tasks[0].tag, "#1");
-        let tags = plain_tags("PLN-1   done  [x]  Title\n#12      idle  ...\n");
+        let mut tasks = parse_list(
+            r#"[{"id":"a/1","state":"done"},{"id":"b/12","state":"idle"},{"id":"b/13","state":"done"}]"#,
+        )
+        .unwrap();
+        let tags =
+            plain_tags("PLN-1   done  [x]  A\n#12     idle  B\nSS-13   done  C  (archived)\n");
         apply_tags(&mut tasks, &tags);
         assert_eq!(tasks[0].tag, "PLN-1");
         assert_eq!(tasks[1].tag, "#12");
+        assert_eq!(tasks[2].tag, "SS-13");
         // A different number, or a different count, is not believed.
-        let mut tasks = parse_list(r#"[{"id":"a/1","state":"done"}]"#).unwrap();
-        apply_tags(&mut tasks, &["PLN-7".to_string()]);
-        assert_eq!(tasks[0].tag, "#1");
-        apply_tags(&mut tasks, &["PLN-1".to_string(), "X-2".to_string()]);
-        assert_eq!(tasks[0].tag, "#1");
+        let mut one = parse_list(r#"[{"id":"a/1","state":"done"}]"#).unwrap();
+        apply_tags(&mut one, &["PLN-7".to_string()]);
+        assert_eq!(one[0].tag, "#1");
+        apply_tags(&mut one, &["PLN-1".to_string(), "X-2".to_string()]);
+        assert_eq!(one[0].tag, "#1");
+    }
+
+    #[test]
+    fn projects_and_summary_split_active_done_and_quiet() {
+        let mut tasks = parse_list(
+            r#"[
+                {"id":"alpha/1","state":"done","stage":"done"},
+                {"id":"alpha/2","state":"working","stage":"working"},
+                {"id":"beta/1","state":"done","stage":"done"},
+                {"id":"beta/2","state":"done","stage":"done"},
+                {"id":"gamma/1","state":"blocked","kind":"question","stage":"working"}
+            ]"#,
+        )
+        .unwrap();
+        apply_tags(
+            &mut tasks,
+            &[
+                "ALP-1".into(),
+                "ALP-2".into(),
+                "BET-1".into(),
+                "BET-2".into(),
+                "GAM-1".into(),
+            ],
+        );
+        let ps = projects(&tasks);
+        assert_eq!(ps.len(), 3);
+        let alpha = ps.iter().find(|p| p.name == "alpha").unwrap();
+        assert_eq!(
+            (alpha.key.as_str(), alpha.active, alpha.done, alpha.quiet),
+            ("ALP", 1, 1, false)
+        );
+        let beta = ps.iter().find(|p| p.name == "beta").unwrap();
+        assert_eq!((beta.active, beta.done, beta.quiet), (0, 2, true));
+        let s = summary(&tasks, &tasks[..1], &ps);
+        assert_eq!(s.tasks, 5);
+        assert_eq!(s.done, 3);
+        assert_eq!(s.waiting, 1);
+        assert_eq!(s.working, 1);
+        assert_eq!(s.attention, 1);
+        assert_eq!(s.projects, 3);
+        assert_eq!(s.active_projects, 2);
+        assert_eq!(s.quiet_projects, 1);
+        assert_eq!(s.archived, 1);
+    }
+
+    #[test]
+    fn agent_from_show_and_details() {
+        let show = "PLN-3: every setting\n* worker.agent              omp/deepseek/deepseek-v4-flash  this task\n  worker.effort high\n";
+        assert_eq!(show_agent(show), "omp/deepseek/deepseek-v4-flash");
+        assert_eq!(show_agent("nothing"), "");
+        let d = parse_details(
+            r#"{"task":{"id":"PLN-3","title":"T"},"failure":null,"review":null,"reviews":[],"agent":"omp","worktree":"/tmp/w","branch":"work/3","limits":{"tokens":{"used":1}}}"#,
+            "/tmp/reports",
+        )
+        .unwrap();
+        assert_eq!(d.task["id"], "PLN-3");
+        assert_eq!(d.agent, "omp");
+        assert_eq!(d.worktree, "/tmp/w");
+        assert_eq!(d.reports_dir, "/tmp/reports");
+    }
+
+    #[test]
+    fn ids_are_safe_as_command_arguments() {
+        assert!(valid_id("herdr-planner/3"));
+        assert!(valid_id("vm-str:ELA/3"));
+        assert!(!valid_id("--now"));
+        assert!(!valid_id("a b"));
+        assert!(!valid_id(""));
+        assert!(valid_tag("PLN-3"));
+        assert!(!valid_tag("<script>"));
     }
 }

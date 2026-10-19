@@ -2,10 +2,10 @@
   "schemaVersion": 1,
   "id": "salehardec.herdr-planner",
   "name": "Herdr Planner",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "author": "Aleksey Abaydulin",
   "license": "MIT",
-  "description": "Herdr Planner in the bar: counters of herdr-projects board tasks waiting on you and under review; a click opens a popup with the projects and their tasks by stage, a project click opens it in the planner.",
+  "description": "Herdr Planner in the bar: one pill that opens the standalone dashboard in its own app window.",
   "kinds": [
     "bar-widget"
   ],
@@ -14,13 +14,13 @@
   },
   "barWidget": {
     "displayName": "Herdr Planner",
-    "description": "Waiting / review counters from the local herdr-planner service (127.0.0.1) and a popup with the board's projects and their tasks by stage (what waits on you first); hidden while the service does not answer.",
+    "description": "A pill that opens the Herdr Planner dashboard in an app window. The dashboard is a separate local web service (127.0.0.1 by default) and works without herdr.",
     "category": "Utilities",
     "allowMultiple": false,
     "defaultSection": "center",
     "defaults": {
       "port": 7117,
-      "refreshSec": 5
+      "refreshSec": 10
     },
     "schema": [
       {
@@ -35,11 +35,11 @@
       {
         "key": "refreshSec",
         "type": "integer",
-        "label": "Refresh interval (seconds)",
+        "label": "Service check interval (seconds)",
         "min": 2,
         "max": 120,
         "step": 1,
-        "defaultValue": 5
+        "defaultValue": 10
       }
     ]
   }

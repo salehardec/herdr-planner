@@ -1,212 +1,558 @@
-//! Shared server state: the latest snapshot of projects, the saved state,
-//! the theme, and the event bus the page listens to.
+//! The planner's one process: the board snapshot the page reads, the journal
+//! of what changed, the Coordinator's standing line and the details cache.
 
-use crate::config::AppConfig;
-use crate::model::{Groups, Project};
-use crate::sources::repos::TimeCache;
-use crate::store::State;
-use crate::suggest::GroupRun;
-use crate::theme::ThemeReport;
-use serde::Serialize;
-use std::sync::{Arc, Mutex, RwLock};
-use std::time::{SystemTime, UNIX_EPOCH};
-use tokio::sync::{broadcast, Notify};
+use crate::board::{self, Details, Project, Status, Summary, Task};
+use crate::config::{now_ms, AppConfig};
+use crate::coordinator::{self, CoordinatorView};
+use crate::theme::{self, Theme};
+use serde::{Deserialize, Serialize};
+use std::collections::{HashMap, VecDeque};
+use std::process::Stdio;
+use std::sync::Arc;
+use std::time::Duration;
+use tokio::process::Command;
+use tokio::sync::{Mutex, RwLock};
+use tokio::time::timeout;
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
+const JOURNAL_MAX: usize = 80;
 
-/// How often the board is re-read.
-pub const REFRESH_SECS: u64 = 20;
-/// How often the focused herdr workspace is asked for.
-pub const WORKSPACE_SECS: u64 = 3;
-/// How often the theme files are checked for changes.
-pub const THEME_SECS: u64 = 2;
-
-pub fn now_ms() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0)
-}
-
-/// The projects as last read from the board, with its error when the read failed.
-#[derive(Debug, Clone, Default, Serialize)]
-pub struct Snapshot {
-    pub projects: Vec<Project>,
-    pub updated: u64,
-    pub loading: bool,
-    pub error: Option<String>,
-}
-
-/// The active herdr workspace: its id, its label and the project it names.
-#[derive(Debug, Clone, Default, PartialEq, Serialize)]
-pub struct Workspace {
-    pub id: Option<String>,
-    pub label: Option<String>,
-    pub slug: Option<String>,
-    /// Counts up on every change of label, so a page can tell a new switch from a refresh.
-    pub seq: u64,
-}
-
-/// A project the bar popup asked the page to show.
-#[derive(Debug, Clone, PartialEq, Serialize)]
-pub struct Show {
-    pub slug: String,
-    /// When it was asked for, unix milliseconds: a page shows each request once.
-    pub at: u64,
-}
-
-/// How long a request to show a project waits for a page that is still opening.
-pub const SHOW_SECS: u64 = 20;
-
-/// What `GET /api/snapshot` returns and what the `snapshot` event carries.
 #[derive(Debug, Clone, Serialize)]
-pub struct Full {
-    pub version: &'static str,
-    /// The board's data folder.
-    pub data: String,
+pub struct BoardStatus {
+    pub ok: bool,
+    pub error: String,
+    /// When the shown data was last read, if the board stopped answering.
+    pub stale_at: u64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct HerdrInfo {
+    pub running: bool,
+    pub socket: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct AuthInfo {
+    pub required: bool,
+    pub user: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ServerInfo {
+    pub listen: String,
+    pub port: u16,
+    pub local_only: bool,
+    pub tls: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct JournalEntry {
+    pub n: u64,
+    pub t: u64,
+    pub id: String,
+    pub s: String,
+    pub text: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct CoordinatorState {
+    #[serde(flatten)]
+    pub view: CoordinatorView,
+    /// The tail shown is the board's last report, not a structured chat reply.
+    pub source: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct Snapshot {
+    pub version: String,
+    pub at: u64,
+    pub seq: u64,
+    pub board: BoardStatus,
+    pub tasks: Vec<Task>,
+    pub archived: Vec<Task>,
     pub projects: Vec<Project>,
-    pub updated: u64,
-    pub now: u64,
-    pub loading: bool,
-    pub error: Option<String>,
-    pub groups: Groups,
-    pub settings: crate::store::Settings,
-    /// What the settings screen is built from.
-    pub setting_defs: &'static [crate::store::SettingDef],
-    /// The group suggestion: running, and why it failed.
-    pub group_suggest: GroupSuggest,
-    pub workspace: Workspace,
-    pub imported_from: Option<String>,
-    /// The project the bar popup asked for in the last seconds.
-    pub show: Option<Show>,
+    pub summary: Summary,
+    pub journal: Vec<JournalEntry>,
+    pub coordinator: CoordinatorState,
+    pub theme: Theme,
+    pub herdr: HerdrInfo,
+    pub auth: AuthInfo,
+    pub server: ServerInfo,
 }
 
-#[derive(Debug, Clone, Default, Serialize)]
-pub struct GroupSuggest {
-    pub busy: bool,
-    pub error: Option<String>,
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct ChatState {
+    pub last_sent: String,
+    pub sent_at: u64,
+    pub last_reply: String,
+    #[serde(skip)]
+    pub busy_until: u64,
 }
 
-/// One event on the bus, serialized for SSE.
-#[derive(Debug, Clone)]
-pub struct Event {
-    pub kind: &'static str,
-    pub data: String,
+#[derive(Debug, Default)]
+pub struct Journal {
+    seq: u64,
+    entries: VecDeque<JournalEntry>,
+    prev: HashMap<String, (Status, String)>,
+    primed: bool,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+struct SavedJournal {
+    seq: u64,
+    entries: Vec<JournalEntry>,
 }
 
 pub struct App {
-    pub config: AppConfig,
+    pub cfg: AppConfig,
     pub snapshot: RwLock<Snapshot>,
-    pub state: Mutex<State>,
-    pub theme: RwLock<ThemeReport>,
-    pub workspace: RwLock<Workspace>,
-    pub events: broadcast::Sender<Event>,
-    /// Woken by `POST /api/refresh`.
-    pub refresh_now: Notify,
-    /// The group suggestion of the cheap agent.
-    pub group_run: Mutex<GroupRun>,
-    /// When the board's tasks came to their stage (read from the task records).
-    pub times: Mutex<TimeCache>,
-    /// The herdr space of each repo's folder, from the board's data folder: (folder, workspace id).
-    pub spaces: RwLock<Vec<(String, String)>>,
-    /// The last request to show a project (see `Show`).
-    pub show: Mutex<Option<Show>>,
+    pub auth: crate::auth::Auth,
+    pub chat: Mutex<ChatState>,
+    pub journal: Mutex<Journal>,
+    pub details: Mutex<HashMap<String, (u64, Details)>>,
+    pub refresh_lock: Mutex<()>,
+    pub action_lock: Mutex<()>,
 }
 
 pub type Shared = Arc<App>;
 
 impl App {
-    pub fn new(config: AppConfig, state: State, theme: ThemeReport) -> Shared {
-        let (events, _) = broadcast::channel(64);
-        Arc::new(App {
-            config,
-            snapshot: RwLock::new(Snapshot {
-                loading: true,
-                ..Default::default()
-            }),
-            state: Mutex::new(state),
-            theme: RwLock::new(theme),
-            workspace: RwLock::new(Workspace::default()),
-            events,
-            refresh_now: Notify::new(),
-            group_run: Mutex::new(GroupRun::default()),
-            times: Mutex::new(TimeCache::default()),
-            spaces: RwLock::new(Vec::new()),
-            show: Mutex::new(None),
+    pub fn new(cfg: AppConfig) -> Shared {
+        let theme = theme::load();
+        let snapshot = Snapshot {
+            version: VERSION.to_string(),
+            at: 0,
+            seq: 0,
+            board: BoardStatus {
+                ok: false,
+                error: String::new(),
+                stale_at: 0,
+            },
+            tasks: Vec::new(),
+            archived: Vec::new(),
+            projects: Vec::new(),
+            summary: Summary::default(),
+            journal: Vec::new(),
+            coordinator: CoordinatorState {
+                view: CoordinatorView::default(),
+                source: "herdr-projects coordinator".into(),
+            },
+            theme,
+            herdr: HerdrInfo {
+                running: cfg.herdr_socket.exists(),
+                socket: cfg.herdr_socket.display().to_string(),
+            },
+            auth: AuthInfo {
+                required: cfg.auth_required(),
+                user: cfg.user.clone(),
+            },
+            server: ServerInfo {
+                listen: cfg.listen.clone(),
+                port: cfg.port,
+                local_only: cfg.is_loopback(),
+                tls: cfg.tls().is_some(),
+            },
+        };
+        let chat = load_chat(&cfg);
+        let journal = load_journal(&cfg);
+        let auth = crate::auth::Auth::new(
+            cfg.auth_required(),
+            cfg.user.clone(),
+            cfg.password_hash.clone(),
+        );
+        Arc::new(Self {
+            cfg,
+            snapshot: RwLock::new(snapshot),
+            auth,
+            chat: Mutex::new(chat),
+            journal: Mutex::new(journal),
+            details: Mutex::new(HashMap::new()),
+            refresh_lock: Mutex::new(()),
+            action_lock: Mutex::new(()),
         })
     }
+}
 
-    pub fn full(&self) -> Full {
-        let s = self.snapshot.read().unwrap().clone();
-        let st = self.state.lock().unwrap();
-        Full {
-            version: VERSION,
-            data: self.config.data_dir.display().to_string(),
-            projects: s.projects,
-            updated: s.updated,
-            now: now_ms(),
-            loading: s.loading,
-            error: s.error,
-            groups: st.groups.clone(),
-            settings: st.settings.clone(),
-            setting_defs: &crate::store::SETTING_DEFS,
-            group_suggest: {
-                let run = self.group_run.lock().unwrap();
-                GroupSuggest {
-                    busy: run.busy,
-                    error: run.error.clone(),
-                }
-            },
-            workspace: self.workspace.read().unwrap().clone(),
-            imported_from: st.imported_from.clone(),
-            show: self
-                .show
-                .lock()
-                .unwrap()
-                .clone()
-                .filter(|s| now_ms().saturating_sub(s.at) < SHOW_SECS * 1000),
+fn state_json_path(cfg: &AppConfig, name: &str) -> std::path::PathBuf {
+    cfg.state_dir.join(name)
+}
+
+fn load_chat(cfg: &AppConfig) -> ChatState {
+    std::fs::read_to_string(state_json_path(cfg, "chat.json"))
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_default()
+}
+
+pub fn save_chat(cfg: &AppConfig, chat: &ChatState) {
+    if let Ok(s) = serde_json::to_string(chat) {
+        write_state(state_json_path(cfg, "chat.json"), &s);
+    }
+}
+
+/// State files hold task text and the last chat message: keep them for this user only.
+fn write_state(path: std::path::PathBuf, text: &str) {
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700));
         }
     }
+    if std::fs::write(&path, text).is_ok() {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
+        }
+    }
+}
 
-    /// Runs a command of the board (`herdr-projects ARGS`) in its data folder, when one was named.
-    pub async fn board(
-        &self,
-        args: &[&str],
-        timeout: std::time::Duration,
-    ) -> Result<crate::sources::runner::Output, String> {
-        let mut parts = vec![self.config.herdr_projects.as_str()];
-        parts.extend_from_slice(args);
-        let argv = crate::sources::runner::argv(parts);
-        let env: Vec<(String, String)> = if self.config.data_named {
-            vec![(
-                "HERDR_PROJECTS_DATA_DIR".into(),
-                self.config.data_dir.display().to_string(),
-            )]
+fn load_journal(cfg: &AppConfig) -> Journal {
+    let saved: SavedJournal = std::fs::read_to_string(state_json_path(cfg, "journal.json"))
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_default();
+    Journal {
+        seq: saved.seq,
+        entries: saved.entries.into_iter().collect(),
+        prev: HashMap::new(),
+        primed: false,
+    }
+}
+
+fn save_journal(cfg: &AppConfig, j: &Journal) {
+    let _ = std::fs::create_dir_all(&cfg.state_dir);
+    let saved = SavedJournal {
+        seq: j.seq,
+        entries: j.entries.iter().cloned().collect(),
+    };
+    if let Ok(s) = serde_json::to_string(&saved) {
+        write_state(state_json_path(cfg, "journal.json"), &s);
+    }
+}
+
+/// Runs a board command. The data folder is passed only when it was named, so a
+/// default setup keeps using whatever `herdr-projects` would use by itself.
+pub async fn run_board(cfg: &AppConfig, args: &[&str], wait: Duration) -> Result<String, String> {
+    let mut cmd = Command::new(&cfg.herdr_projects);
+    cmd.args(args)
+        .env("NO_COLOR", "1")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true);
+    if cfg.data_named {
+        cmd.env("HERDR_PROJECTS_DATA_DIR", &cfg.data_dir);
+    }
+    let out = match timeout(wait, cmd.output()).await {
+        Err(_) => {
+            return Err(format!(
+                "{} {}: no answer in {}s",
+                cfg.herdr_projects,
+                args.join(" "),
+                wait.as_secs()
+            ))
+        }
+        Ok(Err(e)) => {
+            return Err(format!("{}: {e}", cfg.herdr_projects));
+        }
+        Ok(Ok(o)) => o,
+    };
+    let stdout = String::from_utf8_lossy(&out.stdout).to_string();
+    let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
+    if !out.status.success() {
+        let why = if stderr.is_empty() {
+            stdout.trim().to_string()
         } else {
-            Vec::new()
+            stderr
         };
-        crate::sources::runner::run_env(&argv, None, timeout, None, &env).await
+        return Err(if why.is_empty() {
+            format!("herdr-projects {}: exit {}", args.join(" "), out.status)
+        } else {
+            why
+        });
     }
+    Ok(stdout)
+}
 
-    pub fn emit<T: Serialize>(&self, kind: &'static str, data: &T) {
-        let data = serde_json::to_string(data).unwrap_or_else(|_| "null".into());
-        let _ = self.events.send(Event { kind, data });
-    }
+/// Reads the board, the Coordinator and the theme; safe to call at any time.
+/// Failed board reads keep the previous tasks and mark them stale.
+pub async fn refresh(app: &Shared) {
+    let _guard = app.refresh_lock.lock().await;
+    let cfg = &app.cfg;
+    let (json, plain, coord) = tokio::join!(
+        run_board(cfg, &["list", "--all", "--json"], Duration::from_secs(15)),
+        run_board(cfg, &["list", "--all"], Duration::from_secs(15)),
+        run_board(cfg, &["coordinator"], Duration::from_secs(8)),
+    );
 
-    pub fn emit_snapshot(&self) {
-        let full = self.full();
-        self.emit("snapshot", &full);
-    }
+    let now = now_ms();
+    let theme = theme::load();
+    let chat_before = app.chat.lock().await.clone();
+    let mut chat = chat_before.clone();
 
-    /// Saves the state file; a failure is logged, the in-memory state stays.
-    pub fn save_state(&self) {
-        let st = self.state.lock().unwrap();
-        if let Err(e) = st.save(&self.config.state_file) {
-            eprintln!(
-                "herdr-planner: не сохранилось состояние {}: {}",
-                self.config.state_file.display(),
-                e
-            );
+    // The Coordinator's standing line and the last lines of its pane.
+    let mut coord_view = match &coord {
+        Ok(out) => coordinator::parse(out),
+        Err(e) => {
+            let mut v = app.snapshot.read().await.coordinator.view.clone();
+            v.error = e.clone();
+            v
         }
+    };
+    if !coord_view.reply.is_empty() && coord_view.reply != chat.last_reply {
+        chat.last_reply = coord_view.reply.clone();
+        chat.busy_until = 0;
+    }
+    let waiting = chat.busy_until > now;
+    let busy = coordinator::is_busy(&coord_view.status) || waiting;
+    if !busy {
+        chat.busy_until = 0;
+    }
+    coord_view.busy = busy;
+    coord_view.last_sent = chat.last_sent.clone();
+    coord_view.sent_at = chat.sent_at;
+    if chat != chat_before {
+        save_chat(cfg, &chat);
+    }
+    *app.chat.lock().await = chat;
+
+    let mut snap = app.snapshot.write().await;
+    snap.at = now;
+    snap.seq += 1;
+    snap.theme = theme;
+    snap.herdr.running = cfg.herdr_socket.exists();
+    snap.coordinator = CoordinatorState {
+        view: coord_view,
+        source: "herdr-projects coordinator · последние строки окна Координатора".into(),
+    };
+
+    match json {
+        Ok(text) => match board::parse_list(&text) {
+            Ok(mut tasks) => {
+                if let Ok(plain) = &plain {
+                    let tags = board::plain_tags(plain);
+                    board::apply_tags(&mut tasks, &tags);
+                }
+                let (archived, active): (Vec<Task>, Vec<Task>) =
+                    tasks.into_iter().partition(|t| t.archived);
+                let projects = board::projects(&active);
+                let summary = board::summary(&active, &archived, &projects);
+                let mut journal = app.journal.lock().await;
+                update_journal(&mut journal, &active, now);
+                save_journal(cfg, &journal);
+                let entries: Vec<JournalEntry> = journal.entries.iter().cloned().collect();
+                snap.journal = entries;
+                snap.tasks = active;
+                snap.archived = archived;
+                snap.projects = projects;
+                snap.summary = summary;
+                snap.board = BoardStatus {
+                    ok: true,
+                    error: String::new(),
+                    stale_at: 0,
+                };
+            }
+            Err(e) => stale(&mut snap, e, now),
+        },
+        Err(e) => stale(&mut snap, e, now),
+    }
+}
+
+fn stale(snap: &mut Snapshot, error: String, now: u64) {
+    snap.board.ok = false;
+    snap.board.error = error;
+    if snap.board.stale_at == 0 {
+        snap.board.stale_at = if snap.at > 0 { snap.at } else { now };
+    }
+}
+
+/// Adds one line when a task's status changes; the first successful read after a
+/// start only primes the comparison and adds nothing.
+fn update_journal(journal: &mut Journal, tasks: &[Task], now: u64) {
+    if !journal.primed {
+        journal.primed = true;
+        if journal.entries.is_empty() {
+            let mut fresh = Vec::new();
+            for t in tasks {
+                journal.seq += 1;
+                fresh.push(JournalEntry {
+                    n: journal.seq,
+                    t: now,
+                    id: t.id.clone(),
+                    s: t.status.key().to_string(),
+                    text: if t.msg.is_empty() {
+                        t.board_label.clone()
+                    } else {
+                        t.msg.clone()
+                    },
+                });
+            }
+            for e in fresh.into_iter().rev() {
+                journal.entries.push_front(e);
+            }
+            trim_journal(journal);
+        }
+        for t in tasks {
+            journal.prev.insert(t.id.clone(), (t.status, t.msg.clone()));
+        }
+        return;
+    }
+    let mut changed = false;
+    for t in tasks {
+        let prev = journal.prev.get(&t.id).cloned();
+        if prev.as_ref().map(|(s, _)| *s) != Some(t.status) {
+            journal.seq += 1;
+            journal.entries.push_front(JournalEntry {
+                n: journal.seq,
+                t: now,
+                id: t.id.clone(),
+                s: t.status.key().to_string(),
+                text: if t.msg.is_empty() {
+                    t.board_label.clone()
+                } else {
+                    t.msg.clone()
+                },
+            });
+            changed = true;
+        }
+        journal.prev.insert(t.id.clone(), (t.status, t.msg.clone()));
+    }
+    let present: std::collections::HashSet<&str> = tasks.iter().map(|t| t.id.as_str()).collect();
+    let gone: Vec<String> = journal
+        .prev
+        .keys()
+        .filter(|id| !present.contains(id.as_str()))
+        .cloned()
+        .collect();
+    for id in gone {
+        journal.prev.remove(&id);
+        journal.seq += 1;
+        journal.entries.push_front(JournalEntry {
+            n: journal.seq,
+            t: now,
+            id,
+            s: "gone".into(),
+            text: "снята с доски или убрана в архив".into(),
+        });
+        changed = true;
+    }
+    if changed {
+        trim_journal(journal);
+    }
+}
+
+fn trim_journal(journal: &mut Journal) {
+    while journal.entries.len() > JOURNAL_MAX {
+        journal.entries.pop_back();
+    }
+}
+
+/// `details <id>` plus `show --task <id>`, cached for a few seconds.
+pub async fn details(app: &Shared, id: &str) -> Result<Details, String> {
+    if !board::valid_id(id) || !id.contains('/') {
+        return Err("not a task id".into());
+    }
+    if let Some((at, d)) = app.details.lock().await.get(id).cloned() {
+        if now_ms().saturating_sub(at) < 5000 {
+            return Ok(d);
+        }
+    }
+    let cfg = &app.cfg;
+    let reports = app.cfg.reports_dir();
+    let reports_dir = reports
+        .join(board::repo_of(id))
+        .join(board::number_of(id).to_string())
+        .display()
+        .to_string();
+    let dargs = ["details", id];
+    let sargs = ["show", "--task", id];
+    let (det, show) = tokio::join!(
+        run_board(cfg, &dargs, Duration::from_secs(15)),
+        run_board(cfg, &sargs, Duration::from_secs(10)),
+    );
+    let text = det?;
+    let mut d = board::parse_details(&text, &reports_dir)?;
+    if let Ok(show) = show {
+        d.agent_model = board::show_agent(&show);
+    }
+    app.details
+        .lock()
+        .await
+        .insert(id.to_string(), (now_ms(), d.clone()));
+    Ok(d)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::board::parse_list;
+
+    fn tasks() -> Vec<Task> {
+        parse_list(
+            r#"[{"id":"a/1","state":"working","stage":"working","msg":"one"},
+                {"id":"a/2","state":"blocked","kind":"question","stage":"working","msg":"two"}]"#,
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn journal_primes_then_logs_changes() {
+        let mut j = Journal::default();
+        let t = tasks();
+        update_journal(&mut j, &t, 100);
+        assert_eq!(j.entries.len(), 2);
+        // Same data: nothing new.
+        update_journal(&mut j, &t, 200);
+        assert_eq!(j.entries.len(), 2);
+        // One task changes state: one line, first.
+        let mut t2 = t.clone();
+        t2[0].state = "done".into();
+        t2[0].stage = "done".into();
+        t2[0].status = Status::Done;
+        t2[0].msg = "Merged".into();
+        update_journal(&mut j, &t2, 300);
+        assert_eq!(j.entries.len(), 3);
+        let first = j.entries.front().unwrap();
+        assert_eq!(first.id, "a/1");
+        assert_eq!(first.s, "done");
+        assert_eq!(first.text, "Merged");
+        assert_eq!(first.t, 300);
+    }
+
+    #[test]
+    fn journal_keeps_a_bounded_history() {
+        let mut j = Journal::default();
+        let mut t = tasks();
+        update_journal(&mut j, &t, 1);
+        for i in 0..(JOURNAL_MAX * 2) {
+            t[0].status = if i % 2 == 0 {
+                Status::Done
+            } else {
+                Status::Working
+            };
+            update_journal(&mut j, &t, i as u64 + 2);
+        }
+        assert!(j.entries.len() <= JOURNAL_MAX);
+    }
+
+    #[test]
+    fn a_reloaded_journal_does_not_log_everything_again() {
+        let mut j = Journal {
+            entries: VecDeque::from([JournalEntry {
+                n: 7,
+                t: 1,
+                id: "a/1".into(),
+                s: "working".into(),
+                text: "old".into(),
+            }]),
+            seq: 7,
+            ..Journal::default()
+        };
+        update_journal(&mut j, &tasks(), 2);
+        assert_eq!(j.entries.len(), 1);
+        assert_eq!(j.seq, 7);
     }
 }

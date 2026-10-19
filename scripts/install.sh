@@ -1,26 +1,38 @@
 #!/bin/sh
-# Installs Herdr Planner for the current user: no sudo, no system package manager.
+# Installs Herdr Planner for the current user: no sudo, no system packages.
+#
 #   scripts/install.sh [install] [--no-build] [--no-service] [--no-hypr] [--no-shell] [--key "SUPER + ALT + P"]
-#   scripts/install.sh uninstall [--no-service] [--no-hypr] [--no-shell]   removes everything installed; state and config stay
+#   scripts/install.sh uninstall [--no-service] [--no-hypr] [--no-shell]
 #   scripts/install.sh status
-# Running install again updates: it rebuilds, replaces the binary and restarts the service.
+#   scripts/install.sh password [--user NAME] [--listen ADDR]
+#   scripts/install.sh tls --cert FILE --key FILE
+#
+# The repository lives on NTFS in this setup, where compiled files cannot run:
+# the build always goes outside it, to ${XDG_CACHE_HOME:-~/.cache}/herdr-planner/target
+# (override with HERDR_PLANNER_TARGET_DIR).
 #
 # What goes where:
 #   ~/.local/bin/herdr-planner, herdr-planner-open
-#   ~/.config/systemd/user/herdr-planner.service        (enabled, started)
-#   ~/.local/share/applications/herdr-planner.desktop, ~/.local/share/icons/hicolor/scalable/apps/herdr-planner.svg
-#   ~/.config/hypr/herdr_planner.lua + one marked block in ~/.config/hypr/bindings.lua   (Omarchy, Lua config)
-#   ~/.config/omarchy/plugins/salehardec.herdr-planner/ + one entry after the clock in the bar layout of
-#   ~/.config/omarchy/shell.json (a copy of the file is kept beside it as shell.json.bak-herdr-planner-*)
+#   ~/.config/systemd/user/herdr-planner.service   (enabled, started)
+#   ~/.local/share/applications/herdr-planner.desktop,
+#   ~/.local/share/icons/hicolor/scalable/apps/herdr-planner.svg
+#   ~/.config/hypr/herdr_planner.lua + one marked block in bindings.lua
+#   ~/.config/omarchy/plugins/salehardec.herdr-planner/ + one entry in shell.json
+#   ~/.config/herdr-planner/config.toml            (only `password` / `tls` write it)
+#   ~/.local/state/herdr-planner/                  (journal, chat; kept on uninstall)
 set -eu
 
 repo=$(cd "$(dirname "$0")/.." && pwd)
 bin_dir="${HERDR_PLANNER_BIN_DIR:-$HOME/.local/bin}"
 data_home="${XDG_DATA_HOME:-$HOME/.local/share}"
 config_home="${XDG_CONFIG_HOME:-$HOME/.config}"
+cache_home="${XDG_CACHE_HOME:-$HOME/.cache}"
+target_dir="${HERDR_PLANNER_TARGET_DIR:-$cache_home/herdr-planner/target}"
 unit_dir="$config_home/systemd/user"
 hypr_dir="$config_home/hypr"
 unit=herdr-planner.service
+bin="$bin_dir/herdr-planner"
+cfg="$config_home/herdr-planner/config.toml"
 begin_mark='-- >>> herdr-planner (scripts/install.sh) >>>'
 end_mark='-- <<< herdr-planner <<<'
 plugin_id=salehardec.herdr-planner
@@ -34,35 +46,40 @@ service=1
 hypr=1
 shell=1
 key=
+login_user=herdr
+listen=
+cert=
+tls_key=
 while [ $# -gt 0 ]; do
   case "$1" in
-    install | uninstall | status) action="$1" ;;
+    install | uninstall | status | password | tls) action="$1" ;;
     --no-build) build=0 ;;
     --no-service) service=0 ;;
     --no-hypr) hypr=0 ;;
     --no-shell) shell=0 ;;
     --key)
       [ $# -ge 2 ] || { echo "install.sh: --key needs a value" >&2; exit 2; }
-      key="$2"
-      shift
-      ;;
+      if [ "$action" = tls ] || [ -n "$cert" ]; then tls_key="$2"; else key="$2"; fi
+      shift ;;
+    --user) [ $# -ge 2 ] || { echo "install.sh: --user needs a value" >&2; exit 2; }; login_user="$2"; shift ;;
+    --listen) [ $# -ge 2 ] || { echo "install.sh: --listen needs a value" >&2; exit 2; }; listen="$2"; shift ;;
+    --cert) [ $# -ge 2 ] || { echo "install.sh: --cert needs a value" >&2; exit 2; }; cert="$2"; shift ;;
+    --key-file) [ $# -ge 2 ] || { echo "install.sh: --key-file needs a value" >&2; exit 2; }; tls_key="$2"; shift ;;
     -h | --help) sed -n '2,/^set -eu/{/^set -eu/!p;}' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "install.sh: unknown argument $1" >&2; exit 2 ;;
   esac
   shift
 done
 
-# Ask a running shell to rescan its plugins; never when the shell is not this session's.
-shell_reload=0
-if [ "$shell" -eq 1 ] && [ -n "${HYPRLAND_INSTANCE_SIGNATURE:-}" ] && command -v omarchy-shell >/dev/null 2>&1; then
-  shell_reload=1
-fi
-
 say() { printf '%s\n' "$*"; }
 have() { command -v "$1" >/dev/null 2>&1; }
 
-# Systemd user units do not see the login shell's PATH: give the service the directories
-# of the tools the planner starts.
+# The shell's plugin list is reloaded only in a real Omarchy session.
+shell_reload=0
+if [ "$shell" -eq 1 ] && [ -n "${HYPRLAND_INSTANCE_SIGNATURE:-}" ] && have omarchy-shell; then
+  shell_reload=1
+fi
+
 service_path() {
   p="$bin_dir"
   for tool in herdr-projects herdr claude; do
@@ -76,17 +93,104 @@ service_path() {
 
 port() {
   p="${HERDR_PLANNER_PORT:-}"
-  if [ -z "$p" ] && [ -r "$config_home/herdr-planner/config.toml" ]; then
-    p=$(sed -n 's/^[[:space:]]*port[[:space:]]*=[[:space:]]*\([0-9][0-9]*\).*/\1/p' "$config_home/herdr-planner/config.toml" | head -n 1)
+  if [ -z "$p" ] && [ -r "$cfg" ]; then
+    p=$(sed -n 's/^[[:space:]]*port[[:space:]]*=[[:space:]]*\([0-9][0-9]*\).*/\1/p' "$cfg" | head -n 1)
   fi
   printf '%s' "${p:-7117}"
 }
 
-# ---- Hyprland (Omarchy Lua config) ----
+listen_addr() {
+  l=""
+  if [ -r "$cfg" ]; then
+    l=$(sed -n 's/^[[:space:]]*listen[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' "$cfg" | head -n 1)
+  fi
+  printf '%s' "${l:-127.0.0.1}"
+}
+
+# A URL this machine can use to reach the service, whatever it binds to:
+# 0.0.0.0/:: become loopback, a specific interface stays itself, and TLS is
+# used when the config names a certificate.
+probe_url() {
+  l=$(listen_addr)
+  case "$l" in
+    "" | 127.* | localhost | 0.0.0.0) h=127.0.0.1 ;;
+    :: | ::1 | "[::1]" | "[::]") h="[::1]" ;;
+    \[*) h="$l" ;;
+    *:*) h="[$l]" ;;
+    *) h="$l" ;;
+  esac
+  s=http
+  if [ -r "$cfg" ] && grep -q '^[[:space:]]*tls_cert[[:space:]]*=' "$cfg"; then s=https; fi
+  printf '%s://%s:%s' "$s" "$h" "$(port)"
+}
+
+build_bin() {
+  [ "$build" -eq 1 ] || return 0
+  cargo_cmd="cargo"
+  cargo --version >/dev/null 2>&1 || cargo_cmd="mise x rust@stable -- cargo"
+  say "Building release in $target_dir …"
+  CARGO_TARGET_DIR="$target_dir" $cargo_cmd build --release
+}
+
+built_bin() {
+  [ -x "$target_dir/release/herdr-planner" ] || { echo "install.sh: $target_dir/release/herdr-planner is missing: build first" >&2; exit 1; }
+  printf '%s' "$target_dir/release/herdr-planner"
+}
+
+install_bin() {
+  src="${HERDR_PLANNER_SRC:-$(built_bin)}"
+  [ -x "$src" ] || { echo "install.sh: $src is missing: build first" >&2; exit 1; }
+  mkdir -p "$bin_dir"
+  install -m 755 "$src" "$bin_dir/.herdr-planner.new"
+  mv -f "$bin_dir/.herdr-planner.new" "$bin"
+  install -m 755 "$repo/scripts/open.sh" "$bin_dir/herdr-planner-open"
+  say "Installed $bin ($("$bin" --version)) and herdr-planner-open"
+}
+
+ensure_bin() {
+  if [ ! -x "$bin" ] || [ "$build" -eq 1 ]; then
+    build_bin
+    install_bin
+  fi
+}
+
+# ---- systemd ----
+
+install_service() {
+  if [ "$service" -eq 0 ]; then return 0; fi
+  if ! have systemctl; then say "systemctl not found: service skipped"; return 0; fi
+  mkdir -p "$unit_dir"
+  sed -e "s|@BIN@|$bin|" -e "s|@PATH@|$(service_path)|" "$repo/packaging/$unit" >"$unit_dir/$unit"
+  systemctl --user daemon-reload
+  systemctl --user enable "$unit" >/dev/null 2>&1
+  if ! systemctl --user is-active --quiet "$unit" && pgrep -x herdr-planner >/dev/null 2>&1; then
+    say "Note: a herdr-planner started by hand holds port $(port); stop it (pkill -x herdr-planner)."
+  fi
+  systemctl --user restart "$unit"
+  i=0
+  url=$(probe_url)
+  while [ "$i" -lt 80 ] && ! curl -kfs --max-time 2 "$url/login" >/dev/null 2>&1; do
+    sleep 0.25
+    i=$((i + 1))
+  done
+  if [ "$i" -lt 80 ]; then
+    say "Service: $unit on $url (journalctl --user -u herdr-planner)"
+  else
+    say "Service: $unit did not answer on port $(port): systemctl --user status herdr-planner"
+    exit 1
+  fi
+}
+
+restart_service() {
+  if [ "$service" -eq 1 ] && have systemctl && systemctl --user is-enabled --quiet "$unit" 2>/dev/null; then
+    systemctl --user restart "$unit" >/dev/null 2>&1 || true
+  fi
+}
+
+# ---- Hyprland ----
 
 in_hyprland() { [ -n "${HYPRLAND_INSTANCE_SIGNATURE:-}" ] && have hyprctl; }
 
-# "SUPER + ALT + P" -> "72 P" (Hyprland modmask: SHIFT 1, CTRL 4, ALT 8, SUPER 64).
 key_parts() {
   printf '%s' "$1" | awk -F'[ +]+' '{
     m = 0; k = ""
@@ -102,12 +206,10 @@ key_parts() {
     print m, k }'
 }
 
-# Succeeds when the key is bound to something other than Herdr Planner.
 key_busy() {
   have jq || return 1
   in_hyprland || return 1
   set -- $(key_parts "$1")
-  # jq has no bit operations: pull out SHIFT, CTRL, ALT and SUPER by division.
   hyprctl -j binds 2>/dev/null | jq -e --argjson m "$1" --arg k "$2" '
     def bit($n): (. / $n | floor) % 2;
     any(.[]; ((.modmask | bit(64)) * 64 + (.modmask | bit(8)) * 8 + (.modmask | bit(4)) * 4 + (.modmask | bit(1))) as $x
@@ -123,15 +225,16 @@ pick_key() {
   [ -z "$key" ] || { printf '%s' "$key"; return; }
   cur=$(current_key)
   [ -z "$cur" ] || { printf '%s' "$cur"; return; }
-  for cand in "SUPER + ALT + P" "SUPER + SHIFT + H" "SUPER + SHIFT + L" "SUPER + SHIFT + T" "SUPER + SHIFT + Z"; do
+  for cand in "SUPER + ALT + P" "SUPER + SHIFT + H" "SUPER + SHIFT + L" "SUPER + SHIFT + T"; do
     if ! key_busy "$cand"; then printf '%s' "$cand"; return; fi
   done
   return 1
 }
 
 hypr_install() {
+  [ "$hypr" -eq 1 ] || return 0
   if [ ! -f "$hypr_dir/bindings.lua" ]; then
-    say "Hyprland: $hypr_dir/bindings.lua not found (not an Omarchy Lua config): shortcut skipped"
+    say "Hyprland: $hypr_dir/bindings.lua not found: shortcut skipped"
     return 0
   fi
   chosen=$(pick_key) || { say "Hyprland: no free key among the candidates; pass --key \"SUPER + ...\""; return 0; }
@@ -141,7 +244,7 @@ hypr_install() {
   fi
   cat >"$hypr_dir/herdr_planner.lua" <<EOF
 -- Written by Herdr Planner's scripts/install.sh; the installer rewrites this file.
--- Opens the planner: a herdr-gpui tab, otherwise an Omarchy window or the system browser.
+-- Opens the dashboard in its own app window.
 o.bind("$chosen", "Herdr Planner", "$bin_dir/herdr-planner-open")
 EOF
   if ! grep -qF -- "$begin_mark" "$hypr_dir/bindings.lua"; then
@@ -151,15 +254,15 @@ EOF
       printf '%s\n' "$end_mark"
     } >>"$hypr_dir/bindings.lua"
   fi
-  say "Hyprland: $chosen opens Herdr Planner ($hypr_dir/herdr_planner.lua)"
+  say "Hyprland: $chosen opens Herdr Planner"
   if in_hyprland; then hyprctl reload >/dev/null 2>&1 || true; fi
 }
 
 hypr_uninstall() {
+  [ "$hypr" -eq 1 ] || return 0
   rm -f "$hypr_dir/herdr_planner.lua"
   if [ -f "$hypr_dir/bindings.lua" ] && grep -qF -- "$begin_mark" "$hypr_dir/bindings.lua"; then
     tmp=$(mktemp "$hypr_dir/.bindings.lua.XXXXXX")
-    # Drops the marked block and the blank line the installer put before it.
     awk -v b="$begin_mark" -v e="$end_mark" '
       { line[NR] = $0 }
       END {
@@ -180,32 +283,21 @@ hypr_uninstall() {
   if in_hyprland; then hyprctl reload >/dev/null 2>&1 || true; fi
 }
 
-# ---- Omarchy shell: bar plugin ----
+# ---- Omarchy bar plugin ----
 
-# Rewrites shell.json with the jq filter $1 (extra jq arguments after it) when the result differs,
-# keeping the previous file beside it. Prints "changed" or "same".
 shell_edit() {
-  filter="$1"
-  shift
+  filter="$1"; shift
   tmp=$(mktemp "$omarchy_dir/.shell.json.XXXXXX")
   if ! jq --arg id "$plugin_id" "$@" "$filter" "$shell_json" >"$tmp" 2>/dev/null; then
-    rm -f "$tmp"
-    return 1
+    rm -f "$tmp"; return 1
   fi
   if [ "$(jq -c . "$tmp")" = "$(jq -c . "$shell_json")" ]; then
-    rm -f "$tmp"
-    echo same
-    return 0
+    rm -f "$tmp"; echo same; return 0
   fi
   cp -p "$shell_json" "$shell_json.bak-herdr-planner-$(date +%s)"
-  cat "$tmp" >"$shell_json"
-  rm -f "$tmp"
-  echo changed
+  cat "$tmp" >"$shell_json"; rm -f "$tmp"; echo changed
 }
 
-# The planner entry after the clock (bar.centerAnchor, else omarchy.clock, else the end of the center
-# section); if it is already in the layout it stays where it is and only `port` follows the config.
-# --argjson port 0 means "default port": no `port` key.
 filter_add='
   def mine: type == "object" and .id == $id;
   def setport: if $port == 0 then del(.port) else .port = $port end;
@@ -227,126 +319,82 @@ filter_remove='
   | (if (.disabledPlugins | type) == "array" then .disabledPlugins |= map(select(. != $id)) else . end)'
 
 shell_install() {
-  if [ ! -f "$shell_json" ]; then
-    say "Omarchy shell: $shell_json not found: bar icon skipped"
-    return 0
-  fi
-  if ! have jq; then
-    say "Omarchy shell: jq not found: bar icon skipped"
-    return 0
-  fi
+  [ "$shell" -eq 1 ] || return 0
+  if [ ! -f "$shell_json" ]; then say "Omarchy shell: $shell_json not found: bar icon skipped"; return 0; fi
+  if ! have jq; then say "Omarchy shell: jq not found: bar icon skipped"; return 0; fi
   if [ "$(jq -r '.bar.layout.center | type' "$shell_json" 2>/dev/null)" != array ]; then
-    say "Omarchy shell: no bar layout in $shell_json: bar icon skipped (omarchy plugin enable $plugin_id center)"
+    say "Omarchy shell: no bar layout in $shell_json: bar icon skipped"
     return 0
   fi
   src_dir="$repo/packaging/omarchy-plugin"
   mkdir -p "$plugin_dir"
   rm -f "$plugin_dir"/*.qml "$plugin_dir"/manifest.json
   install -m 644 "$src_dir/manifest.json" "$src_dir/Widget.qml" "$plugin_dir/"
-  p=$(port)
-  [ "$p" != 7117 ] || p=0
+  p=$(port); [ "$p" != 7117 ] || p=0
   r=$(shell_edit "$filter_add" --argjson port "$p") || { say "Omarchy shell: could not edit $shell_json"; return 1; }
-  say "Omarchy shell: bar icon $r ($plugin_dir; layout entry in $shell_json)"
+  say "Omarchy shell: bar icon $r ($plugin_dir)"
   if [ "$shell_reload" -eq 1 ]; then omarchy-shell shell rescanPlugins >/dev/null 2>&1 || true; fi
 }
 
 shell_uninstall() {
-  if [ -f "$shell_json" ] && have jq; then
-    shell_edit "$filter_remove" >/dev/null || say "Omarchy shell: could not edit $shell_json"
-  fi
-  # Only a folder that really is ours.
+  [ "$shell" -eq 1 ] || return 0
+  if [ -f "$shell_json" ] && have jq; then shell_edit "$filter_remove" >/dev/null || true; fi
   if [ -f "$plugin_dir/manifest.json" ] && grep -q "\"id\": \"$plugin_id\"" "$plugin_dir/manifest.json"; then
     rm -rf "$plugin_dir"
   fi
   if [ "$shell_reload" -eq 1 ]; then omarchy-shell shell rescanPlugins >/dev/null 2>&1 || true; fi
 }
 
-# ---- install / uninstall / status ----
+# ---- actions ----
 
 do_install() {
-  if [ "$build" -eq 1 ]; then
-    cd "$repo"
-    cargo_cmd="cargo"
-    cargo --version >/dev/null 2>&1 || cargo_cmd="mise x rust@stable -- cargo"
-    say "Building release ($cargo_cmd build --release)…"
-    $cargo_cmd build --release
-  fi
-  src="${HERDR_PLANNER_SRC:-$repo/target/release/herdr-planner}"
-  [ -x "$src" ] || { echo "install.sh: $src is missing: build first" >&2; exit 1; }
-
-  mkdir -p "$bin_dir"
-  # Copy beside, then rename: a running binary cannot be overwritten in place.
-  install -m 755 "$src" "$bin_dir/.herdr-planner.new"
-  mv -f "$bin_dir/.herdr-planner.new" "$bin_dir/herdr-planner"
-  install -m 755 "$repo/scripts/open.sh" "$bin_dir/herdr-planner-open"
-  say "Installed $bin_dir/herdr-planner ($("$bin_dir/herdr-planner" --version)) and herdr-planner-open"
-
+  build_bin
+  install_bin
   mkdir -p "$data_home/applications" "$data_home/icons/hicolor/scalable/apps"
   sed "s|@OPEN@|$bin_dir/herdr-planner-open|" "$repo/packaging/herdr-planner.desktop" \
     >"$data_home/applications/herdr-planner.desktop"
   install -m 644 "$repo/packaging/herdr-planner.svg" "$data_home/icons/hicolor/scalable/apps/herdr-planner.svg"
   if have update-desktop-database; then update-desktop-database "$data_home/applications" >/dev/null 2>&1 || true; fi
   say "Launcher: $data_home/applications/herdr-planner.desktop"
-
-  if [ "$service" -eq 1 ]; then
-    if have systemctl; then
-      mkdir -p "$unit_dir"
-      sed -e "s|@BIN@|$bin_dir/herdr-planner|" -e "s|@PATH@|$(service_path)|" \
-        "$repo/packaging/$unit" >"$unit_dir/$unit"
-      systemctl --user daemon-reload
-      systemctl --user enable "$unit" >/dev/null 2>&1
-      # A planner started by hand holds the port: the service could not bind it.
-      if ! systemctl --user is-active --quiet "$unit" && pgrep -x herdr-planner >/dev/null 2>&1; then
-        say "Note: a herdr-planner started by hand is running and holds port $(port): stop it (pkill -x herdr-planner)."
-      fi
-      systemctl --user restart "$unit"
-      i=0
-      while [ "$i" -lt 40 ] && ! curl -fs --max-time 2 "http://127.0.0.1:$(port)/api/snapshot" >/dev/null 2>&1; do
-        sleep 0.25
-        i=$((i + 1))
-      done
-      if [ "$i" -lt 40 ]; then
-        say "Service: $unit is running on http://127.0.0.1:$(port) (journalctl --user -u herdr-planner)"
-      else
-        say "Service: $unit did not answer on port $(port): systemctl --user status herdr-planner"
-        exit 1
-      fi
-    else
-      say "systemctl not found: service skipped"
-    fi
-  fi
-
-  if [ "$hypr" -eq 1 ]; then hypr_install; fi
-  if [ "$shell" -eq 1 ]; then shell_install; fi
+  install_service
+  hypr_install
+  shell_install
 }
 
 do_uninstall() {
-  # --no-service leaves the service alone, as it does for install.
   if [ "$service" -eq 1 ] && have systemctl; then
     systemctl --user disable --now "$unit" >/dev/null 2>&1 || true
     rm -f "$unit_dir/$unit"
     systemctl --user daemon-reload >/dev/null 2>&1 || true
   fi
   hypr_uninstall
-  if [ "$shell" -eq 1 ]; then shell_uninstall; fi
-  rm -f "$bin_dir/herdr-planner" "$bin_dir/herdr-planner-open" "$bin_dir/.herdr-planner.new" \
+  shell_uninstall
+  rm -f "$bin" "$bin_dir/herdr-planner-open" "$bin_dir/.herdr-planner.new" \
     "$data_home/applications/herdr-planner.desktop" \
     "$data_home/icons/hicolor/scalable/apps/herdr-planner.svg"
   if have update-desktop-database; then update-desktop-database "$data_home/applications" >/dev/null 2>&1 || true; fi
   say "Removed the binary, service, launcher, shortcut and bar icon."
-  say "Kept: $config_home/herdr-planner and ${XDG_STATE_HOME:-$HOME/.local/state}/herdr-planner (config, groups, answers)."
+  say "Kept: $cfg and ${XDG_STATE_HOME:-$HOME/.local/state}/herdr-planner"
 }
 
 do_status() {
-  for f in "$bin_dir/herdr-planner" "$bin_dir/herdr-planner-open" "$unit_dir/$unit" \
+  for f in "$bin" "$bin_dir/herdr-planner-open" "$unit_dir/$unit" \
     "$data_home/applications/herdr-planner.desktop" "$hypr_dir/herdr_planner.lua" "$plugin_dir/manifest.json"; do
     if [ -e "$f" ]; then say "ok       $f"; else say "missing  $f"; fi
   done
+  if [ -f "$cfg" ]; then
+    say "config   $cfg"
+    u=herdr
+    u=$(sed -n 's/^[[:space:]]*user[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' "$cfg" | head -n 1)
+    [ -n "$u" ] || u=herdr
+    if grep -q '^[[:space:]]*password_hash[[:space:]]*=' "$cfg"; then say "login    on ($u / $(listen_addr):$(port))"; else say "login    off (127.0.0.1 only)"; fi
+    if grep -q '^[[:space:]]*tls_cert[[:space:]]*=' "$cfg"; then say "tls      on"; else say "tls      off"; fi
+  else
+    say "config   $cfg (not written: login off, 127.0.0.1)"
+  fi
   if have systemctl; then
     say "service  enabled=$(systemctl --user is-enabled "$unit" 2>/dev/null || true) active=$(systemctl --user is-active "$unit" 2>/dev/null || true)"
   fi
-  k=$(current_key)
-  [ -z "$k" ] || say "key      $k"
   if [ -f "$shell_json" ] && have jq; then
     if jq -e --arg id "$plugin_id" 'any(.bar.layout[]?; type == "array" and any(.[]; type == "object" and .id == $id))' "$shell_json" >/dev/null 2>&1; then
       say "bar      $plugin_id is in the bar layout"
@@ -354,15 +402,55 @@ do_status() {
       say "bar      $plugin_id is not in the bar layout"
     fi
   fi
-  if curl -fs --max-time 2 "http://127.0.0.1:$(port)/api/snapshot" >/dev/null 2>&1; then
-    say "http     answers on 127.0.0.1:$(port)"
+  url=$(probe_url)
+  if curl -kfs --max-time 2 "$url/login" >/dev/null 2>&1; then
+    say "http     answers on $url"
   else
-    say "http     no answer on 127.0.0.1:$(port)"
+    say "http     no answer on $url"
   fi
+}
+
+do_password() {
+  ensure_bin
+  say "Пароль хранится только как Argon2id-хеш в $cfg."
+  printf 'Пароль для «%s»: ' "$login_user"
+  stty -echo 2>/dev/null || true
+  IFS= read -r pw || true
+  stty echo 2>/dev/null || true
+  printf '\nЕщё раз: '
+  stty -echo 2>/dev/null || true
+  IFS= read -r pw2 || true
+  stty echo 2>/dev/null || true
+  printf '\n'
+  [ -n "$pw" ] || { echo "install.sh: empty password" >&2; exit 2; }
+  [ "$pw" = "$pw2" ] || { echo "install.sh: passwords do not match" >&2; exit 2; }
+  hash=$(printf '%s' "$pw" | "$bin" hash-password) || { echo "install.sh: could not hash the password" >&2; exit 1; }
+  if [ -n "$listen" ]; then
+    printf '%s' "$hash" | "$bin" set-auth --user "$login_user" --listen "$listen"
+  else
+    printf '%s' "$hash" | "$bin" set-auth --user "$login_user"
+  fi
+  say "Login: $login_user on $(listen_addr):$(port)"
+  if [ "$(listen_addr)" != "127.0.0.1" ] && ! grep -q '^[[:space:]]*tls_cert[[:space:]]*=' "$cfg" 2>/dev/null; then
+    say "Note: the session cookie is Secure. For a remote browser use HTTPS"
+    say "      (scripts/install.sh tls --cert FILE --key FILE) or a TLS proxy / Tailscale Serve."
+  fi
+  restart_service
+}
+
+do_tls() {
+  ensure_bin
+  [ -n "$cert" ] && [ -n "$tls_key" ] || { echo "install.sh tls: --cert FILE --key FILE are required" >&2; exit 2; }
+  [ -r "$cert" ] || { echo "install.sh tls: cannot read $cert" >&2; exit 1; }
+  [ -r "$tls_key" ] || { echo "install.sh tls: cannot read $tls_key" >&2; exit 1; }
+  "$bin" set-tls --cert "$cert" --key "$tls_key"
+  restart_service
 }
 
 case "$action" in
   install) do_install ;;
   uninstall) do_uninstall ;;
   status) do_status ;;
+  password) do_password ;;
+  tls) do_tls ;;
 esac

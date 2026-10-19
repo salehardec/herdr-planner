@@ -1,0 +1,41 @@
+:root{
+  --c-bg:#1a120c; --c-bg-dark:#140e09; --c-bg-darker:#0d0906; --c-bg-light:#2a201a;
+  --c-fg:#ecded6; --c-fg-bright:#fcf5f1; --c-muted:#806f64; --c-accent:#dfa360;
+  --c-red:#e48682; --c-border-a:#dfa360; --c-border-b:#7ea9d5;
+  --font:"JetBrainsMono Nerd Font","JetBrains Mono","JetBrainsMono NF",ui-monospace,"DejaVu Sans Mono",monospace;
+}
+:root[data-mode="light"]{color-scheme:light}
+*{box-sizing:border-box}
+html,body{height:100%}
+body{
+  margin:0;display:grid;place-items:center;padding:24px;
+  font:12px/1.5 var(--font);color:var(--c-fg);background:var(--c-bg);
+  background-image:radial-gradient(color-mix(in srgb,var(--c-fg) 9%,transparent) 1px,transparent 1.2px);
+  background-size:18px 18px;
+}
+.login{
+  width:min(410px,100%);padding:22px 24px 20px;border-radius:10px;border:1px solid transparent;
+  background:linear-gradient(var(--c-bg-dark),var(--c-bg-dark)) padding-box,
+    linear-gradient(135deg,var(--c-border-a),var(--c-border-b)) border-box;
+  box-shadow:0 22px 60px rgba(0,0,0,.35);
+}
+.lbl{font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:color-mix(in srgb,var(--c-fg) 72%,var(--c-bg))}
+h1{margin:6px 0 4px;font-size:24px;line-height:1.1;letter-spacing:-.01em;color:var(--c-fg-bright)}
+.sub{margin:0 0 18px;color:color-mix(in srgb,var(--c-fg) 88%,var(--c-bg))}
+form{display:grid;gap:12px}
+label{display:grid;gap:5px;font-size:10px;letter-spacing:.08em;text-transform:uppercase;color:color-mix(in srgb,var(--c-fg) 72%,var(--c-bg))}
+input{
+  height:34px;padding:0 10px;border-radius:6px;border:1px solid color-mix(in srgb,var(--c-fg) 22%,var(--c-bg));
+  background:color-mix(in srgb,var(--c-fg) 7%,var(--c-bg));color:var(--c-fg-bright);font:inherit;font-size:13px;
+  outline:none;
+}
+input:focus{border-color:color-mix(in srgb,var(--c-accent) 70%,var(--c-bg));box-shadow:0 0 0 2px color-mix(in srgb,var(--c-accent) 22%,transparent)}
+button{
+  height:34px;border:0;border-radius:6px;background:var(--c-accent);color:var(--c-bg);
+  font:inherit;font-size:12px;font-weight:700;letter-spacing:.04em;cursor:pointer;margin-top:2px;
+}
+button:disabled{opacity:.6;cursor:wait}
+.err{min-height:18px;margin:0;color:color-mix(in srgb,var(--c-red) 70%,var(--c-fg));font-size:11.5px}
+.hint{margin:16px 0 0;color:color-mix(in srgb,var(--c-fg) 58%,var(--c-bg));font-size:10.5px;line-height:1.5}
+code{font:inherit;color:color-mix(in srgb,var(--c-fg) 80%,var(--c-bg))}
+@media (prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}

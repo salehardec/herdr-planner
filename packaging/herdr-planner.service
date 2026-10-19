@@ -1,5 +1,5 @@
 [Unit]
-Description=Herdr Planner: local dashboard of herdr-projects (127.0.0.1)
+Description=Herdr Planner: standalone dashboard of the herdr-projects board
 Documentation=https://github.com/salehardec/herdr-planner
 
 [Service]
