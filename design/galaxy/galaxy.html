@@ -1,0 +1,1265 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Галактика · макет PLN-9</title>
+<style>
+/* ───────────────────────────────────────────────────────────────
+   Макет PLN-9 «Галактика herdr-projects». Тестовые данные.
+   Слои токенов — как в web/app.css: --c-* (тема Omarchy) → --pl-* (окно).
+   Сцена здесь — Canvas 2D с перспективой (в продукте — three.js + bloom).
+   ─────────────────────────────────────────────────────────────── */
+:root{
+  --c-bg:#1a120c; --c-bg-dark:#140e09; --c-bg-darker:#0d0906; --c-bg-light:#2a201a;
+  --c-fg:#ecded6; --c-fg-dim:#9c9089; --c-fg-bright:#fcf5f1; --c-muted:#806f64;
+  --c-accent:#dfa360; --c-sel:#513b24;
+  --c-red:#e48682; --c-yellow:#f6bb6f; --c-green:#98bf7a; --c-cyan:#5bcbcb; --c-blue:#77b0e9; --c-magenta:#da8fbf;
+  --c-border-a:#dfa360; --c-border-b:#7ea9d5;
+  --font:"JetBrainsMono Nerd Font","JetBrains Mono",ui-monospace,"DejaVu Sans Mono",monospace;
+  --m-fast:.14s; --m-med:.26s; --m-ease:cubic-bezier(.2,.7,.2,1);
+  color-scheme:dark;
+}
+:root[data-mode="light"]{color-scheme:light}
+body{
+  --pl-bg:var(--c-bg); --pl-text:var(--c-fg); --pl-title:var(--c-fg-bright);
+  --pl-dim:var(--c-fg-dim);
+  --pl-tile:color-mix(in srgb,var(--c-fg) 5%,var(--c-bg));
+  --pl-raised:color-mix(in srgb,var(--c-fg) 9%,var(--c-bg));
+  --pl-line:color-mix(in srgb,var(--c-fg) 15%,var(--c-bg));
+  --pl-hover:color-mix(in srgb,var(--c-fg) 8%,transparent);
+  --pl-accent:var(--c-accent);
+  --pl-panel:color-mix(in srgb,var(--c-bg) 93%,transparent);
+  --pl-panel-solid:color-mix(in srgb,var(--c-bg) 97%,transparent);
+  --pl-r:6px;
+}
+:root[data-mode="light"] body{--pl-dim:color-mix(in srgb,var(--c-fg) 70%,var(--c-bg));--pl-panel:color-mix(in srgb,var(--c-bg) 90%,transparent)}
+.s-waiting{--s:var(--c-yellow)} .s-failed{--s:var(--c-red)} .s-ready{--s:var(--c-green)}
+.s-plan{--s:var(--c-cyan)} .s-review{--s:var(--c-magenta)} .s-working{--s:var(--c-blue)}
+.s-queued,.s-done{--s:var(--c-muted)}
+
+*{box-sizing:border-box}
+html,body{margin:0;height:100%;overflow:hidden}
+body{font:12px/1.45 var(--font);color:var(--pl-text);background:var(--c-bg-darker);-webkit-font-smoothing:antialiased}
+button,input,textarea,select{font:inherit;color:inherit}
+button{cursor:pointer}
+:focus-visible{outline:2px solid var(--pl-accent);outline-offset:1px}
+[hidden]{display:none!important}
+kbd{display:inline-block;min-width:1.7em;padding:0 .35em;border:1px solid var(--pl-line);border-bottom-width:2px;border-radius:4px;background:var(--pl-tile);text-align:center;font-size:11px}
+
+#scene{position:fixed;inset:0;width:100vw;height:100vh;display:block}
+.panel{position:fixed;z-index:10;background:var(--pl-panel);border:1px solid var(--pl-line);border-radius:var(--pl-r);backdrop-filter:blur(6px)}
+body.simple .panel{backdrop-filter:none;background:var(--pl-panel-solid)}
+.btn{border:1px solid var(--pl-line);background:var(--pl-tile);border-radius:5px;padding:4px 10px;min-height:28px}
+.btn:hover{background:var(--pl-raised)}
+.btn.on{border-color:var(--pl-accent);color:var(--pl-accent)}
+.btn.primary{background:var(--pl-accent);color:var(--c-bg);border-color:var(--pl-accent)}
+.dim{color:var(--pl-dim)}
+.chip{display:inline-block;padding:0 6px;border-radius:9px;border:1px solid var(--pl-line);font-size:11px;white-space:nowrap}
+.dot{display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--s,var(--c-muted));vertical-align:middle}
+
+/* ── верх: крошки · поиск · режим ── */
+#top{position:fixed;top:0;left:0;right:0;height:52px;display:grid;grid-template-columns:minmax(0,1fr) minmax(280px,560px) minmax(0,1fr);align-items:center;gap:12px;padding:0 14px;pointer-events:none;z-index:20}
+#top>*{pointer-events:auto}
+#crumbs{min-width:0;display:flex;gap:6px;align-items:center;font-size:13px;white-space:nowrap;overflow:hidden}
+#crumbs button{min-width:0;flex:0 1 auto;overflow:hidden;text-overflow:ellipsis;background:none;border:0;padding:2px 4px;border-radius:4px;color:var(--pl-dim)}
+#crumbs button:last-child{color:var(--pl-title);flex:none}
+#crumbs button:hover{background:var(--pl-hover)}
+#crumbs .sep{color:var(--pl-dim)}
+#searchbox{position:relative}
+#q{width:100%;height:34px;padding:0 70px 0 34px;border-radius:17px;border:1px solid var(--pl-line);background:var(--pl-panel-solid);outline:none;transition:box-shadow var(--m-med)}
+#q:focus{border-color:var(--pl-accent);box-shadow:0 0 0 4px color-mix(in srgb,var(--pl-accent) 18%,transparent),0 0 30px color-mix(in srgb,var(--pl-accent) 25%,transparent)}
+#searchbox>.ic{position:absolute;left:12px;top:8px;color:var(--pl-dim)}
+#searchbox>.k{position:absolute;right:10px;top:7px;color:var(--pl-dim);font-size:11px}
+#sres{position:absolute;top:40px;left:0;right:0;max-height:62vh;overflow:auto;padding:6px;background:var(--c-bg);border:1px solid var(--pl-line);border-radius:10px;box-shadow:0 16px 40px #0008;animation:rise var(--m-med) var(--m-ease)}
+@keyframes rise{from{opacity:0;transform:translateY(-6px)}}
+#sres h4{margin:8px 8px 2px;font-size:10px;letter-spacing:.08em;text-transform:uppercase;color:var(--pl-dim);font-weight:500}
+.sr{display:grid;grid-template-columns:22px 1fr auto;gap:8px;align-items:center;padding:6px 8px;border-radius:6px;cursor:pointer}
+.sr .ic{text-align:center;color:var(--pl-dim)}
+.sr .path{font-size:10.5px;color:var(--pl-dim)}
+.sr mark{background:color-mix(in srgb,var(--pl-accent) 35%,transparent);color:inherit;border-radius:2px}
+.sr.cur,.sr:hover{background:var(--pl-hover)}
+.sr .st{font-size:11px;color:var(--s)}
+#sres .empty{padding:12px;color:var(--pl-dim)}
+#right{display:flex;justify-content:flex-end;gap:8px;align-items:center}
+#mode{display:flex;border:1px solid var(--pl-line);border-radius:16px;overflow:hidden;background:var(--pl-panel-solid)}
+#mode button{border:0;background:none;padding:5px 12px}
+#mode button.on{background:var(--pl-accent);color:var(--c-bg)}
+#wait{border-color:color-mix(in srgb,var(--c-yellow) 60%,var(--pl-line));color:var(--c-yellow)}
+
+/* ── навигатор ── */
+#nav{top:60px;left:12px;width:330px;bottom:70px;display:flex;flex-direction:column;transform:translateX(0);transition:transform var(--m-med) var(--m-ease),opacity var(--m-med)}
+#nav.off{transform:translateX(-110%);opacity:0}
+#nav header,#focus header,#todo header{display:flex;justify-content:space-between;align-items:center;padding:8px 10px;border-bottom:1px solid var(--pl-line);font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--pl-dim)}
+#tree{overflow:auto;padding:6px 4px;flex:1}
+.ti{display:flex;align-items:center;gap:6px;padding:3px 6px;border-radius:5px;cursor:pointer;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-height:24px}
+.ti:hover{background:var(--pl-hover)}
+.ti.sel{background:color-mix(in srgb,var(--pl-accent) 20%,transparent);color:var(--pl-title)}
+.ti .tw{width:12px;color:var(--pl-dim);flex:none}
+.ti .meta{color:var(--pl-dim);font-size:11px;overflow:hidden;text-overflow:ellipsis}
+.ti.done{opacity:.5}
+.ti .lag{color:var(--c-yellow);font-size:10.5px;border:1px solid color-mix(in srgb,var(--c-yellow) 40%,transparent);border-radius:8px;padding:0 5px}
+.ti.off .meta{color:var(--c-red)}
+.ti.add{color:var(--pl-accent)}
+
+/* ── фокус ── */
+#focus{top:60px;right:12px;width:380px;max-height:calc(100vh - 220px);display:flex;flex-direction:column;transition:transform var(--m-med) var(--m-ease),opacity var(--m-med)}
+#focus.off{transform:translateX(110%);opacity:0;pointer-events:none}
+#fbody{overflow:auto;padding:10px 12px 14px}
+#fbody h2{margin:2px 0 4px;font-size:15px;color:var(--pl-title);font-weight:600}
+#fbody h3{margin:14px 0 6px;font-size:10.5px;letter-spacing:.08em;text-transform:uppercase;color:var(--pl-dim);font-weight:500}
+#fbody .row{display:flex;gap:6px;flex-wrap:wrap;align-items:center}
+.closing{white-space:pre-wrap;background:var(--pl-tile);border:1px solid var(--pl-line);border-radius:6px;padding:8px 10px;font-size:12px;line-height:1.55}
+.closing.loading{opacity:.5}
+table.lag{width:100%;border-collapse:collapse;font-size:11.5px}
+table.lag td,table.lag th{padding:3px 4px;border-bottom:1px solid var(--pl-line);text-align:left}
+.req{border:1px solid color-mix(in srgb,var(--c-yellow) 45%,var(--pl-line));background:color-mix(in srgb,var(--c-yellow) 7%,var(--pl-bg));border-radius:6px;padding:8px 10px;margin:6px 0}
+.req .opts{display:flex;gap:6px;flex-wrap:wrap;margin-top:6px}
+.btn.armed{background:var(--c-yellow);color:var(--c-bg);border-color:var(--c-yellow)}
+.moonl{display:flex;justify-content:space-between;gap:8px;padding:4px 6px;border-radius:5px;cursor:pointer}
+.moonl:hover{background:var(--pl-hover)}
+.moonl.tri.cur{outline:1px solid var(--pl-accent);background:color-mix(in srgb,var(--pl-accent) 12%,transparent)}
+.moonl.tri.done{opacity:.45;text-decoration:line-through}
+.moonl.tri:focus{outline:2px solid var(--pl-accent)}
+
+/* ── чат ── */
+#chat{left:50%;bottom:62px;transform:translateX(-50%);width:min(76ch,calc(100vw - 800px));min-width:min(460px,calc(100vw - 800px));max-height:38vh;display:flex;flex-direction:column;font-size:15px;transition:transform var(--m-med) var(--m-ease),opacity var(--m-med)}
+#chat.off{transform:translate(-50%,40px);opacity:0;pointer-events:none}
+#chat.left{left:354px;transform:none;width:calc(100vw - 760px - 20px);min-width:420px}
+#chat header{display:flex;gap:8px;align-items:center;padding:6px 8px;border-bottom:1px solid var(--pl-line);font-size:12px}
+#chat header b{color:var(--pl-title);font-weight:600}
+#chat-q{flex:1;height:26px;border:1px solid var(--pl-line);border-radius:13px;background:var(--pl-tile);padding:0 10px;font-size:12px;outline:none}
+#log{overflow:auto;padding:8px 14px;scroll-behavior:smooth}
+.older{display:block;margin:0 auto 8px;font-size:11.5px;color:var(--pl-dim);background:none;border:0}
+.turn{margin:0 0 12px}
+.turn .who{font-size:11px;color:var(--pl-dim);margin-bottom:1px}
+.turn.q .txt{color:var(--pl-title)}
+.turn.a .txt{color:var(--pl-text);padding-left:10px;border-left:2px solid color-mix(in srgb,var(--pl-accent) 50%,transparent)}
+.turn.hit{animation:hit 1.6s}
+@keyframes hit{0%,40%{background:color-mix(in srgb,var(--pl-accent) 22%,transparent)}}
+#tolast{position:absolute;right:14px;bottom:56px;font-size:11.5px;border-radius:12px}
+#compose{display:flex;gap:6px;padding:8px;border-top:1px solid var(--pl-line)}
+#compose textarea{flex:1;height:36px;resize:none;border:1px solid var(--pl-line);background:var(--pl-tile);border-radius:6px;padding:7px 9px;font-size:13px;outline:none}
+#chits{padding:4px 8px;max-height:150px;overflow:auto;border-bottom:1px solid var(--pl-line);font-size:12px}
+#chits .h{padding:4px 6px;border-radius:4px;cursor:pointer}
+#chits .h:hover{background:var(--pl-hover)}
+#chits mark{background:color-mix(in srgb,var(--pl-accent) 35%,transparent);color:inherit}
+
+/* ── дела ── */
+#todo{top:60px;right:12px;width:340px;bottom:70px;display:flex;flex-direction:column;transform:translateX(115%);transition:transform .26s var(--m-ease);z-index:12}
+#todo.open{transform:none}
+#tlist{list-style:none;margin:0;padding:6px;overflow:auto;flex:1}
+#tlist li{display:grid;grid-template-columns:14px 1fr;gap:8px;align-items:start;padding:7px 8px;margin-bottom:5px;border:1px solid var(--pl-line);border-radius:6px;background:var(--pl-tile);cursor:grab}
+#tlist li.drag{opacity:.4}
+#tlist li.over{border-top:2px solid var(--pl-accent)}
+#tlist li.hl{animation:hit 1.6s}
+#tlist .h{color:var(--pl-dim);letter-spacing:-2px;line-height:1.2}
+#tlist .to{margin-top:4px;display:flex;gap:6px;align-items:center}
+#tadd{display:flex;gap:6px;padding:8px;border-top:1px solid var(--pl-line)}
+#tadd input{flex:1;border:1px solid var(--pl-line);background:var(--pl-tile);border-radius:5px;padding:4px 8px}
+#tnote{padding:6px 10px;color:var(--pl-dim);font-size:11px;border-top:1px solid var(--pl-line)}
+#pop{position:fixed;z-index:40;width:340px;max-height:calc(100vh - 80px);overflow:auto;overflow-wrap:anywhere;padding:12px;background:var(--pl-panel-solid);border:1px solid var(--pl-accent);border-radius:8px;box-shadow:0 16px 40px #0009;animation:rise var(--m-med)}
+#pop label{display:block;font-size:10.5px;color:var(--pl-dim);margin:8px 0 3px;text-transform:uppercase;letter-spacing:.06em}
+#pop select,#pop input{width:100%;padding:5px 7px;border:1px solid var(--pl-line);background:var(--pl-tile);border-radius:5px}
+#pop .prog{display:flex;gap:4px}
+#pop .prog button{flex:1}
+
+/* ── низ: канбан-строка ── */
+#kanban{left:50%;bottom:12px;transform:translateX(-50%);display:flex;padding:3px;gap:2px;border-radius:20px}
+#kanban button{border:0;background:none;padding:6px 14px;border-radius:16px;display:flex;gap:8px;align-items:center;white-space:nowrap}
+#kanban button:hover{background:var(--pl-hover)}
+#kanban button.on{background:color-mix(in srgb,var(--pl-accent) 22%,transparent);color:var(--pl-title)}
+#kanban b{font-weight:600;color:var(--pl-title)}
+#kanban .w{color:var(--c-yellow);font-size:10.5px}
+#kanban .arr{color:var(--pl-dim);padding:0 2px;align-self:center}
+#kbar{position:fixed;left:12px;bottom:12px;display:flex;gap:6px;z-index:15}
+
+/* ── подсказки управления ── */
+#hint{left:354px;bottom:62px;width:330px;padding:10px 12px;font-size:12px;z-index:9}
+#hint h5{margin:0 0 6px;font-size:12px;color:var(--pl-title);font-weight:600}
+#hint .keys{display:grid;grid-template-columns:auto 1fr;gap:4px 10px;align-items:center}
+#hint .x{position:absolute;top:6px;right:8px;background:none;border:0;color:var(--pl-dim)}
+#coach{position:fixed;z-index:50;width:290px;padding:12px 14px;background:var(--pl-panel-solid);border:1px solid var(--pl-accent);border-radius:8px;box-shadow:0 0 0 9999px #0007}
+#coach .n{color:var(--pl-dim);font-size:11px}
+#coach p{margin:6px 0 10px;font-size:13px;color:var(--pl-title)}
+#edge{position:fixed;top:64px;left:50%;transform:translateX(-50%);padding:6px 14px;border-radius:16px;background:color-mix(in srgb,var(--c-yellow) 18%,var(--pl-panel-solid));border:1px solid var(--c-yellow);z-index:21}
+#lockhint{position:fixed;top:100px;left:50%;transform:translateX(-50%);padding:4px 12px;border-radius:14px;background:var(--pl-panel-solid);border:1px solid var(--pl-line);z-index:21;font-size:11.5px}
+#link{position:fixed;top:64px;left:50%;transform:translateX(-50%);padding:6px 14px;border-radius:16px;border:1px solid var(--pl-line);background:var(--pl-panel-solid);z-index:21;display:flex;gap:10px;align-items:center}
+#link.bad{border-color:var(--c-red)}
+#link b{white-space:nowrap}
+#link .spin{width:10px;height:10px;border:2px solid var(--pl-accent);border-right-color:transparent;border-radius:50%;animation:sp .8s linear infinite}
+@keyframes sp{to{transform:rotate(1turn)}}
+#toast{position:fixed;left:50%;bottom:120px;transform:translateX(-50%);padding:8px 14px;border-radius:6px;background:var(--pl-panel-solid);border:1px solid var(--pl-accent);z-index:60;max-width:70ch;animation:rise var(--m-med)}
+#labels{position:fixed;inset:0;pointer-events:none;z-index:5}
+.lb{position:absolute;transform:translate(-50%,0);white-space:nowrap;font-size:11.5px;text-shadow:0 0 4px var(--c-bg),0 0 8px var(--c-bg);pointer-events:auto;cursor:pointer;padding:1px 4px;border-radius:4px}
+.lb:hover{background:var(--pl-hover)}
+.lb .k{color:var(--pl-dim)}
+.lb.big{font-size:13.5px;color:var(--pl-title)}
+.lb .wt{color:var(--c-yellow)}
+.lb.off{color:var(--c-red);opacity:.8}
+.lb.lagl{color:var(--c-yellow);font-size:10.5px;pointer-events:none}
+
+
+/* ── добавить вселенную ── */
+#addu{top:60px;left:354px;width:min(520px,calc(100vw - 380px));max-height:calc(100vh - 140px);overflow:auto;z-index:30;padding:0 0 12px;background:var(--pl-panel-solid)}
+#addu header{display:flex;justify-content:space-between;align-items:center;padding:10px 14px;border-bottom:1px solid var(--pl-line)}
+#addu header b{color:var(--pl-title);font-size:13px}
+#addu .bd{padding:10px 14px}
+#addu .tabs{display:flex;gap:4px;margin-bottom:10px}
+#addu .tabs button{flex:1}
+#addu label{display:block;font-size:10.5px;color:var(--pl-dim);margin:10px 0 3px;text-transform:uppercase;letter-spacing:.06em}
+#addu input{width:100%;padding:6px 8px;border:1px solid var(--pl-line);background:var(--pl-tile);border-radius:5px;outline:none}
+#addu input:focus{border-color:var(--pl-accent)}
+#addu .sug{border:1px solid var(--pl-line);border-top:0;border-radius:0 0 5px 5px;max-height:190px;overflow:auto}
+#addu .sug div{display:flex;justify-content:space-between;gap:8px;padding:5px 8px;cursor:pointer}
+#addu .sug div:hover,#addu .sug div.cur{background:var(--pl-hover)}
+#addu .sug .m{color:var(--pl-dim);font-size:11px;white-space:nowrap}
+#addu .sug .ok{color:var(--c-green)} #addu .sug .no{color:var(--c-red)} #addu .sug .on{color:var(--c-yellow)}
+#addu .info{margin-top:8px;padding:8px 10px;border:1px solid var(--pl-line);border-radius:6px;background:var(--pl-tile);font-size:11.5px;line-height:1.6}
+#addu .info code,#addu .steps code{color:var(--pl-accent);word-break:break-all}
+#addu .grid2{display:grid;grid-template-columns:1fr 110px;gap:8px}
+#addu .act{display:flex;gap:6px;margin-top:12px;align-items:center;flex-wrap:wrap}
+#addu .steps{list-style:none;margin:10px 0 0;padding:0}
+#addu .steps li{display:grid;grid-template-columns:18px 1fr;gap:8px;padding:5px 0;border-top:1px solid var(--pl-line)}
+#addu .steps li .i{text-align:center}
+#addu .steps li.wait{opacity:.45}
+#addu .steps li.run .i{color:var(--pl-accent)} #addu .steps li.ok .i{color:var(--c-green)} #addu .steps li.err .i{color:var(--c-red)}
+#addu .bar{height:4px;background:var(--pl-line);border-radius:2px;margin-top:5px;overflow:hidden}
+#addu .bar i{display:block;height:100%;background:var(--pl-accent);transition:width .2s}
+#addu .err{color:var(--c-red)}
+/* ── первый запуск ── */
+#first{left:50%;top:50%;transform:translate(-50%,-30%);width:min(560px,calc(100vw - 40px));padding:18px 20px;z-index:25;background:var(--pl-panel-solid)}
+#first h2{margin:0 0 4px;font-size:17px;color:var(--pl-title);font-weight:600}
+#first p{margin:0 0 12px;color:var(--pl-dim);line-height:1.55}
+#first .repos{border:1px solid var(--pl-line);border-radius:6px;max-height:240px;overflow:auto}
+#first .repos label{display:grid;grid-template-columns:18px 1fr auto;gap:8px;align-items:center;padding:6px 10px;border-top:1px solid var(--pl-line);cursor:pointer}
+#first .repos label:first-child{border-top:0}
+#first .repos .m{color:var(--pl-dim);font-size:11px}
+#first .row{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:12px}
+#first .more{margin-top:14px;padding-top:10px;border-top:1px solid var(--pl-line);color:var(--pl-dim);font-size:11.5px}
+#first a{color:var(--pl-accent)}
+/* ── Tweaks (только макет) ── */
+#tw{position:fixed;right:12px;bottom:12px;z-index:70;width:290px;padding:10px 12px;background:var(--pl-panel-solid);border:1px dashed var(--pl-accent);border-radius:8px;font-size:11.5px;max-height:80vh;overflow:auto}
+#tw.min{width:auto}
+#tw.min>*:not(.th){display:none}
+#tw .th{display:flex;justify-content:space-between;gap:8px;align-items:center;color:var(--pl-accent)}
+#tw label{display:block;margin:8px 0 3px;color:var(--pl-dim)}
+#tw select{width:100%;padding:3px 5px;background:var(--pl-tile);border:1px solid var(--pl-line);border-radius:4px}
+#tw .screens{display:grid;grid-template-columns:1fr 1fr;gap:4px}
+#tw .screens button{font-size:11px;padding:4px 6px;text-align:left}
+
+/* в ручном полёте низ экрана — нос корабля: канбан прячется, подсказка уходит вправо */
+body.manual #kanban{opacity:0;pointer-events:none}
+body.manual #hint{left:auto;right:12px;bottom:60px}
+/* ── упрощённый режим ── */
+body.simple #chat{font-size:16px}
+body.simple #nav{width:380px}
+body.simple .ti{min-height:32px;font-size:13px}
+@media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
+@media (max-width:1100px){#chat{min-width:0;width:calc(100vw - 40px)}#focus{width:320px}#nav{width:280px}}
+</style>
+</head>
+<body>
+<canvas id="scene" aria-label="Галактика"></canvas>
+<div id="labels"></div>
+
+<div id="top">
+  <nav id="crumbs" aria-label="Где я"></nav>
+  <div id="searchbox">
+    <span class="ic">⌕</span>
+    <input id="q" placeholder="Космический поиск: задача, проект, машина, дело, чат…" autocomplete="off" aria-label="Поиск" aria-controls="sres">
+    <span class="k"><kbd>Ctrl</kbd> <kbd>K</kbd></span>
+    <div id="sres" role="listbox" hidden></div>
+  </div>
+  <div id="right">
+    <button class="btn" id="wait" title="B">Ждёт тебя · 3</button>
+    <div id="mode" role="group" aria-label="Режим полёта">
+      <button data-mode="auto" class="on" title="P">Автопилот</button>
+      <button data-mode="manual" title="P">Ручной</button>
+    </div>
+  </div>
+</div>
+
+<aside class="panel" id="nav" aria-label="Навигатор">
+  <header><span>Навигатор <kbd>N</kbd></span><span class="dim" id="navn"></span></header>
+  <div id="tree" role="tree"></div>
+</aside>
+
+<aside class="panel off" id="focus" aria-label="Фокус">
+  <header><span>Фокус <kbd>F</kbd></span><button class="btn" id="fclose" style="min-height:22px;padding:0 8px">✕</button></header>
+  <div id="fbody"></div>
+</aside>
+
+<section class="panel off" id="chat" aria-label="Чат с Координатором">
+  <header>
+    <b>Квазар · Координатор</b><span class="dim" id="cstate">работает</span>
+    <input id="chat-q" placeholder="поиск по чату" aria-label="Поиск по чату">
+    <button class="btn" id="chide" style="min-height:24px;padding:0 8px" title="/">свернуть</button>
+  </header>
+  <div id="chits" hidden></div>
+  <div id="log" aria-live="polite"></div>
+  <button class="btn" id="tolast" hidden>↓ к последним</button>
+  <div id="compose"><textarea placeholder="Скажи Координатору… (Enter — отправить)"></textarea><button class="btn primary">→</button></div>
+</section>
+
+<aside class="panel" id="todo" aria-label="Дела">
+  <header><span>Дела <kbd>T</kbd></span><button class="btn" id="tclose" style="min-height:22px;padding:0 8px">✕</button></header>
+  <ul id="tlist"></ul>
+  <div id="tnote">Перетащи дело на планету — скажу её агенту; на Квазар — Координатору; на туманность — новая задача. Порядок — перетаскиванием или <kbd>Alt</kbd>+<kbd>↑↓</kbd>.</div>
+  <form id="tadd"><input placeholder="новое дело…"><button class="btn">+</button></form>
+</aside>
+
+<div class="panel" id="kanban" role="group" aria-label="Стадии"></div>
+<div id="kbar">
+  <button class="btn" id="btodo">Дела · <span id="tn">4</span></button>
+  <button class="btn" id="bchat">Чат <kbd>/</kbd></button>
+</div>
+
+<div class="panel" id="hint" role="note"></div>
+<div id="edge" hidden>Край Галактики — дальше не пускает, поверни к центру</div>
+<div id="lockhint" hidden>Мышь захвачена · <kbd>Esc</kbd> — отпустить мышь · <kbd>P</kbd> — автопилот</div>
+<div id="link" hidden></div>
+<div id="pop" hidden></div>
+<section class="panel" id="first" hidden aria-label="Первый запуск"></section>
+<section class="panel" id="addu" hidden aria-label="Добавить вселенную"></section>
+<div id="coach" hidden></div>
+<div id="toast" hidden></div>
+
+<div id="tw">
+  <div class="th"><b>Tweaks · макет</b><button class="btn" id="twmin" style="min-height:20px;padding:0 6px">–</button></div>
+  <label>Экран</label>
+  <div class="screens" id="screens"></div>
+  <label>Тема Omarchy</label><select id="theme"></select>
+  <label>Режим</label><select id="simple"><option value="0">Обычный</option><option value="1">Упрощённый (без движения)</option></select>
+  <label>Вариант A · чат в кабине</label><select id="vchat"><option value="bottom">A1 — по центру снизу (по плану)</option><option value="left">A2 — к навигатору, шире</option></select>
+  <label>Вариант B · корабль</label><select id="vship"><option value="third">B1 — от третьего лица (по плану)</option><option value="small">B2 — маленький, только в полёте</option></select>
+  <label>Вариант C · подсказки новичку</label><select id="vhint"><option value="card">C1 — карточка в углу</option><option value="coach">C2 — 3 шага при первом входе</option></select>
+  <label>Вариант D · имя центра</label><select id="vname"><option value="Квазар">D1 — Квазар (рекомендация плана)</option><option value="Пульсар">D2 — Пульсар</option></select>
+  <label>Вариант F · вертикаль в ручном полёте</label><select id="vvert"><option value="c">F1 — Space вверх, C вниз, Shift форсаж</option><option value="shift">F2 — Space вверх, Shift вниз</option></select>
+  <label>Корабль в ручном полёте</label><select id="vnose"><option value="on">Нос крупным планом снизу</option><option value="off">От третьего лица</option></select>
+  <label>ОС vm-a (пример установки yazi)</label><select id="vvmos"><option value="ubuntu">Ubuntu x86_64</option><option value="arch">Arch Linux ARM aarch64</option><option value="mac">macOS arm64 + Homebrew</option><option value="macx">macOS x86_64 без Homebrew</option></select>
+  <label>Мышь: чувствительность <span id="sensv"></span></label><input type="range" id="vsens" min="0.3" max="3" step="0.1" style="width:100%">
+  <label>Мышь: вертикаль</label><select id="vinv"><option value="0">обычная</option><option value="1">инверсия</option></select>
+  <label>Данные</label><select id="data"><option value="demo">Демо: 5 вселенных · 17 планет</option><option value="empty">Первый запуск: пусто</option><option value="big">Нагрузка: 50 вселенных · 500 планет</option></select>
+  <div class="dim" id="fps" style="font-size:10.5px;margin-top:3px"></div>
+  <label>Вариант G · регистрация вселенной в доске</label><select id="vreg"><option value="task">G1 — через первую задачу (работает сейчас)</option><option value="cmd">G2 — команда repo add (нужна в herdr-projects)</option></select>
+  <label>Вариант E · канбан</label><select id="vkan"><option value="strip">E1 — строка-стадии со стрелками</option><option value="bar">E2 — строка + полоса долей</option></select>
+</div>
+
+<script>
+'use strict';
+/* ───────── темы: значения из colors.toml тем Omarchy ───────── */
+const THEMES={
+ 'americano-night':{label:'Americano Night',mode:'dark',bg:'#1a120c',bgDark:'#140e09',bgDarker:'#0d0906',bgLight:'#2a201a',fg:'#ecded6',fgDim:'#9c9089',fgBright:'#fcf5f1',muted:'#806f64',accent:'#dfa360',red:'#e48682',yellow:'#f6bb6f',green:'#98bf7a',cyan:'#5bcccb',blue:'#77b0e9',magenta:'#da8fbf',borderA:'#dfa360',borderB:'#7ea9d5'},
+ 'tokyo-night':{label:'Tokyo Night',mode:'dark',bg:'#1a1b26',bgDark:'#13141c',bgDarker:'#0e0e14',bgLight:'#24283b',fg:'#a9b1d6',fgDim:'#7880a8',fgBright:'#c0caf5',muted:'#414868',accent:'#7aa2f7',red:'#f7768e',yellow:'#e0af68',green:'#9ece6a',cyan:'#449dab',blue:'#7aa2f7',magenta:'#ad8ee6',borderA:'#7aa2f7',borderB:'#7aa2f7'},
+ 'americano-day':{label:'Americano Day',mode:'light',bg:'#f9f1e8',bgDark:'#f1e7dc',bgDarker:'#e4d9ce',bgLight:'#eaded1',fg:'#372b1f',fgDim:'#6d6154',fgBright:'#1d140a',muted:'#84786a',accent:'#9c610b',red:'#a54746',yellow:'#996306',green:'#52792f',cyan:'#007a7a',blue:'#29669f',magenta:'#954b7c',borderA:'#9c610b',borderB:'#4875a3'},
+ 'catppuccin-latte':{label:'Catppuccin Latte',mode:'light',bg:'#eff1f5',bgDark:'#e3e4e8',bgDarker:'#d7d8dc',bgLight:'#dce0e8',fg:'#4c4f69',fgDim:'#7c7f93',fgBright:'#4c4f69',muted:'#acb0be',accent:'#1e66f5',red:'#d20f39',yellow:'#df8e1d',green:'#40a02b',cyan:'#179299',blue:'#1e66f5',magenta:'#ea76cb',borderA:'#1e66f5',borderB:'#1e66f5'},
+};
+const $=id=>document.getElementById(id);
+const esc=s=>String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const LS=k=>{try{return localStorage.getItem('galaxy-mock.'+k)}catch{return null}};
+const LSset=(k,v)=>{try{localStorage.setItem('galaxy-mock.'+k,v)}catch{}};
+
+const QS=new URLSearchParams(location.search),INSTANT=QS.has('instant');
+/* ───────── тестовые данные ───────── */
+const STAT={queued:'в очереди',plan:'план',working:'работает',review:'ревью',ready:'к одобрению',waiting:'ждёт тебя',failed:'сбой',done:'сделано'};
+const STAGES=[['queue','Очередь',['queued']],['work','План и работа',['plan','working']],['review','Ревью',['review']],['ready','К одобрению',['ready','waiting','failed']],['done','Сделано',['done']]];
+const T0=new Date(2026,9,20);
+const day=d=>{const x=new Date(T0);x.setDate(x.getDate()-d);return x};
+let PROJECTS=[
+ {id:'alpha',key:'ALP',color:'blue',angle:1.55,lag:{behind:2,ahead:0}},
+ {id:'herdr-planner',key:'PLN',color:'accent',angle:4.4,lag:{behind:3,ahead:0},bridge:'vm-a'},
+ {id:'portal-web',key:'PRT',color:'magenta',angle:2.35,lag:{behind:0,ahead:0}},
+ {id:'beta',key:'BET',color:'green',angle:.3,lag:null,fork:{up:'acme/beta',behind:12,tool:'gh',kind:'GitHub'}},
+ {id:'docs',key:'DOC',color:'cyan',angle:5.25,quiet:true,lag:null,gitlab:true,research:{up:'gis/geo-docs',behind:5,tool:'glab',kind:'GitLab'}},
+];
+const T=(p,n,title,st,d,extra={})=>({id:`${p}/${n}`,repo:p,tag:`${PROJECTS.find(x=>x.id===p).key}-${n}`,title,st,created:day(d),agent:'claude/sonnet-5.5',...extra});
+let TASKS=[
+ T('alpha',16,'Лишние ветки в репозитории','waiting',0,{subs:[{id:'s1',role:'Explore',title:'Explore Rust backend',doing:'Grep «git branch -D» в src/',min:4,state:'running',kind:'claude'}],ask:{q:'Удалить 6 веток без PR старше 30 дней?',opts:['Да, все 6','Только мои','Нет']}}),
+ T('alpha',15,'Кэш SSH-соединений','working',0,{subs:[{id:'s2',role:'Plan',title:'План переноса ControlPath',doing:'Read remote.rs',min:2,state:'running',kind:'claude'},{id:'s3',role:'general-purpose',title:'Проверить тесты',doing:'затих 12 мин назад',min:19,state:'quiet',kind:'claude'}]}),
+ T('alpha',14,'Таймаут models 90 с','review',0,{after:['alpha/15']}),
+ T('alpha',12,'Экспорт истории в CSV','done',1),
+ T('alpha',11,'Флаг --dry-run','done',1),
+ T('alpha',9,'Тёмная тема в виджете','queued',6,{after:['alpha/14']}),
+ T('herdr-planner',9,'Галактика herdr-projects: полёт на корабле','plan',0,{agent:'claude/opus-5.5',closing:"Plan v3 is ready for approval. I rewrote the stack section (axum + SQLite + SSE), added the subagent satellites with a reliable 'done' rule, and described far galaxies over SSH. Open questions: the name of the centre (Quasar vs Pulsar) and whether the chat docks bottom-centre.",closingRu:"План v3 готов к одобрению. Переписал раздел о стеке (axum + SQLite + SSE), добавил спутники-субагенты с надёжным правилом «завершён» и описал далёкие галактики по SSH. Открытые вопросы: имя центра (Квазар или Пульсар) и где пристыковать чат — по центру снизу или нет.",subs:[{id:'s4',role:'Explore',title:'Обзор web/world.js',doing:'Read world.js:480–620',min:6,state:'running',kind:'claude'}]}),
+ T('herdr-planner',10,'Макеты Галактики для одобрения','working',0,{agent:'claude/opus-5.5',after:['herdr-planner/9']}),
+ T('herdr-planner',8,'Чат с историей из стенограммы','done',2),
+ T('herdr-planner',7,'3D-мир','done',6),
+ T('portal-web',16,'Экспорт заявок: фильтр по датам','ready',0,{agent:'codex/gpt-5.5',ask:{q:'PR #41 готов: одобрить и влить?',opts:['Одобрить','Вернуть на доработку']}}),
+ T('portal-web',13,'Модуль заявок: рефакторинг','working',1,{agent:'codex/gpt-5.5',subs:[{id:'s5',role:'reviewer',title:'Проверка миграций',doing:'function_call: run_tests',min:8,state:'running',kind:'codex'}]}),
+ T('portal-web',12,'Форма входа: ошибки','failed',1,{ask:{q:'Агент упал: «cargo not found». Повторить?',opts:['Повторить','Остановить']}}),
+ T('portal-web',10,'Логотип в шапке','done',6),
+ T('beta',4,'Миграция на Postgres','queued',1,{after:['portal-web/13']}),
+ T('beta',3,'Ночной бэкап','working',6,{agent:'omp/kimi-k2',subs:[{id:'s6',role:'Backup',title:'Проверка rsync',doing:'toolCall: bash',min:1,state:'running',kind:'omp'}]}),
+ T('docs',2,'Справка по клавишам','done',6),
+];
+const QUASAR={subs:[{id:'q1',role:'Explore',title:'Где живёт поиск по доске',doing:'Grep «search_fts»',min:3,state:'running',kind:'claude'}]};
+let GALAXIES=[
+ {id:'orion',label:'orion',here:true},
+ {id:'vm-a',label:'vm-a',target:'deploy@192.0.2.12',ok:true,tasks:136,wait:2,version:'1.2.4',angle:4.55},
+ {id:'vm-b',label:'vm-b',target:'me@vm-b.lan',ok:false,why:'herdr-projects is not found there',detail:'Поставь herdr-projects в login-shell PATH на vm-b, затем «Повторить».',angle:5.35},
+];
+
+/* ───────── нагрузочная фикстура: 50 вселенных · 500 планет ───────── */
+const DEMO={P:PROJECTS,T:TASKS};
+const GROUPS=[['AI','accent'],['herdr','blue'],['web','magenta'],['infra','green'],['tools','cyan'],['sandbox','yellow']];
+function bigData(){
+  const r=rnd(7),W=['atlas','borealis','cinder','delta','ember','fjord','gale','harbor','iris','jade','kite','lumen','mosaic','nova','orbit','prism','quartz','raven','sable','tundra','umbra','vertex','willow','xenon','yarrow','zephyr'];
+  const P=[],T=[],keys=new Set();
+  for(let i=0;i<50;i++){const g=GROUPS[i%6];const name=`${W[i%26]}-${g[0].toLowerCase()}${i>=26?'-2':''}`;
+    let key=(W[i%26].slice(0,2)+g[0][0]).toUpperCase();let n=2;while(keys.has(key))key=(W[i%26].slice(0,2)+g[0][0]).toUpperCase()+n++;keys.add(key);
+    P.push({id:name,key,color:g[1],group:g[0],quiet:i>=18,lag:i%7===0?{behind:1+i%4,ahead:0}:null})}
+  // задачи: активным ~22, тихим ~3; всего ровно 500
+  const st=['done','done','done','done','done','done','queued','queued','working','working','plan','review','review','ready','waiting','failed'];
+  let id=0;for(let k=0;T.length<500;k++){const pr=P[k%50];if(pr.quiet&&r()<.75)continue;const n=++id;
+    const s0=pr.quiet?(r()<.8?'done':'queued'):st[Math.floor(r()*st.length)];
+    T.push({id:`${pr.id}/${n}`,repo:pr.id,tag:`${pr.key}-${n}`,title:`Задача ${n} проекта ${pr.id}`,st:s0,created:day(Math.floor(r()*40)),agent:['claude/sonnet-5.5','codex/gpt-5.5','omp/kimi-k2'][n%3],
+      subs:s0==='working'&&r()<.5?[{id:'s'+n,role:'Explore',title:'Обзор кода',doing:'Read src/',min:1+n%20,state:'running',kind:'claude'}]:undefined})}
+  // раскладка: рукав спирали на папку (группу), активные внутри по активности, тихие — внешнее кольцо, мельче и тусклее
+  GROUPS.forEach(([g],gi)=>{const act=P.filter(p=>p.group===g&&!p.quiet).sort((a,b)=>T.filter(t=>t.repo===b.id&&t.st!=='done').length-T.filter(t=>t.repo===a.id&&t.st!=='done').length);
+    act.forEach((p,j)=>{const rr=150+j*85,th=gi*Math.PI/3+j*.42;p.pos=V(Math.cos(th)*rr,(j%2?6:-6),Math.sin(th)*rr);p.scale=.5});
+    const q=P.filter(p=>p.group===g&&p.quiet);q.forEach((p,j)=>{const th=gi*Math.PI/3+.25+j*(Math.PI/3-.3)/Math.max(1,q.length);const rr=470+(j%2)*45;p.pos=V(Math.cos(th)*rr,-25,Math.sin(th)*rr);p.scale=.3})});
+  return{P,T}}
+function indexTasks(){const c={};for(const t of [...TASKS,...FTASKS]){const k=(t.g||'')+t.repo;t._i=c[k]=(c[k]??-1)+1}}
+let ALLG=null,ALLTD=null;
+function setData(d){S.data=d;const D=d==='big'?bigData():d==='empty'?{P:[],T:[]}:DEMO;$('first').hidden=d!=='empty';
+  // свежая установка: других машин и дел ещё нет
+  if(!ALLG)ALLG=GALAXIES;GALAXIES=d==='empty'?ALLG.filter(g=>g.here):ALLG;
+  if(d==='empty'){if(!ALLTD)ALLTD=TODOS;TODOS=[]}else if(ALLTD){TODOS=ALLTD;ALLTD=null}renderTodo();PROJECTS=D.P;TASKS=D.T;
+  if(d==='big'){R_BOUND=630;R_FAR=1100}else{R_BOUND=R_QUIET+120;R_FAR=900}
+  indexTasks();S.sel=null;S.level='galaxy';S.nebula=null;S.folds={};$('log').innerHTML='';LSset('data',d)}
+const FAR_PROJECTS=[{id:'herdr-planner',key:'PLN',color:'accent',angle:.8,lag:{behind:0,ahead:3}},{id:'infra',key:'INF',color:'green',angle:3.0,lag:null},{id:'site',key:'SIT',color:'cyan',angle:5,lag:null}];
+const FT=(p,n,title,st,d,extra={})=>({id:`vm-a~${p}/${n}`,g:'vm-a',repo:p,tag:`${FAR_PROJECTS.find(x=>x.id===p).key}-${n}`,title,st,created:day(d),agent:'claude/sonnet-5.5',...extra});
+const FTASKS=[
+ FT('infra',4,'Перезапуск nginx на проде','waiting',0,{ask:{q:'Перезапустить nginx на проде сейчас?',opts:['Да','Ночью','Нет']}}),
+ FT('infra',3,'Ротация логов','working',0,{agent:'omp/kimi-k2'}),
+ FT('infra',2,'Мониторинг диска','done',3),
+ FT('site',7,'Новая главная страница','ready',0,{ask:{q:'Ревью прошло: одобрить SIT-7?',opts:['Одобрить','Вернуть']}}),
+ FT('site',6,'Карта сайта','queued',1,{after:['vm-a~site/7']}),
+ FT('herdr-planner',12,'Сборка под aarch64','working',0,{agent:'codex/gpt-5.5'}),
+];
+const gTasks=()=>S.galaxy==='vm-a'?FTASKS:TASKS;
+const projOf=t=>(t.g==='vm-a'?FAR_PROJECTS:PROJECTS).find(p=>p.id===t.repo);
+const CHAT=[
+ ['q','Что сейчас ждёт меня?','14:02'],['a','Три вещи: ALP-16 спрашивает про удаление 6 веток; PRT-16 готов к одобрению (PR #41); PRT-12 упал — нет cargo на машине.','14:02'],
+ ['q','Заведи задачу на экспорт заявок с фильтром по датам','14:10'],['a','Завёл PRT-16 «Экспорт заявок: фильтр по датам», агент codex/gpt-5.5. Поставил after PRT-13 — тот же модуль.','14:11'],
+ ['q','Как дела у плана Галактики?','14:31'],['a','PLN-9 на версии 3: ревьюер принял, ждут макеты (PLN-10). Субагент Explore читает world.js.','14:31'],
+ ['q','Покажи, что делает vm-a','14:40'],['a','vm-a на связи, 136 задач, 2 ждут тебя. Клон herdr-planner там впереди на 3 коммита — здесь main отстаёт.','14:40'],
+];
+const CHATS={orion:CHAT,'vm-a':[['a','vm-a: INF-4 ждёт тебя — подтвердить перезапуск nginx на проде.','13:20'],['a','SIT-7 готов к одобрению, ревью прошло.','13:55'],['a','Клон herdr-planner здесь впереди origin на 3 коммита — не запушено.','14:20']]};
+const OLDER=[['q','Почему models claude так долго?','вчера'],['a','herdr-projects models claude идёт ≈42 с: два таймаута по 30 с внутри плагина. Прогрев кэша спрячет это.','вчера'],['q','Сделай тёмную тему виджета','вчера'],['a','Завёл ALP-9, after ALP-14.','вчера']];
+let TODOS=[
+ {id:'d1',text:'Спросить про ротацию логов',to:''},
+ {id:'d2',text:'Проверить PRT-16 на мобильном',to:'PRT-16'},
+ {id:'d3',text:'Обновить README после релиза',to:'Квазар'},
+ {id:'d4',text:'Импорт из CSV для beta',to:''},
+];
+
+/* ───────── состояние ───────── */
+const S={data:QS.get('data')||'demo',level:'galaxy',galaxy:'orion',nebula:null,sel:null,mode:'auto',filter:null,folds:{},theme:QS.get('theme')||LS('theme')||'americano-night',simple:LS('simple')==='1',chatOpen:true,shown:3,hintOff:false,armed:null,v:{chat:'bottom',ship:'third',hint:'card',name:'Квазар',kan:'strip',vert:'c',sens:'1',inv:'0',reg:'task',nose:'on',vmos:'ubuntu'}};
+try{Object.assign(S.v,JSON.parse(LS('v')||'{}'))}catch{}
+const QN=()=>S.v.name;
+
+/* ───────── 3D: камера и проекция ───────── */
+const cv=$('scene'),cx=cv.getContext('2d');
+let W=0,H=0,DPR=1;
+function resize(){DPR=Math.min(2,devicePixelRatio||1);W=innerWidth;H=innerHeight;cv.width=W*DPR;cv.height=H*DPR;cx.setTransform(DPR,0,0,DPR,0,0)}
+addEventListener('resize',resize);resize();
+const V=(x,y,z)=>({x,y,z});
+const add=(a,b)=>V(a.x+b.x,a.y+b.y,a.z+b.z),sub=(a,b)=>V(a.x-b.x,a.y-b.y,a.z-b.z),mul=(a,k)=>V(a.x*k,a.y*k,a.z*k);
+const dot=(a,b)=>a.x*b.x+a.y*b.y+a.z*b.z,len=a=>Math.hypot(a.x,a.y,a.z),norm=a=>mul(a,1/(len(a)||1));
+const cross=(a,b)=>V(a.y*b.z-a.z*b.y,a.z*b.x-a.x*b.z,a.x*b.y-a.y*b.x);
+const lerp=(a,b,t)=>a+(b-a)*t,lerpV=(a,b,t)=>V(lerp(a.x,b.x,t),lerp(a.y,b.y,t),lerp(a.z,b.z,t));
+const cam={pos:V(0,250,560),tgt:V(0,0,0),fov:45,yaw:0,speed:0,bank:0};
+let basis;
+function updBasis(){const f=norm(sub(cam.tgt,cam.pos));const r=norm(cross(f,V(0,1,0)));basis={f,r,u:cross(r,f),k:(H/2)/Math.tan(cam.fov*Math.PI/360)}}
+function P(p){const d=sub(p,cam.pos);const z=dot(d,basis.f);if(z<2)return null;const s=basis.k/z;return{x:W/2+dot(d,basis.r)*s,y:H/2-dot(d,basis.u)*s,s,z}}
+
+let R_ACTIVE=190,R_QUIET=330,R_BOUND=R_QUIET+120,R_FAR=900;
+const projPos=p=>{if(p.pos)return p.pos;const r=p.quiet?R_QUIET:R_ACTIVE;const v=V(Math.cos(p.angle)*r,p.quiet?-20:0,Math.sin(p.angle)*r);if(!p.born)return v;
+  // новая туманность вылетает из Квазара
+  const k=Math.min(1,(performance.now()-p.born)/1400);if(k>=1){p.born=0;return v}return mul(v,1-Math.pow(1-k,3))};
+function rnd(seed){let s=seed;return()=>((s=Math.imul(s^s>>>15,1|s)+0x6d2b79f5|0)>>>0)/4294967296}
+const NEB={};
+function nebula(id,n,sc=1){if(NEB[id])return NEB[id];const r=rnd([...id].reduce((a,c)=>a*31+c.charCodeAt(0),7));const pts=[];for(let i=0;i<n;i++){const a=r()*Math.PI*2,rad=Math.pow(r(),.6)*58,arm=Math.sin(a*2+rad*.08)*10;pts.push({a,rad:(rad+arm)*sc,y:(r()-.5)*18*(1-rad/70)*sc,sz:.6+r()*1.6,ph:r()*6})}return NEB[id]=pts}
+const STARS=(()=>{const r=rnd(42),a=[];for(let i=0;i<900;i++){const t=r()*Math.PI*2,p=Math.acos(2*r()-1),d=1600+r()*900;a.push({p:V(Math.sin(p)*Math.cos(t)*d,Math.cos(p)*d*.6,Math.sin(p)*Math.sin(t)*d),b:r()})}return a})();
+
+function col(name){const th=THEMES[S.theme];return th[name]||th.accent}
+function rgba(hex,a){const n=parseInt(hex.slice(1),16);return`rgba(${n>>16},${n>>8&255},${n&255},${a})`}
+const light=()=>THEMES[S.theme].mode==='light';
+const stCol=st=>col({queued:'muted',plan:'cyan',working:'blue',review:'magenta',ready:'green',waiting:'yellow',failed:'red',done:'muted'}[st]);
+const progCol=k=>col({claude:'accent',codex:'green',omp:'cyan',pi:'magenta'}[k]||'fgDim');
+
+/* ───────── состав мира по уровню ───────── */
+function worldProjects(){return S.galaxy==='orion'?PROJECTS:FAR_PROJECTS}
+function planetsOf(pid){return gTasks().filter(t=>t.repo===pid)}
+function planetPos(t,time){const pr=projOf(t);const c=projPos(pr);const i=t._i??0;const sc=pr.scale||1;const r=(18+i*(S.data==='big'?3.2:7))*sc*(S.data==='big'?1.6:1);const a=i*2.1+time*0.04*(t.st==='done'?.3:1);return add(c,V(Math.cos(a)*r,Math.sin(i*1.7)*4,Math.sin(a)*r))}
+function moonPos(t,i,time){const c=planetPos(t,time);const a=time*1.6+i*2.4;return add(c,V(Math.cos(a)*3.4,Math.sin(a*1.3)*1.2,Math.sin(a)*3.4))}
+function quasarMoonPos(i,time){const a=time*.9+i*2;return V(Math.cos(a)*22,6,Math.sin(a)*22)}
+
+/* ───────── полёт: разгон → варп → торможение ───────── */
+let flight=null;
+function flyTo(pos,tgt,{warp=1,dur=1.4,onArrive,dive=false}={}){
+  if(S.simple||document.hidden||INSTANT){cam.pos=pos;cam.tgt=tgt;fade();onArrive&&onArrive();return}
+  flight={p0:cam.pos,t0:cam.tgt,p1:pos,t1:tgt,start:performance.now(),dur:dur*1000*warp,warp,onArrive,dive};
+}
+function fade(){cv.style.transition='none';cv.style.opacity=.3;requestAnimationFrame(()=>{cv.style.transition='opacity .15s';cv.style.opacity=1})}
+function flightStep(now){
+  if(!flight)return 0;
+  const f=flight;let t=Math.min(1,(now-f.start)/f.dur);
+  const e=t<.5?4*t*t*t:1-Math.pow(-2*t+2,3)/2;
+  cam.pos=lerpV(f.p0,f.p1,e);cam.tgt=lerpV(f.t0,f.t1,Math.min(1,e*1.3));
+  const w=t>.25&&t<.68?Math.sin((t-.25)/.43*Math.PI):0; // фаза варпа
+  cam.fov=45+27*w*Math.min(1,f.warp);
+  if(t>=1){flight=null;cam.fov=45;if(S.mode==='manual')syncLook();if(f.dive)burst=performance.now();f.onArrive&&f.onArrive()}
+  return w;
+}
+let burst=0;
+
+/* пресеты */
+function overview(){return S.data==='big'?[V(0,430,900),V(0,0,0)]:[V(0,250,560),V(0,0,0)]}
+function atNebula(p){const c=projPos(p);const out=norm(V(c.x,0,c.z));return[add(c,add(mul(out,-100),V(0,52,0))),add(c,V(0,-6,0))]}
+function atPlanet(t){const c=planetPos(t,tm);const out=norm(V(c.x,0,c.z));return[add(c,add(mul(out,-62),V(0,20,0))),add(c,V(0,-14,0))]}
+function atQuasar(){return[V(0,40,120),V(0,0,0)]}
+function atFar(g){const c=V(Math.cos(g.angle)*R_FAR,40,Math.sin(g.angle)*R_FAR);return[mul(c,.72),c]}
+
+/* ───────── рисование ───────── */
+let tm=0,last=performance.now(),hits=[];
+const keys={};
+const STATS={parts:0,dots:0,labels:0,ms:0};
+function frame(now){const t0=performance.now();STATS.parts=0;STATS.dots=0;
+  const dt=Math.min(.05,(now-last)/1000);last=now;if(!S.simple)tm+=dt;
+  manualStep(dt);
+  const w=flightStep(now);updBasis();
+  const th=THEMES[S.theme];
+  cx.globalCompositeOperation='source-over';
+  const g=cx.createRadialGradient(W/2,H/2,0,W/2,H/2,Math.max(W,H)*.7);
+  g.addColorStop(0,th.bgDark);g.addColorStop(1,th.bgDarker);cx.fillStyle=g;cx.fillRect(0,0,W,H);
+  hits=[];const labels=[];
+  const blend=light()?'source-over':'lighter';
+  // звёзды
+  for(const s of STARS){const p=P(add(s.p,cam.pos));if(!p)continue;cx.fillStyle=rgba(th.fg,(light()?.25:.35)+s.b*.4);cx.fillRect(p.x,p.y,1+s.b,1+s.b)}
+  // туннель варпа
+  if(w>0){cx.strokeStyle=rgba(th.fgBright,.5*w);cx.lineWidth=1.2;const r=rnd(Math.floor(now/40));for(let i=0;i<220;i++){const a=r()*Math.PI*2,d0=40+r()*Math.max(W,H)*.6,d1=d0+60+w*260*r();cx.beginPath();cx.moveTo(W/2+Math.cos(a)*d0,H/2+Math.sin(a)*d0);cx.lineTo(W/2+Math.cos(a)*d1,H/2+Math.sin(a)*d1);cx.stroke()}
+    const vg=cx.createRadialGradient(W/2,H/2,H*.2,W/2,H/2,H*.8);vg.addColorStop(0,'transparent');vg.addColorStop(1,rgba(th.bgDarker,.8*w));cx.fillStyle=vg;cx.fillRect(0,0,W,H)}
+  // далёкие галактики
+  if(S.galaxy==='orion')for(const gx of GALAXIES.filter(g=>!g.here)){const c=V(Math.cos(gx.angle)*R_FAR,40,Math.sin(gx.angle)*R_FAR);const p=P(c);if(!p)continue;
+    cx.globalCompositeOperation=blend;const a=gx.ok?.8:.25;
+    for(let i=0;i<160;i++){const t=i/160*Math.PI*5,rr=i*.28;for(const arm of[0,Math.PI]){const q=P(add(c,V(Math.cos(t+arm+tm*.05)*rr,0,Math.sin(t+arm+tm*.05)*rr*.6)));if(q){cx.fillStyle=rgba(gx.ok?th.borderB:th.muted,a*(1-i/180));cx.fillRect(q.x,q.y,1.6,1.6)}}}
+    cx.globalCompositeOperation='source-over';
+    hits.push({x:p.x,y:p.y,r:30,kind:'galaxy',ref:gx});
+    labels.push({x:p.x,y:p.y+22,html:gx.ok?`Галактика ${gx.label} <span class="k">· ${gx.tasks} задач</span>${gx.wait?` <span class="wt">· ждёт ${gx.wait}</span>`:''}`:`Галактика ${gx.label} · нет связи`,cls:gx.ok?'big':'off',act:()=>selectGalaxy(gx)})}
+  // мосты клонов
+  if(S.galaxy==='orion')for(const pr of PROJECTS.filter(p=>p.bridge)){const gx=GALAXIES.find(g=>g.id===pr.bridge);const a=projPos(pr),b=V(Math.cos(gx.angle)*R_FAR,40,Math.sin(gx.angle)*R_FAR);
+    cx.strokeStyle=rgba(th.yellow,.55);cx.setLineDash([4,6]);cx.lineWidth=1.2;cx.beginPath();let mid=null;for(let i=0;i<=40;i++){const t=i/40;const q=P(add(lerpV(a,b,t),V(0,Math.sin(t*Math.PI)*120,0)));if(!q)continue;if(i===20)mid=q;i?cx.lineTo(q.x,q.y):cx.moveTo(q.x,q.y)}cx.stroke();cx.setLineDash([]);
+    if(mid)labels.push({x:mid.x,y:mid.y-16,html:`мост ${pr.key} · здесь main −${pr.lag.behind} · vm-a впереди +3`,cls:'lagl'})}
+  // граница
+  if(S.mode==='manual'){cx.strokeStyle=rgba(th.yellow,.18);cx.beginPath();for(let i=0;i<=64;i++){const q=P(V(Math.cos(i/64*6.283)*R_BOUND,0,Math.sin(i/64*6.283)*R_BOUND));if(q)i?cx.lineTo(q.x,q.y):cx.moveTo(q.x,q.y)}cx.stroke()}
+  // туманности
+  const inNeb=S.level==='nebula';
+  for(const pr of worldProjects()){const c=projPos(pr),pc=col(pr.color);const sc=pr.scale||1;const pts=nebula(S.galaxy+pr.id+S.data,S.simple?150:pr.quiet?260:560,sc);const here=inNeb&&S.nebula===pr.id;
+    // LOD: число частиц по экранному размеру туманности
+    const p0=P(c);const lod=p0?Math.max(24,Math.min(pts.length,Math.round(p0.s*58*sc*5))):0;cx.fillStyle=pc;STATS.parts+=lod;
+    const alpha=(pr.quiet?.35:.7)*(here?.35:inNeb?.25:1)*(light()?.9:1);
+    cx.globalCompositeOperation=blend;
+    const rot=tm*.05;
+    for(let qi=0;qi<lod;qi++){const q=pts[qi];const a=q.a+rot*(1-q.rad/90),br=1+.06*Math.sin(tm*.8+q.ph);const p=P(add(c,V(Math.cos(a)*q.rad*br,q.y,Math.sin(a)*q.rad*br)));if(!p)continue;const sz=Math.min(here?1.8:3.2,Math.max(.6,q.sz*p.s*1.4));cx.globalAlpha=alpha*(.25+.5*(1-q.rad/70/sc));if(sz<1.6)cx.fillRect(p.x-sz,p.y-sz,sz*2,sz*2);else{cx.beginPath();cx.arc(p.x,p.y,sz,0,6.283);cx.fill()}}
+    cx.globalAlpha=1;
+    // вспышка нырка
+    if(here&&burst&&now-burst<900){const k=(now-burst)/900;const p=P(c);if(p){cx.fillStyle=rgba(pc,.5*(1-k));cx.beginPath();cx.arc(p.x,p.y,40+k*p.s*300,0,6.283);cx.fill()}}
+    cx.globalCompositeOperation='source-over';
+    const p=P(c);if(!p)continue;
+    // ядро-солнце
+    const cr=Math.max(3,p.s*5);const cg=cx.createRadialGradient(p.x,p.y,0,p.x,p.y,cr*3);cg.addColorStop(0,rgba(pc,.95));cg.addColorStop(1,rgba(pc,0));cx.fillStyle=cg;cx.beginPath();cx.arc(p.x,p.y,cr*3,0,6.283);cx.fill();
+    hits.push({x:p.x,y:p.y,r:Math.max(S.data==='big'?14:30,p.s*55*sc),kind:'nebula',ref:pr,z:p.z});
+    const pl=planetsOf(pr.id);const wt=pl.filter(t=>['waiting','failed','ready'].includes(t.st)).length;
+    const hov=hoverRef===pr;if(!here)labels.push({pri:(hov||S.sel&&S.sel.u===pr?200:0)+(wt?60:0)+(pr.quiet?0:20)-p.z/40,x:p.x,y:p.y+Math.max(14,p.s*62*sc),html:`${pr.id} <span class="k">· ${pr.key}</span>${pr.lag&&pr.lag.behind?` <span class="wt">main −${pr.lag.behind}</span>`:''}${wt?` <span class="wt">· ждёт ${wt}</span>`:''}${pr.fork?` <span class="k">· форк ← ${pr.fork.up}</span>${pr.fork.behind?` <span class="wt">upstream +${pr.fork.behind}</span>`:''}`:''}${pr.research?` <span class="k">· изучаю</span>`:''}`,cls:'big',act:()=>dive(pr)});
+    // точки-планеты снаружи
+    if(!inNeb)for(const t of pl){if(S.data==='big'&&t.st==='done')continue;const q=P(planetPos(t,tm));if(q){STATS.dots++;const r=Math.max(1.2,q.s*1.2*sc);cx.fillStyle=stCol(t.st);cx.fillRect(q.x-r,q.y-r,r*2,r*2)}}
+  }
+  // подписи рукавов: папка проектов (цвет туманностей = папка)
+  if(S.data==='big'&&!inNeb&&S.galaxy==='orion')for(const[g]of GROUPS){const ps=PROJECTS.filter(p=>p.group===g&&!p.quiet);const e=ps[ps.length-1];if(!e)continue;const q=P(mul(e.pos,1.18));if(q)labels.push({pri:5,x:q.x,y:q.y,html:`~/Projects/${g} · ${PROJECTS.filter(p=>p.group===g).length}`,cls:'lagl'})}
+  // связи after и планеты внутри туманности
+  if(inNeb){const pl=planetsOf(S.nebula);
+    for(const t of gTasks())for(const a of t.after||[]){const o=gTasks().find(x=>x.id===a);if(!o)continue;if(t.repo!==S.nebula&&o.repo!==S.nebula)continue;const p1=P(planetPos(o,tm)),p2=P(planetPos(t,tm));if(!p1||!p2)continue;
+      const done=o.st==='done';cx.strokeStyle=rgba(done?th.muted:th.yellow,.7);cx.setLineDash(done?[2,4]:[6,5]);cx.lineDashOffset=-tm*20;cx.lineWidth=1.3;cx.beginPath();cx.moveTo(p1.x,p1.y);cx.lineTo(p2.x,p2.y);cx.stroke();cx.setLineDash([]);
+      const ang=Math.atan2(p2.y-p1.y,p2.x-p1.x),mx=(p1.x+p2.x)/2,my=(p1.y+p2.y)/2;cx.fillStyle=rgba(th.yellow,.9);cx.beginPath();cx.moveTo(mx+Math.cos(ang)*7,my+Math.sin(ang)*7);cx.lineTo(mx+Math.cos(ang+2.5)*6,my+Math.sin(ang+2.5)*6);cx.lineTo(mx+Math.cos(ang-2.5)*6,my+Math.sin(ang-2.5)*6);cx.fill();
+      if(o.repo!==t.repo)labels.push({x:mx,y:my+6,html:`after ${o.tag}`,cls:'lagl'})}
+    for(const t of pl){const c=planetPos(t,tm),p=P(c);if(!p)continue;const r=Math.max(4,p.s*2.6);const sc=stCol(t.st);const dim=S.filter&&!STAGES.find(s=>s[0]===S.filter)[2].includes(t.st);
+      cx.globalAlpha=dim?.2:t.st==='done'?.5:1;
+      const pg=cx.createRadialGradient(p.x-r*.4,p.y-r*.4,r*.1,p.x,p.y,r);pg.addColorStop(0,rgba(sc,1));pg.addColorStop(1,rgba(th.bgDarker,1));cx.fillStyle=pg;cx.beginPath();cx.arc(p.x,p.y,r,0,6.283);cx.fill();
+      if(['waiting','failed'].includes(t.st)){cx.strokeStyle=rgba(sc,.5+.4*Math.sin(tm*4));cx.lineWidth=2;cx.beginPath();cx.arc(p.x,p.y,r+5,0,6.283);cx.stroke()}
+      // кольцо-ангар основного агента
+      if(!['done','queued'].includes(t.st)){const prog=t.agent.split('/')[0];cx.strokeStyle=rgba(progCol(prog),.8);cx.lineWidth=1.2;cx.beginPath();cx.ellipse(p.x,p.y,r*1.9,r*.55,-.25,0,6.283);cx.stroke();cx.fillStyle=progCol(prog);cx.fillRect(p.x+r*1.9*Math.cos(tm)-2,p.y+r*.55*Math.sin(tm)-2,4,4)}
+      if(S.sel&&S.sel.t===t){cx.strokeStyle=th.accent;cx.lineWidth=1.5;cx.setLineDash([3,3]);cx.beginPath();cx.arc(p.x,p.y,r+11,0,6.283);cx.stroke();cx.setLineDash([])}
+      // спутники-субагенты
+      (t.subs||[]).forEach((m,i)=>{const mp=P(moonPos(t,i,tm));if(!mp)return;const mr=Math.max(2,mp.s*.5);const mc=progCol(m.kind);
+        if(m.state==='running'&&!S.simple){const tp=P(moonPos(t,i,tm-.12));if(tp){cx.strokeStyle=rgba(mc,.6);cx.lineWidth=mr;cx.beginPath();cx.moveTo(tp.x,tp.y);cx.lineTo(mp.x,mp.y);cx.stroke()}}
+        cx.fillStyle=rgba(mc,m.state==='quiet'?.35:1);cx.beginPath();cx.arc(mp.x,mp.y,mr,0,6.283);cx.fill();
+        hits.push({x:mp.x,y:mp.y,r:12,kind:'moon',ref:{t,m}});
+        if(S.sel&&S.sel.m===m)labels.push({x:mp.x,y:mp.y+8,html:`${m.role} · ${m.doing}`,cls:''})});
+      cx.globalAlpha=1;
+      hits.push({x:p.x,y:p.y,r:r+8,kind:'planet',ref:t,z:p.z});
+      labels.push({pri:(S.sel&&S.sel.t===t?300:0)+(hoverRef===t?250:0)+(['waiting','failed','ready'].includes(t.st)?60:0)+(t.st==='done'?-40:0)+40-p.z/20,x:p.x,y:p.y+r+6,html:`<span class="k">${t.tag}</span> ${esc(t.title.length>26?t.title.slice(0,25)+'…':t.title)} <span style="color:${sc}">· ${STAT[t.st]}</span>`,cls:'',act:()=>selectTask(t)})}}
+  // Квазар
+  {const p=P(V(0,0,0));if(p){const R=Math.max(6,p.s*9),ac=th.accent;cx.globalCompositeOperation=blend;
+    // джеты
+    for(const sgn of[1,-1]){for(let i=0;i<40;i++){const k=i/40;const fl=S.simple?1:(.7+.3*Math.sin(tm*6+i));const q=P(V(Math.sin(tm*3+i)*k*3,sgn*k*90,0));if(q){cx.fillStyle=rgba(ac,.25*(1-k)*fl);cx.beginPath();cx.arc(q.x,q.y,Math.max(1,q.s*(2+k*6)),0,6.283);cx.fill()}}}
+    // аккреционный диск = дуги лимитов
+    // аккреционный диск = лимиты подписок: кольцо на подписку, дуга = израсходованная доля окна; неподвижно
+    const lim=[[.62,'claude · 5 ч','сброс 17:00'],[.38,'codex · 5 ч','сброс 18:40'],[.84,'claude · неделя','сброс 23.10']];
+    const near=p.s>.9||(S.sel&&S.sel.quasar)||hoverRef==='quasar';
+    lim.forEach(([v,name,reset],i)=>{const rr=18+i*6,c=v>=.8?th.red:v>=.6?th.yellow:th.green,a0=Math.PI/2;
+      const ring=(from,to,style,w)=>{cx.strokeStyle=style;cx.lineWidth=w;cx.beginPath();let first=true;for(let j=0;j<=80;j++){const a=a0+from+(to-from)*j/80;const q=P(V(Math.cos(a)*rr,0,Math.sin(a)*rr));if(!q)continue;first?cx.moveTo(q.x,q.y):cx.lineTo(q.x,q.y);first=false}cx.stroke()};
+      const w=Math.max(1.5,p.s*1.1);ring(0,6.283,rgba(th.fg,.12),w);ring(0,6.283*v,rgba(c,.85),w);
+      if(near){const a=a0+6.283*v;const q=P(V(Math.cos(a)*rr,0,Math.sin(a)*rr));if(q)labels.push({pri:90,x:q.x,y:q.y-8,html:`${name} · ${Math.round(v*100)} % <span class="k">${reset}</span>`,cls:'lagl'})}});
+    const qg=cx.createRadialGradient(p.x,p.y,0,p.x,p.y,R*4);qg.addColorStop(0,rgba(th.fgBright,1));qg.addColorStop(.2,rgba(ac,.9));qg.addColorStop(1,rgba(ac,0));cx.fillStyle=qg;cx.beginPath();cx.arc(p.x,p.y,R*(4+.3*Math.sin(tm*2)),0,6.283);cx.fill();
+    cx.globalCompositeOperation='source-over';
+    (S.galaxy==='orion'&&S.data!=='empty'?QUASAR.subs:[]).forEach((m,i)=>{const q=P(quasarMoonPos(i,tm));if(q){cx.fillStyle=progCol(m.kind);cx.beginPath();cx.arc(q.x,q.y,Math.max(2,q.s*1.2),0,6.283);cx.fill();hits.push({x:q.x,y:q.y,r:12,kind:'moon',ref:{t:null,m}})}});
+    hits.push({x:p.x,y:p.y,r:Math.max(24,R*2),kind:'quasar',ref:'quasar'});
+    const far=S.galaxy!=='orion';labels.push({x:p.x,y:p.y+R*2+8,html:far?`Координатор ${S.galaxy} <span class="k">· чат идёт туда</span>`:`${QN()} · Координатор <span class="k">· ${S.data==='empty'?'спит — проснётся на первое сообщение':'работает'}</span>`,cls:'big',act:()=>selectQuasar(far?'here':true)})}}
+  drawShip(now,w);drawAim(now);
+  renderLabels(labels);
+  STATS.ms=STATS.ms*.9+(performance.now()-t0)*.1;if((STATS.n=(STATS.n||0)+1)%15===0&&$('fps'))$('fps').textContent=`кадр ${STATS.ms.toFixed(1)} мс · ${worldProjects().length} туманностей · ${gTasks().length} планет · частиц ${STATS.parts} · подписей ${STATS.labels}`;
+  requestAnimationFrame(frame);
+}
+// ручной режим: нос корабля крупным планом снизу (вид из-за кабины)
+function drawNose(now,w){const th=THEMES[S.theme];const sp=Math.min(1,cam.speed/200);
+  const shake=w?Math.sin(now/23)*2*w:0,bob=Math.sin(tm*1.6)*2;
+  cx.save();cx.globalAlpha=1;cx.globalCompositeOperation="source-over";cx.translate(W/2+shake,H+20+bob);cx.rotate(cam.bank*.35);
+  const tipY=-H*.3,half=Math.min(W*.34,520);
+  // корпус
+  const g=cx.createLinearGradient(0,tipY,0,0);g.addColorStop(0,th.bgLight);g.addColorStop(.5,th.bgDark);g.addColorStop(1,th.bgDarker);
+  cx.fillStyle=g;cx.strokeStyle=rgba(th.accent,.85);cx.lineWidth=2;
+  cx.beginPath();cx.moveTo(-half,0);cx.bezierCurveTo(-half*.55,tipY*.55,-half*.12,tipY*.98,0,tipY);cx.bezierCurveTo(half*.12,tipY*.98,half*.55,tipY*.55,half,0);cx.closePath();cx.fill();cx.stroke();
+  // хребет и панели
+  cx.strokeStyle=rgba(th.fg,.18);cx.lineWidth=1;cx.beginPath();cx.moveTo(0,tipY+6);cx.lineTo(0,0);
+  for(const k of[.35,.62,.85]){cx.moveTo(-half*k*.95,tipY*(1-k)*.9);cx.quadraticCurveTo(0,tipY*(1-k)*1.08-6,half*k*.95,tipY*(1-k)*.9)}cx.stroke();
+  // блики скорости по кромке
+  cx.strokeStyle=rgba(th.cyan,.25+.5*sp);cx.lineWidth=2;cx.beginPath();cx.moveTo(-half*.5,tipY*.45);cx.bezierCurveTo(-half*.25,tipY*.8,-half*.08,tipY*.97,0,tipY);cx.stroke();
+  // огни на носу
+  cx.fillStyle=th.red;cx.beginPath();cx.arc(-half*.55,tipY*.38,3,0,6.283);cx.fill();cx.fillStyle=th.green;cx.beginPath();cx.arc(half*.55,tipY*.38,3,0,6.283);cx.fill();
+  cx.fillStyle=rgba(th.fgBright,.5+.5*Math.sin(now/300));cx.beginPath();cx.arc(0,tipY+4,2.2,0,6.283);cx.fill();
+  // приборная строка на корпусе
+  cx.font='11px '+getComputedStyle(document.body).fontFamily;cx.textAlign='center';cx.fillStyle=rgba(th.accent,.8);
+  cx.fillText(`${Math.round(cam.speed)} · круиз ${look.cruise}${keys.shift&&S.v.vert!=='shift'?' · ФОРСАЖ':''}`,0,tipY*.42);cx.textAlign='start';
+  cx.restore()}
+function drawShip(now,w){
+  if(S.mode==='manual'&&S.v.nose!=='off'){drawNose(now,w);return}
+  if(S.v.ship==='small'&&!flight&&S.mode==='auto')return;
+  const th=THEMES[S.theme];const cockpit=!!S.sel;
+  const sc=(S.v.ship==='small'?.6:1)*(cockpit?.75:1);
+  const x=W/2,y=H*(cockpit?.4:.74)+Math.sin(tm*1.4)*3;
+  cx.save();cx.translate(x,y);cx.rotate(cam.bank*.5);cx.scale(sc,sc);
+  // факел
+  cx.globalCompositeOperation=light()?'source-over':'lighter';
+  const fl=14+Math.abs(cam.speed)*.3+w*40+Math.sin(now/60)*2;
+  const eg=cx.createRadialGradient(0,26,0,0,26,fl);eg.addColorStop(0,rgba(th.fgBright,.95));eg.addColorStop(.3,rgba(th.cyan,.7));eg.addColorStop(1,rgba(th.cyan,0));
+  cx.fillStyle=eg;cx.beginPath();cx.ellipse(0,30,9,fl,0,0,6.283);cx.fill();
+  cx.globalCompositeOperation='source-over';
+  // корпус и крылья
+  cx.fillStyle=th.bgLight;cx.strokeStyle=th.accent;cx.lineWidth=1.4;
+  cx.beginPath();cx.moveTo(0,-34);cx.lineTo(12,14);cx.lineTo(46,26);cx.lineTo(44,31);cx.lineTo(10,26);cx.lineTo(0,32);cx.lineTo(-10,26);cx.lineTo(-44,31);cx.lineTo(-46,26);cx.lineTo(-12,14);cx.closePath();cx.fill();cx.stroke();
+  cx.fillStyle=rgba(th.accent,.55);cx.beginPath();cx.ellipse(0,-6,5,11,0,0,6.283);cx.fill();
+  cx.fillStyle=th.red;cx.fillRect(-46,25,3,3);cx.fillStyle=th.green;cx.fillRect(43,25,3,3);
+  cx.restore();
+}
+const LABEL_MAX=22;
+function renderLabels(ls){
+  // подписи только у ближних, выбранных и ждущих: бюджет LABEL_MAX
+  // по приоритету, без наложений: подпись, перекрывающая более важную, не рисуется
+  if(ls.length>8){const put=[];const keep=[];for(const [l,,i] of ls.map((l,i)=>[l,l.pri??150,i]).sort((a,b)=>b[1]-a[1])){if(keep.length>=LABEL_MAX)break;
+    const w=l.html.replace(/<[^>]+>/g,'').length*7.2+8,b={x0:l.x-w/2,x1:l.x+w/2,y0:l.y,y1:l.y+17};
+    if(l.cls!=='lagl'&&put.some(o=>o.x0<b.x1&&b.x0<o.x1&&o.y0<b.y1&&b.y0<o.y1))continue;put.push(b);keep.push([l,i])}
+   ls=keep.sort((a,b)=>a[1]-b[1]).map(x=>x[0])}
+  STATS.labels=ls.length;
+  const box=$('labels');const html=ls.map((l,i)=>`<div class="lb ${l.cls}" data-i="${i}" style="left:${l.x|0}px;top:${l.y|0}px">${l.html}</div>`).join('');
+  if(box._h!==html){box.innerHTML=html;box._h=html;box._ls=ls}else box._ls=ls;
+}
+$('labels').addEventListener('click',e=>{const el=e.target.closest('.lb');if(!el)return;const l=$('labels')._ls[+el.dataset.i];l&&l.act&&l.act()});
+
+/* ───────── ручной полёт ───────── */
+const look={yaw:0,pitch:0,vel:V(0,0,0),cruise:80,locked:false,unlockT:0,hold:null,mx:0,my:0};
+const fwdOf=()=>V(-Math.sin(look.yaw)*Math.cos(look.pitch),Math.sin(look.pitch),-Math.cos(look.yaw)*Math.cos(look.pitch));
+function syncLook(){const d=norm(sub(cam.tgt,cam.pos));look.yaw=Math.atan2(-d.x,-d.z);look.pitch=Math.asin(Math.max(-1,Math.min(1,d.y)));look.vel=V(0,0,0)}
+function manualStep(dt){
+  if(S.mode!=='manual'||flight)return;
+  // мгновенный отклик: целевая скорость из клавиш, лёгкая инерция только для плавности (τ ≈ 0.1 с)
+  const f=(keys.w||keys.arrowup?1:0)-(keys.s||keys.arrowdown?1:0);
+  const st=(keys.d||keys.arrowright?1:0)-(keys.a||keys.arrowleft?1:0);
+  const vertShift=S.v.vert==='shift';
+  const u=(keys[' ']?1:0)-((vertShift?keys.shift:keys.c)?1:0);
+  const boost=!vertShift&&keys.shift?2.2:1;
+  const fw=fwdOf(),rt=V(Math.cos(look.yaw),0,-Math.sin(look.yaw));
+  const tv=mul(add(add(mul(fw,f),mul(rt,st)),V(0,u,0)),look.cruise*boost);
+  const k=1-Math.exp(-dt*10);
+  look.vel=add(look.vel,mul(sub(tv,look.vel),k));
+  cam.pos=add(cam.pos,mul(look.vel,dt));
+  cam.speed=len(look.vel);cam.bank=lerp(cam.bank,-st*.45-look.mx*.004,.2);look.mx*=.6;
+  const r=Math.hypot(cam.pos.x,cam.pos.z);
+  $('edge').hidden=r<R_BOUND&&Math.abs(cam.pos.y)<280;
+  if(r>R_BOUND){const back=norm(V(-cam.pos.x,0,-cam.pos.z));cam.pos=add(cam.pos,mul(back,(r-R_BOUND)*.15));const out=dot(look.vel,back);if(out<0)look.vel=sub(look.vel,mul(back,out))}
+  cam.pos.y=Math.max(-280,Math.min(280,cam.pos.y));
+  cam.tgt=add(cam.pos,mul(fw,100));
+  $('spd')&&($('spd').textContent=`${Math.round(cam.speed)} / круиз ${look.cruise}${boost>1?' · форсаж':''}`);
+}
+cv.addEventListener('mousemove',e=>{
+  if(S.mode==='manual'&&look.locked){const sens=.0022*(+S.v.sens||1),inv=S.v.inv==='1'?-1:1;
+    look.yaw-=e.movementX*sens;look.pitch=Math.max(-1.35,Math.min(1.35,look.pitch-e.movementY*sens*inv));look.mx+=e.movementX;
+    if(!flight)cam.tgt=add(cam.pos,mul(fwdOf(),100));return}
+  hover(e)});
+cv.addEventListener('wheel',e=>{if(S.mode==='manual'){look.cruise=Math.max(20,Math.min(240,Math.round(look.cruise-e.deltaY*.1)));e.preventDefault();manualStep(0)}},{passive:false});
+document.addEventListener('pointerlockchange',()=>{look.locked=document.pointerLockElement===cv;$('lockhint').hidden=!look.locked;if(!look.locked)look.unlockT=performance.now();hint()});
+const aimPoint=e=>look.locked?[W/2,H/2]:[e.clientX,e.clientY];
+function aimTarget(){if(S.mode!=='manual')return null;return pick(look.locked?W/2:lastMouse[0],look.locked?H/2:lastMouse[1])}
+let lastMouse=[0,0];addEventListener('mousemove',e=>{lastMouse=[e.clientX,e.clientY]});
+cv.addEventListener('mousedown',e=>{if(S.mode!=='manual'||e.button!==0)return;const[x,y]=aimPoint(e);const h=pick(x,y);
+  if(!h){if(!look.locked)try{cv.requestPointerLock()}catch{}return}
+  look.hold={h,t0:performance.now(),done:false}});
+addEventListener('mouseup',()=>{if(look.hold&&!look.hold.done)doDive(look.hold.h);look.hold=null});
+// нырок: клик или удержание (кольцо заполняется за 0.35 с)
+function doDive(h){if(!h)return;if(look.hold)look.hold.done=true;
+  if(h.kind==='nebula'){if(!(S.level==='nebula'&&S.nebula===h.ref.id))dive(h.ref)}
+  else if(h.kind==='planet')selectTask(h.ref,true);
+  else if(h.kind==='moon')selectMoon(h.ref.t,h.ref.m,true);
+  else if(h.kind==='quasar')selectQuasar(S.galaxy!=='orion'?'here':true);
+  else if(h.kind==='galaxy')selectGalaxy(h.ref)}
+const KIND={nebula:'нырнуть в туманность',planet:'к планете',moon:'к спутнику',quasar:'к Квазару',galaxy:'лететь в галактику'};
+function drawAim(now){
+  if(S.mode!=='manual')return;const th=THEMES[S.theme];const h=aimTarget();
+  if(look.hold&&!look.hold.done&&now-look.hold.t0>350)doDive(look.hold.h);
+  const x=look.locked?W/2:lastMouse[0],y=look.locked?H/2:lastMouse[1];
+  if(look.locked){cx.strokeStyle=rgba(h?th.accent:th.fg,h?.95:.6);cx.lineWidth=1.5;cx.beginPath();for(const[a,b,c,d]of[[-14,0,-5,0],[5,0,14,0],[0,-14,0,-5],[0,5,0,14]]){cx.moveTo(x+a,y+b);cx.lineTo(x+c,y+d)}cx.stroke()}
+  if(h){cx.strokeStyle=rgba(th.accent,.9);cx.lineWidth=1.5;cx.setLineDash([4,4]);cx.beginPath();cx.arc(h.x,h.y,Math.min(80,h.r*.8)+4,0,6.283);cx.stroke();cx.setLineDash([]);
+    if(look.hold&&!look.hold.done){const k=Math.min(1,(now-look.hold.t0)/350);cx.strokeStyle=th.accent;cx.lineWidth=3;cx.beginPath();cx.arc(h.x,h.y,Math.min(80,h.r*.8)+9,-Math.PI/2,-Math.PI/2+k*6.283);cx.stroke()}
+    const name=h.kind==='nebula'?h.ref.id:h.kind==='planet'?h.ref.tag:h.kind==='moon'?h.ref.m.role:h.kind==='galaxy'?h.ref.label:QN();
+    cx.font='12px '+getComputedStyle(document.body).fontFamily;cx.fillStyle=th.accent;cx.textAlign='center';cx.fillText(`◎ ${name} — клик: ${KIND[h.kind]}`,x,y+34);cx.textAlign='start'}
+}
+function pick(x,y){let best=null;for(const h of hits){const d=Math.hypot(h.x-x,h.y-y);if(d<h.r&&(!best||d/h.r<best.d))best={...h,d:d/h.r}}return best}
+let hoverRef=null;
+function hover(e){const h=pick(e.clientX,e.clientY);hoverRef=h&&h.ref&&!h.ref.m?h.ref:null;cv.style.cursor=h?'pointer':S.mode==='manual'?'crosshair':'default'}
+cv.addEventListener('click',e=>{if(S.mode==='manual')return;const h=pick(e.clientX,e.clientY);if(!h){return}
+  const fly=S.mode==='auto';
+  if(h.kind==='nebula'){if(S.level==='nebula'&&S.nebula===h.ref.id)return;dive(h.ref)}
+  else if(h.kind==='planet')selectTask(h.ref,fly);
+  else if(h.kind==='moon')selectMoon(h.ref.t,h.ref.m,fly);
+  else if(h.kind==='quasar')selectQuasar(S.galaxy!=='orion'?'here':fly);
+  else if(h.kind==='galaxy')selectGalaxy(h.ref)});
+
+/* ───────── действия выбора ───────── */
+function dive(pr,gid){if(gid)enterGalaxy(gid);S.level='nebula';S.nebula=pr.id;S.sel={u:pr};const [p,t]=atNebula(pr);flyTo(p,t,{dive:true,onArrive:()=>{}});ui()}
+function enterGalaxy(id){if(S.galaxy===id)return;const g=GALAXIES.find(x=>x.id===id);S.galaxy=id;const lk=$('link');if(g.here){lk.hidden=true}else{lk.hidden=false;lk.className='';lk.innerHTML=`на связи · <b>${g.label}</b> · herdr-projects ${g.version} <span class="dim">· все действия идут туда · <kbd>H</kbd> домой</span>`}}
+function selectTask(t,fly=true){if(typeof TRI!=='undefined'&&!TRI.opening)TRI.on=false;enterGalaxy(t.g||'orion');S.level='nebula';S.nebula=t.repo;S.sel={t};if(fly){const[p,q]=atPlanet(t);flyTo(p,q,{warp:.8})}ui()}
+function selectMoon(t,m,fly=true){if(t)enterGalaxy(t.g||'orion');S.sel={t,m,quasar:!t};if(t){S.level='nebula';S.nebula=t.repo}if(fly){const[p,q]=t?atPlanet(t):atQuasar();flyTo(p,q,{warp:.6})}ui()}
+function selectQuasar(fly=true){if(S.galaxy!=='orion'&&fly!=='here')enterGalaxy('orion');S.level='galaxy';S.nebula=null;S.sel={quasar:true};if(fly!==false){const[p,t]=atQuasar();flyTo(p,t)}ui()}
+function home(){S.level='galaxy';S.nebula=null;S.sel=null;S.galaxy='orion';$('link').hidden=true;const[p,t]=overview();flyTo(p,t);ui()}
+function selectGalaxy(g){
+  if(g.here||g.id===S.galaxy&&g.here){home();return}
+  const lk=$('link');lk.hidden=false;lk.className='';lk.innerHTML=`<span class="spin"></span> устанавливаю связь с ${g.label}…`;
+  const[p,t]=atFar(g);
+  flyTo(p,t,{warp:1,dur:2.1,onArrive:()=>{
+    if(!g.ok){lk.className='bad';lk.innerHTML=`<b>нет связи · ${g.label}</b>: ${esc(g.why)} <span class="dim">${esc(g.detail)}</span> <button class="btn" id="retry">Повторить</button> <button class="btn" id="goback">← домой</button>`;$('retry').onclick=()=>selectGalaxy(g);$('goback').onclick=home;S.sel={g};ui();return}
+    S.galaxy=g.id;S.level='galaxy';S.nebula=null;S.sel={g};cam.pos=V(0,250,560);cam.tgt=V(0,0,0);fade();
+    lk.innerHTML=`на связи · <b>${g.label}</b> · herdr-projects ${g.version} <span class="dim">· все действия идут туда · <kbd>H</kbd> домой</span>`;ui()}});
+  ui();
+}
+
+/* ───────── интерфейс ───────── */
+function ui(){
+  document.body.classList.toggle('simple',S.simple);document.body.classList.toggle('manual',S.mode==='manual'&&S.v.nose!=='off');
+  crumbs();tree();focus();kanban();hint();
+  const cockpit=!!S.sel;
+  $("chat").classList.toggle("off",!(cockpit&&S.chatOpen&&!(S.sel.g&&!S.sel.g.ok)));
+  $('chat').classList.toggle('left',S.v.chat==='left');
+  $('mode').querySelectorAll('button').forEach(b=>b.classList.toggle('on',b.dataset.mode===S.mode));
+  if(cockpit&&(!$('log').childElementCount||S.logG!==S.galaxy)){S.shown=3;S.olderLoaded=false;renderLog()}
+}
+function crumbs(){
+  const c=[];const g=GALAXIES.find(x=>x.id===S.galaxy);c.push([`Галактика ${g.label}`,()=>S.galaxy==='orion'?home():selectGalaxy(g)]);
+  if(S.sel&&S.sel.quasar)c.push([`${QN()} · Координатор`,selectQuasar]);
+  if(S.nebula){const pr=worldProjects().find(p=>p.id===S.nebula);c.push([pr.id,()=>dive(pr)])}
+  if(S.sel&&S.sel.t)c.push([S.sel.t.tag,()=>selectTask(S.sel.t)]);
+  if(S.sel&&S.sel.m)c.push([S.sel.m.role,()=>{}]);
+  $('crumbs').innerHTML=(S.level!=='galaxy'||S.sel?`<button data-i="back" title="Esc">←</button>`:'')+c.map((x,i)=>`${i?'<span class="sep">›</span>':''}<button data-i="${i}">${esc(x[0])}</button>`).join('');
+  $('crumbs').onclick=e=>{const b=e.target.closest('button');if(!b)return;if(b.dataset.i==='back')back();else c[+b.dataset.i][1]()};
+}
+function back(){if(TRI.on&&S.sel&&S.sel.t)return triShow();if(S.sel&&S.sel.m&&S.sel.t)return selectTask(S.sel.t);if(S.sel&&S.sel.t)return dive(projOf(S.sel.t));home()}
+const fmt=d=>{const s=d.toDateString()===T0.toDateString();return s?'Сегодня':d.toLocaleDateString('ru-RU')};
+function tree(){
+  const out=[];const F=S.folds;const fold=(k,def)=>F[k]===undefined?def:F[k];
+  const row=(lvl,k,tw,html,cls='',sel=false)=>out.push(`<div class="ti ${cls}${sel?' sel':''}" role="treeitem" style="padding-left:${6+lvl*14}px" data-k="${k}"${tw?` aria-expanded="${tw==='▾'}"`:''}><span class="tw">${tw||''}</span>${html}</div>`);
+  const sel=S.sel||{};
+  for(const g of GALAXIES){const open=fold('g:'+g.id,g.here);
+    row(0,'g:'+g.id,open?'▾':'▸',`Галактика <b>${g.label}</b> <span class="meta">${g.here?'(эта машина)':g.ok?`на связи · ${g.tasks} задач`:`нет связи: ${esc(g.why)}`}</span>`,g.ok===false?'off':'',sel.g===g);
+    if(!open||g.ok===false)continue;
+    const GP=g.here?PROJECTS:FAR_PROJECTS,GT=g.here?TASKS:FTASKS,cur=g.id===S.galaxy;
+    if(g.here){row(1,'q','◉',`${QN()} · Координатор <span class="meta">${S.data==='empty'?'спит':'работает'}</span>`,'',sel.quasar&&!sel.m);
+    (S.data==='empty'?[]:QUASAR.subs).forEach(m=>row(2,'qm:'+m.id,'↳',`<span title="${roleHint(m.role)}">субагент ${m.role}</span> <span class="meta">· «${esc(m.title)}» · идёт ${m.min} мин</span>`,'',sel.m===m))}
+    else row(1,'g:'+g.id,'◉',`Координатор ${g.label} <span class="meta">чат идёт туда</span>`);
+    const GPs=[...GP].sort((a,b)=>(!!a.quiet-!!b.quiet));const qn=GP.filter(p=>p.quiet).length,qk='qf:'+g.id,qopen=fold(qk,qn<6);
+    for(const pr of GPs){if(pr.quiet&&pr===GPs.find(x=>x.quiet))row(1,qk,qopen?'▾':'▸',`Тихие вселенные <span class="meta">(${qn})</span>`);if(pr.quiet&&!qopen)continue;const pk=`p:${pr.id}:${g.id}`;const po=fold(pk,cur&&pr.id===S.nebula);const pl=GT.filter(t=>t.repo===pr.id);
+      row(1,pk,po?'▾':'▸',`${pr.id} · ${pr.key} ${pr.lag&&pr.lag.behind?`<span class="lag">main −${pr.lag.behind}</span>`:''}${pr.bridge?'<span class="lag">мост vm-a</span>':''}${pr.lag&&pr.lag.ahead?`<span class="lag">main +${pr.lag.ahead}</span>`:''}${pr.fork?`<span class="lag">форк ← ${pr.fork.up}${pr.fork.behind?' · upstream +'+pr.fork.behind:''}</span>`:''}${pr.research?`<span class="lag">изучаю${pr.research.behind?' · upstream +'+pr.research.behind:''}</span>`:''} <span class="meta">${pl.length}</span>`,'',sel.u===pr);
+      if(!po)continue;
+      const groups={};pl.slice().sort((a,b)=>b.created-a.created).forEach(t=>{(groups[fmt(t.created)]=groups[fmt(t.created)]||[]).push(t)});
+      for(const[d,ts]of Object.entries(groups)){const dk=`d:${g.id}~${pr.id}:${d}`;const dopen=fold(dk,d==='Сегодня');row(2,dk,dopen?'▾':'▸',`${d} <span class="meta">(${ts.length})</span>`);
+        if(!dopen)continue;
+        for(const t of ts){row(3,'t:'+t.id,'',`<span class="dot s-${t.st}"></span><b>${t.tag}</b> <span>${esc(t.title)}</span> <span class="meta">· ${STAT[t.st]}</span>`,t.st==='done'?'done':'',sel.t===t&&!sel.m);
+          (t.subs||[]).forEach(m=>row(4,`m:${t.id}:${m.id}`,'↳',`<span title="${roleHint(m.role)}">субагент ${m.role}</span> <span class="meta">· «${esc(m.title)}» · ${m.state==='quiet'?'затих':'идёт '+m.min+' мин'}</span>`,m.state==='quiet'?'done':'',sel.m===m))}}}
+    row(1,'addu:'+g.id,'',`+ Добавить вселенную в ${g.label}…`,'add');}
+  out.push(`<div class="ti add" data-k="add" style="padding-left:20px">+ Добавить галактику…</div>`);
+  $('tree').innerHTML=out.join('');$('navn').textContent=`${gTasks().length} задач · ${S.galaxy}`;
+}
+$('tree').addEventListener('click',e=>{const el=e.target.closest('.ti');if(!el)return;const k=el.dataset.k;const[a,b,c]=k.split(':');
+  if(k==='add')return addGalaxy(el);
+  if(a==='addu')return openAddU(b);
+  if(a==='qf'){S.folds[k]=!(S.folds[k]??false);return tree()}
+  if(k==='q')return selectQuasar();
+  if(a==='qm')return selectMoon(null,QUASAR.subs.find(m=>m.id===b));
+  if(a==='g'){const g=GALAXIES.find(x=>x.id===b);if(e.target.classList.contains('tw')){S.folds[k]=!(S.folds[k]??g.here);return tree()}return g.here?home():selectGalaxy(g)}
+  if(a==='p'){const pr=(c==='orion'?PROJECTS:FAR_PROJECTS).find(x=>x.id===b);if(e.target.classList.contains('tw')){S.folds[k]=!(S.folds[k]??(c===S.galaxy&&pr.id===S.nebula));return tree()}S.folds[k]=true;return dive(pr,c)}
+  if(a==='d'){S.folds[k]=!(S.folds[k]??(c==='Сегодня'));return tree()}
+  if(a==='t')return selectTask([...TASKS,...FTASKS].find(t=>t.id===b));
+  if(a==='m'){const t=[...TASKS,...FTASKS].find(t=>t.id===b);return selectMoon(t,t.subs.find(m=>m.id===c))}});
+
+function addGalaxy(el){const r=el.getBoundingClientRect();openPop(r.right+8,r.top-40,`<b>Добавить галактику</b>
+ <label>Цель SSH</label><input placeholder="user@host[:port]" value="me@nas.lan">
+ <label>Метка</label><input value="nas">
+ <p class="dim" style="font-size:11px">На той машине должны стоять herdr и herdr-projects в login-shell PATH. Ключ SSH — у вашего ssh-agent; планировщик его не хранит и не спрашивает.</p>
+ <button class="btn primary" id="ga">Открыть терминал: herdr machine add</button>`);
+ const b=$('ga');b.onclick=()=>{if(!b.classList.contains('armed')){b.classList.add('armed');b.textContent='Точно? Нажми ещё раз';return}closePop();toast('Открыт терминал: подтверди там herdr machine add me@nas.lan --label nas')}}
+
+// тип субагента (как его называет программа) → что это значит
+const ROLE={Explore:'разведчик: ищет и читает код, ничего не меняет',Plan:'планировщик: составляет план, ничего не меняет','general-purpose':'помощник общего назначения',reviewer:'ревьюер: проверяет изменения',Backup:'помощник omp'};
+const roleHint=r=>ROLE[r]||'помощник агента';
+function forkBlock(pr){const f=pr.fork||pr.research;if(!f&&!pr.gitlab)return'';const mr=f&&f.kind==='GitLab'?'MR':'PR';
+  return `<h3>${pr.fork?'Форк':pr.research?'Только изучаю':'Хостинг'}</h3>
+   ${f?`<div class="row"><span class="chip">${pr.fork?'форк':'клон без записи'} ← ${f.up}</span><span class="chip" style="${f.behind?'color:var(--c-yellow);border-color:var(--c-yellow)':''}">upstream ${f.behind?'+'+f.behind:'вровень'}</span><span class="chip">${f.kind}</span>${pr.research?'<span class="chip">research.only</span>':''}</div>
+   <div class="row" style="margin-top:8px"><button class="btn" data-arm data-act="pull">Подтянуть upstream</button>${pr.fork?`<button class="btn" data-arm data-act="pr">${mr} в оригинал</button>`:`<button class="btn" data-arm data-act="tofork">Превратить в форк</button>`}</div>
+   <div class="dim" style="font-size:11px;margin-top:4px">«Подтянуть» — задача на доске: влить свежий upstream/main. ${pr.fork?`${mr} открывает планировщик (<code>${f.tool==='gh'?`gh pr create --repo ${f.up}`:`glab mr create --target-project ${f.up}`}</code>) — доска сама этого не делает.`:`«Превратить в форк» — <code>${f.tool} repo fork ${f.up} --remote</code>: origin → твой форк, upstream → оригинал.`}</div>`:''}
+   ${pr.gitlab?`<div class="dim" style="font-size:11px;margin-top:6px">GitLab: для репо выставлено <code>merge.pr false</code> · <code>merge.checks none</code> — слияние локально, без PR.</div>`:''}`}
+function focus(){
+  const f=$('focus'),sel=S.sel;f.classList.toggle('off',!sel||$('todo').classList.contains('open'));if(!sel)return;
+  let h='';
+  if(sel.m){const m=sel.m,t=sel.t;h=`<div class="dim">спутник-субагент · ${m.kind}</div><h2>${esc(m.role)} · «${esc(m.title)}»</h2>
+   <p class="dim" style="margin:2px 0 8px">Субагент — помощник, которого ${t?'агент задачи':'Координатор'} запустил на подзадачу. ${esc(m.role)} — ${roleHint(m.role)}. Когда закончит, спутник погаснет.</p>
+   <div class="row"><span class="chip">${m.state==='running'?'работает':m.state==='quiet'?'затих':'завершён'}</span><span class="chip">идёт ${m.min} мин</span><span class="chip">${t?t.agent:'Координатор'}</span></div>
+   <h3>Что делает</h3><div class="closing">${esc(m.doing)}</div>
+   <h3>Итог</h3><div class="closing dim">Ещё работает — итог появится, когда закончит.</div>
+   <h3>Родитель</h3><div class="moonl" data-go="${t?t.id:'q'}">${t?`<span>${t.tag} ${esc(t.title)}</span>`:`<span>${QN()} · Координатор</span>`}<span>→</span></div>`}
+  else if(sel.t){const t=sel.t;const tr=t.closing&&!sel.ru;
+   h=`<div class="dim">${t.repo} · создана ${t.created.toLocaleDateString('ru-RU')}</div><h2>${t.tag} · ${esc(t.title)}</h2>
+   <div class="row s-${t.st}"><span class="chip" style="color:var(--s);border-color:var(--s)">${STAT[t.st]}</span><span class="chip">${t.agent}</span>${(t.after||[]).map(a=>`<span class="chip">after ${([...TASKS,...FTASKS].find(x=>x.id===a)||{tag:a}).tag}</span>`).join('')}</div>
+   ${TRI.on?`<div class="req" style="border-style:dashed">Разбор «Ждёт тебя» · ${TRI.cur+1} из ${triList().length} · ответь или <kbd>Esc</kbd> — вернёшься к списку</div>`:''}
+   ${t.ask?`<h3>Запрос к тебе</h3><div class="req">${esc(t.ask.q)}<div class="opts">${t.ask.opts.map((o,i)=>`<button class="btn" data-ask="${i}">${esc(o)}</button>`).join('')}</div></div>`:''}
+   <h3>Итог агента</h3>${t.closing?`<div class="closing" id="cl">${esc(sel.ru?t.closingRu:t.closing)}</div><div class="row" style="margin-top:6px">${tr?`<button class="btn" id="tr">Перевести на русский</button><span class="dim">текст на английском</span>`:`<button class="btn" id="tro">оригинал</button><span class="dim">перевод · claude-haiku-5-5</span>`}</div>`:'<div class="closing dim">Агент ещё работает.</div>'}
+   ${t.subs?`<h3>Субагенты · ${t.subs.length}</h3>`+t.subs.map(m=>`<div class="moonl" data-moon="${m.id}"><span>${m.role} · «${esc(m.title)}»</span><span class="dim">${m.state==='quiet'?'затих':m.min+' мин'}</span></div>`).join(''):''}
+   <h3>Действия</h3><div class="row"><button class="btn" data-do="tell" title="написать агенту этой задачи">Сказать агенту</button><button class="btn" data-do="screen" title="открыть терминал агента в herdr">Экран агента</button><button class="btn" data-do="yazi" title="файлы задачи в файловом менеджере yazi">Файлы (yazi)</button>${t.st==='ready'?'<button class="btn primary" data-arm>Одобрить</button>':''}</div>`}
+  else if(sel.u){const pr=sel.u,pl=planetsOf(pr.id);
+   h=`<div class="dim">вселенная-проект</div><h2>${pr.id} · ${pr.key}</h2><div class="row">${STAGES.map(s=>`<span class="chip">${s[1]} ${pl.filter(t=>s[2].includes(t.st)).length}</span>`).join('')}</div>
+   <h3>Главная ветка и клоны</h3><table class="lag"><tr><th>Галактика</th><th>main</th><th>origin</th></tr><tr><td>${S.galaxy}</td><td>${pr.lag?(S.galaxy==='orion'?'a1c9e4f':'77d02b1'):'—'}</td><td>${pr.lag&&pr.lag.behind?`<span style="color:var(--c-yellow)">−${pr.lag.behind}</span>`:pr.lag&&pr.lag.ahead?`впереди +${pr.lag.ahead}`:pr.lag?'вровень':'неизвестно'}</td></tr>${S.galaxy==='orion'&&pr.bridge?`<tr><td>vm-a</td><td>77d02b1</td><td>впереди +3</td></tr>`:S.galaxy==='vm-a'&&pr.id==='herdr-planner'?`<tr><td>orion</td><td>a1c9e4f</td><td><span style="color:var(--c-yellow)">−3</span></td></tr>`:''}</table>
+   <div class="dim" style="font-size:11px;margin-top:4px">по состоянию на 20.10.2026 13:58 (последний fetch) · без fetch/pull</div>
+   ${pr.lag&&pr.lag.behind?`<div class="row" style="margin-top:8px"><button class="btn" data-arm>Предложить обновить</button><code class="dim">git -C ~/src/${pr.id} pull --ff-only</code></div>`:''}
+   ${forkBlock(pr)}
+   <h3>Планеты</h3>${pl.map(t=>`<div class="moonl" data-go="${t.id}"><span><span class="dot s-${t.st}"></span> ${t.tag} ${esc(t.title)}</span><span class="dim">${STAT[t.st]}</span></div>`).join('')}`}
+  else if(sel.quasar){h=`<div class="dim">центр Галактики ${S.galaxy}</div><h2>${S.galaxy==="orion"?QN()+" · Координатор":"Координатор "+S.galaxy}</h2><div class="row"><span class="chip">работает</span><span class="chip">claude/opus-5.5</span></div>
+   <h3>Лимиты подписок = аккреционный диск</h3>${[['claude · 5 ч','62 %','сброс в 17:00 · 2 ч 28 мин'],['codex · 5 ч','38 %','сброс в 18:40'],['claude · неделя','84 %','сброс 23.10']].map(x=>`<div class="moonl"><span>${x[0]}</span><span>${x[1]} <span class="dim">${x[2]}</span></span></div>`).join('')}
+   <h3>Спутники Координатора</h3>${S.galaxy!=='orion'?'<div class="dim">нет данных: субагенты далёкой машины не передаются</div>':''}${(S.galaxy==='orion'?QUASAR.subs:[]).map(m=>`<div class="moonl" data-qm="${m.id}"><span>${m.role} · «${esc(m.title)}»</span><span class="dim">${m.min} мин</span></div>`).join('')}
+   <h3 id="waith">Ждут тебя · ${triList().filter(t=>!TRI.done[t.id]).length} из ${triList().length}</h3>${triList().map((t,i)=>`<div class="moonl tri ${TRI.done[t.id]?'done':''} ${i===TRI.cur?'cur':''}" data-tri="${i}" tabindex="-1"><span><span class="dot s-${t.st}"></span> ${t.tag} ${esc(t.ask.q)}</span><span>${TRI.done[t.id]?'✓ '+esc(TRI.done[t.id]):'→'}</span></div>`).join('')}
+   <div class="dim" style="font-size:11px;margin-top:6px">↑↓ — выбрать · Enter — открыть запрос · после ответа или Esc вернёшься сюда, к следующему</div>`}
+  else if(sel.g){const g=sel.g;h=`<div class="dim">далёкая галактика · ${g.target}</div><h2>Галактика ${g.label}</h2>${g.ok?`<div class="row"><span class="chip">на связи</span><span class="chip">herdr-projects ${g.version}</span><span class="chip">${g.tasks} задач</span></div><p class="dim">Чат, tell, approve, after — уходят на ${g.label} по SSH той же формой, что у доски. Экран агента — через herdr --remote, файлы — yazi по ssh -t в локальном терминале; картинки из чата той машины не показываются.</p>`:`<div class="req" style="border-color:var(--c-red)">нет связи: ${esc(g.why)}<br><span class="dim">${esc(g.detail)}</span></div>`}`}
+  $('fbody').innerHTML=h;
+}
+$('fbody').addEventListener('click',e=>{const b=e.target.closest('button,[data-go],[data-moon],[data-qm]');if(!b)return;
+  if(b.dataset.do){const t=S.sel.t,far=t.g;
+    if(b.dataset.do==='tell'){const box=$('fbody').querySelector('#tellbox');if(box){box.querySelector('textarea').focus();return}
+      b.closest('.row').insertAdjacentHTML('afterend',`<div id="tellbox" style="margin-top:8px"><textarea placeholder="Что сказать агенту ${t.tag}? Enter — отправить" style="width:100%;height:56px;resize:vertical;border:1px solid var(--pl-line);background:var(--pl-tile);border-radius:6px;padding:6px 8px"></textarea><div class="dim" style="font-size:11px">уйдёт как <code>herdr-projects tell ${t.tag} …</code>${far?' на '+far:''}</div></div>`);
+      const ta=$('tellbox').querySelector('textarea');ta.focus();ta.onkeydown=e=>{if(e.key==='Enter'&&!e.shiftKey&&ta.value.trim()){e.preventDefault();toast(`tell ${t.tag} — «${ta.value.trim()}»`);$('tellbox').remove()}};return}
+    if(b.dataset.do==='screen')return toast(far?`Открыт терминал: herdr --remote ${GALAXIES.find(x=>x.id===far).target} — сессия herdr на ${far}, вкладка агента ${t.tag}`:`Herdr: фокус на вкладку агента ${t.tag} (терминал, где он работает)`);
+    if(b.dataset.do==='yazi'){if(!far)return toast(`Открыт yazi в папке задачи ${t.tag} (её worktree)`);const g=GALAXIES.find(x=>x.id===far);if(g.yazi)return toast(yaziOpen(g,t));return yaziInstall(g,t,b)}}
+  if(b.id==='tr'){const cl=$('cl');cl.classList.add('loading');b.textContent='перевожу…';b.disabled=true;setTimeout(()=>{S.sel.ru=true;focus()},700);return}
+  if(b.id==='tro'){S.sel.ru=false;return focus()}
+  if(b.dataset.tri!==undefined)return triOpen(+b.dataset.tri);
+  if(b.dataset.go)return b.dataset.go==='q'?selectQuasar():selectTask([...TASKS,...FTASKS].find(t=>t.id===b.dataset.go));
+  if(b.dataset.moon)return selectMoon(S.sel.t,S.sel.t.subs.find(m=>m.id===b.dataset.moon));
+  if(b.dataset.qm)return selectMoon(null,QUASAR.subs.find(m=>m.id===b.dataset.qm));
+  if(b.dataset.ask!==undefined||b.dataset.arm!==undefined){if(!b.classList.contains('armed')){document.querySelectorAll('#fbody .armed').forEach(x=>{x.classList.remove('armed')});b.classList.add('armed');b.dataset.o=b.textContent;b.textContent='Точно? ещё раз';setTimeout(()=>{if(b.isConnected&&b.classList.contains('armed')){b.classList.remove('armed');b.textContent=b.dataset.o}},3500);return}
+    const pr=S.sel.u,f=pr&&(pr.fork||pr.research);const act=b.dataset.act;
+    if(TRI.on&&S.sel.t&&b.dataset.ask!==undefined){toast(`Ответ «${b.dataset.o}» → ${S.sel.t.tag} · назад к «Ждёт тебя»`);b.classList.remove('armed');return triDone(S.sel.t,b.dataset.o)}
+    toast(act==='pull'?`herdr-projects add "Влить свежий upstream/main из ${f.up}" --repo ${pr.id}`:act==='pr'?(f.tool==='gh'?`gh pr create --repo ${f.up} --head me:main --fill`:`glab mr create --target-project ${f.up} --fill`)+' — открыт в браузере':act==='tofork'?`${f.tool} repo fork ${f.up} --remote · origin → форк, upstream → ${f.up}`:`Отправлено: «${b.dataset.o}» → ${S.sel.t?S.sel.t.tag:S.sel.u.id}`);b.classList.remove('armed');b.textContent=b.dataset.o}});
+$('fclose').onclick=()=>{S.sel=null;TRI.on=false;ui()};
+/* ───────── «Ждёт тебя» — очередь разбора ───────── */
+const TRI={on:false,cur:0,done:{},scroll:0};
+const triList=()=>gTasks().filter(t=>t.ask);
+function triShow(){TRI.on=false;selectQuasar(S.galaxy!=='orion'?'here':true);
+  const fb=$('fbody');fb.scrollTop=TRI.scroll||$('waith').offsetTop-8;const el=fb.querySelector('.tri.cur');el&&el.focus({preventScroll:true})}
+function triOpen(i){TRI.cur=i;TRI.scroll=$('fbody').scrollTop;TRI.on=true;TRI.opening=true;const t=triList()[i];selectTask(t);TRI.opening=false}
+function triDone(t,what){TRI.done[t.id]=what;const L=triList();let n=L.findIndex((x,j)=>j>TRI.cur&&!TRI.done[x.id]);if(n<0)n=L.findIndex(x=>!TRI.done[x.id]);if(n>=0)TRI.cur=n;setTimeout(triShow,500)}
+$('fbody').addEventListener('keydown',e=>{if(!e.target.classList.contains('tri'))return;const L=triList();
+  if(e.key==='ArrowDown'||e.key==='ArrowUp'){e.preventDefault();TRI.cur=(TRI.cur+(e.key==='ArrowDown'?1:-1)+L.length)%L.length;$('fbody').querySelectorAll('.tri').forEach((x,i)=>x.classList.toggle('cur',i===TRI.cur));$('fbody').querySelector('.tri.cur').focus()}
+  else if(e.key==='Enter'){e.preventDefault();triOpen(TRI.cur)}});
+
+function kanban(){
+  const pool=S.level==='nebula'?planetsOf(S.nebula):gTasks();const nw=gTasks().filter(t=>t.ask||['waiting','failed'].includes(t.st)).length;$('wait').textContent=`Ждёт тебя · ${nw}`;const total=pool.length;
+  $('kanban').innerHTML=STAGES.map((s,i)=>{const ts=pool.filter(t=>s[2].includes(t.st));const w=ts.filter(t=>['waiting','failed'].includes(t.st)).length;
+    return`${i?'<span class="arr">›</span>':''}<button data-s="${s[0]}" class="${S.filter===s[0]?'on':''}" aria-pressed="${S.filter===s[0]}">${s[1]} <b>${ts.length}</b>${w?`<span class="w">● ${w}</span>`:''}${S.v.kan==='bar'?`<span style="display:inline-block;height:3px;width:${Math.max(4,ts.length/total*60)}px;background:${stCol(s[2][0])};border-radius:2px"></span>`:''}</button>`}).join('');
+}
+$('kanban').onclick=e=>{const b=e.target.closest('button');if(!b)return;S.filter=S.filter===b.dataset.s?null:b.dataset.s;kanban();if(S.filter&&S.level!=='nebula'){const t=gTasks().find(t=>STAGES.find(s=>s[0]===S.filter)[2].includes(t.st));t&&dive(projOf(t))}};
+
+function hint(){
+  const h=$('hint');if(S.data==='empty'||S.hintOff||S.v.hint==='coach'&&S.mode==='auto'){h.hidden=true;return}h.hidden=false;
+  h.style.bottom=S.sel?'56px':'56px';
+  h.innerHTML=`<button class="x" title="скрыть">✕</button>`+(S.mode==='auto'?`<h5>Автопилот — корабль летит сам</h5>
+   <div class="keys"><span>клик</span><span>по туманности — нырнуть внутрь, по планете — к задаче</span><span><kbd>Ctrl</kbd><kbd>K</kbd></span><span>найти что угодно и долететь</span><span><kbd>Esc</kbd></span><span>назад · <kbd>H</kbd> домой</span><span><kbd>P</kbd></span><span>ручной полёт</span></div>`
+   :`<h5>Ручной полёт · <span id="spd">0</span></h5><div class="keys">
+   <span><kbd>W</kbd><kbd>S</kbd></span><span>вперёд / назад</span>
+   <span><kbd>A</kbd><kbd>D</kbd></span><span>влево / вправо (стрейф)</span>
+   ${S.v.vert==='shift'?`<span><kbd>Space</kbd><kbd>Shift</kbd></span><span>вверх / вниз</span>`:`<span><kbd>Space</kbd><kbd>C</kbd></span><span>вверх / вниз · <kbd>Shift</kbd> форсаж</span>`}
+   <span>мышь</span><span>${look.locked?'обзор и курс — мышь захвачена':'клик по пустому месту — захватить мышь'}</span>
+   <span><kbd>Esc</kbd></span><span>${look.locked?'отпустить мышь':'назад'}</span>
+   <span>прицел</span><span>наведи на туманность или планету и кликни (или зажми) — нырок</span>
+   <span>колесо</span><span>круизная скорость</span>
+   <span><kbd>P</kbd></span><span>обратно на автопилот</span></div>
+   <div class="dim" style="margin-top:6px">Чувствительность мыши и инверсия — в настройках. За край Галактики не улетишь.</div>`);
+  h.style.display='';if(S.sel&&S.v.chat==='left')h.hidden=true;
+  h.querySelector('.x').onclick=()=>{S.hintOff=true;hint()};
+  if(S.sel)h.hidden=true; // в кабине место занимает навигатор/чат
+}
+const COACH=[['#nav','Это навигатор: все машины, проекты и задачи. Кликни — корабль долетит сам.'],['#searchbox','Не знаешь, где задача? Ctrl+K — поиск по всему миру.'],['#mode','Хочешь порулить — «Ручной» или P. Автопилот вернёт всё как было.']];
+function coach(i=0){const c=$('coach');if(i>=COACH.length){c.hidden=true;return}const el=document.querySelector(COACH[i][0]).getBoundingClientRect();c.hidden=false;
+  c.style.left=Math.min(W-310,Math.max(10,el.left+(i===0?el.width+10:0)))+'px';c.style.top=(i===0?el.top+40:el.bottom+10)+'px';
+  c.innerHTML=`<div class="n">шаг ${i+1} из ${COACH.length}</div><p>${COACH[i][1]}</p><button class="btn primary" id="cn">${i<COACH.length-1?'Дальше':'Понятно'}</button> <button class="btn" id="cs">пропустить</button>`;$('cn').onclick=()=>coach(i+1);$('cs').onclick=()=>coach(99)}
+
+/* ───────── чат ───────── */
+function renderLog(scroll=true){
+  const all=[...(S.olderLoaded?olderList():[]),...chatList()];const shown=all.slice(-(S.shown*2));
+  const off=all.length-shown.length;S.logG=S.galaxy;
+  $('log').innerHTML=(S.galaxy!=='orion'?`<div class="dim" style="font-size:11.5px;margin-bottom:8px">Стенограммы Координатора ${S.galaxy} здесь нет — показываю его последние ответы (reply/talk) с той машины.</div>`:'')+(all.length>shown.length||(!S.olderLoaded&&olderList().length)?`<button class="older" id="older">↑ ранее (прокрути вверх)</button>`:'')+shown.map((m,i)=>`<div class="turn ${m[0]}" data-n="${off+i}"><div class="who">${m[0]==='q'?'ты':QN()+' · Координатор'} · ${m[2]}</div><div class="txt">${esc(m[1])}</div></div>`).join('');
+  if(scroll)toBottom();
+}
+function toBottom(){const l=$('log');S.quietUntil=performance.now()+400;l.style.scrollBehavior='auto';l.scrollTop=l.scrollHeight;l.style.scrollBehavior='';$('tolast').hidden=true}
+const chatList=()=>CHATS[S.galaxy]||[],olderList=()=>S.galaxy==='orion'?OLDER:[];
+$('log').addEventListener('scroll',()=>{const l=$('log');$('tolast').hidden=l.scrollHeight-l.scrollTop-l.clientHeight<40;if(l.scrollTop<4&&performance.now()>(S.quietUntil||0)&&l.scrollHeight>l.clientHeight)older()});
+$('log').addEventListener('click',e=>{if(e.target.id==='older')older()});
+function older(){const l=$('log'),h=l.scrollHeight,C=chatList(),O=olderList();if(S.shown*2<C.length)S.shown++;else if(!S.olderLoaded&&O.length)S.olderLoaded=true;else{if(S.shown*2>=C.length+O.length)return;S.shown++}renderLog(false);S.quietUntil=performance.now()+400;l.style.scrollBehavior='auto';l.scrollTop=l.scrollHeight-h;l.style.scrollBehavior=''}
+$('tolast').onclick=toBottom;
+let cqT;$('chat-q').addEventListener('input',e=>{clearTimeout(cqT);cqT=setTimeout(()=>{const q=e.target.value.trim().toLowerCase();const box=$('chits');if(!q){box.hidden=true;return}
+  const all=[...olderList(),...chatList()];const r=all.map((m,i)=>[m,i]).filter(([m])=>m[1].toLowerCase().includes(q));
+  box.hidden=false;box.innerHTML=r.length?r.map(([m,i])=>{const k=m[1].toLowerCase().indexOf(q);const s=Math.max(0,k-30);return`<div class="h" data-i="${i}"><span class="dim">${m[2]} · ${m[0]==='q'?'ты':'К.'}</span> …${esc(m[1].slice(s,k))}<mark>${esc(m[1].slice(k,k+q.length))}</mark>${esc(m[1].slice(k+q.length,k+q.length+50))}…</div>`}).join(''):'<div class="dim">ничего — поиск идёт и по старым ходам на сервере</div>'},150)});
+$('chits').addEventListener('click',e=>{const h=e.target.closest('.h');if(!h)return;const i=+h.dataset.i;S.olderLoaded=true;S.shown=99;renderLog(false);const el=$('log').querySelector(`.turn[data-n="${i}"]`);if(el){el.classList.add('hit');S.quietUntil=performance.now()+600;$('log').style.scrollBehavior='auto';$('log').scrollTop=el.offsetTop-$('log').offsetTop-8;$('log').style.scrollBehavior=''}$('chits').hidden=true;$('tolast').hidden=false});
+$('compose').addEventListener('keydown',e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();send()}});
+$('compose').querySelector('button').onclick=send;
+function send(){const CHAT=chatList();const ta=$('compose').querySelector('textarea');const v=ta.value.trim();if(!v)return;CHAT.push(['q',v,'14:52']);ta.value='';renderLog();$('cstate').textContent='думает…';setTimeout(()=>{CHAT.push(['a','Принял. (макет: ответ Координатора)','14:52']);$('cstate').textContent='работает';renderLog()},900)}
+$('chide').onclick=()=>{S.chatOpen=false;ui()};
+$('bchat').onclick=()=>{S.chatOpen=!S.chatOpen;if(!S.sel)selectQuasar();else ui()};
+
+/* ───────── дела ───────── */
+function renderTodo(){
+  $('tlist').innerHTML=TODOS.map(d=>`<li draggable="true" tabindex="0" data-id="${d.id}"><span class="h">⋮⋮</span><div>${esc(d.text)}<div class="to">${d.to?`<span class="chip">${d.to==='Квазар'?QN():d.to}</span><button class="btn" data-send style="min-height:20px;padding:0 6px;font-size:11px">отправить</button>`:'<span class="dim" style="font-size:11px">без адресата — перетащи в мир</span>'}</div></div></li>`).join('');$('tn').textContent=TODOS.length}
+let dragId=null;
+$('tlist').addEventListener('dragstart',e=>{const li=e.target.closest('li');dragId=li.dataset.id;li.classList.add('drag');e.dataTransfer.setData('text/plain',dragId)});
+$('tlist').addEventListener('dragend',e=>{document.querySelectorAll('#tlist li').forEach(l=>l.classList.remove('drag','over'))});
+$('tlist').addEventListener('dragover',e=>{e.preventDefault();document.querySelectorAll('#tlist li').forEach(l=>l.classList.remove('over'));const li=e.target.closest('li');li&&li.classList.add('over')});
+$('tlist').addEventListener('drop',e=>{e.preventDefault();const li=e.target.closest('li');if(!li||li.dataset.id===dragId)return;const a=TODOS.findIndex(d=>d.id===dragId);const [d]=TODOS.splice(a,1);TODOS.splice(TODOS.findIndex(x=>x.id===li.dataset.id),0,d);renderTodo();toast('Порядок сохранён (todo-reorder)')});
+$('tlist').addEventListener('click',e=>{if(e.target.dataset.send===undefined)return;const id=e.target.closest('li').dataset.id;const d=TODOS.find(x=>x.id===id);TODOS=TODOS.filter(x=>x!==d);renderTodo();toast(d.to==='Квазар'?`coordinator tell — «${d.text}»`:`tell ${d.to} — «${d.text}»`)});
+$('tlist').addEventListener('keydown',e=>{if(!e.altKey)return;const li=e.target.closest('li');if(!li)return;const i=TODOS.findIndex(d=>d.id===li.dataset.id);const j=i+(e.key==='ArrowUp'?-1:e.key==='ArrowDown'?1:0);if(j<0||j>=TODOS.length||j===i)return;[TODOS[i],TODOS[j]]=[TODOS[j],TODOS[i]];const id=li.dataset.id;renderTodo();document.querySelector(`#tlist li[data-id="${id}"]`).focus();e.preventDefault()});
+cv.addEventListener('dragover',e=>{e.preventDefault();const h=pick(e.clientX,e.clientY);cv.style.cursor=h?'copy':'no-drop'});
+cv.addEventListener('drop',e=>{e.preventDefault();const h=pick(e.clientX,e.clientY);const d=TODOS.find(x=>x.id===dragId);if(!h||!d)return;
+  if(h.kind==='planet'){TODOS=TODOS.filter(x=>x!==d);renderTodo();toast(`tell ${h.ref.tag} -- «${d.text}»`)}
+  else if(h.kind==='quasar'){TODOS=TODOS.filter(x=>x!==d);renderTodo();toast(`coordinator tell -- «${d.text}»`)}
+  else if(h.kind==='nebula'){newTaskPop(e.clientX,e.clientY,d,h.ref)}});
+function newTaskPop(x,y,d,pr){openPop(x,y,`<b>Новая задача из дела</b><div class="dim" style="margin-top:4px">«${esc(d.text)}»</div>
+ <label>Проект</label><select id="np">${PROJECTS.map(p=>`<option ${p===pr?'selected':''}>${p.id}</option>`).join('')}</select>
+ <label>Программа</label><div class="prog">${['claude','codex','pi','omp'].map((p,i)=>`<button type="button" class="btn ${i?'':'on'}" data-p="${p}">${p}</button>`).join('')}</div>
+ <label>Модель</label><input id="nm" list="models" value="claude/sonnet-5.5"><datalist id="models"></datalist><div class="dim" id="mnote" style="font-size:11px;margin-top:3px">список загружается… можно ввести самому</div>
+ <div style="margin-top:12px;display:flex;gap:6px"><button class="btn primary" id="nc">Создать задачу</button><button class="btn" id="nx">Отмена</button></div>`);
+ const MODELS={claude:['claude/opus-5.5','claude/sonnet-5.5','claude/haiku-5.5'],codex:['codex/gpt-5.5','codex/gpt-5.5-mini']};let mT;
+ const loadModels=p=>{clearTimeout(mT);$('models').innerHTML='';if(!MODELS[p])return;$('mnote').textContent='список загружается… можно ввести самому';mT=setTimeout(()=>{if(!$('models'))return;$('models').innerHTML=MODELS[p].map(m=>`<option value="${m}">`).join('');$('mnote').textContent=`${MODELS[p].length} модели · из herdr-projects models ${p}`},1200)};loadModels('claude');
+ $('pop').querySelector('.prog').onclick=e=>{const b=e.target.closest('button');if(!b)return;$('pop').querySelectorAll('.prog button').forEach(x=>x.classList.toggle('on',x===b));const p=b.dataset.p;$('nm').value=p==='pi'?'pi/default':p==='omp'?'':MODELS[p][1]||MODELS[p][0];if(p==='omp')$('mnote').textContent='omp — свободный текст, например omp/kimi-k2';else if(p==='pi')$('mnote').textContent='pi: модель по умолчанию';loadModels(p)};
+ $('nx').onclick=closePop;$('nc').onclick=()=>{const ag=$('nm').value.trim();if(!/^[a-z]+\/[A-Za-z0-9._:\/-]+$/.test(ag)){$('mnote').textContent='нужно «программа/модель», например codex/gpt-5.5';$('nm').focus();return}TODOS=TODOS.filter(x=>x!==d);renderTodo();closePop();toast(`add «${d.text}» --repo ${$('np').value} --worker.agent ${ag}`)}}
+function openPop(x,y,html){const p=$('pop');p.innerHTML=html;p.hidden=false;p.style.left=Math.max(10,Math.min(W-360,x))+'px';p.style.top=Math.min(H-380,Math.max(60,y))+'px'}
+function closePop(){$('pop').hidden=true}
+$('tadd').onsubmit=e=>{e.preventDefault();const i=e.target.querySelector('input');if(!i.value.trim())return;TODOS.push({id:'d'+Date.now(),text:i.value.trim(),to:''});i.value='';renderTodo()};
+const toggleTodo=(on)=>{const t=$('todo');t.classList.toggle('open',on??!t.classList.contains('open'));focus()};
+$('btodo').onclick=()=>toggleTodo();$('tclose').onclick=()=>toggleTodo(false);
+
+
+/* ───────── добавить вселенную ───────── */
+// файловые системы машин (макет): папка → {git, origin, branch, board}
+const FS={
+ orion:{'~/Projects':['AI/','herdr/','site-old/','notes.txt'],'~/Projects/AI':['ditis/','gis-next/','scratch/'],'~/Projects/herdr':['herdr-planner/','celestune-bar/'],
+  meta:{'~/Projects/AI/ditis':{git:1,origin:'git@github.com:me/ditis.git',branch:'main'},'~/Projects/AI/gis-next':{git:1,origin:'https://github.com/me/gis-next',branch:'develop'},'~/Projects/AI/scratch':{git:0},
+   '~/Projects/herdr/herdr-planner':{git:1,board:'herdr-planner'},'~/Projects/herdr/celestune-bar':{git:1,origin:'git@github.com:me/celestune-bar.git',branch:'main'},'~/Projects/site-old':{git:1,origin:'',branch:'master'}}},
+ 'vm-a':{'~/Projects':['infra/','site/','api/'],meta:{'~/Projects/infra':{git:1,board:'infra'},'~/Projects/site':{git:1,board:'site'},'~/Projects/api':{git:1,origin:'git@github.com:me/api.git',branch:'main'}}},
+};
+// хостинги: где человек залогинен (в продукте — gh auth status / glab auth status на той машине)
+const LOGINS={'github.com':{tool:'gh',user:'me'},'gitlab.example.com':{tool:'glab',user:'jdoe'}};
+function hostOf(url){const m=url.match(/^(?:https?:\/\/|ssh:\/\/)?(?:[^@\/]+@)?([^:\/]+)[:\/]+([^\/]+)\/([^\/]+?)(?:\.git)?\/?$/);if(!m)return null;
+  const h=m[1].toLowerCase(),kind=h==='github.com'?'GitHub':/gitlab/.test(h)?'GitLab':null;const lg=LOGINS[h];
+  return{h,kind,tool:kind==='GitHub'?'gh':kind==='GitLab'?'glab':null,owner:m[2],repo:m[3],login:lg&&lg.user,own:lg&&lg.user===m[2]}}
+const AU={g:'orion',mode:'',tab:'dir',path:'',url:'',dest:'',key:'',cur:0,running:false,dir:LS('projects_dir')||'~/Projects/'};
+const nameOf=s=>(s.replace(/\/+$/,'').split('/').pop()||'').replace(/\.git$/,'').replace(/[^A-Za-z0-9_.+-]/g,'-').slice(0,28);
+const keyOf=n=>{const w=n.split(/[-_.]/).filter(Boolean);let k=(w.length>1?w.map(x=>x[0]).join(''):n.slice(0,3)).toUpperCase().slice(0,4);const used=new Set([...PROJECTS,...FAR_PROJECTS].map(p=>p.key));let k0=k,i=2;while(used.has(k))k=k0+i++;return k};
+function openAddU(g){Object.assign(AU,{g,tab:'dir',path:'~/Projects/',url:'',key:'',running:false});AU.dest='';renderAddU();$('addu').hidden=false;setTimeout(()=>{const i=$('au-path');i&&i.focus()},30)}
+function sugs(){const fs=FS[AU.g]||{};const p=AU.path.replace(/\/+$/,'');const base=p.includes('/')&&!fs[p]?p.slice(0,p.lastIndexOf('/')):p;const part=fs[p]?'':p.slice(p.lastIndexOf('/')+1);
+  return (fs[base]||[]).filter(x=>x.endsWith('/')&&x.toLowerCase().startsWith(part.toLowerCase())).map(x=>{const full=base+'/'+x.slice(0,-1);return{full,m:(fs.meta||{})[full]}})}
+function renderAddU(){const g=GALAXIES.find(x=>x.id===AU.g);const far=!g.here;const el=$('addu');
+  const m=(FS[AU.g]?.meta||{})[AU.path.replace(/\/+$/,'')];
+  const nm=AU.tab==='dir'?nameOf(AU.path):nameOf(AU.url);const key=AU.key||(nm?keyOf(nm):'');
+  const dest=AU.dest||(AU.dir.replace(/\/?$/,'/')+nm);
+  const ss=AU.tab==='dir'?sugs():[];
+  let ready=false,info='';
+  if(AU.tab==='dir'){
+    if(!m)info=`<span class="dim">Начни вводить путь — подскажу папки ${far?'на '+g.label+' (ls по SSH, только чтение)':'на этой машине'}. <kbd>Tab</kbd> — дополнить, <kbd>↑↓</kbd> — выбрать.</span>`;
+    else if(m.board)info=`<span class="on">Уже на доске как <b>${m.board}</b></span> — добавлять не нужно. <button class="btn" data-go="${m.board}">Лететь к ней</button>`;
+    else if(!m.git)info=`<span class="err">Не git-репозиторий</span>: нет <code>.git</code>. Выбери другую папку или укажи адрес репозитория.`;
+    else{ready=true;info=`git ✓ · ветка <b>${m.branch}</b> · origin <code>${esc(m.origin||'нет')}</code><br>Имя на доске: <b>${nm}</b> <span class="dim">(доска даёт его по имени папки)</span>`}
+  }else{
+    if(!AU.url)info=`<span class="dim">git@host:user/repo.git или https://… Ключ SSH — у вашего ssh-agent${far?' на '+g.label:''}; планировщик его не хранит и не спрашивает.</span>`;
+    else{const H=hostOf(AU.url);
+      if(!H)info=`<span class="err">Не похоже на адрес репозитория</span>: нужен вид host:owner/repo`;
+      else{const mode=AU.mode||(H.own||!H.kind?'clone':'fork');AU.mode=mode;
+        const perm=!H.kind?'—':!H.login?`<span class="err">не залогинен в ${H.h}</span>: выполни <code>${H.tool} auth login${H.kind==='GitLab'||H.h!=='github.com'?' --hostname '+H.h:''}</code> ${far?'на '+g.label:''} и нажми «Проверить снова»`:H.own?`<span class="ok" style="color:var(--c-green)">запись есть</span> <span class="dim">(${H.tool==='gh'?`gh repo view ${H.owner}/${H.repo} --json viewerPermission → ADMIN`:`glab api projects/${H.owner}%2F${H.repo} → permissions: maintainer`})</span>`:`<span class="on" style="color:var(--c-yellow)">только чтение</span> <span class="dim">(${H.tool==='gh'?`gh repo view … → READ`:`glab api projects/… → permissions: нет`})</span>`;
+        const opt=(v,t,d,dis)=>`<label style="text-transform:none;letter-spacing:0;display:flex;gap:8px;align-items:flex-start;margin:6px 0;color:var(--pl-text);font-size:12px;${dis?'opacity:.4':''}"><input type="radio" name="au-mode" value="${v}" ${mode===v?'checked':''} ${dis?'disabled':''} style="width:auto;margin-top:2px"><span><b>${t}</b><br><span class="dim">${d}</span></span></label>`;
+        ready=!!H.login||!H.kind;
+        info=`Хостинг: <b>${H.kind||H.h+' (неизвестный — только клон, без форка и PR)'}</b>${H.kind?` · ${H.h} · через <code>${H.tool}</code>${H.login?` · ты — ${H.login}`:''}`:''}<br>Репозиторий: <b>${H.owner}/${H.repo}</b> · право: ${perm}
+         ${H.kind&&H.login?`<div style="margin-top:6px">${opt('clone','Клон — своё, есть запись',`origin = ${H.owner}/${H.repo}; работа и слияние прямо в него`,!H.own)}${opt('fork',`Форк — чужое, хочу менять`,`${H.tool} repo fork ${H.owner}/${H.repo} --clone → origin = ${H.login}/${H.repo}, upstream = ${H.owner}/${H.repo}; изменения в оригинал — ${H.kind==='GitHub'?'PR':'MR'} из форка`,H.own)}${opt('research','Только изучать — клон без записи','задачи по умолчанию исследовательские (research.only true); позже можно превратить в форк',false)}</div>`:''}
+         <div style="margin-top:6px">Склонирую в <code>${esc(dest)}</code> ${far?'на '+g.label:''} · имя на доске: <b>${nm}</b></div>
+         ${H.kind==='GitLab'?`<div class="dim" style="margin-top:4px">GitLab: доска открывает PR только на GitHub, поэтому для этого репо выставлю <code>merge.pr false</code> и <code>merge.checks none</code> — слияние локально, без PR.</div>`:''}`}}}
+  el.innerHTML=`<header><b>Добавить вселенную в Галактику ${g.label}</b><button class="btn" id="au-x" style="min-height:22px;padding:0 8px">✕</button></header><div class="bd">
+   <div class="tabs" role="tablist"><button class="btn ${AU.tab==='dir'?'on':''}" data-tab="dir">Папка с git ${far?'на '+g.label:'на этой машине'}</button><button class="btn ${AU.tab==='url'?'on':''}" data-tab="url">Адрес репозитория</button></div>
+   ${AU.tab==='dir'?`<label>Папка</label><input id="au-path" value="${esc(AU.path)}" autocomplete="off" spellcheck="false" aria-autocomplete="list">${ss.length?`<div class="sug">${ss.map((x,i)=>`<div data-p="${esc(x.full)}" class="${i===AU.cur?'cur':''}"><span>${esc(x.full)}</span><span class="m ${!x.m?'':x.m.board?'on':x.m.git?'ok':'no'}">${!x.m?'папка':x.m.board?'уже на доске':x.m.git?'git · '+(x.m.branch||''):'не git'}</span></div>`).join('')}</div>`:''}`
+   :`<label>Адрес репозитория</label><input id="au-url" value="${esc(AU.url)}" placeholder="git@github.com:me/project.git · https://gitlab.example.com/team/app" spellcheck="false"><div class="dim" style="font-size:11px;margin-top:3px">примеры: <a href="#" data-ex="git@github.com:me/notes.git">своё на GitHub</a> · <a href="#" data-ex="https://github.com/torvalds/subsurface">чужое на GitHub</a> · <a href="#" data-ex="https://gitlab.example.com/gis/geo-portal">GitLab example</a> · <a href="#" data-ex="https://gitlab.com/inkscape/inkscape">gitlab.com (не залогинен)</a></div>
+     <label>Клонировать в</label><input id="au-dest" value="${esc(dest)}" spellcheck="false"><div class="dim" style="font-size:11px;margin-top:3px">Папка по умолчанию — <code>${esc(AU.dir)}</code> на ${g.label} (настройки планировщика: <code>projects_dir</code>) · <a href="#" id="au-dir" style="color:var(--pl-accent)">изменить</a></div>`}
+   <div class="info">${info}</div>
+   ${ready?`<div class="grid2"><div><label>Ключ задач</label><div class="dim" style="font-size:11px">${key}-1, ${key}-2… — доска даёт ключ сама; если поменять, планировщик выполнит <code>herdr-projects set repo.key</code></div></div><div><label>&nbsp;</label><input id="au-key" value="${key}" maxlength="6" style="text-transform:uppercase"></div></div>`:''}
+   <div class="act"><button class="btn primary" id="au-go" ${ready&&!AU.running?'':'disabled'}>${AU.tab==='url'?'Клонировать и добавить':'Добавить на доску'}</button><button class="btn" id="au-cancel">Отмена</button><span class="dim" style="font-size:11px">${far?'всё выполняется на '+g.label+' по SSH':''}</span></div>
+   <ol class="steps" id="au-steps"></ol></div>`;
+  if(AU.steps)drawSteps();
+}
+function stepsFor(){const g=GALAXIES.find(x=>x.id===AU.g);const ssh=g.here?'':`ssh ${g.target} … `;const nm=AU.tab==='dir'?nameOf(AU.path):nameOf(AU.url);
+  const path=AU.tab==='dir'?AU.path.replace(/\/+$/,''):(AU.dest||AU.dir.replace(/\/?$/,'/')+nm);const key=($('au-key')&&$('au-key').value.toUpperCase())||keyOf(nm);
+  const reg=S.v.reg==='cmd'?`herdr-projects repo add ${path}`:`herdr-projects add "Знакомство с проектом ${nm}" --repo ${path}`;
+  const st=[];const H=AU.tab==='url'?hostOf(AU.url):hostOf((FS[AU.g]?.meta||{})[path]?.origin||'')||{};const mode=AU.tab==='url'?AU.mode:'clone';
+  if(AU.tab==='url'){
+    if(H.kind)st.push({t:`Вход в ${H.h}`,c:`${ssh}${H.tool} auth status${H.h!=='github.com'?' --hostname '+H.h:''}`,d:400});
+    st.push({t:'Право записи у хостинга',c:H.tool==='gh'?`${ssh}gh repo view ${H.owner}/${H.repo} --json viewerPermission`:H.tool?`${ssh}glab api projects/${H.owner}%2F${H.repo}`:`${ssh}git ls-remote --heads ${AU.url}`,d:500});
+    if(mode==='fork'){st.push({t:`Форк в ${H.login}/${H.repo} и клон в ${path}`,c:`${ssh}cd ${AU.dir} && ${H.tool} repo fork ${H.owner}/${H.repo} --clone`,d:2600,bar:1});
+      st.push({t:'origin = форк, upstream = оригинал',c:`${ssh}git -C ${path} remote -v`,d:300})}
+    else st.push({t:`Клонирование в ${path}`,c:`${ssh}git clone --progress ${AU.url} ${path}`,d:2600,bar:1})}
+  else st.push({t:'Проверка папки',c:`${ssh}git -C ${path} rev-parse --show-toplevel`,d:500});
+  st.push({t:'Регистрация в доске herdr-projects'+(g.here?'':' '+g.label),c:ssh+reg,d:900,note:S.v.reg==='cmd'?'G2: такой команды в herdr-projects 1.2.4 нет — нужна в плагине':'G1: задача встаёт в очередь без агента; её можно сразу архивировать'});
+  if(key!==keyOf(nm))st.push({t:`Ключ проекта ${key}`,c:`${ssh}herdr-projects set repo.key ${key} --repo ${nm}`,d:400});
+  else st.push({t:`Ключ проекта ${key}`,c:'доска дала ключ сама',d:200});
+  if(mode==='research')st.push({t:'Только изучать: задачи исследовательские',c:`${ssh}herdr-projects set research.only true --repo ${nm}`,d:300});
+  if(H.kind==='GitLab')st.push({t:'GitLab: слияние локально, без PR',c:`${ssh}herdr-projects set merge.pr false --repo ${nm} && herdr-projects set merge.checks none --repo ${nm}`,d:400});
+  st.push({t:'Туманность появилась',c:'перечитываю доску',d:300});
+  AU.H=H;AU.M=mode;
+  return{st,nm,key,path}}
+function drawSteps(){const A=AU.steps;$('au-steps').innerHTML=A.st.map((x,i)=>{const s=i<A.i?'ok':i===A.i?(A.err?'err':'run'):'wait';
+  return`<li class="${s}"><span class="i">${s==='ok'?'✓':s==='err'?'✕':s==='run'?'<span class="spin" style="display:inline-block;width:9px;height:9px;border:2px solid var(--pl-accent);border-right-color:transparent;border-radius:50%;animation:sp .8s linear infinite"></span>':'·'}</span><div>${esc(x.t)}<div><code>${esc(x.c)}</code></div>${x.note?`<div class="dim" style="font-size:11px">${esc(x.note)}</div>`:''}${x.bar&&s!=='wait'?`<div class="bar"><i style="width:${s==='ok'?100:A.pct|0}%"></i></div><div class="dim" style="font-size:11px">${s==='ok'?'готово':A.pct<30?`Counting objects: ${A.pct*3|0}%`:A.pct<85?`Receiving objects: ${A.pct|0}% · ${(A.pct*.21).toFixed(1)} МиБ`:`Resolving deltas: ${A.pct|0}%`}</div>`:''}${s==='err'?`<div class="err">${esc(x.fail)}</div><button class="btn" id="au-retry">Повторить</button>`:''}</div></li>`}).join('')}
+function runAddU(){const A=AU.steps=stepsFor();A.i=0;A.pct=0;AU.running=true;renderAddU();
+  const next=()=>{if(A.i>=A.st.length)return done();const x=A.st[A.i];if(x.fail){A.err=true;AU.running=false;renderAddU();return}
+    if(x.bar){const t0=performance.now();const tick=()=>{A.pct=Math.min(100,(performance.now()-t0)/x.d*100);drawSteps();if(A.pct<100)setTimeout(tick,120);else{A.i++;drawSteps();next()}};tick()}
+    else setTimeout(()=>{A.i++;drawSteps();next()},x.d)};
+  const done=()=>{AU.running=false;const g=GALAXIES.find(x=>x.id===AU.g);const list=g.here?PROJECTS:FAR_PROJECTS;
+    const pr={id:A.nm,key:A.key,color:'yellow',angle:5.8,lag:null};
+    if(S.data==='big'){pr.pos=V(Math.cos(5.8)*360,0,Math.sin(5.8)*360);pr.scale=.5}
+    const H=AU.H||{};if(AU.M==='fork')pr.fork={up:`${H.owner}/${H.repo}`,behind:0,tool:H.tool,kind:H.kind};if(AU.M==='research')pr.research={up:`${H.owner}/${H.repo}`,behind:0,tool:H.tool,kind:H.kind};if(H.kind==='GitLab')pr.gitlab=true;
+    list.push(pr);indexTasks();tree();toast(`Вселенная ${A.nm} · ${A.key} добавлена в Галактику ${g.label}`);
+    const sum=[`<b>${A.nm} · ${A.key}</b> в Галактике ${g.label}`,`папка <code>${esc(A.path)}</code>`,
+      H.kind?`хостинг: ${H.kind} (${H.h})`:'',AU.M==='fork'?`форк: origin = ${H.login}/${H.repo}, upstream = ${H.owner}/${H.repo}; изменения в оригинал — кнопкой «${H.kind==='GitHub'?'PR':'MR'} в оригинал»`:AU.M==='research'?'только изучать: research.only true — задачи исследовательские':AU.tab==='url'?`клон: origin = ${H.owner}/${H.repo}`:'',
+      H.kind==='GitLab'?'<b>merge.pr false · merge.checks none</b> — доска сливает локально, без PR (PR открывает только на GitHub)':''].filter(Boolean);
+    $('au-steps').insertAdjacentHTML('afterend',`<div class="info" style="border-color:var(--c-green)"><b style="color:var(--c-green)">Готово.</b><br>${sum.join('<br>')}<div class="act"><button class="btn primary" id="au-fly">Лететь к ней</button></div></div>`);
+    $('au-fly').onclick=()=>{$('addu').hidden=true;AU.steps=null;dive(pr,g.id)}};
+  next()}
+function T0P(pr){} // в продукте: снимок доски перечитывается по notify/SSE
+$('addu').addEventListener('input',e=>{const t=e.target;if(t.id==='au-path'){AU.path=t.value;AU.cur=0;const pos=t.selectionStart;renderAddU();const i=$('au-path');i.focus();i.setSelectionRange(pos,pos)}
+  else if(t.id==='au-url'){AU.url=t.value;const pos=t.selectionStart;renderAddU();const i=$('au-url');i.focus();i.setSelectionRange(pos,pos)}
+  else if(t.id==='au-dest')AU.dest=t.value;else if(t.id==='au-key')AU.key=t.value.toUpperCase()});
+$('addu').addEventListener('keydown',e=>{if(e.target.id!=='au-path')return;const ss=sugs();
+  if(e.key==='ArrowDown'||e.key==='ArrowUp'){e.preventDefault();AU.cur=(AU.cur+(e.key==='ArrowDown'?1:-1)+ss.length)%Math.max(1,ss.length);renderAddU();$('au-path').focus()}
+  else if((e.key==='Tab'||e.key==='Enter')&&ss[AU.cur]){e.preventDefault();AU.path=ss[AU.cur].full+'/';AU.cur=0;renderAddU();const i=$('au-path');i.focus();i.setSelectionRange(1e3,1e3)}
+  else if(e.key==='Escape')$('addu').hidden=true});
+$('addu').addEventListener('click',e=>{if(e.target.name==='au-mode'){AU.mode=e.target.value;return renderAddU()}
+  const b=e.target.closest('button,[data-p],a');if(!b)return;
+  if(b.id==='au-x'||b.id==='au-cancel'){$('addu').hidden=true;AU.steps=null;return}
+  if(b.dataset.tab){AU.tab=b.dataset.tab;AU.steps=null;return renderAddU()}
+  if(b.dataset.p){AU.path=b.dataset.p+'/';renderAddU();$('au-path').focus();return}
+  if(b.dataset.go){const pr=[...PROJECTS,...FAR_PROJECTS].find(p=>p.id===b.dataset.go);$('addu').hidden=true;return dive(pr,AU.g)}
+  if(b.id==='au-dir'){e.preventDefault();const v=(prompt('Папка для клонов',AU.dir)||AU.dir);AU.dir=v;LSset('projects_dir',v);return renderAddU()}
+  if(b.dataset.ex){e.preventDefault();AU.url=b.dataset.ex;AU.mode='';AU.steps=null;return renderAddU()}
+  if(b.id==='au-retry'){AU.url=AU.url.replace(/private|denied/g,'');AU.steps=null;return renderAddU()}
+  if(b.id==='au-go'){if(!b.classList.contains('armed')){b.classList.add('armed');b.textContent=AU.tab==='url'?'Точно? Клонировать и зарегистрировать':'Точно? Зарегистрировать на доске';return}runAddU()}});
+
+
+/* ───────── первый запуск: доска пуста ───────── */
+// найденные git-папки в ~/Projects (в продукте — обход projects_dir на глубину 2, только чтение)
+const FOUND=[['~/Projects/AI/ditis','main','github.com/me/ditis'],['~/Projects/AI/gis-next','develop','github.com/me/gis-next'],['~/Projects/herdr/celestune-bar','main','github.com/me/celestune-bar'],['~/Projects/site-old','master','без origin']];
+function renderFirst(){const el=$('first');const none=QS.has('noprojects');
+  el.innerHTML=`<h2>Галактика пуста — добавь первую вселенную</h2>
+   <p>Вселенная — это проект с git. Доска herdr-projects заводит в нём задачи и ставит на них агентов. ${none?`В <code>${AU.dir}</code> git-папок нет — укажи адрес репозитория, склонирую туда.`:`Нашёл git-папки в <code>${AU.dir}</code> — отметь нужные:`}</p>
+   ${none?'':`<div class="repos">${FOUND.map((f,i)=>`<label><input type="checkbox" data-i="${i}" ${i<2?'checked':''}><span>${f[0]}</span><span class="m">${f[1]} · ${f[2]}</span></label>`).join('')}</div>`}
+   <div class="row">${none?'':`<button class="btn primary" id="f-go">Добавить выбранные (<span id="f-n">2</span>)</button>`}<button class="btn ${none?'primary':''}" id="f-url">Адрес репозитория…</button><button class="btn" id="f-dir">Другая папка…</button></div>
+   <ol class="steps" id="f-steps" style="list-style:none;padding:0;margin:10px 0 0"></ol>
+   <div class="more">Есть другие машины с herdr? <a href="#" id="f-gal">+ Добавить галактику</a> · Координатор проснётся на первое сообщение в чате.</div>`}
+$('first').addEventListener('change',()=>{const n=$('first').querySelectorAll('.repos input:checked').length;$('f-n').textContent=n;$('f-go').disabled=!n});
+$('first').addEventListener('click',e=>{const b=e.target.closest('button,a');if(!b)return;
+  if(b.id==='f-url'){openAddU('orion');AU.tab='url';renderAddU();return}
+  if(b.id==='f-dir'){openAddU('orion');return}
+  if(b.id==='f-gal'){e.preventDefault();return addGalaxy(b)}
+  if(b.id==='f-go'){if(!b.classList.contains('armed')){b.classList.add('armed');b.textContent='Точно? Зарегистрировать на доске';return}
+    const sel=[...$('first').querySelectorAll('.repos input:checked')].map(i=>FOUND[+i.dataset.i]);b.disabled=true;
+    const L=$('f-steps');L.innerHTML=sel.map(f=>`<li style="padding:4px 0" class="dim">· ${f[0]} — <code>herdr-projects add "Знакомство с проектом ${nameOf(f[0])}" --repo ${f[0]}</code></li>`).join('');
+    sel.forEach((f,i)=>setTimeout(()=>{const nm=nameOf(f[0]);PROJECTS.push({id:nm,key:keyOf(nm),color:['accent','blue','magenta','green'][PROJECTS.length%4],angle:.6+PROJECTS.length*1.4,lag:null,born:performance.now()});
+      L.children[i].className='';L.children[i].innerHTML=`<span style="color:var(--c-green)">✓</span> ${f[0]} → <b>${nm} · ${PROJECTS.at(-1).key}</b>`;indexTasks();tree();
+      if(i===sel.length-1)setTimeout(()=>{$('first').hidden=true;S.data='demo-first';dive(PROJECTS[0]);toast('Перетащи сюда дело или напиши Координатору — он заведёт задачу');if(S.v.hint==='coach')setTimeout(()=>coach(0),1600)},1500)},500+i*700))}});
+
+
+/* ───────── yazi на далёкой машине: проверить и поставить ───────── */
+// Все команды на той машине — в login shell, той же формой, что у доски: так виден PATH из ~/.zprofile/~/.profile
+// (на macOS Homebrew — /opt/homebrew/bin, на Linux — ~/.local/bin).
+const LSH=(g,cmd,tty)=>`ssh${tty?' -t':''} ${g.target} 'exec "\${SHELL:-/bin/sh}" -lc "${cmd}"'`;
+// проверка: command -v yazi file; uname -sm; command -v pacman apt-get brew; sudo -n true; для пакетов — есть ли yazi в репозитории
+// Linux и macOS, x86_64 и arm64: бинарник релиза yazi по `uname -sm`
+// pm.yazi — команда, если yazi есть в репозиториях этого менеджера; null — нет (в Ubuntu/Debian пакета yazi нет)
+const PM={
+ 'apt-get':{yazi:null,chafa:'sudo apt-get install -y chafa',sudo:true,why:'в репозиториях Ubuntu пакета yazi нет'},
+ pacman:{yazi:'sudo pacman -S --needed yazi',chafa:'sudo pacman -S --needed chafa',sudo:true},
+ brew:{yazi:'brew install yazi',chafa:'brew install chafa',sudo:false}};
+const OSES={ubuntu:{os:'Linux x86_64 · Ubuntu 24.04',pm:'apt-get',asset:'yazi-x86_64-unknown-linux-musl.zip'},
+ arch:{os:'Linux aarch64 · Arch Linux ARM',pm:'pacman',asset:'yazi-aarch64-unknown-linux-musl.zip'},
+ mac:{os:'macOS arm64 (Darwin) · Homebrew',pm:'brew',asset:'yazi-aarch64-apple-darwin.zip'},
+ macx:{os:'macOS x86_64 (Darwin) · без Homebrew',pm:null,asset:'yazi-x86_64-apple-darwin.zip'}};
+const REMOTE_OS={get 'vm-a'(){return OSES[S.v.vmos||'ubuntu']}};
+// открыть yazi там, где он стоит (запоминается путь, а не только «стоит»)
+const yaziOpen=(g,t)=>`Открыт терминал kitty (картинки в yazi): ${LSH(g,`cd ~/Projects/${t.repo} && exec ${g.yazi}`,true)}`;
+function yaziInstall(g,t,btn){const os=REMOTE_OS[g.id]||{os:'Linux',pm:null,asset:'yazi-x86_64-unknown-linux-musl.zip'};const r=btn.getBoundingClientRect();
+  const rel=os.asset,pm=PM[os.pm]||null,pmY=pm&&pm.yazi,pmC=pm&&pm.chafa,pmFirst=pmY&&!pm.sudo;
+  const lab='style="text-transform:none;letter-spacing:0;display:flex;gap:6px;color:var(--pl-text);font-size:12px"';
+  openPop(r.left-340,r.top-260,`<b>На ${g.label} нет yazi</b>
+   <div class="dim" style="margin-top:4px;font-size:11.5px">${os.os} · менеджер пакетов ${os.pm||'не найден'}${pm?(pm.sudo?' · нужен sudo':' · без sudo'):''}</div>
+   <label>Как поставить</label>
+   <label ${lab}><input type="radio" name="yi" value="user" ${pmFirst?'':'checked'} style="width:auto"> <span>В ~/.local/bin без sudo — бинарник из релиза <code>${rel}</code>${pmFirst?'':' (рекомендую)'}</span></label>
+   <label ${lab}><input type="radio" name="yi" value="pm" style="width:auto" ${pmFirst?'checked':''} ${pmY?'':'disabled'}> <span>${pmY?`<code>${pmY}</code>${pm.sudo?' — пароль sudo вводишь сам в открывшемся терминале':' — без sudo (рекомендую)'}`:os.pm?`${os.pm}: ${pm.why}`:'менеджер пакетов не найден'}</span></label>
+   <label>Картинки (PNG, JPG) в yazi</label>
+   <div style="font-size:11.5px;line-height:1.5">Терминал здесь — <b>kitty</b> (Linux: первый в xdg-terminal-exec; macOS: <code>open -a kitty</code>, также Ghostty, WezTerm, iTerm2): yazi на ${g.label} рисует картинки протоколом kitty прямо через SSH; на той машине нужен только <code>file</code>.</div>
+   <label ${lab} style="margin-top:6px"><input type="checkbox" id="ychafa" style="width:auto" ${pmC?'':'disabled'}> <span>${pmC?`и chafa — запасной просмотр символами (<code>${pmC}</code>)`:'chafa — нет менеджера пакетов, пропускаю'}</span></label>
+   <div class="dim" style="font-size:11px;margin-top:6px">Команды идут в login shell той машины (как у доски), поэтому PATH из ~/.zprofile/~/.profile виден. Пароли планировщик не спрашивает и не хранит.</div>
+   <ol id="yst" style="list-style:none;padding:0;margin:8px 0 0;font-size:11.5px"></ol>
+   <div style="margin-top:10px;display:flex;gap:6px"><button class="btn primary" id="yg">Поставить yazi на ${g.label}</button><button class="btn" id="yx">Не сейчас</button></div>`);
+  $('yx').onclick=closePop;
+  $('yg').onclick=()=>{const b=$('yg');if(!b.classList.contains('armed')){b.classList.add('armed');b.textContent='Точно? Ставлю';return}
+    const how=$('pop').querySelector('input[name=yi]:checked').value,chafa=$('ychafa').checked;b.disabled=true;
+    const st=[];let path;
+    if(how==='pm'){path='yazi';
+      st.push(pm.sudo?{c:`терминал: ${LSH(g,pmY,true)} — пароль sudo вводишь там`}:{c:LSH(g,pmY)})}
+    else{path='~/.local/bin/yazi';
+      st.push({c:LSH(g,'command -v file')+' → /usr/bin/file (нужен yazi для типов файлов)'},{c:`uname -sm → ${os.os.split(' ·')[0]} → ${rel}`},
+        {c:LSH(g,`mkdir -p ~/.local/bin && curl -fsSL https://github.com/sxyazi/yazi/releases/latest/download/${rel} -o /tmp/yazi.zip && unzip -oj /tmp/yazi.zip '*/yazi' '*/ya' -d ~/.local/bin`)})}
+    st.push({c:LSH(g,`${path} --version`)+' → Yazi 25.x'},{c:'проверка картинок: kitty ↔ yazi по SSH — протокол kitty ✓'});
+    if(chafa&&pmC)st.push({c:pm.sudo?`терминал: ${LSH(g,pmC,true)} — пароль sudo вводишь там`:LSH(g,pmC)});
+    const L=$('yst');L.innerHTML=st.map(x=>`<li class="dim" style="padding:2px 0">· <code>${esc(x.c)}</code></li>`).join('');
+    st.forEach((x,i)=>setTimeout(()=>{L.children[i].className='';L.children[i].firstChild.textContent='✓ ';L.children[i].scrollIntoView({block:'nearest'});
+      if(i===st.length-1){g.yazi=path;setTimeout(()=>{closePop();toast(`yazi поставлен на ${g.label} (${path}), картинки — через kitty · `+yaziOpen(g,t))},900)}},400+i*600))}}
+
+/* ───────── космический поиск ───────── */
+function index(){const r=[];
+  for(const g of GALAXIES)r.push({k:'Галактики',ic:'✺',t:`Галактика ${g.label}`,path:g.target||'эта машина',st:g.ok===false?'failed':null,stl:g.ok===false?'нет связи':g.here?'':'на связи',go:()=>selectGalaxy(g),s:`${g.label} ${g.target||''}`});
+  r.push({k:QN(),ic:'◉',t:`${QN()} · Координатор`,path:'orion',go:selectQuasar,s:'квазар пульсар координатор coordinator'});
+  for(const p of PROJECTS)r.push({k:'Вселенные',ic:'☁',t:`${p.id} · ${p.key}`,path:'orion',go:()=>dive(p),s:`${p.id} ${p.key}`});
+  for(const t of TASKS)r.push({k:'Планеты',ic:'●',t:`${t.tag} ${t.title}`,path:`orion › ${t.repo} › ${t.tag}`,st:t.st,stl:STAT[t.st],go:()=>selectTask(t),s:`${t.tag} ${t.title} ${t.agent} ${STAT[t.st]}`});
+  for(const t of FTASKS)r.push({k:'Планеты',ic:'●',t:`${t.tag} ${t.title}`,path:`vm-a › ${t.repo} › ${t.tag}`,st:t.st,stl:STAT[t.st],go:()=>selectTask(t),s:`${t.tag} ${t.title} ${t.agent} ${STAT[t.st]} vm-a`});
+  for(const t of TASKS)for(const m of t.subs||[])r.push({k:'Спутники',ic:'↳',t:`${m.role} · ${m.title}`,path:`orion › ${t.repo} › ${t.tag}`,stl:m.doing,go:()=>selectMoon(t,m),s:`${m.role} ${m.title} ${m.doing}`});
+  for(const d of TODOS)r.push({k:'Дела',ic:'☐',t:d.text,path:'дела',go:()=>{toggleTodo(true);const li=document.querySelector(`#tlist li[data-id="${d.id}"]`);li&&li.classList.add('hl')},s:d.text});
+  [...olderList(),...chatList()].forEach((m,i)=>r.push({k:'Чат',ic:'❝',t:m[1],path:`чат · ${m[2]}`,go:()=>{if(!S.sel)selectQuasar();S.chatOpen=true;ui();$('chat-q').value=m[1].split(' ').slice(0,2).join(' ');$('chat-q').dispatchEvent(new Event('input'))},s:m[1]}));
+  return r}
+// нечёткое совпадение: подстрока или буквы по порядку (как uFuzzy), ru/en раскладка
+const RU='йцукенгшщзхъфывапролджэячсмитьбю',EN="qwertyuiop[]asdfghjkl;'zxcvbnm,.";
+const swap=s=>[...s].map(c=>{let i=EN.indexOf(c);if(i>=0)return RU[i];i=RU.indexOf(c);return i>=0?EN[i]:c}).join('');
+function score(s,q){s=s.toLowerCase();let i=s.indexOf(q);if(i>=0)return[100-i*.1,i,q.length];let j=0,first=-1;for(let k=0;k<s.length&&j<q.length;k++)if(s[k]===q[j]){if(first<0)first=k;j++}return j===q.length?[20,-1,0]:null}
+let cur=0,res=[];
+function search(){const q=$('q').value.trim().toLowerCase();const box=$('sres');if(!q){box.hidden=true;return}
+  const idx=index();res=[];for(const it of idx){const sc=score(it.s,q)||score(it.s,swap(q));if(sc)res.push({...it,sc})}
+  res.sort((a,b)=>b.sc[0]-a.sc[0]);const groups={};res.slice(0,30).forEach(r=>(groups[r.k]=groups[r.k]||[]).push(r));res=Object.values(groups).flat();cur=0;
+  const hl=(t,q)=>{const i=t.toLowerCase().indexOf(q);return i<0?esc(t):esc(t.slice(0,i))+'<mark>'+esc(t.slice(i,i+q.length))+'</mark>'+esc(t.slice(i+q.length))};
+  let n=0;box.hidden=false;box.innerHTML=res.length?Object.entries(groups).map(([k,rs])=>`<h4>${k}</h4>`+rs.map(r=>`<div class="sr ${n===cur?'cur':''} s-${r.st||'none'}" data-i="${n++}" role="option"><span class="ic">${r.ic}</span><div><div>${hl(r.t.length>80?r.t.slice(0,80)+'…':r.t,q)}</div><div class="path">${esc(r.path)}</div></div><span class="st">${esc(r.stl||'')}</span></div>`).join('')).join(''):'<div class="empty">Ничего в этой Галактике. Сервер ищет ещё в старом чате и далёких галактиках…</div>';
+}
+function choose(i){const r=res[i];if(!r)return;$('q').value='';$('sres').hidden=true;$('q').blur();r.go()}
+$('q').addEventListener('input',search);
+$('q').addEventListener('keydown',e=>{const els=[...document.querySelectorAll('.sr')];if(e.key==='ArrowDown'||e.key==='ArrowUp'){e.preventDefault();cur=(cur+(e.key==='ArrowDown'?1:-1)+els.length)%els.length;els.forEach((x,i)=>x.classList.toggle('cur',i===cur));els[cur]&&els[cur].scrollIntoView({block:'nearest'})}else if(e.key==='Enter')choose(cur);else if(e.key==='Escape'){$('sres').hidden=true;$('q').blur()}});
+$('sres').addEventListener('mousedown',e=>{const r=e.target.closest('.sr');if(r){e.preventDefault();choose(+r.dataset.i)}});
+$('q').addEventListener('blur',()=>setTimeout(()=>$('sres').hidden=true,100));
+
+/* ───────── клавиши ───────── */
+addEventListener('keydown',e=>{
+  if((e.ctrlKey||e.metaKey)&&(e.key==='k'||e.key==='л')){e.preventDefault();$('q').focus();$('q').select();return}
+  const inField=/INPUT|TEXTAREA|SELECT/.test(document.activeElement.tagName);
+  if(inField){if(e.key==='Escape')document.activeElement.blur();return}
+  const k=swap(e.key.toLowerCase())&&/[а-я]/.test(e.key.toLowerCase())?swap(e.key.toLowerCase()):e.key.toLowerCase();
+  keys[k]=true;if(e.shiftKey)keys.shift=true;
+  if(S.mode==='manual'&&['w','a','s','d','c',' ','shift','arrowup','arrowdown','arrowleft','arrowright'].includes(k)){e.preventDefault();return}
+  if(k==='escape'&&(look.locked||performance.now()-look.unlockT<250))return; // Esc сначала отпускает мышь
+  if(k==='p')setMode(S.mode==='auto'?'manual':'auto');
+  else if(k==='escape'){closePop();if($('todo').classList.contains('open'))toggleTodo(false);else back()}
+  else if(k==='h')home();
+  else if(k==='0'||k==='home'){S.level='galaxy';S.nebula=null;S.sel=null;const[p,t]=overview();flyTo(p,t);ui()}
+  else if(k==='n')$('nav').classList.toggle('off');
+  else if(k==='f'&&S.sel)$('focus').classList.toggle('off');
+  else if(k==='t')toggleTodo();
+  else if(k==='/'){e.preventDefault();$('bchat').click();setTimeout(()=>$('compose').querySelector('textarea').focus(),50)}
+  else if(k==='b'){TRI.scroll=0;triShow()}
+});
+// потеря фокуса окна: отпустить все клавиши, иначе корабль летит сам
+const releaseKeys=()=>{for(const k in keys)keys[k]=false};addEventListener('blur',releaseKeys);document.addEventListener('visibilitychange',releaseKeys);
+addEventListener('keyup',e=>{const k=e.key.toLowerCase();keys[k]=false;keys[swap(k)]=false;if(e.key==='Shift')keys.shift=false});
+function setMode(m){S.mode=m;if(m==='manual'){flight=null;syncLook();S.hintOff=false;const r=Math.hypot(cam.pos.x,cam.pos.z);if(r>R_BOUND-30){const k=(R_BOUND-60)/r;flyTo(V(cam.pos.x*k,Math.min(cam.pos.y,140),cam.pos.z*k),cam.tgt,{warp:.4})}}else{$('edge').hidden=true;cam.speed=0;cam.bank=0;if(document.pointerLockElement)document.exitPointerLock()}ui()}
+$('mode').onclick=e=>{const b=e.target.closest('button');b&&setMode(b.dataset.mode)};
+$('wait').onclick=()=>{TRI.scroll=0;triShow()};
+
+/* ───────── toast ───────── */
+let tT;function toast(s){const t=$('toast');t.textContent=s;t.hidden=false;clearTimeout(tT);tT=setTimeout(()=>t.hidden=true,3200)}
+
+/* ───────── Tweaks ───────── */
+function applyTheme(){const t=THEMES[S.theme],r=document.documentElement.style;
+  const m={bg:'bg','bg-dark':'bgDark','bg-darker':'bgDarker','bg-light':'bgLight',fg:'fg','fg-dim':'fgDim','fg-bright':'fgBright',muted:'muted',accent:'accent',red:'red',yellow:'yellow',green:'green',cyan:'cyan',blue:'blue',magenta:'magenta','border-a':'borderA','border-b':'borderB'};
+  for(const[k,v]of Object.entries(m))r.setProperty('--c-'+k,t[v]);document.documentElement.dataset.mode=t.mode}
+$('theme').innerHTML=Object.entries(THEMES).map(([k,t])=>`<option value="${k}">${t.label} · ${t.mode==='light'?'светлая':'тёмная'}</option>`).join('');
+$('theme').value=S.theme;$('simple').value=S.simple?'1':'0';
+for(const k of['chat','ship','hint','name','kan','vert','sens','inv','reg','nose','vmos'])$('v'+k).value=S.v[k];$('sensv').textContent='×'+S.v.sens;
+$('vsens').addEventListener('input',e=>{S.v.sens=e.target.value;$('sensv').textContent='×'+S.v.sens});
+$('tw').addEventListener('change',e=>{const id=e.target.id;
+  if(id==='theme'){S.theme=e.target.value;LSset('theme',S.theme);applyTheme()}
+  else if(id==='data'){setData(e.target.value);if(S.data==='empty')renderFirst();const[p,t]=overview();cam.pos=p;cam.tgt=t}
+  else if(id==='simple'){S.simple=e.target.value==='1';LSset('simple',S.simple?'1':'0')}
+  else{S.v[id.slice(1)]=e.target.value;$('sensv').textContent='×'+S.v.sens;LSset('v',JSON.stringify(S.v));if(id==='vhint'&&e.target.value==='coach')coach(0)}
+  ui()});
+$('twmin').onclick=()=>{$('tw').classList.toggle('min');LSset('twopen',$('tw').classList.contains('min')?'0':'1')};
+const SCREENS=[
+ ['1 · Галактика снаружи',()=>{reset();home()}],
+ ['2 · Внутри туманности',()=>{reset();dive(PROJECTS[0]);S.sel=null;ui()}],
+ ['3 · Кабина: задача',()=>{reset();selectTask(TASKS.find(t=>t.tag==='PLN-9'))}],
+ ['4 · Кабина: спутник',()=>{reset();const t=TASKS[1];selectMoon(t,t.subs[0])}],
+ ['5 · Кабина + дела',()=>{reset();selectTask(TASKS[0]);toggleTodo(true)}],
+ ['6 · Квазар и запросы',()=>{reset();selectQuasar()}],
+ ['7 · Поиск Ctrl+K',()=>{reset();home();setTimeout(()=>{$('q').value='alp';$('q').focus();search()},300)}],
+ ['8 · Ручной полёт',()=>{reset();home();setTimeout(()=>setMode('manual'),50)}],
+ ['9 · Перелёт: vm-a',()=>{reset();selectGalaxy(GALAXIES[1])}],
+ ['10 · Нет связи: vm-b',()=>{reset();selectGalaxy(GALAXIES[2])}],
+ ['11 · Вселенная, отставание',()=>{reset();dive(PROJECTS[0])}],
+ ['12 · Первый вход (C2)',()=>{reset();home();coach(0)}],
+ ['13 · 50 вселенных',()=>{reset();setData('big');$('data').value='big';home()}],
+ ['14 · Добавить вселенную',()=>{reset();home();openAddU('orion')}],
+ ['15 · Добавить: чужое (форк)',()=>{reset();home();openAddU('orion');AU.tab='url';AU.url='https://github.com/torvalds/subsurface';renderAddU()}],
+ ['16 · Форк во вселенной',()=>{reset();dive(PROJECTS.find(p=>p.id==='beta'))}],
+ ['17 · Первый запуск',()=>{reset();setData('empty');$('data').value='empty';home();renderFirst()}],
+];
+function reset(){$('addu').hidden=true;if(S.data!=='demo'){setData('demo');$('data').value='demo'}closePop();toggleTodo(false);$('link').hidden=true;$('coach').hidden=true;S.galaxy='orion';S.mode='auto';S.filter=null;S.chatOpen=true;$('nav').classList.remove('off');$('edge').hidden=true}
+$('screens').innerHTML=SCREENS.map((s,i)=>`<button class="btn" data-i="${i}">${s[0]}</button>`).join('');
+$('screens').onclick=e=>{const b=e.target.closest('button');b&&SCREENS[+b.dataset.i][1]()};
+
+$('data').value=S.data;setData(S.data);if(S.data==='empty')renderFirst();{const[p,t]=overview();cam.pos=p;cam.tgt=t}
+applyTheme();renderTodo();ui();requestAnimationFrame(frame);
+const start=QS.get('screen');if(QS.has('tw')||LS('twopen')!=='1')$('tw').classList.add('min');if(start&&SCREENS[start-1])setTimeout(()=>SCREENS[start-1][1](),100);
+</script>
+</body>
+</html>
