@@ -389,6 +389,38 @@ check('the Coordinator offers answer options', await waitFor('document.querySele
 await click('#cvariants .btn:nth-child(2)');
 check('an option is sent as coordinator tell', await waitLog(() => calls('coordinator.jsonl').some((c) => c.text === 'Разобрать «Ждёт тебя»'), 8000), JSON.stringify(lastCall('coordinator.jsonl')));
 
+// `/` opens the chat: the last three turns of the Coordinator's transcript above the line;
+// Up (or the wheel) pulls earlier ones in.
+const press = async (key, code) => {
+  await send('Input.dispatchKeyEvent', { type: 'rawKeyDown', key, code: key, windowsVirtualKeyCode: code });
+  await send('Input.dispatchKeyEvent', { type: 'keyUp', key, code: key, windowsVirtualKeyCode: code });
+};
+await evalJs('document.activeElement && document.activeElement.blur()');
+await keyText('/');
+check('/ focuses the line and opens the chat', await waitFor('document.activeElement.id === "ask-in" && document.querySelector("#console").classList.contains("open")', 6000));
+check('the open chat shows the last three turns', await waitFor('document.querySelectorAll("#clog .turn:not(.pending)").length === 3', 6000), await evalJs('document.querySelectorAll("#clog .turn:not(.pending)").length'));
+check('the newest turn is at the bottom, its answer still pending', (await evalJs('(() => { const t = [...document.querySelectorAll("#clog .turn:not(.pending)")]; return t[t.length - 1].innerText; })()')).includes('Вопрос 10') && (await evalJs('(() => { const l = document.querySelector("#clog"); return l.scrollHeight - l.scrollTop - l.clientHeight < 30; })()')));
+check('the line stayed empty after /', (await evalJs('document.querySelector("#ask-in").value')) === '');
+await sleep(1800);
+check('the open chat is docked and fully in view', await evalJs('(() => { const r = document.querySelector("#console").getBoundingClientRect(); return r.left >= 0 && r.top >= 0 && r.right <= innerWidth && r.bottom <= innerHeight; })()'), await evalJs('JSON.stringify(document.querySelector("#console").getBoundingClientRect())'));
+await shot('chat-open.png');
+for (let i = 0; i < 12; i++) await press('ArrowUp', 38);
+check('Up pulls earlier turns in', await waitFor('document.querySelectorAll("#clog .turn:not(.pending)").length === 8', 6000), await evalJs('document.querySelectorAll("#clog .turn:not(.pending)").length'));
+for (let i = 0; i < 60 && (await evalJs('document.querySelectorAll("#clog .turn:not(.pending)").length')) < 10; i++) { await press('ArrowUp', 38); await sleep(60); }
+check('the oldest turns come last and the start is marked', await waitFor('document.querySelectorAll("#clog .turn:not(.pending)").length === 10 && !!document.querySelector("#clog .meta.start")', 6000), await evalJs('document.querySelectorAll("#clog .turn:not(.pending)").length'));
+check('the answers are the Coordinator\'s words, tools left out', (await text('#clog')).includes('Ответ 1: ALP-1 идёт по плану.') && !(await text('#clog')).includes('tool_result'));
+await evalJs('document.querySelector("#clog .you").click()');
+check('a click on an old question returns it to the line', (await evalJs('document.querySelector("#ask-in").value')) === 'Вопрос 1: как дела по ALP-1?');
+await evalJs('document.querySelector("#ask-in").value = ""; document.querySelector("#ask-in").dispatchEvent(new Event("input"))');
+await evalJs('(() => { const t = document.querySelector("#ask-in"); t.value = "НОВЫЙ ВОПРОС"; t.dispatchEvent(new Event("input")); t.focus(); })()');
+await press('Enter', 13);
+check('a sent message shows in the open chat', await waitFor('document.querySelector("#clog").innerText.includes("НОВЫЙ ВОПРОС")', 4000));
+await sleep(4500);
+check('it stays there until the transcript has it', await evalJs('document.querySelector("#clog").innerText.includes("НОВЫЙ ВОПРОС") && document.querySelector("#console").classList.contains("open")'), await text('#clog'));
+await press('Escape', 27);
+check('Escape closes the chat', await waitFor('!document.querySelector("#console").classList.contains("open")', 4000));
+check('the chat history answers with its page size', await evalJs(`fetch('/api/chat/history?limit=2').then(r=>r.json()).then(h => h.available && h.turns.length === 2 && h.turns[1].n === 9 && h.more)`));
+
 writeFileSync(join(fixture, 'state', 'coordinator-dialog'), '1');
 writeFileSync(join(fixture, 'state', 'dialog.txt'), '❯ May I remove the old branches?\n  1. Yes\n  2. No');
 check('a Coordinator dialog is shown in the chat', await waitFor('!document.querySelector("#cdialog").hidden && document.querySelector("#cdialog").innerText.includes("May I remove the old branches")', 12000), await text('#cdialog'));

@@ -31,6 +31,7 @@ FIXTURE_DIR="$FX" \
   HERDR_PROJECTS_BIN="$FX/bin/herdr-projects" \
   HERDR_SOCKET_PATH="$FX/herdr.sock" \
   OMARCHY_THEME_DIR="$FX/theme" \
+  CLAUDE_CONFIG_DIR="$FX/claude" \
   PATH="$FX/bin:$PATH" \
   XDG_STATE_HOME="$FX/state" XDG_CONFIG_HOME="$FX/cfg" XDG_CACHE_HOME="$FX/cache" \
   "$TARGET/debug/herdr-planner" --port "$PORT" --data "$FX/board" >"$FX/server.log" 2>&1 &

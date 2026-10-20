@@ -12,7 +12,7 @@
 //   OMARCHY_THEME_DIR=DIR/theme XDG_STATE_HOME=DIR/state XDG_CONFIG_HOME=DIR/cfg
 //   PATH=DIR/bin:$PATH herdr-planner --port N --data DIR/board
 
-import { chmodSync, mkdirSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, realpathSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 
 const dir = resolve(process.argv[2] || '');
@@ -74,6 +74,21 @@ write(join(dir, 'state', 'coordinator.json'), JSON.stringify({
   status: 'idle · claude · claude-opus-5-5 · medium',
   reply: 'Жду задач. Доска спокойна.\n\nЧто делаем?\n1) Показать план на день\n2) Разобрать «Ждёт тебя»',
 }));
+// The Coordinator's Claude transcript (CLAUDE_CONFIG_DIR=DIR/claude): ten turns,
+// the last one still unanswered, the way the page reads the chat history.
+const chatDir = join(dir, 'board', 'coordinator', 'default', 'chat');
+mkdirSync(chatDir, { recursive: true });
+write(join(dir, 'board', 'coordinator', 'default', 'state.json'), JSON.stringify({ run: { kind: 'claude' }, session: 'fixture' }));
+const user = (i, text) => JSON.stringify({ type: 'user', timestamp: new Date(1792389360000 + i * 60000).toISOString(), message: { role: 'user', content: text } });
+const said = (i, text) => JSON.stringify({ type: 'assistant', timestamp: new Date(1792389361000 + i * 60000).toISOString(), message: { content: [{ type: 'text', text }] } });
+const tool = (i) => JSON.stringify({ type: 'user', timestamp: new Date(1792389360500 + i * 60000).toISOString(), message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 't', content: 'ok' }] } });
+const lines = [];
+for (let i = 1; i <= 10; i++) {
+  lines.push(user(i, `Вопрос ${i}: как дела по ALP-${i}?`));
+  lines.push(tool(i));
+  if (i < 10) lines.push(said(i, `Ответ ${i}: ALP-${i} идёт по плану.`));
+}
+write(join(dir, 'claude', 'projects', realpathSync(chatDir).replace(/[^A-Za-z0-9]/g, '-'), 'fixture.jsonl'), lines.join('\n') + '\n');
 mkdirSync(join(dir, 'state', 'herdr-planner'), { recursive: true });
 write(join(dir, 'state', 'herdr-planner', 'todo.json'), JSON.stringify([
   { id: 't1', text: 'Починить кэш отчётов', at: 1792407710000 },

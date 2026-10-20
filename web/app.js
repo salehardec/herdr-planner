@@ -96,6 +96,8 @@ const state = {
   chatPinned: true,
   tellDraft: {},
   expanded: false,
+  // The chat opened by `/` or a click: the last turns of the Coordinator's transcript.
+  chat: { pending: null, open: false, available: null, turns: [], loading: false, loadingLatest: false, stick: true, anchor: null, wide: new Set() },
   refreshing: false,
   motion: 'auto',
   simple: false,
@@ -657,6 +659,130 @@ function badge(s) { return `<span class="badge">${gl(s, s === 'working' ? 'spin'
 
 /* ───────── console ───────── */
 
+/* The chat while it is open: the transcript's turns, oldest on top. */
+
+const mergeTurns = (list) => {
+  const map = new Map(state.chat.turns.map((t) => [t.n, t]));
+  for (const t of list) map.set(t.n, t);
+  state.chat.turns = [...map.values()].sort((a, b) => a.n - b.n);
+};
+/* A message sent from this page stays in the open chat until the transcript has it (it waits there while the Coordinator is busy). */
+const notePending = (text, attachments = []) => {
+  const t = state.chat.turns;
+  state.chat.pending = { text, attachments, base: t.length ? t[t.length - 1].n : -1, at: Date.now() };
+};
+const pendingMsg = () => {
+  const p = state.chat.pending;
+  if (!p) return null;
+  const seen = state.chat.turns.some((t) => t.n > p.base && (!p.text || t.q.includes(p.text)));
+  if (seen || Date.now() - p.at > 600000) { state.chat.pending = null; return null; }
+  return p;
+};
+const hasOlder = () => state.chat.turns.length > 0 && state.chat.turns[0].n > 0;
+
+async function loadLatest() {
+  const ch = state.chat;
+  if (ch.loadingLatest) return;
+  ch.loadingLatest = true;
+  try {
+    const r = await api('/api/chat/history?limit=3');
+    ch.available = !!r.available;
+    if (r.available) {
+      const have = ch.turns.length ? ch.turns[ch.turns.length - 1].n : -1;
+      // More than a page arrived since the last look: start again from the end.
+      if (have >= 0 && r.turns.length && r.turns[0].n > have + 1) ch.turns = [];
+      mergeTurns(r.turns);
+    }
+  } catch { /* the compact chat stays */ } finally {
+    ch.loadingLatest = false;
+    renderConsole();
+  }
+}
+
+async function loadOlder() {
+  const ch = state.chat, log = $('clog');
+  if (ch.loading || !hasOlder()) return;
+  ch.loading = true;
+  renderConsole();
+  try {
+    const r = await api('/api/chat/history?limit=5&before=' + ch.turns[0].n);
+    ch.anchor = { h: log.scrollHeight, top: log.scrollTop };
+    mergeTurns(r.turns || []);
+  } catch { /* try again on the next scroll */ } finally {
+    ch.loading = false;
+    renderConsole();
+  }
+}
+
+/* While open the chat leaves the world for the bottom dock: wherever the camera is, it is on screen, above the panels. */
+function dockChat(on) {
+  $('console-dock').classList.toggle('open', on);
+  if (state.narrow) return;
+  if (on) world.detachChat(); else world.attachChat();
+}
+
+function openChat() {
+  const ch = state.chat;
+  if (ch.open) return;
+  ch.open = true;
+  ch.stick = true;
+  const hadFocus = document.activeElement === $('ask-in');
+  dockChat(true);
+  // Moving the line in the page drops its focus.
+  if (hadFocus) $('ask-in').focus({ preventScroll: true });
+  renderConsole();
+  loadLatest();
+}
+
+function closeChat() {
+  if (!state.chat.open) return;
+  state.chat.open = false;
+  dockChat(false);
+  renderConsole();
+}
+
+function turnHTML(t) {
+  const long = t.a.length > 420 || t.a.split('\n').length > 9;
+  const wide = state.chat.wide.has(t.n);
+  const who = t.from === 'board' ? '<span>· уведомление доски</span>' : '';
+  return `<div class="turn ${t.from}"><div class="you" data-reuse="${t.n}" title="вернуть в строку ввода"><span>›</span><span>${esc(t.q)}</span></div><div class="meta"><span>${dayTimeOf(t.at)}</span>${who}</div>`
+    + (t.a ? `<div class="rep"><span class="pr">‹</span><span class="tx ${long && !wide ? 'clamp' : ''}">${keysHTML(t.a)}</span></div>${long ? `<button class="more" data-chat="turn" data-n="${t.n}" type="button">${wide ? 'свернуть ▴' : 'развернуть ▾'}</button>` : ''}` : '')
+    + '</div>';
+}
+
+function openLogHTML(c, err) {
+  const ch = state.chat, turns = ch.turns;
+  let log = hasOlder()
+    ? `<button class="more up" data-chat="older" type="button">${ch.loading ? 'загружаю…' : '↑ раньше · колесо мыши или ↑'}</button>`
+    : '<div class="meta start">начало разговора</div>';
+  for (const t of turns) log += turnHTML(t);
+  const pending = pendingMsg();
+  if (pending) log += `<div class="turn pending">${youHTML(pending.text, 0, pending.attachments)}<div class="meta"><span>отправлено · ждёт Координатора</span></div></div>`;
+  if (err) log += `<div class="rep err"><span class="pr">‹</span><span class="tx">${esc(err)}</span></div><button class="more" data-chat="retry" type="button">отправить ещё раз</button>`;
+  else if (c.busy) log += `<div class="rep"><span class="pr">‹</span><span class="tx">читает доску<span class="dots"><i></i><i></i><i></i></span></span></div>`;
+  return log;
+}
+
+function setLog(html) {
+  const el = $('clog'), ch = state.chat;
+  const open = !!(ch.open && ch.available && ch.turns.length);
+  el.classList.toggle('open', open);
+  $('console').classList.toggle('open', open);
+  if (el._html === html && el._open === open) return;
+  const keepTop = el.scrollTop;
+  el.innerHTML = html;
+  el._html = html;
+  el._open = open;
+  // The history starts at the top unless we put the view at its end: a full
+  // log otherwise hides both the message just sent and the Coordinator's reply.
+  const follow = state.chatPinned !== false || (open && ch.stick);
+  if (open && ch.anchor) { el.scrollTop = ch.anchor.top + (el.scrollHeight - ch.anchor.h); ch.anchor = null; }
+  else if (follow) el.scrollTop = el.scrollHeight;
+  else el.scrollTop = Math.min(keepTop, Math.max(0, el.scrollHeight - el.clientHeight));
+  ch.stick = false;
+  state.chatPinned = chatFollowsEnd();
+}
+
 function sameShots(a = [], b = []) {
   return a.length === b.length && a.every((x, i) => x.id === b[i].id);
 }
@@ -840,7 +966,8 @@ function renderConsole() {
   const sent = state.optimisticSent || c.last_sent || '';
   const reply = c.reply || '';
   const err = state.chatError || c.error || '';
-  const options = c.dialog ? [] : parseOptions(reply);
+  const shown = state.chat.open && state.chat.available && state.chat.turns.length;
+  const options = c.dialog ? [] : parseOptions(shown ? state.chat.turns[state.chat.turns.length - 1].a : reply);
   state.variantOptions = options;
   const history = Array.isArray(c.history) ? c.history : [];
   let log = '';
@@ -862,16 +989,9 @@ function renderConsole() {
   } else if (!log) {
     log += `<div class="rep empty"><span class="pr">›</span><span class="tx">Скажи Координатору, что сделать, — ответ появится здесь.</span></div>`;
   }
-  const logEl = $('clog');
-  const follow = state.chatPinned !== false;
-  const keepTop = logEl.scrollTop;
-  logEl.innerHTML = log;
-  logEl.classList.toggle('expanded', state.expanded);
-  // The history starts at the top unless we put the view at its end: a full
-  // log otherwise hides both the message just sent and the Coordinator's reply.
-  if (follow) logEl.scrollTop = logEl.scrollHeight;
-  else logEl.scrollTop = Math.min(keepTop, Math.max(0, logEl.scrollHeight - logEl.clientHeight));
-  state.chatPinned = follow;
+  if (state.chat.open && state.chat.available && state.chat.turns.length) log = openLogHTML(c, err);
+  setLog(log);
+  $('clog').classList.toggle('expanded', state.expanded);
 
   const variants = $('cvariants');
   if (options.length) {
@@ -908,9 +1028,29 @@ function setupChat() {
   ta.addEventListener('input', sync);
   ta.addEventListener('keydown', (e) => {
     if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); $('ask').requestSubmit(); }
-    else if (e.key === 'ArrowUp' && ta.value === '' && state.optimisticSent) { ta.value = state.optimisticSent; sync(); e.preventDefault(); }
-    else if (e.key === 'Escape') { ta.value = ''; sync(); ta.blur(); }
+    else if (e.key === 'Escape') { ta.value = ''; sync(); ta.blur(); closeChat(); }
+    else if (state.chat.open && state.chat.turns.length) {
+      // Up and down walk the conversation while the line is a single row.
+      const log = $('clog'), caret = ta.selectionStart;
+      const firstRow = !ta.value.slice(0, caret).includes('\n'), lastRow = !ta.value.slice(ta.selectionEnd).includes('\n');
+      const step = e.key === 'PageUp' || e.key === 'PageDown' ? log.clientHeight * 0.85 : 64;
+      if ((e.key === 'ArrowUp' && firstRow) || e.key === 'PageUp') {
+        e.preventDefault();
+        if (log.scrollTop <= 1) loadOlder();
+        else log.scrollTop -= step;
+      } else if ((e.key === 'ArrowDown' && lastRow) || e.key === 'PageDown') {
+        e.preventDefault();
+        log.scrollTop += step;
+      }
+    }
   });
+  ta.addEventListener('focus', openChat);
+  const log = $('clog');
+  log.addEventListener('scroll', () => { if (state.chat.open && log.scrollTop < 40) loadOlder(); }, { passive: true });
+  // A wheel turn up at the very top has nothing to scroll, so it asks for more.
+  log.addEventListener('wheel', (e) => { if (state.chat.open && e.deltaY < 0 && log.scrollTop <= 1) loadOlder(); }, { passive: true });
+  // The chat stays open while it is used (a click in the log blurs the line); a click elsewhere closes it.
+  document.addEventListener('pointerdown', (e) => { if (state.chat.open && !e.target.closest('#console')) closeChat(); });
   $('ask').addEventListener('submit', async (e) => {
     e.preventDefault();
     if (state.sending) return;
@@ -932,6 +1072,7 @@ function setupChat() {
       state.chatError = '';
       state.optimisticSent = text;
       state.optimistic = { text, at: Date.now(), attachments };
+      notePending(text, attachments);
       ta.value = '';
       sync();
       renderConsole();
@@ -945,6 +1086,7 @@ function setupChat() {
         setTimeout(refresh, 2200);
       } catch (err) {
         state.optimistic = null;
+        state.chat.pending = null;
         state.chatError = 'Не получилось передать: ' + err.message;
         ta.value = text;
         sync();
@@ -1024,7 +1166,7 @@ function renderHelp() {
     ['L', 'режим связи: тянуть линию мышью'],
     ['T', 'дела божьи: список рядом с чатом, перетащи дело во вселенную'],
     ['Shift + перетащить', 'связь без режима L: от ждущей планеты к той, что раньше'],
-    ['/', 'в чат к Координатору'],
+    ['/', 'в чат к Координатору: три последних вопроса и ответа; ↑ или колесо — раньше'],
     ['?', 'эта подсказка'],
     ['Esc', 'закрыть панель, выйти из режима, общий вид'],
     ['', 'Связь = herdr-projects after: «эта начнётся после той». Клик по линии открывает её в «Фокусе».'],
@@ -1558,12 +1700,20 @@ document.addEventListener('click', (e) => {
     if (t) select(t.id, true);
     return;
   }
+  const reuse = e.target.closest('[data-reuse]');
+  if (reuse) {
+    const t = state.chat.turns.find((x) => x.n === Number(reuse.dataset.reuse));
+    const ta = $('ask-in');
+    if (t && ta) { ta.value = t.q; ta.dispatchEvent(new Event('input')); ta.focus(); }
+    return;
+  }
   const variant = e.target.closest('[data-variant]');
   if (variant) {
     const o = state.variantOptions[Number(variant.dataset.variant)];
     if (o) {
       state.optimisticSent = o.value;
-      post('/api/chat', { text: o.value }).catch((err) => { state.chatError = err.message; renderConsole(); });
+      notePending(o.value);
+      post('/api/chat', { text: o.value }).catch((err) => { state.chat.pending = null; state.chatError = err.message; renderConsole(); });
       renderConsole();
       setTimeout(refresh, 900);
       setTimeout(refresh, 2500);
@@ -1643,6 +1793,12 @@ document.addEventListener('click', (e) => {
   }
   if (b.matches('[data-chat]')) {
     if (b.dataset.chat === 'toggle') { state.expanded = !state.expanded; renderConsole(); }
+    else if (b.dataset.chat === 'older') loadOlder();
+    else if (b.dataset.chat === 'turn') {
+      const n = Number(b.dataset.n), w = state.chat.wide;
+      if (w.has(n)) w.delete(n); else w.add(n);
+      renderConsole();
+    }
     else if (b.dataset.chat === 'retry') { const ta = $('ask-in'); if (state.optimisticSent) ta.value = state.optimisticSent; $('ask').requestSubmit(); }
     return;
   }
@@ -1719,6 +1875,7 @@ async function refresh() {
     if (state.optimisticSent && s.coordinator && s.coordinator.last_sent === state.optimisticSent) state.optimisticSent = '';
     if (s.coordinator && !s.coordinator.busy && s.coordinator.reply) state.chatError = '';
     applyState(s);
+    if (state.chat.open) loadLatest();
   } catch (e) {
     if (e.message !== 'unauthorized') {
       state.board = { ...state.board, ok: false, error: e.message };
@@ -1734,8 +1891,8 @@ function applyWidth() {
   state.narrow = innerWidth < 900;
   $('win').classList.toggle('narrow', state.narrow);
   if (state.narrow && !state._narrowInit) { state._narrowInit = true; state.panels.focus = false; }
-  if (state.narrow) { world.detachChat(); world.detachTodo(); }
-  else { world.attachChat(); world.attachTodo(); }
+  if (state.narrow || state.chat.open) world.detachChat(); else world.attachChat();
+  if (state.narrow) world.detachTodo(); else world.attachTodo();
   world.showTodo(state.panels.todo);
   if (state.narrow) {
     const open = Object.entries(state.panels).filter(([k, v]) => v && k !== 'help');

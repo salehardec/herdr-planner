@@ -5,6 +5,7 @@ use crate::attachments;
 use crate::auth::{self, cookie_value, peer_ip, LoginError, COOKIE};
 use crate::board::{self, Status};
 use crate::config::now_ms;
+use crate::history;
 use crate::usage;
 use axum::extract::{ConnectInfo, DefaultBodyLimit, Multipart, Path, Query, State};
 use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
@@ -46,6 +47,7 @@ pub fn router(app: Shared) -> Router {
         .route("/api/coordinator/screen", get(api_coordinator_screen))
         .route("/api/action", post(api_action))
         .route("/api/chat", post(api_chat))
+        .route("/api/chat/history", get(api_chat_history))
         .route(
             "/api/chat/attach",
             post(api_attach).layer(DefaultBodyLimit::max(attachments::MAX_BODY_BYTES)),
@@ -522,6 +524,30 @@ async fn run_herdr(args: &[&str], wait: Duration) -> Result<String, String> {
 async fn api_refresh(State(app): State<Shared>) -> Response {
     refresh(&app).await;
     Json(json!({"ok": true})).into_response()
+}
+
+#[derive(Deserialize)]
+struct HistoryQuery {
+    /// Turns older than this one (`n` of the oldest the page has); the newest when absent.
+    before: Option<usize>,
+    limit: Option<usize>,
+}
+
+/// The Coordinator's past questions and answers, read from its transcript.
+async fn api_chat_history(State(app): State<Shared>, Query(q): Query<HistoryQuery>) -> Response {
+    let cfg = app.cfg.clone();
+    let limit = q.limit.unwrap_or(3);
+    match tokio::task::spawn_blocking(move || history::page(&cfg, q.before, limit)).await {
+        Ok(page) => Json(json!({
+            "ok": true,
+            "available": page.available,
+            "turns": page.turns,
+            "more": page.more,
+            "total": page.total,
+        }))
+        .into_response(),
+        Err(e) => error(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
+    }
 }
 
 #[derive(Deserialize)]

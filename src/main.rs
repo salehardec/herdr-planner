@@ -9,6 +9,7 @@ mod auth;
 mod board;
 mod config;
 mod coordinator;
+mod history;
 mod server;
 mod theme;
 mod usage;
