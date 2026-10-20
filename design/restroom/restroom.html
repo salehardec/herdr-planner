@@ -1,0 +1,447 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Комната отдыха · макет</title>
+<style>
+/* Токены — те же, что в design/galaxy (тема Omarchy по умолчанию), светлая — Catppuccin Latte */
+:root{
+  --c-bg:#1a120c;--c-bg-dark:#140e09;--c-bg-light:#2a201a;--c-fg:#ecded6;--c-fg-dim:#9c9089;--c-fg-bright:#fcf5f1;
+  --c-muted:#806f64;--c-accent:#dfa360;--c-red:#e48682;--c-yellow:#f6bb6f;--c-green:#98bf7a;--c-cyan:#5bcbcb;--c-blue:#77b0e9;--c-magenta:#da8fbf;
+  --font:"JetBrainsMono Nerd Font","JetBrains Mono",ui-monospace,"DejaVu Sans Mono",monospace;
+  --m-fast:.14s;--m-med:.26s;--m-slow:.9s;--m-ease:cubic-bezier(.2,.7,.2,1);
+  --pl-panel:color-mix(in srgb,var(--c-bg) 90%,transparent);--pl-line:color-mix(in srgb,var(--c-fg) 15%,var(--c-bg));
+  --pl-hover:color-mix(in srgb,var(--c-fg) 8%,transparent);--pl-r:6px;color-scheme:dark;
+}
+:root[data-theme=light]{
+  --c-bg:#eff1f5;--c-bg-dark:#e3e4e8;--c-bg-light:#dce0e8;--c-fg:#4c4f69;--c-fg-dim:#6c6f85;--c-fg-bright:#4c4f69;--c-muted:#9ca0b0;
+  --c-accent:#1e66f5;--c-red:#d20f39;--c-yellow:#df8e1d;--c-green:#40a02b;--c-cyan:#179299;--c-blue:#1e66f5;--c-magenta:#ea76cb;
+  --pl-panel:color-mix(in srgb,var(--c-bg) 93%,transparent);color-scheme:light;
+}
+*{box-sizing:border-box}
+[hidden]{display:none!important}
+html,body{margin:0;height:100%;overflow:hidden;background:#000;color:var(--c-fg);font:13px/1.45 var(--font)}
+button{font:inherit;color:inherit;cursor:pointer}
+:focus-visible{outline:2px solid var(--c-accent);outline-offset:2px}
+.panel{background:var(--pl-panel);border:1px solid var(--pl-line);border-radius:var(--pl-r);backdrop-filter:blur(8px)}
+.btn{background:transparent;border:1px solid var(--pl-line);border-radius:var(--pl-r);padding:6px 10px;min-height:32px}
+.btn:hover{background:var(--pl-hover)}
+.btn.panel{background:var(--pl-panel)}
+.btn.pri{background:var(--c-accent);border-color:var(--c-accent);color:var(--c-bg);font-weight:700}
+kbd{border:1px solid var(--pl-line);border-bottom-width:2px;border-radius:4px;padding:0 5px;font:11px var(--font);color:var(--c-fg-dim)}
+.dim{color:var(--c-fg-dim)}
+
+/* ---------- Кабина (упрощённая сцена из галактики) ---------- */
+#cockpit{position:fixed;inset:0;background:radial-gradient(ellipse at 50% 40%,#2a1b30 0,#0b0710 60%,#040306 100%)}
+#stars{position:absolute;inset:0;width:100%;height:100%}
+.topbar{position:absolute;left:12px;right:12px;top:12px;display:flex;gap:8px;align-items:center;padding:6px 10px}
+.topbar .crumb{color:var(--c-fg-dim)} .topbar .crumb b{color:var(--c-fg-bright)}
+.topbar .sp{flex:1}
+#nav{position:absolute;left:12px;top:64px;width:250px;padding:10px}
+#nav h3{margin:0 0 6px;font-size:11px;text-transform:uppercase;letter-spacing:.08em;color:var(--c-fg-dim)}
+#nav li{list-style:none;padding:4px 6px;border-radius:4px}
+#nav ul{margin:0 0 8px;padding:0}
+#nav li.cur{background:var(--pl-hover);color:var(--c-fg-bright)}
+#nav .rest{display:flex;justify-content:space-between;align-items:center;width:100%;text-align:left;background:none;border:1px dashed color-mix(in srgb,var(--c-green) 55%,transparent);border-radius:4px;padding:6px}
+#nav .rest:hover{background:color-mix(in srgb,var(--c-green) 12%,transparent)}
+#focus{position:absolute;right:12px;top:64px;width:320px;padding:12px}
+#focus h2{margin:0 0 4px;font-size:15px;color:var(--c-fg-bright)}
+.tag{display:inline-block;padding:0 6px;border-radius:3px;font-size:11px;border:1px solid currentColor}
+/* люк в отсек отдыха — нижний левый угол кабины, у пола */
+#hatch{position:absolute;left:12px;bottom:12px;display:flex;align-items:center;gap:10px;padding:8px 12px 8px 8px;background:var(--pl-panel);border:1px solid var(--pl-line);border-radius:var(--pl-r)}
+#hatch .door{width:34px;height:42px;border-radius:17px 17px 3px 3px;border:2px solid var(--c-green);position:relative;overflow:hidden;background:#0a1a10}
+#hatch .door::before,#hatch .door::after{content:"";position:absolute;top:0;bottom:0;width:50%;background:color-mix(in srgb,var(--c-green) 30%,#111);transition:transform var(--m-med) var(--m-ease)}
+#hatch .door::before{left:0;border-right:1px solid var(--c-green)} #hatch .door::after{right:0}
+#hatch:hover .door::before{transform:translateX(-35%)} #hatch:hover .door::after{transform:translateX(35%)}
+#hatch b{display:block;color:var(--c-fg-bright)}
+.callout{position:absolute;font-size:11px;color:var(--c-yellow);pointer-events:none}
+#flyto{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);padding:14px 18px;text-align:center}
+#flyto[hidden]{display:none}
+
+/* ---------- Комната отдыха ---------- */
+#room{position:fixed;inset:0;visibility:hidden}
+#room.on{visibility:visible}
+#wall{position:absolute;inset:-2%;background:#000 center/cover no-repeat;transition:opacity .5s;animation:drift 60s ease-in-out infinite alternate}
+@keyframes drift{to{transform:scale(1.04) translate(-1%,0)}}
+#wall svg{width:100%;height:100%;display:block}
+.vignette{position:absolute;inset:0;background:radial-gradient(ellipse at 50% 55%,transparent 45%,rgba(0,0,0,.55) 100%);pointer-events:none}
+#exit{position:absolute;left:16px;top:16px;display:flex;gap:8px;align-items:center}
+/* панель обоев */
+#wp{position:absolute;left:16px;bottom:16px;padding:10px;width:max-content;max-width:calc(100vw - 32px)}
+#wp header{display:flex;align-items:center;gap:8px;margin-bottom:8px}
+#wp header b{color:var(--c-fg-bright);flex:1}
+#wp.min .thumbs{display:none} #wp.min header{margin:0}
+.thumbs{display:flex;gap:8px;flex-wrap:wrap}
+.thumb{width:92px;padding:0;border:2px solid transparent;border-radius:6px;background:none;text-align:center}
+.thumb .im{height:56px;border-radius:4px;overflow:hidden;background:#222 center/cover;border:1px solid var(--pl-line)}
+.thumb .im svg{width:100%;height:100%;display:block}
+.thumb span{display:block;font-size:11px;padding:3px 0 1px;color:var(--c-fg-dim)}
+.thumb[aria-pressed=true]{border-color:var(--c-accent)} .thumb[aria-pressed=true] span{color:var(--c-fg-bright)}
+.thumb.browse .im{display:grid;place-items:center;border-style:dashed;background:transparent;font-size:20px;color:var(--c-fg-dim)}
+/* уведомления */
+#notes{position:absolute;right:16px;top:16px;width:280px;max-width:calc(100vw - 32px);display:flex;flex-direction:column;gap:8px}
+.note{padding:10px 12px;animation:slidein var(--m-med) var(--m-ease)}
+.note.out{animation:slideout var(--m-med) var(--m-ease) forwards}
+@keyframes slidein{from{opacity:0;transform:translateX(30px)}}
+@keyframes slideout{to{opacity:0;transform:translateX(30px)}}
+.note .k{font-size:11px;display:flex;gap:6px;align-items:center}
+.note .k i{width:8px;height:8px;border-radius:50%;background:var(--s);box-shadow:0 0 0 3px color-mix(in srgb,var(--s) 25%,transparent)}
+.note p{margin:4px 0 8px;color:var(--c-fg-bright)}
+.note .row{display:flex;gap:6px;justify-content:flex-end}
+.s-ask{--s:var(--c-yellow)} .s-review{--s:var(--c-magenta)}
+
+/* ---------- Приставка ---------- */
+#console{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);width:min(600px,92vw,calc((100vh - 150px)/1.04),calc(100vw - 640px))}
+@media (max-width:820px){#console{width:min(600px,92vw)}}
+@media (max-width:1499px){.thumbs{display:grid;grid-template-columns:repeat(2,92px)}} /* узкая панель обоев не заходит на приставку */
+.shell{position:relative;background:linear-gradient(#d9d2c3,#bfb6a4);border-radius:18px 18px 46px 18px;padding:22px 22px 26px;box-shadow:0 30px 60px rgba(0,0,0,.55),inset 0 2px 0 #f2ede2,inset 0 -4px 0 #9d9483;color:#3b3530}
+.brand{display:flex;justify-content:space-between;align-items:baseline;margin-bottom:10px;font:italic 700 15px/1 Georgia,serif;letter-spacing:.04em;color:#38306a}
+.brand small{font:10px var(--font);font-style:normal;color:#6d665b;letter-spacing:.12em}
+.bezel{background:#4a4650;border-radius:10px 10px 28px 10px;padding:10px 16px 12px;box-shadow:inset 0 3px 6px rgba(0,0,0,.5)}
+.bezel .led{display:flex;align-items:center;gap:6px;font-size:9px;color:#aaa3b3;margin-bottom:8px;letter-spacing:.1em}
+.bezel .led i{width:7px;height:7px;border-radius:50%;background:#3a1010}
+.bezel .led i.on{background:#ff3b3b;box-shadow:0 0 6px #ff3b3b}
+#screen{display:block;width:100%;aspect-ratio:240/224;image-rendering:pixelated;background:#0b1a12;border-radius:3px;box-shadow:inset 0 0 20px rgba(0,0,0,.8)}
+.controls{display:grid;grid-template-columns:auto 1fr auto;align-items:center;margin-top:12px;gap:10px}
+.dpad{position:relative;width:96px;height:96px}
+.dpad button{position:absolute;width:32px;height:32px;background:#2c2a2e;border:0;border-radius:4px;box-shadow:0 3px 0 #141315}
+.dpad button:active,.dpad button.dn{transform:translateY(2px);box-shadow:0 1px 0 #141315}
+.dpad .u{left:32px;top:0}.dpad .d{left:32px;bottom:0}.dpad .l{left:0;top:32px}.dpad .r{right:0;top:32px}
+.dpad::after{content:"";position:absolute;left:32px;top:32px;width:32px;height:32px;background:#2c2a2e}
+.mid{display:flex;justify-content:center;gap:14px;align-self:end;padding-bottom:6px}
+.pill{display:flex;flex-direction:column;align-items:center;gap:4px;font-size:9px;letter-spacing:.1em;color:#6d665b}
+.pill button{width:44px;height:12px;border-radius:6px;border:0;background:#77706a;transform:rotate(-24deg);box-shadow:0 2px 0 #55504b}
+.ab{display:flex;gap:12px;transform:rotate(-24deg)}
+.ab div{display:flex;flex-direction:column;align-items:center;gap:4px;font:700 11px var(--font);color:#38306a}
+.ab button{width:44px;height:44px;border-radius:50%;border:0;background:#a3245a;box-shadow:0 4px 0 #6b1439}
+.ab button:active,.ab button.dn{transform:translateY(3px);box-shadow:0 1px 0 #6b1439}
+.speaker{position:absolute;right:26px;bottom:22px;display:flex;gap:6px;transform:rotate(-24deg)}
+.speaker i{width:4px;height:30px;border-radius:2px;background:#9d9483;box-shadow:inset 0 1px 2px rgba(0,0,0,.4)}
+.hint{margin:10px auto 0;width:fit-content;max-width:100%;padding:4px 10px;border-radius:6px;background:rgba(0,0,0,.45);text-align:center;font-size:11px;color:rgba(255,255,255,.8);text-shadow:0 1px 2px #000}
+.hint kbd{color:#fff;border-color:rgba(255,255,255,.4)}
+
+/* ---------- Переход: шлюз ---------- */
+#iris{position:fixed;inset:0;pointer-events:none;z-index:50}
+#iris .l,#iris .r{position:absolute;top:0;bottom:0;width:50.5%;background:repeating-linear-gradient(90deg,#1d1814 0 40px,#241e19 40px 42px);transition:transform .45s var(--m-ease)}
+#iris .l{left:0;transform:translateX(-101%);border-right:3px solid var(--c-green)}
+#iris .r{right:0;transform:translateX(101%);border-left:3px solid var(--c-green)}
+#iris.shut .l,#iris.shut .r{transform:none}
+#iris .lbl{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);color:var(--c-green);font-size:12px;letter-spacing:.2em;opacity:0;transition:opacity .2s}
+#iris.shut .lbl{opacity:1}
+
+/* Tweaks (только для макета) */
+#tw{position:fixed;right:12px;bottom:12px;z-index:60;padding:8px 10px;font-size:11px;display:flex;gap:6px;align-items:center;flex-wrap:wrap}
+#tw b{color:var(--c-fg-dim);font-weight:400}
+
+@media (prefers-reduced-motion:reduce){
+  *,*::before,*::after{animation:none!important;transition-duration:1ms!important}
+}
+@media (max-width:820px){#nav,#focus{display:none} #console{top:46%}}
+</style>
+</head>
+<body>
+
+<!-- ================= Кабина ================= -->
+<section id="cockpit" aria-label="Кабина">
+  <canvas id="stars"></canvas>
+  <div class="topbar panel">
+    <span class="crumb">Галактика → herdr-planner → <b>PLN-9</b></span><span class="sp"></span>
+    <span class="dim">поиск <kbd>Ctrl K</kbd></span>
+    <button class="btn" id="topRest" title="Комната отдыха (O)">☕ Отдых <kbd>O</kbd></button>
+  </div>
+  <nav id="nav" class="panel" aria-label="Навигатор">
+    <h3>Навигатор</h3>
+    <ul><li>Галактика</li><li>&nbsp;Вселенная</li><li class="cur">&nbsp;&nbsp;herdr-planner · PLN-9</li><li>&nbsp;&nbsp;Сегодня</li><li>&nbsp;&nbsp;Спутники</li></ul>
+    <h3>Корабль</h3>
+    <button class="rest" id="navRest"><span>☕ Комната отдыха</span><kbd>O</kbd></button>
+  </nav>
+  <aside id="focus" class="panel">
+    <div class="dim" style="font-size:11px">фокус</div>
+    <h2 id="fTitle">PLN-9 · Галактика</h2>
+    <div id="fBody"><span class="tag" style="color:var(--c-blue)">в работе</span> <span class="dim">агент · claude · 42 мин</span>
+    <p class="dim">Итог агента появится здесь. Отсюда можно уйти отдохнуть — вернёшься ровно сюда.</p></div>
+  </aside>
+  <button id="hatch" aria-label="Люк в комнату отдыха"><span class="door"></span><span><b>Комната отдыха</b><span class="dim">люк кабины · <kbd>O</kbd></span></span></button>
+  <div id="flyto" class="panel" hidden></div>
+</section>
+
+<!-- ================= Комната отдыха ================= -->
+<section id="room" aria-label="Комната отдыха">
+  <div id="wall"></div><div class="vignette"></div>
+
+  <div id="exit"><button class="btn panel" id="back">← <span id="backLbl">В кабину</span> <kbd>Esc</kbd></button></div>
+
+  <div id="notes" aria-live="polite"></div>
+
+  <div id="console">
+    <div class="shell">
+      <div class="brand"><span>Звёздный Досуг</span><small>КАРМАННЫЙ · 8 БИТ</small></div>
+      <div class="bezel">
+        <div class="led"><i id="led"></i> ПИТАНИЕ</div>
+        <canvas id="screen" width="240" height="224"></canvas>
+      </div>
+      <div class="controls">
+        <div class="dpad"><button class="u" data-k="ArrowUp" aria-label="вверх"></button><button class="l" data-k="ArrowLeft" aria-label="влево"></button><button class="r" data-k="ArrowRight" aria-label="вправо"></button><button class="d" data-k="ArrowDown" aria-label="вниз"></button></div>
+        <div class="mid"><div class="pill"><button data-k="Escape2" aria-label="Select / меню"></button>МЕНЮ</div><div class="pill"><button data-k="p" aria-label="Start / пауза"></button>СТАРТ</div></div>
+        <div class="ab"><div><button data-k="x" aria-label="B"></button>B</div><div><button data-k=" " aria-label="A — огонь"></button>A</div></div>
+      </div>
+      <div class="speaker"><i></i><i></i><i></i><i></i><i></i></div>
+    </div>
+    <div class="hint"><kbd>←</kbd><kbd>→</kbd> движение · <kbd>Пробел</kbd> огонь / выбор · <kbd>P</kbd> пауза · <kbd>M</kbd> меню · <kbd>Esc</kbd> выйти</div>
+  </div>
+
+  <div id="wp" class="panel">
+    <header><b>Обои</b><button class="btn" id="wpMin" aria-expanded="true" style="min-height:24px;padding:0 8px">–</button></header>
+    <div class="thumbs" id="thumbs"></div>
+    <input type="file" id="file" accept="image/*" hidden>
+  </div>
+</section>
+
+<div id="iris"><div class="l"></div><div class="r"></div><div class="lbl" id="irisLbl">ШЛЮЗ</div></div>
+
+<div id="tw" class="panel"><b>Tweaks:</b>
+  <button class="btn" id="twTheme">тема: тёмная</button>
+  <button class="btn" id="twNote">ещё уведомление</button>
+</div>
+
+<script>
+const $=id=>document.getElementById(id);
+const EMBED=new URLSearchParams(location.search).has('embed');
+const RM=matchMedia('(prefers-reduced-motion: reduce)').matches;
+const store={get(k,d){try{return localStorage.getItem('restroom.'+k)??d}catch{return d}},set(k,v){try{localStorage.setItem('restroom.'+k,v)}catch{}}};
+
+/* ---------- Тема ---------- */
+function setTheme(t){document.documentElement.dataset.theme=t;$('twTheme').textContent='тема: '+(t==='light'?'светлая':'тёмная');store.set('theme',t)}
+setTheme(new URLSearchParams(location.search).get('theme')==='light'?'light':store.get('theme','dark'));
+$('twTheme').onclick=()=>setTheme(document.documentElement.dataset.theme==='light'?'dark':'light');
+
+/* ---------- Звёзды кабины ---------- */
+const sc=$('stars'),sx=sc.getContext('2d');let ST=[];
+function sizeStars(){sc.width=innerWidth;sc.height=innerHeight;ST=Array.from({length:260},()=>({x:Math.random()*sc.width,y:Math.random()*sc.height,z:Math.random()}))}
+sizeStars();addEventListener('resize',sizeStars);
+function drawStars(){sx.clearRect(0,0,sc.width,sc.height);for(const s of ST){if(!RM){s.x-=s.z*.3;if(s.x<0)s.x=sc.width}sx.fillStyle=`rgba(255,240,230,${.25+s.z*.7})`;sx.fillRect(s.x,s.y,1+s.z*1.4,1+s.z*1.4)}
+  // туманность-проект вдали
+  const g=sx.createRadialGradient(sc.width*.62,sc.height*.55,0,sc.width*.62,sc.height*.55,sc.height*.35);g.addColorStop(0,'rgba(223,163,96,.25)');g.addColorStop(1,'rgba(223,163,96,0)');sx.fillStyle=g;sx.fillRect(0,0,sc.width,sc.height)}
+
+/* ---------- Обои (нарисованы SVG, всё в файле) ---------- */
+const svgEarth=`<svg viewBox="0 0 1600 900" preserveAspectRatio="xMidYMid slice" xmlns="http://www.w3.org/2000/svg">
+<defs>
+<radialGradient id="ea" cx="50%" cy="100%" r="80%"><stop offset="0" stop-color="#1f5fa8"/><stop offset=".55" stop-color="#2c7fc4"/><stop offset=".8" stop-color="#3f9bd8"/><stop offset="1" stop-color="#9fe0ff"/></radialGradient>
+<radialGradient id="glow" cx="50%" cy="100%" r="62%"><stop offset=".78" stop-color="#6cc6ff" stop-opacity="0"/><stop offset=".86" stop-color="#8fd8ff" stop-opacity=".55"/><stop offset="1" stop-color="#8fd8ff" stop-opacity="0"/></radialGradient>
+<linearGradient id="sp" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#03040b"/><stop offset="1" stop-color="#0b1430"/></linearGradient>
+<linearGradient id="fl" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#2a2a22"/><stop offset="1" stop-color="#121410"/></linearGradient>
+<radialGradient id="lamp" cx="50%" cy="0" r="1"><stop offset="0" stop-color="#ffd9a0" stop-opacity=".35"/><stop offset="1" stop-color="#ffd9a0" stop-opacity="0"/></radialGradient>
+</defs>
+<rect width="1600" height="900" fill="url(#sp)"/>
+<g fill="#fff">${Array.from({length:120},(_,i)=>`<circle cx="${(i*137.5)%1600}" cy="${(i*71.3)%520}" r="${(i%5)/3+.4}" opacity="${.3+(i%7)/10}"/>`).join('')}</g>
+<circle cx="800" cy="1330" r="1040" fill="url(#glow)"/>
+<circle cx="800" cy="1330" r="970" fill="url(#ea)"/>
+<g fill="#3e8a4a" opacity=".85" transform="translate(0,-150)"><path d="M330 760 q80-90 200-70 t180 40 q40 60-60 120 H300z"/><path d="M960 600 q90-40 170 10 t120 120 q-30 40-120 20 t-170-60z"/></g>
+<g fill="#fff" opacity=".55" transform="translate(0,-150)"><ellipse cx="560" cy="640" rx="160" ry="16"/><ellipse cx="1040" cy="560" rx="200" ry="14"/><ellipse cx="760" cy="720" rx="230" ry="18"/><ellipse cx="1220" cy="700" rx="120" ry="12"/></g>
+<rect width="1600" height="900" fill="url(#lamp)"/>
+<!-- рама оранжереи -->
+<g fill="none" stroke="#1a1d17" stroke-width="26"><path d="M80 900 V330 Q800 -120 1520 330 V900"/></g>
+<g fill="none" stroke="#1a1d17" stroke-width="10"><path d="M800 50 V900"/><path d="M430 140 Q520 400 520 900"/><path d="M1170 140 Q1080 400 1080 900"/><path d="M100 520 Q800 300 1500 520"/></g>
+<g fill="none" stroke="#c7b48a" stroke-width="1.5" opacity=".35"><path d="M800 50 V900"/><path d="M100 520 Q800 300 1500 520"/></g>
+<!-- пол и грядки -->
+<rect y="780" width="1600" height="120" fill="url(#fl)"/>
+<g fill="#5a3e2a"><rect x="0" y="770" width="560" height="40" rx="6"/><rect x="1060" y="770" width="540" height="40" rx="6"/></g>
+<!-- растения: листья -->
+<g>${Array.from({length:46},(_,i)=>{const left=i<23,x=left?(i*24)+10:1070+(i-23)*24,h=80+((i*53)%140),c=['#2f6b39','#3d8547','#25542d','#4a9a52'][i%4],b=left?-1:1;return `<path d="M${x} 775 q${b*30} ${-h*.6} ${b*(10+i%20)} ${-h} q${-b*20} ${h*.5} ${-b*(10+i%20)} ${h}z" fill="${c}"/>`}).join('')}</g>
+<g fill="#e7c14a"><circle cx="140" cy="660" r="9"/><circle cx="300" cy="640" r="7"/><circle cx="1260" cy="650" r="9"/><circle cx="1420" cy="630" r="7"/></g>
+<g fill="#d96a7a"><circle cx="220" cy="690" r="8"/><circle cx="1340" cy="690" r="8"/></g>
+<!-- лианы сверху -->
+<g stroke="#2f6b39" stroke-width="4" fill="none">${Array.from({length:9},(_,i)=>{const x=200+i*150,l=60+(i*37)%120;return `<path d="M${x} ${Math.abs(800-x)/3.2+30} q10 ${l/2} -6 ${l}"/>`}).join('')}</g>
+<g fill="#3d8547">${Array.from({length:9},(_,i)=>{const x=200+i*150,l=60+(i*37)%120;return `<ellipse cx="${x-4}" cy="${Math.abs(800-x)/3.2+30+l}" rx="9" ry="5"/>`}).join('')}</g>
+</svg>`;
+const svgSea=`<svg viewBox="0 0 1600 900" preserveAspectRatio="xMidYMid slice" xmlns="http://www.w3.org/2000/svg">
+<defs><linearGradient id="sk" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#253a6b"/><stop offset=".5" stop-color="#e9867a"/><stop offset=".62" stop-color="#ffcf8a"/></linearGradient>
+<linearGradient id="se" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#2f5f8a"/><stop offset="1" stop-color="#0c2238"/></linearGradient>
+<linearGradient id="sun" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#fff2c4"/><stop offset="1" stop-color="#ffb26b"/></linearGradient></defs>
+<rect width="1600" height="560" fill="url(#sk)"/>
+<circle cx="1050" cy="520" r="90" fill="url(#sun)"/>
+<g fill="#fff" opacity=".22"><ellipse cx="400" cy="300" rx="260" ry="22"/><ellipse cx="1200" cy="250" rx="200" ry="16"/><ellipse cx="760" cy="380" rx="300" ry="14"/></g>
+<rect y="540" width="1600" height="360" fill="url(#se)"/>
+<g fill="#ffd79a" opacity=".7">${Array.from({length:14},(_,i)=>`<rect x="${1050-(30+i*14)}" y="${552+i*20}" width="${60+i*28}" height="3" rx="1.5" opacity="${1-i/15}"/>`).join('')}</g>
+<g stroke="#9cc6e6" stroke-width="2" fill="none" opacity=".35">${Array.from({length:12},(_,i)=>`<path d="M${(i*170)%1600-100} ${600+i*24} q30 -8 60 0 t60 0"/>`).join('')}</g>
+<path d="M0 640 Q180 600 330 650 T560 700 L560 900 H0z" fill="#16202a"/><path d="M60 620 l10 -120 l8 120z" fill="#16202a"/>
+<!-- иллюминатор -->
+<path fill-rule="evenodd" fill="#111317" d="M0 0H1600V900H0z M800 450 m-560 0 a560 400 0 1 0 1120 0 a560 400 0 1 0 -1120 0z"/>
+<ellipse cx="800" cy="450" rx="560" ry="400" fill="none" stroke="#3a3d44" stroke-width="18"/>
+<g fill="#5a5e66">${Array.from({length:16},(_,i)=>{const a=i/16*Math.PI*2;return `<circle cx="${800+Math.cos(a)*580}" cy="${450+Math.sin(a)*418}" r="7"/>`}).join('')}</g>
+</svg>`;
+const svgAurora=`<svg viewBox="0 0 1600 900" preserveAspectRatio="xMidYMid slice" xmlns="http://www.w3.org/2000/svg">
+<defs><linearGradient id="ns" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#040814"/><stop offset="1" stop-color="#0f2a33"/></linearGradient>
+<linearGradient id="au" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#7affc4" stop-opacity="0"/><stop offset=".6" stop-color="#5cf0a8" stop-opacity=".55"/><stop offset="1" stop-color="#3fb0c9" stop-opacity="0"/></linearGradient>
+<linearGradient id="au2" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#c47aff" stop-opacity="0"/><stop offset=".7" stop-color="#b07af0" stop-opacity=".35"/><stop offset="1" stop-color="#b07af0" stop-opacity="0"/></linearGradient></defs>
+<rect width="1600" height="900" fill="url(#ns)"/>
+<g fill="#fff">${Array.from({length:140},(_,i)=>`<circle cx="${(i*131.7)%1600}" cy="${(i*47.9)%560}" r="${(i%4)/3+.3}" opacity="${.3+(i%6)/9}"/>`).join('')}</g>
+<path d="M-50 380 C300 120 500 420 820 200 S1300 260 1650 120 L1650 520 C1300 600 900 420 600 560 S100 520 -50 600z" fill="url(#au)"/>
+<path d="M-50 300 C400 200 700 380 1000 260 S1400 180 1650 260 L1650 420 C1200 460 800 480 400 430 S0 460 -50 470z" fill="url(#au2)"/>
+<path d="M0 640 L220 470 L360 580 L560 420 L760 600 L980 460 L1200 610 L1420 500 L1600 600 V900 H0z" fill="#0b1a20"/>
+<rect y="680" width="1600" height="220" fill="#0a1f26"/>
+<g opacity=".25"><path d="M-50 980 C300 1240 500 940 820 1160 S1300 1100 1650 1240" stroke="#5cf0a8" stroke-width="60" fill="none" transform="translate(0,-260) scale(1,.8)"/></g>
+<g fill="#060d10">${Array.from({length:40},(_,i)=>{const x=i*42-10,h=90+((i*61)%110);return `<path d="M${x} 700 l18 -${h} l18 ${h}z"/>`}).join('')}</g>
+</svg>`;
+const WALLS=[{id:'earth',name:'Земля + сад',svg:svgEarth},{id:'sea',name:'Море',svg:svgSea},{id:'aurora',name:'Сияние',svg:svgAurora}];
+let custom=null;
+function setWall(id){
+  const w=$('wall');w.style.opacity=0;
+  setTimeout(()=>{if(id==='custom'&&custom){w.innerHTML='';w.style.backgroundImage=`url("${custom}")`}else{const W=WALLS.find(x=>x.id===id)||WALLS[0];w.style.backgroundImage='none';w.innerHTML=W.svg;id=W.id}w.style.opacity=1},RM?0:250);
+  document.querySelectorAll('.thumb').forEach(t=>t.setAttribute('aria-pressed',t.dataset.id===id));store.set('wall',id)}
+function renderThumbs(){
+  $('thumbs').innerHTML=WALLS.map(W=>`<button class="thumb" data-id="${W.id}" aria-pressed="false"><div class="im">${W.svg}</div><span>${W.name}</span></button>`).join('')
+   +(custom?`<button class="thumb" data-id="custom" aria-pressed="false"><div class="im" style="background-image:url('${custom}')"></div><span>Свои</span></button>`:'')
+   +`<button class="thumb browse" id="browse"><div class="im">＋</div><span>Обзор…</span></button>`;
+  document.querySelectorAll('.thumb[data-id]').forEach(t=>t.onclick=()=>setWall(t.dataset.id));
+  $('browse').onclick=()=>$('file').click()}
+$('file').onchange=e=>{const f=e.target.files[0];if(!f)return;const r=new FileReader();r.onload=()=>{custom=r.result;store.set('custom',custom);renderThumbs();setWall('custom')};r.readAsDataURL(f)};
+custom=store.get('custom',null);renderThumbs();setWall(store.get('wall','earth'));
+if(innerWidth<1500)setTimeout(()=>$('wpMin').click(),0); // на ноутбуке панель обоев свёрнута, чтобы не закрывать приставку
+$('wpMin').onclick=()=>{const m=$('wp').classList.toggle('min');$('wpMin').textContent=m?'+':'–';$('wpMin').setAttribute('aria-expanded',!m)};
+
+/* ---------- Переходы: вход и выход «туда, откуда пришёл» ---------- */
+let inRoom=false,origin='кабину';
+function gate(label,mid){
+  if(RM){mid();return}
+  const ir=$('iris');$('irisLbl').textContent=label;ir.classList.add('shut');
+  setTimeout(()=>{mid();setTimeout(()=>ir.classList.remove('shut'),220)},480)}
+function enter(from){if(inRoom)return;origin=from;document.activeElement?.blur?.();$('backLbl').textContent='Назад в '+from;
+  gate('ШЛЮЗ · КОМНАТА ОТДЫХА',()=>{inRoom=true;$('room').classList.add('on');$('flyto').hidden=true;if(Game.mode==='off')Game.menu();scheduleNotes()})}
+function leave(target){if(!inRoom)return;Game.pause(true);
+  if(EMBED){gate(target?'ПЕРЕЛЁТ · '+target.tag:'ШЛЮЗ',()=>{inRoom=false;$('room').classList.remove('on');parent.postMessage({restroom:target?'fly':'back',tag:target?.tag},'*')});return}
+  gate(target?'ПЕРЕЛЁТ · '+target.tag:'ШЛЮЗ · '+origin.toUpperCase(),()=>{inRoom=false;$('room').classList.remove('on');if(target)flyTo(target)})}
+$('hatch').onclick=()=>enter('кабину');$('navRest').onclick=()=>enter('навигатор');$('topRest').onclick=()=>enter('кабину');
+$('back').onclick=()=>leave();
+function flyTo(t){$('fTitle').textContent=t.tag+' · '+t.title;
+  $('fBody').innerHTML=`<span class="tag" style="color:var(${t.kind==='ask'?'--c-yellow':'--c-magenta'})">${t.kind==='ask'?'ждёт тебя · вопрос':'готово к одобрению'}</span><p>${t.text}</p><button class="btn pri">${t.kind==='ask'?'Ответить':'Одобрить'}</button> <button class="btn" onclick="enter('кабину')">Обратно к игре (пауза)</button>`;
+  const f=$('flyto');f.hidden=false;f.innerHTML=`Прилетели к <b>${t.tag}</b> — игра на паузе`;setTimeout(()=>f.hidden=true,2200)}
+
+/* ---------- Уведомления из «Ждёт тебя» ---------- */
+const NOTES=[
+ {id:1,kind:'ask',tag:'ALP-16',title:'alpha',text:'Агент спрашивает: «Оставить старый файл настроек или удалить?»'},
+ {id:2,kind:'review',tag:'PRT-16',title:'portal',text:'PR #41 «Экспорт отчётов в CSV» — проверки зелёные.'},
+ {id:3,kind:'ask',tag:'PLN-11',title:'herdr-planner',text:'Нужен вход в GitHub, чтобы открыть PR.'}];
+let shown=new Set(),timers=[];
+function scheduleNotes(){timers.forEach(clearTimeout);timers=[];[[0,4000],[1,11000]].forEach(([i,ms])=>timers.push(setTimeout(()=>pushNote(NOTES[i]),ms)))}
+function pushNote(n){if(!n||shown.has(n.id)||!inRoom)return;shown.add(n.id);
+  const el=document.createElement('div');el.className='note panel s-'+n.kind;
+  el.innerHTML=`<div class="k"><i></i><span>${n.kind==='ask'?'Ждёт тебя · вопрос агента':'Готово к одобрению'}</span><span class="dim">· ${n.tag}</span></div><p>${n.text}</p><div class="row"><button class="btn">Позже</button><button class="btn pri">Лететь →</button></div>`;
+  const [later,go]=el.querySelectorAll('button');
+  const rm=()=>{el.classList.add('out');setTimeout(()=>el.remove(),RM?0:260)};
+  later.onclick=rm;go.onclick=()=>{rm();leave(n)};$('notes').prepend(el)}
+$('twNote').onclick=()=>{if(!inRoom)enter('кабину');setTimeout(()=>pushNote(NOTES.find(n=>!shown.has(n.id))||(shown.clear(),NOTES[0])),RM?50:1000)};
+
+/* ---------- Приставка: меню, «Звёздный заслон», «Кирпичики» ---------- */
+const cv=$('screen'),g=cv.getContext('2d');g.imageSmoothingEnabled=false;const W=240,H=224;
+const keys={};const PAL={bg:'#0b1a12',fg:'#9bf0b0',dim:'#3f7a52',hi:'#f6e27a',red:'#ff6b6b'};
+function txt(s,x,y,c=PAL.fg,sz=8,al='center'){g.fillStyle=c;g.font=`bold ${sz}px monospace`;g.textAlign=al;g.fillText(s,x,y)}
+const Game={mode:'off',sel:0,paused:false,
+  menu(){this.mode='menu';this.paused=false;$('led').classList.add('on')},
+  pause(v){if(this.mode==='shoot'||this.mode==='bricks')this.paused=v??!this.paused}};
+// --- шутер
+let S;
+function shootNew(){S={x:W/2,lives:3,score:0,wave:1,bul:[],ebul:[],inv:0,cool:0,over:false,boom:[]};wave()}
+function wave(){S.al=[];for(let r=0;r<4;r++)for(let c=0;c<8;c++)S.al.push({x:30+c*24,y:22+r*16,t:r,alive:true});S.dir=1;S.sp=.25+S.wave*.08}
+const SPR={ship:['...#...','..###..','.#####.','##.#.##','#######'],
+  a:[['.#...#.','..###..','.#####.','##.#.##','#.#.#.#'],['#.###.#','#######','##.#.##','.#####.','.#...#.'],['..###..','.#####.','#.#.#.#','#######','.#.#.#.'],['.##.##.','#######','#.###.#','.#...#.','#.....#']]};
+function spr(p,x,y,c,s=2){g.fillStyle=c;p.forEach((row,j)=>[...row].forEach((ch,i)=>{if(ch==='#')g.fillRect(Math.round(x+(i-3.5)*s),Math.round(y+j*s),s,s)}))}
+function shootStep(){
+  if(S.over)return
+  if(keys.ArrowLeft||keys.a)S.x=Math.max(8,S.x-2.2);if(keys.ArrowRight||keys.d)S.x=Math.min(W-8,S.x+2.2);
+  if(S.cool>0)S.cool--;if(keys[' ']&&S.cool===0){S.bul.push({x:S.x,y:H-22});S.cool=14}
+  S.bul.forEach(b=>b.y-=4);S.bul=S.bul.filter(b=>b.y>0);
+  const live=S.al.filter(a=>a.alive);let edge=false;live.forEach(a=>{a.x+=S.dir*S.sp*(1+(32-live.length)/16);if(a.x<10||a.x>W-10)edge=true});
+  if(edge){S.dir*=-1;live.forEach(a=>a.y+=6)}
+  if(Math.random()<.02+S.wave*.004&&live.length){const a=live[Math.random()*live.length|0];S.ebul.push({x:a.x,y:a.y+10})}
+  S.ebul.forEach(b=>b.y+=1.8+S.wave*.2);S.ebul=S.ebul.filter(b=>b.y<H);
+  for(const b of S.bul)for(const a of live)if(a.alive&&Math.abs(b.x-a.x)<8&&Math.abs(b.y-a.y-5)<6){a.alive=false;b.y=-9;S.score+=(4-a.t)*10;S.boom.push({x:a.x,y:a.y+5,t:12})}
+  if(S.inv>0)S.inv--;
+  for(const b of S.ebul)if(S.inv===0&&Math.abs(b.x-S.x)<7&&b.y>H-22&&b.y<H-10){b.y=H+9;S.lives--;S.inv=90;S.boom.push({x:S.x,y:H-16,t:16});if(S.lives<=0)S.over=true}
+  if(live.some(a=>a.y>H-30)){S.lives=0;S.over=true}
+  if(!S.al.some(a=>a.alive)){S.wave++;wave()}
+  S.boom.forEach(b=>b.t--);S.boom=S.boom.filter(b=>b.t>0)}
+function shootDraw(){
+  txt('СЧЁТ '+String(S.score).padStart(5,'0'),6,10,PAL.fg,8,'left');txt('ВОЛНА '+S.wave,W/2,10,PAL.dim);
+  for(let i=0;i<S.lives;i++)spr(SPR.ship,W-12-i*14,3,PAL.hi,1.2);
+  const fr=(performance.now()/400|0)%2;
+  S.al.forEach(a=>{if(a.alive)spr(fr&&a.t%2?SPR.a[(a.t+1)%4]:SPR.a[a.t],a.x,a.y,[PAL.fg,'#7ad8f0','#f0a07a','#d88af0'][a.t])});
+  if(!(S.inv&&(S.inv>>2)%2))spr(SPR.ship,S.x,H-20,PAL.hi);
+  g.fillStyle=PAL.hi;S.bul.forEach(b=>g.fillRect(b.x-1,b.y,2,5));g.fillStyle=PAL.red;S.ebul.forEach(b=>g.fillRect(b.x-1,b.y,2,4));
+  S.boom.forEach(b=>{g.fillStyle=b.t%4<2?PAL.hi:PAL.red;for(let k=0;k<6;k++){const an=k/6*6.28;g.fillRect(b.x+Math.cos(an)*(16-b.t),b.y+Math.sin(an)*(16-b.t),2,2)}});
+  g.fillStyle=PAL.dim;g.fillRect(0,H-6,W,1);
+  if(S.over){g.fillStyle='rgba(0,0,0,.6)';g.fillRect(0,0,W,H);txt('ИГРА ОКОНЧЕНА',W/2,80,PAL.red,12);txt('счёт '+S.score,W/2,98);txt('ПРОБЕЛ — ещё раз · M — меню',W/2,120,PAL.dim)}}
+// --- кирпичики (тетрис-подобная, простая)
+const PCS=[[[1,1,1,1]],[[1,1],[1,1]],[[0,1,0],[1,1,1]],[[1,0,0],[1,1,1]],[[0,0,1],[1,1,1]],[[1,1,0],[0,1,1]],[[0,1,1],[1,1,0]]];
+let B;const BW=10,BH=23,CS=9;
+function bricksNew(){B={grid:Array.from({length:BH},()=>Array(BW).fill(0)),score:0,lines:0,t:0,over:false};spawn()}
+function spawn(){const i=Math.random()*7|0;B.p={m:PCS[i].map(r=>[...r]),x:3,y:0,c:i+1};if(hit(B.p.m,B.p.x,B.p.y))B.over=true}
+function hit(m,x,y){return m.some((r,j)=>r.some((v,i)=>v&&(x+i<0||x+i>=BW||y+j>=BH||B.grid[y+j]?.[x+i])))}
+function lock(){B.p.m.forEach((r,j)=>r.forEach((v,i)=>{if(v)B.grid[B.p.y+j][B.p.x+i]=B.p.c}));let n=0;B.grid=B.grid.filter(r=>!r.every(Boolean)||(n++,false));while(B.grid.length<BH)B.grid.unshift(Array(BW).fill(0));B.lines+=n;B.score+=[0,100,300,500,800][n];spawn()}
+function bricksKey(k){if(B.over){if(k===' '){bricksNew()}return}const p=B.p;
+  if(k==='ArrowLeft'&&!hit(p.m,p.x-1,p.y))p.x--;if(k==='ArrowRight'&&!hit(p.m,p.x+1,p.y))p.x++;
+  if(k==='ArrowDown'&&!hit(p.m,p.x,p.y+1))p.y++;
+  if(k==='ArrowUp'){const m=p.m[0].map((_,i)=>p.m.map(r=>r[i]).reverse());if(!hit(m,p.x,p.y))p.m=m}
+  if(k===' '){while(!hit(p.m,p.x,p.y+1))p.y++;lock()}}
+function bricksStep(){if(B.over)return;if(++B.t>Math.max(8,34-B.lines)){B.t=0;if(hit(B.p.m,B.p.x,B.p.y+1))lock();else B.p.y++}}
+function bricksDraw(){const ox=(W-BW*CS)/2-30,oy=8,C=['','#9bf0b0','#f6e27a','#d88af0','#7ad8f0','#f0a07a','#ff6b6b','#7aa8f0'];
+  g.strokeStyle=PAL.dim;g.strokeRect(ox-1.5,oy-1.5,BW*CS+3,BH*CS+3);
+  const cell=(x,y,c)=>{g.fillStyle=C[c];g.fillRect(ox+x*CS,oy+y*CS,CS-1,CS-1)};
+  B.grid.forEach((r,y)=>r.forEach((v,x)=>v&&cell(x,y,v)));B.p.m.forEach((r,j)=>r.forEach((v,i)=>v&&cell(B.p.x+i,B.p.y+j,B.p.c)));
+  txt('КИРПИЧИКИ',ox+BW*CS+14,20,PAL.hi,8,'left');txt('счёт '+B.score,ox+BW*CS+14,40,PAL.fg,8,'left');txt('линии '+B.lines,ox+BW*CS+14,54,PAL.fg,8,'left');
+  txt('↑ поворот',ox+BW*CS+14,90,PAL.dim,7,'left');txt('␣ сброс',ox+BW*CS+14,102,PAL.dim,7,'left');
+  if(B.over){g.fillStyle='rgba(0,0,0,.6)';g.fillRect(0,0,W,H);txt('ЗАВАЛ!',W/2,84,PAL.red,12);txt('ПРОБЕЛ — ещё раз · M — меню',W/2,104,PAL.dim)}}
+// --- меню
+const ITEMS=[{n:'ЗВЁЗДНЫЙ ЗАСЛОН',d:'сбивай корабли пришельцев'},{n:'КИРПИЧИКИ',d:'собирай линии из фигур'}];
+function menuDraw(){txt('ЗВЁЗДНЫЙ ДОСУГ',W/2,30,PAL.hi,12);
+  for(let i=0;i<3;i++)spr(SPR.a[i],W/2-40+i*40,44,PAL.dim);
+  ITEMS.forEach((it,i)=>{const y=108+i*30,s=i===Game.sel;if(s){g.fillStyle=PAL.dim;g.fillRect(30,y-11,W-60,22)}txt((s?'▶ ':'  ')+it.n,W/2,y-1,s?PAL.hi:PAL.fg,9);txt(it.d,W/2,y+8,s?PAL.fg:PAL.dim,7)});
+  txt('↑↓ выбор · ПРОБЕЛ старт',W/2,H-10,PAL.dim,7)}
+function start(i){if(i===0){shootNew();Game.mode='shoot'}else{bricksNew();Game.mode='bricks'}Game.paused=false}
+// --- цикл
+let last=0,acc=0;
+function loop(t){requestAnimationFrame(loop);if(!inRoom){drawStars();return}
+  acc+=Math.min(100,t-last);last=t;
+  while(acc>=16.7){acc-=16.7;if(!Game.paused){if(Game.mode==='shoot')shootStep();else if(Game.mode==='bricks')bricksStep()}}
+  g.fillStyle=PAL.bg;g.fillRect(0,0,W,H);
+  if(Game.mode==='menu')menuDraw();else if(Game.mode==='shoot')shootDraw();else if(Game.mode==='bricks')bricksDraw();
+  if(Game.paused){g.fillStyle='rgba(0,0,0,.55)';g.fillRect(0,0,W,H);txt('ПАУЗА',W/2,H/2,PAL.hi,14);txt('P — продолжить',W/2,H/2+16,PAL.fg,7)}
+  g.fillStyle='rgba(0,0,0,.12)';for(let y=0;y<H;y+=2)g.fillRect(0,y,W,1)}
+requestAnimationFrame(loop);
+
+/* ---------- Клавиатура ---------- */
+const RU={'щ':'o','з':'p','ь':'m','ф':'a','в':'d','ч':'x'};
+function press(k){
+  if(Game.mode==='menu'){if(k==='ArrowUp'||k==='ArrowDown')Game.sel=(Game.sel+1)%ITEMS.length;if(k===' '||k==='Enter')start(Game.sel);return}
+  if(k==='p'){Game.pause();return}
+  if(k==='m'||k==='Escape2'){Game.menu();return}
+  if(Game.paused)return;
+  if(Game.mode==='shoot'&&S.over&&(k===' '||k==='Enter'))shootNew(); // только новое нажатие, не удержание
+  if(Game.mode==='bricks')bricksKey(k)}
+addEventListener('keydown',e=>{
+  let k=e.key.length===1?(RU[e.key.toLowerCase()]||e.key.toLowerCase()):e.key;
+  if(!inRoom){if(k==='o'&&!e.ctrlKey&&!e.metaKey)enter('кабину');return}
+  if(k==='Escape'){leave();return}
+  if(['ArrowUp','ArrowDown','ArrowLeft','ArrowRight',' '].includes(k))e.preventDefault();
+  // Пробел/Enter на кнопке панели (обои, уведомление, выход) — нажимают её; иначе всегда идут в игру
+  if((k===' '||k==='Enter')&&e.target.closest&&e.target.closest('#wp button,#notes button,#exit button'))return;
+  if(k===' '||k==='Enter')e.preventDefault();
+  if(!e.repeat||Game.mode==='bricks')press(k);keys[k]=true});
+addEventListener('keyup',e=>{const k=e.key.length===1?(RU[e.key.toLowerCase()]||e.key.toLowerCase()):e.key;keys[k]=false});
+addEventListener('blur',()=>{for(const k in keys)keys[k]=false;Game.pause(true)});
+// клик мышью по кнопке панели не оставляет на ней фокус: Пробел/Enter снова идут в игру (с клавиатуры — Tab — фокус остаётся)
+document.addEventListener('click',e=>{const b=e.target.closest?.('#room button');if(b&&e.detail>0&&!b.closest('#console'))b.blur()});
+// кнопки на корпусе — тач/мышь
+document.querySelectorAll('#console [data-k]').forEach(b=>{const k=b.dataset.k;
+  b.addEventListener('pointerdown',e=>{e.preventDefault();b.classList.add('dn');press(k);keys[k]=true});
+  ['pointerup','pointerleave'].forEach(ev=>b.addEventListener(ev,()=>{b.classList.remove('dn');keys[k]=false}))});
+
+if(new URLSearchParams(location.search).has('room'))enter('кабину');
+/* Встраивание в design/galaxy/galaxy.html: ?embed&from=… — кабина и Tweaks у галактики свои */
+if(EMBED){$('cockpit').hidden=true;$('tw').hidden=true;document.body.style.background='transparent';
+  addEventListener('message',e=>{const d=e.data||{};if(d.restroom==='enter'){if(d.theme)setTheme(d.theme);for(const k in d.vars||{})document.documentElement.style.setProperty(k,d.vars[k]);enter(d.from||'кабину')}
+    else if(d.restroom==='theme')setTheme(d.theme)})}
+</script>
+</body>
+</html>

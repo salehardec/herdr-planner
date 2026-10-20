@@ -92,6 +92,12 @@ body.simple .panel{backdrop-filter:none;background:var(--pl-panel-solid)}
 #nav.off{transform:translateX(-110%);opacity:0}
 #nav header,#focus header,#todo header{display:flex;justify-content:space-between;align-items:center;padding:8px 10px;border-bottom:1px solid var(--pl-line);font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--pl-dim)}
 #tree{overflow:auto;padding:6px 4px;flex:1}
+/* корабль: комната отдыха (PLN-13, макет design/restroom) */
+#ship{border-top:1px solid var(--pl-line);padding:6px 8px 8px}
+#ship h4{margin:2px 0 4px;font-size:11px;font-weight:400;letter-spacing:.06em;text-transform:uppercase;color:var(--pl-dim)}
+#ship button{display:flex;justify-content:space-between;align-items:center;width:100%;text-align:left;background:none;border:1px dashed color-mix(in srgb,var(--c-green) 55%,transparent);border-radius:4px;padding:6px 8px;color:inherit;font:inherit;cursor:pointer}
+#ship button:hover{background:color-mix(in srgb,var(--c-green) 12%,transparent)}
+#restroom{position:fixed;inset:0;width:100%;height:100%;border:0;z-index:90;background:transparent}
 .ti{display:flex;align-items:center;gap:6px;padding:3px 6px;border-radius:5px;cursor:pointer;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-height:24px}
 .ti:hover{background:var(--pl-hover)}
 .ti.sel{background:color-mix(in srgb,var(--pl-accent) 20%,transparent);color:var(--pl-title)}
@@ -272,6 +278,7 @@ body.simple .ti{min-height:32px;font-size:13px}
     <div id="sres" role="listbox" hidden></div>
   </div>
   <div id="right">
+    <button class="btn" id="restTop" title="Комната отдыха · O">☕ Отдых</button>
     <button class="btn" id="wait" title="B">Ждёт тебя · 3</button>
     <div id="mode" role="group" aria-label="Режим полёта">
       <button data-mode="auto" class="on" title="P">Автопилот</button>
@@ -283,6 +290,7 @@ body.simple .ti{min-height:32px;font-size:13px}
 <aside class="panel" id="nav" aria-label="Навигатор">
   <header><span>Навигатор <kbd>N</kbd></span><span class="dim" id="navn"></span></header>
   <div id="tree" role="tree"></div>
+  <div id="ship"><h4>Корабль</h4><button id="restBtn" title="O">☕ Комната отдыха <kbd>O</kbd></button></div>
 </aside>
 
 <aside class="panel off" id="focus" aria-label="Фокус">
@@ -1208,6 +1216,7 @@ addEventListener('keydown',e=>{
   else if(k==='t')toggleTodo();
   else if(k==='/'){e.preventDefault();$('bchat').click();setTimeout(()=>$('compose').querySelector('textarea').focus(),50)}
   else if(k==='b'){TRI.scroll=0;triShow()}
+  else if(k==='o'||k==='щ')restroom()
 });
 // потеря фокуса окна: отпустить все клавиши, иначе корабль летит сам
 const releaseKeys=()=>{for(const k in keys)keys[k]=false};addEventListener('blur',releaseKeys);document.addEventListener('visibilitychange',releaseKeys);
@@ -1220,6 +1229,19 @@ $('wait').onclick=()=>{TRI.scroll=0;triShow()};
 let tT;function toast(s){const t=$('toast');t.textContent=s;t.hidden=false;clearTimeout(tT);tT=setTimeout(()=>t.hidden=true,3200)}
 
 /* ───────── Tweaks ───────── */
+/* ───────── комната отдыха: живёт в iframe (design/restroom/restroom.html?embed), не выгружается — игра ждёт на паузе ───────── */
+let RR=null;
+function restroom(){
+  const from=S.sel&&S.sel.t?S.sel.t.tag:S.nebula?'туманность':'Галактику';
+  const vars={};for(const k of['bg','bg-dark','bg-light','fg','fg-dim','fg-bright','muted','accent','red','yellow','green','cyan','blue','magenta'])vars['--c-'+k]=getComputedStyle(document.documentElement).getPropertyValue('--c-'+k).trim();
+  const go=()=>{RR.hidden=false;RR.focus();RR.contentWindow.postMessage({restroom:'enter',from,theme:THEMES[S.theme].mode,vars},'*')};
+  for(const k in keys)keys[k]=false;
+  if(RR)return go();
+  RR=document.createElement('iframe');RR.id='restroom';RR.title='Комната отдыха';RR.src='../restroom/restroom.html?embed';RR.onload=go;document.body.append(RR)}
+addEventListener('message',e=>{const d=e.data||{};if(!RR||e.source!==RR.contentWindow)return;
+  if(d.restroom==='back'||d.restroom==='fly'){RR.hidden=true;window.focus()}
+  if(d.restroom==='fly'){const t=[...TASKS,...FTASKS].find(t=>t.tag===d.tag);if(t)selectTask(t);else toast('не нашёл '+d.tag)}});
+$('restBtn').onclick=$('restTop').onclick=()=>{document.activeElement.blur();restroom()};
 function applyTheme(){const t=THEMES[S.theme],r=document.documentElement.style;
   const m={bg:'bg','bg-dark':'bgDark','bg-darker':'bgDarker','bg-light':'bgLight',fg:'fg','fg-dim':'fgDim','fg-bright':'fgBright',muted:'muted',accent:'accent',red:'red',yellow:'yellow',green:'green',cyan:'cyan',blue:'blue',magenta:'magenta','border-a':'borderA','border-b':'borderB'};
   for(const[k,v]of Object.entries(m))r.setProperty('--c-'+k,t[v]);document.documentElement.dataset.mode=t.mode}
@@ -1252,6 +1274,7 @@ const SCREENS=[
  ['15 · Добавить: чужое (форк)',()=>{reset();home();openAddU('orion');AU.tab='url';AU.url='https://github.com/torvalds/subsurface';renderAddU()}],
  ['16 · Форк во вселенной',()=>{reset();dive(PROJECTS.find(p=>p.id==='beta'))}],
  ['17 · Первый запуск',()=>{reset();setData('empty');$('data').value='empty';home();renderFirst()}],
+ ['18 · Комната отдыха',()=>{reset();restroom()}],
 ];
 function reset(){$('addu').hidden=true;if(S.data!=='demo'){setData('demo');$('data').value='demo'}closePop();toggleTodo(false);$('link').hidden=true;$('coach').hidden=true;S.galaxy='orion';S.mode='auto';S.filter=null;S.chatOpen=true;$('nav').classList.remove('off');$('edge').hidden=true}
 $('screens').innerHTML=SCREENS.map((s,i)=>`<button class="btn" data-i="${i}">${s[0]}</button>`).join('');
