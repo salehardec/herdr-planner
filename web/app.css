@@ -280,7 +280,12 @@ button{cursor:pointer}
 .c-log{padding:8px 11px;display:grid;gap:3px;align-content:start;overflow:auto;min-height:92px;max-height:210px;scrollbar-width:thin}
 .c-log.expanded{max-height:46vh}
 .c-log .you{color:var(--pl-faint);display:flex;gap:6px;min-width:0}
-.c-log .you span:last-child{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
+.c-log .you .you-body{min-width:0;flex:1}
+.c-log .you .you-text{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
+.c-log .you .shots{display:flex;flex-wrap:wrap;gap:4px;margin-top:4px}
+.c-log .you .shot{display:block;line-height:0}
+.c-log .you .shot img{height:58px;max-width:120px;object-fit:cover;border-radius:5px;border:1px solid var(--pl-line)}
+.c-log .you .shot:hover img{border-color:var(--pl-accent)}
 .c-log .rep{display:flex;gap:6px;color:var(--pl-text);line-height:1.45}
 .c-log .rep .pr{color:var(--pl-accent-ink);flex:none}
 .c-log .rep .tx{white-space:pre-wrap;word-break:break-word;min-width:0;max-height:3.9em;overflow:hidden}
@@ -301,13 +306,25 @@ button{cursor:pointer}
 .c-in .pr{color:var(--pl-accent-ink);font-weight:700;line-height:18px}
 .c-in textarea{flex:1;min-width:0;resize:none;border:0;background:transparent;outline:none;padding:0;height:18px;max-height:76px;line-height:18px;color:var(--pl-title);caret-color:var(--pl-accent)}
 .c-in textarea::placeholder{color:var(--pl-faint)}
+.attach{display:inline-flex;align-items:center;justify-content:center;width:22px;height:20px;padding:0;border:0;border-radius:5px;background:transparent;color:var(--pl-faint);flex:none}
+.attach:hover,.attach:focus-visible{color:var(--pl-title);background:var(--pl-hover)}
+.c-attach{display:flex;flex-wrap:wrap;gap:6px;padding:8px 11px 2px}
+.c-attach[hidden]{display:none}
+.att{position:relative;width:58px;height:58px;border:1px solid var(--pl-line);border-radius:6px;overflow:hidden;background:var(--pl-raised)}
+.att img{display:block;width:100%;height:100%;object-fit:cover}
+.att[data-state="uploading"] img{opacity:.45}
+.att[data-state="error"]{border-color:var(--pl-danger)}
+.att .rm{position:absolute;top:1px;right:1px;display:flex;align-items:center;justify-content:center;width:16px;height:16px;padding:0;border:0;border-radius:50%;background:color-mix(in srgb,var(--pl-bg) 72%,transparent);color:var(--pl-title);font-size:12px;line-height:1}
+.att .rm:hover{background:var(--pl-danger);color:var(--pl-on-accent)}
+.att .wait{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:var(--pl-title);font-size:10px;pointer-events:none}
+.drop-hint{display:none;position:absolute;inset:0;z-index:5;align-items:center;justify-content:center;border:1px dashed var(--pl-accent);border-radius:7px;background:color-mix(in srgb,var(--pl-bg) 82%,transparent);color:var(--pl-accent-ink);font-size:11px;pointer-events:none}
+.console.drop .drop-hint{display:flex}
 .send{display:inline-flex;align-items:center;gap:5px;height:20px;padding:0 7px;border-radius:5px;border:1px solid var(--pl-line);background:transparent;color:var(--pl-faint);font-size:11px;flex:none}
 .send[data-ready="true"]{background:var(--pl-accent);border-color:var(--pl-accent);color:var(--pl-on-accent);font-weight:700}
 .c-dialog{margin:0 8px 6px;padding:7px 9px;border:1px solid color-mix(in srgb,var(--c-yellow) 55%,var(--pl-line));border-radius:6px;background:color-mix(in srgb,var(--c-yellow) 12%,var(--pl-bg));display:grid;gap:5px}
 .c-dialog .h{color:var(--c-yellow);font-weight:700;font-size:10.5px;letter-spacing:.06em;text-transform:uppercase}
 .c-dialog pre{margin:0;max-height:150px;overflow:auto;white-space:pre-wrap;word-break:break-word;color:var(--pl-dim);font:11px/1.35 var(--font)}
 .c-variants{display:flex;flex-wrap:wrap;gap:5px;padding:0 8px 7px}
-.c-attach{padding:0 8px 7px;color:var(--pl-faint);font-size:10.5px}
 
 /* кнопки */
 .btn{display:inline-flex;align-items:center;gap:5px;height:22px;padding:0 9px;border-radius:5px;border:1px solid var(--pl-line);background:var(--pl-raised);color:var(--pl-title);font-size:11px;font-weight:600;white-space:nowrap}

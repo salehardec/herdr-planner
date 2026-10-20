@@ -19,6 +19,8 @@ use tokio::time::timeout;
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 const JOURNAL_MAX: usize = 80;
+/// How many sent Coordinator messages the page keeps with their images.
+pub const CHAT_HISTORY_MAX: usize = 20;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct BoardStatus {
@@ -63,6 +65,8 @@ pub struct CoordinatorState {
     pub view: CoordinatorView,
     /// The tail shown is the board's last report, not a structured chat reply.
     pub source: String,
+    /// Sent messages, newest last, with the images that went with them.
+    pub history: Vec<ChatMessage>,
 }
 
 /// One item of the God's own list: an idea that is not on the board yet.
@@ -102,8 +106,19 @@ pub struct ChatState {
     pub last_sent: String,
     pub sent_at: u64,
     pub last_reply: String,
+    /// Newest last; capped at [`CHAT_HISTORY_MAX`].
+    #[serde(default)]
+    pub history: Vec<ChatMessage>,
     #[serde(skip)]
     pub busy_until: u64,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct ChatMessage {
+    pub text: String,
+    pub at: u64,
+    #[serde(default)]
+    pub attachments: Vec<crate::attachments::Attachment>,
 }
 
 #[derive(Debug, Default)]
@@ -168,6 +183,7 @@ impl App {
             coordinator: CoordinatorState {
                 view: CoordinatorView::default(),
                 source: "herdr-projects coordinator".into(),
+                history: Vec::new(),
             },
             theme,
             herdr: HerdrInfo {
@@ -185,7 +201,11 @@ impl App {
                 tls: cfg.tls().is_some(),
             },
         };
-        let chat = load_chat(&cfg);
+        crate::attachments::cleanup(&cfg.attachments_dir(), std::time::SystemTime::now());
+        let mut chat = load_chat(&cfg);
+        if prune_missing_attachments(&cfg.attachments_dir(), &mut chat) {
+            save_chat(&cfg, &chat);
+        }
         let journal = load_journal(&cfg);
         let auth = crate::auth::Auth::new(
             cfg.auth_required(),
@@ -234,6 +254,30 @@ fn load_chat(cfg: &AppConfig) -> ChatState {
 pub fn save_chat(cfg: &AppConfig, chat: &ChatState) {
     if let Ok(s) = serde_json::to_string(chat) {
         write_state(state_json_path(cfg, "chat.json"), &s);
+    }
+}
+
+/// Drops history images whose files are gone: cleanup by age (or a manual
+/// removal) must not leave broken thumbnails in the chat.
+fn prune_missing_attachments(dir: &std::path::Path, chat: &mut ChatState) -> bool {
+    let mut changed = false;
+    for message in &mut chat.history {
+        let before = message.attachments.len();
+        message.attachments.retain(|a| {
+            crate::attachments::path(dir, &a.id).is_some_and(|p| p.exists())
+        });
+        changed |= message.attachments.len() != before;
+    }
+    changed
+}
+
+/// Runs after an upload's cleanup: old images may have just disappeared.
+pub async fn prune_chat_attachments(app: &Shared) {
+    let mut chat = app.chat.lock().await;
+    if prune_missing_attachments(&app.cfg.attachments_dir(), &mut chat) {
+        let saved = chat.clone();
+        drop(chat);
+        save_chat(&app.cfg, &saved);
     }
 }
 
@@ -365,6 +409,7 @@ pub async fn refresh(app: &Shared) {
     if chat != chat_before {
         save_chat(cfg, &chat);
     }
+    let history = chat.history.clone();
     *app.chat.lock().await = chat;
 
     let seq = app.snapshot.read().await.seq + 1;
@@ -401,6 +446,7 @@ pub async fn refresh(app: &Shared) {
     snap.coordinator = CoordinatorState {
         view: coord_view,
         source: "herdr-projects coordinator · последние строки окна Координатора".into(),
+        history,
     };
 
     match active {
@@ -641,6 +687,47 @@ mod tests {
             update_journal(&mut j, &t, i as u64 + 2);
         }
         assert!(j.entries.len() <= JOURNAL_MAX);
+    }
+
+    #[test]
+    fn chat_history_drops_images_whose_files_are_gone() {
+        use crate::attachments::Attachment;
+        let dir = std::env::temp_dir().join(format!(
+            "herdr-chat-prune-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let present = "0123456789abcdef0123456789abcdef.png".to_string();
+        let missing = "fedcba9876543210fedcba9876543210.png".to_string();
+        std::fs::write(dir.join(&present), b"\x89PNG\r\n\x1a\n").unwrap();
+        let mut chat = ChatState::default();
+        chat.history.push(ChatMessage {
+            text: "посмотри".into(),
+            at: 1,
+            attachments: vec![
+                Attachment {
+                    id: present.clone(),
+                    name: "one.png".into(),
+                    mime: "image/png".into(),
+                    size: 8,
+                },
+                Attachment {
+                    id: missing,
+                    name: "two.png".into(),
+                    mime: "image/png".into(),
+                    size: 8,
+                },
+            ],
+        });
+        assert!(prune_missing_attachments(&dir, &mut chat));
+        assert_eq!(chat.history[0].attachments.len(), 1);
+        assert_eq!(chat.history[0].attachments[0].id, present);
+        assert!(!prune_missing_attachments(&dir, &mut chat));
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]

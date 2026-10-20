@@ -1,11 +1,12 @@
 //! HTTP: the page, the JSON API, login and the board commands behind it.
 
 use crate::app::{self, details, refresh, run_board, save_todo, Shared, TodoItem};
+use crate::attachments;
 use crate::auth::{self, cookie_value, peer_ip, LoginError, COOKIE};
 use crate::board::{self, Status};
 use crate::config::now_ms;
 use crate::usage;
-use axum::extract::{ConnectInfo, Query, State};
+use axum::extract::{ConnectInfo, DefaultBodyLimit, Multipart, Path, Query, State};
 use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
 use axum::middleware::{self, Next};
 use axum::response::{Html, IntoResponse, Redirect, Response};
@@ -13,9 +14,10 @@ use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde::Deserialize;
 use serde_json::json;
+use std::collections::HashSet;
 use std::net::{IpAddr, SocketAddr};
 use std::process::Stdio;
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 use tokio::process::Command;
 use tokio::time::timeout;
 
@@ -44,6 +46,11 @@ pub fn router(app: Shared) -> Router {
         .route("/api/coordinator/screen", get(api_coordinator_screen))
         .route("/api/action", post(api_action))
         .route("/api/chat", post(api_chat))
+        .route(
+            "/api/chat/attach",
+            post(api_attach).layer(DefaultBodyLimit::max(attachments::MAX_BODY_BYTES)),
+        )
+        .route("/api/attachments/{id}", get(api_attachment))
         .route("/api/refresh", post(api_refresh))
         .route("/api/logout", post(api_logout))
         .route_layer(middleware::from_fn_with_state(
@@ -123,7 +130,7 @@ async fn headers_middleware(req: axum::extract::Request, next: Next) -> Response
         header::CONTENT_SECURITY_POLICY,
         HeaderValue::from_static(
             "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; \
-             img-src 'self' data:; connect-src 'self'; form-action 'self'; \
+             img-src 'self' data: blob:; connect-src 'self'; form-action 'self'; \
              frame-ancestors 'none'; base-uri 'self'",
         ),
     );
@@ -519,11 +526,40 @@ async fn api_refresh(State(app): State<Shared>) -> Response {
 
 #[derive(Deserialize)]
 struct ChatBody {
-    text: String,
-    /// PLN-6: pictures in the chat. Accepted and ignored for now.
     #[serde(default)]
-    #[allow(dead_code)]
-    attachments: Vec<serde_json::Value>,
+    text: String,
+    #[serde(default)]
+    attachments: Vec<AttachmentRef>,
+}
+
+/// A message may name uploaded files by id alone (older callers) or carry a
+/// display name too. The id is always the authority; the name never becomes a
+/// path.
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum AttachmentRef {
+    Id(String),
+    Named {
+        id: String,
+        #[serde(default)]
+        name: String,
+    },
+}
+
+impl AttachmentRef {
+    fn id(&self) -> &str {
+        match self {
+            Self::Id(id) => id,
+            Self::Named { id, .. } => id,
+        }
+    }
+
+    fn name(&self) -> Option<&str> {
+        match self {
+            Self::Named { name, .. } if !name.is_empty() => Some(name),
+            _ => None,
+        }
+    }
 }
 
 async fn api_chat(
@@ -535,26 +571,78 @@ async fn api_chat(
         return error(StatusCode::FORBIDDEN, "cross-origin request refused");
     }
     let text = body.text.trim();
-    if text.is_empty() {
-        return error(StatusCode::BAD_REQUEST, "empty message");
+    if body.attachments.len() > attachments::MAX_PER_MESSAGE {
+        return error(
+            StatusCode::BAD_REQUEST,
+            format!(
+                "at most {} images per message",
+                attachments::MAX_PER_MESSAGE
+            ),
+        );
     }
     if text.chars().count() > 4000 {
         return error(StatusCode::BAD_REQUEST, "message is too long");
     }
+
+    let dir = app.cfg.attachments_dir();
+    let mut files = Vec::new();
+    let mut stored = Vec::new();
+    let mut seen = HashSet::new();
+    for reference in &body.attachments {
+        let id = reference.id();
+        let Some(kind) = attachments::parse_id(id) else {
+            return error(StatusCode::BAD_REQUEST, "unknown attachment");
+        };
+        if !seen.insert(id.to_string()) {
+            continue;
+        }
+        let Some(path) = attachments::path(&dir, id) else {
+            return error(StatusCode::BAD_REQUEST, "unknown attachment");
+        };
+        let meta = match tokio::fs::metadata(&path).await {
+            Ok(meta) if meta.is_file() => meta,
+            _ => return error(StatusCode::BAD_REQUEST, "attachment is gone"),
+        };
+        // The Coordinator opens these paths itself: they are absolute paths on
+        // the machine with the board, never paths from the browser's machine.
+        let absolute = tokio::fs::canonicalize(&path).await.unwrap_or(path);
+        files.push(absolute);
+        stored.push(attachments::Attachment {
+            id: id.to_string(),
+            name: attachments::clean_name(reference.name(), kind),
+            mime: kind.mime.to_string(),
+            size: meta.len(),
+        });
+    }
+    if text.is_empty() && files.is_empty() {
+        return error(StatusCode::BAD_REQUEST, "empty message");
+    }
+
+    let message = attachments::message(text, &files);
     if let Err(e) = run_board(
         &app.cfg,
-        &["coordinator", "tell", "--", text],
+        &["coordinator", "tell", "--", &message],
         Duration::from_secs(30),
     )
     .await
     {
         return error(StatusCode::BAD_GATEWAY, e);
     }
+    let at = now_ms();
     {
         let mut chat = app.chat.lock().await;
         chat.last_sent = text.to_string();
-        chat.sent_at = now_ms();
-        chat.busy_until = now_ms() + 120_000;
+        chat.sent_at = at;
+        chat.busy_until = at + 120_000;
+        chat.history.push(app::ChatMessage {
+            text: text.to_string(),
+            at,
+            attachments: stored,
+        });
+        let extra = chat.history.len().saturating_sub(app::CHAT_HISTORY_MAX);
+        if extra > 0 {
+            chat.history.drain(0..extra);
+        }
     }
     let chat = app.chat.lock().await.clone();
     // Persist right away; the next refresh also does it.
@@ -565,6 +653,101 @@ async fn api_chat(
         refresh(&app2).await;
     });
     Json(json!({"ok": true})).into_response()
+}
+
+/// One image per request (`file` field). The browser, local or remote, sends
+/// the bytes over HTTP(S); nothing is read from the browser's filesystem.
+async fn api_attach(
+    State(app): State<Shared>,
+    headers: HeaderMap,
+    mut multipart: Multipart,
+) -> Response {
+    if !same_origin(&headers) {
+        return error(StatusCode::FORBIDDEN, "cross-origin request refused");
+    }
+    let mut upload = None;
+    loop {
+        match multipart.next_field().await {
+            Ok(Some(field)) => {
+                if field.name() != Some("file") {
+                    continue;
+                }
+                let name = field.file_name().map(str::to_owned);
+                match field.bytes().await {
+                    Ok(bytes) => {
+                        upload = Some((name, bytes));
+                        break;
+                    }
+                    Err(e) => {
+                        return error(e.status(), format!("could not read the upload: {e}"))
+                    }
+                }
+            }
+            Ok(None) => break,
+            Err(e) => return error(e.status(), format!("could not read the upload: {e}")),
+        }
+    }
+    let Some((name, bytes)) = upload else {
+        return error(StatusCode::BAD_REQUEST, "no file in the upload");
+    };
+    if bytes.len() > attachments::MAX_IMAGE_BYTES {
+        return error(
+            StatusCode::PAYLOAD_TOO_LARGE,
+            format!(
+                "image is larger than {} MB",
+                attachments::MAX_IMAGE_BYTES / (1024 * 1024)
+            ),
+        );
+    }
+    if attachments::sniff(&bytes).is_none() {
+        return error(
+            StatusCode::UNSUPPORTED_MEDIA_TYPE,
+            "only PNG, JPEG, WebP and GIF are accepted",
+        );
+    }
+
+    let dir = app.cfg.attachments_dir();
+    let attachment = match attachments::save(&dir, name.as_deref(), &bytes).await {
+        Ok(a) => a,
+        Err(e) => return error(StatusCode::INTERNAL_SERVER_ERROR, e),
+    };
+    // Keep the folder bounded; the old files are no longer needed by any chat
+    // entry the page shows (history is at most 20 messages old).
+    let cleanup_dir = dir.clone();
+    let app2 = app.clone();
+    tokio::spawn(async move {
+        let _ = tokio::task::spawn_blocking(move || {
+            attachments::cleanup(&cleanup_dir, SystemTime::now())
+        })
+        .await;
+        app::prune_chat_attachments(&app2).await;
+    });
+    Json(json!({"ok": true, "attachment": attachment})).into_response()
+}
+
+/// A thumbnail or a full image for the chat history. Behind the login, with an
+/// id that can only be one of the files `save` created.
+async fn api_attachment(State(app): State<Shared>, Path(id): Path<String>) -> Response {
+    let Some(path) = attachments::path(&app.cfg.attachments_dir(), &id) else {
+        return error(StatusCode::NOT_FOUND, "image not found");
+    };
+    let Some(mime) = attachments::mime(&id) else {
+        return error(StatusCode::NOT_FOUND, "image not found");
+    };
+    match tokio::fs::read(&path).await {
+        Ok(bytes) => (
+            [
+                (header::CONTENT_TYPE, HeaderValue::from_static(mime)),
+                (
+                    header::CACHE_CONTROL,
+                    HeaderValue::from_static("private, max-age=3600"),
+                ),
+            ],
+            bytes,
+        )
+            .into_response(),
+        Err(_) => error(StatusCode::NOT_FOUND, "image not found"),
+    }
 }
 
 #[derive(Deserialize)]

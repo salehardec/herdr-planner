@@ -6,7 +6,7 @@ description = "Herdr Planner: a local dashboard of the herdr-projects board"
 license = "MIT"
 
 [dependencies]
-axum = { version = "0.8", features = ["json"] }
+axum = { version = "0.8", features = ["json", "multipart"] }
 axum-server = { version = "0.8", features = ["tls-rustls"] }
 tokio = { version = "1", features = [
     "rt-multi-thread",

@@ -35,10 +35,12 @@ FIXTURE_DIR="$FX" \
   XDG_STATE_HOME="$FX/state" XDG_CONFIG_HOME="$FX/cfg" XDG_CACHE_HOME="$FX/cache" \
   "$TARGET/debug/herdr-planner" --port "$PORT" --data "$FX/board" >"$FX/server.log" 2>&1 &
 SERVER=$!
+READY=
 for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
-  curl -fs "http://127.0.0.1:$PORT/api/state" >/dev/null 2>&1 && break
+  curl -fs "http://127.0.0.1:$PORT/api/state" >/dev/null 2>&1 && READY=1 && break
   sleep 0.25
 done
+[ -n "$READY" ] || { echo "run-checks: the dashboard did not start on port $PORT"; cat "$FX/server.log"; exit 1; }
 FIXTURE="$FX" HERDR_PLANNER_TARGET_DIR="$TARGET" node scripts/ui-check.mjs "http://127.0.0.1:$PORT" ${SHOTS:+"$SHOTS"}
 
 # A second server with a password: the login, the cookie and the limit.
@@ -54,8 +56,10 @@ FIXTURE_DIR="$FX" \
   XDG_STATE_HOME="$FX/state-auth" XDG_CONFIG_HOME="$FX/cfg-auth" XDG_CACHE_HOME="$FX/cache" \
   "$TARGET/debug/herdr-planner" --port "$AUTH_PORT" --data "$FX/board" >"$FX/server-auth.log" 2>&1 &
 AUTH_SERVER=$!
+READY=
 for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
-  curl -fs "http://127.0.0.1:$AUTH_PORT/login" >/dev/null 2>&1 && break
+  curl -fs "http://127.0.0.1:$AUTH_PORT/login" >/dev/null 2>&1 && READY=1 && break
   sleep 0.25
 done
-AUTH_BASE="http://127.0.0.1:$AUTH_PORT" node scripts/auth-check.mjs
+[ -n "$READY" ] || { echo "run-checks: the login server did not start on port $AUTH_PORT"; cat "$FX/server-auth.log"; exit 1; }
+FIXTURE="$FX" AUTH_BASE="http://127.0.0.1:$AUTH_PORT" node scripts/auth-check.mjs

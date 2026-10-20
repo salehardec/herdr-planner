@@ -15,6 +15,11 @@ const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<
 const gl = (n, cls = '') => `<svg class="gl ${cls}" aria-hidden="true"><use href="#g-${n}"/></svg>`;
 const localClient = () => ['127.0.0.1', '::1', '[::1]'].includes(location.hostname);
 
+const IMG_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp', 'image/gif']);
+const IMG_MAX = 10 * 1024 * 1024;
+const IMG_MAX_COUNT = 8;
+const attUrl = (a) => '/api/attachments/' + encodeURIComponent(typeof a === 'string' ? a : a.id);
+
 const ST = {
   waiting: { label: 'Ждёт тебя', title: 'Ждёт тебя: вопрос, разрешение или вход' },
   failed: { label: 'Упала', title: 'Упала' },
@@ -83,7 +88,12 @@ const state = {
   lastLog: 0,
   newLog: new Set(),
   optimisticSent: '',
+  optimistic: null,
+  pending: [],
+  attSeq: 0,
+  sending: false,
   chatError: '',
+  chatPinned: true,
   tellDraft: {},
   expanded: false,
   refreshing: false,
@@ -647,6 +657,184 @@ function badge(s) { return `<span class="badge">${gl(s, s === 'working' ? 'spin'
 
 /* ───────── console ───────── */
 
+function sameShots(a = [], b = []) {
+  return a.length === b.length && a.every((x, i) => x.id === b[i].id);
+}
+
+function shotsHTML(list) {
+  const items = (list || []).filter((a) => a && a.id);
+  if (!items.length) return '';
+  return `<div class="shots">${items.map((a) => {
+    const url = esc(attUrl(a));
+    const name = esc(a.name || 'Картинка');
+    return `<a class="shot" href="${url}" target="_blank" rel="noopener"><img src="${url}" alt="${name}" title="${name}" loading="lazy"></a>`;
+  }).join('')}</div>`;
+}
+
+function youHTML(text, at, list) {
+  const hasShots = !!(list && list.length);
+  const label = text ? esc(text) : (hasShots ? 'Картинки' : '');
+  if (!label && !hasShots) return '';
+  let html = `<div class="you"><span>›</span><div class="you-body"><div class="you-text">${label || 'Картинки'}</div>${shotsHTML(list)}</div></div>`;
+  if (at) html += `<div class="meta"><span>${timeOf(at)}</span><span>· отправлено Координатору</span></div>`;
+  return html;
+}
+
+function syncSend() {
+  const send = $('send');
+  if (!send) return;
+  const typed = ($('ask-in')?.value || '').trim().length > 0;
+  const files = state.pending.some((p) => p.state === 'ready' || p.state === 'uploading');
+  send.dataset.ready = String(typed || files);
+}
+
+/** True when the log is at (or within a line of) the newest message. */
+function chatFollowsEnd() {
+  const el = $('clog');
+  return !el || el.scrollHeight - el.scrollTop - el.clientHeight < 24;
+}
+
+function renderAttach() {
+  const list = $('attach');
+  if (!list) return;
+  list.hidden = state.pending.length === 0;
+  list.innerHTML = state.pending.map((p) => {
+    const title = p.error ? `${p.name} — ${p.error}` : p.name;
+    return `<div class="att" data-state="${p.state}" title="${esc(title)}">
+      <img src="${esc(p.local)}" alt="${esc(p.name)}">
+      ${p.state === 'uploading' ? '<span class="wait">загрузка…</span>' : ''}
+      <button class="rm" type="button" data-att-rm="${p.key}" aria-label="Убрать ${esc(p.name)}">×</button>
+    </div>`;
+  }).join('');
+  syncSend();
+}
+
+function removePending(key) {
+  const i = state.pending.findIndex((p) => p.key === Number(key));
+  if (i < 0) return;
+  const [p] = state.pending.splice(i, 1);
+  if (p.local) URL.revokeObjectURL(p.local);
+  renderAttach();
+}
+
+async function uploadImage(item, file) {
+  const form = new FormData();
+  form.append('file', file, item.name);
+  try {
+    const r = await fetch('/api/chat/attach', { method: 'POST', credentials: 'same-origin', body: form });
+    if (r.status === 401) {
+      location.href = '/login?next=' + encodeURIComponent(location.pathname + location.search);
+      throw new Error('unauthorized');
+    }
+    const data = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(data.error || `HTTP ${r.status}`);
+    item.id = data.attachment?.id || '';
+    item.name = data.attachment?.name || item.name;
+    if (!item.id) throw new Error('сервер не вернул файл');
+    item.state = 'ready';
+  } catch (e) {
+    item.state = 'error';
+    item.error = e.message;
+    toast('Картинка не загрузилась: ' + e.message);
+  }
+  renderAttach();
+}
+
+function addFiles(files) {
+  for (const file of [...(files || [])]) {
+    if (state.pending.length >= IMG_MAX_COUNT) {
+      toast(`Не больше ${IMG_MAX_COUNT} картинок в одном сообщении`);
+      break;
+    }
+    const type = String(file.type || '').toLowerCase();
+    if (type && !IMG_TYPES.has(type)) {
+      toast('Можно прикрепить только PNG, JPEG, WebP или GIF');
+      continue;
+    }
+    if (!file.size) {
+      toast('Пустой файл не прикрепить');
+      continue;
+    }
+    if (file.size > IMG_MAX) {
+      toast('Картинка больше 10 МБ');
+      continue;
+    }
+    const item = {
+      key: ++state.attSeq,
+      name: file.name || 'картинка',
+      size: file.size,
+      state: 'uploading',
+      local: URL.createObjectURL(file),
+      id: '',
+      error: '',
+      task: null,
+    };
+    state.pending.push(item);
+    // The browser sends the bytes over HTTP(S), so a remote client works the
+    // same as a local one; no path from the client machine ever reaches us.
+    item.task = uploadImage(item, file);
+  }
+  renderAttach();
+}
+
+function setupAttach() {
+  const button = $('attach-btn');
+  const input = $('file-in');
+  const box = $('console');
+  const ta = $('ask-in');
+  if (!button || !input || !box || !ta) return;
+
+  button.addEventListener('click', () => input.click());
+  input.addEventListener('change', () => {
+    addFiles(input.files);
+    input.value = '';
+  });
+
+  ta.addEventListener('paste', (e) => {
+    const files = [...(e.clipboardData?.items || [])]
+      .filter((i) => i.kind === 'file' && IMG_TYPES.has(String(i.type || '').toLowerCase()))
+      .map((i) => i.getAsFile())
+      .filter(Boolean);
+    if (!files.length) return;
+    e.preventDefault();
+    addFiles(files);
+  });
+
+  const hasFiles = (e) => Array.from(e.dataTransfer?.types || []).includes('Files');
+  let depth = 0;
+  box.addEventListener('dragenter', (e) => {
+    if (!hasFiles(e)) return;
+    e.preventDefault();
+    depth += 1;
+    box.classList.add('drop');
+  });
+  box.addEventListener('dragover', (e) => {
+    if (!hasFiles(e)) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'copy';
+  });
+  box.addEventListener('dragleave', () => {
+    depth = Math.max(0, depth - 1);
+    if (!depth) box.classList.remove('drop');
+  });
+  box.addEventListener('drop', (e) => {
+    if (!e.dataTransfer?.files?.length) return;
+    e.preventDefault();
+    depth = 0;
+    box.classList.remove('drop');
+    addFiles(e.dataTransfer.files);
+  });
+  // Dropping a file outside the console must not replace the dashboard.
+  window.addEventListener('dragover', (e) => {
+    if (hasFiles(e)) e.preventDefault();
+  });
+  window.addEventListener('drop', (e) => {
+    if (hasFiles(e)) e.preventDefault();
+  });
+
+  renderAttach();
+}
+
 function renderConsole() {
   const c = state.coordinator || {};
   const sent = state.optimisticSent || c.last_sent || '';
@@ -654,26 +842,36 @@ function renderConsole() {
   const err = state.chatError || c.error || '';
   const options = c.dialog ? [] : parseOptions(reply);
   state.variantOptions = options;
+  const history = Array.isArray(c.history) ? c.history : [];
   let log = '';
-  // PLN-6: a message is `{ text, attachments: [] }`; attachments render as thumbnails here.
-  const message = { text: sent, attachments: [] };
-  if (sent) {
-    log += `<div class="you"><span>›</span><span>${esc(message.text)}</span></div>`;
-    if (c.sent_at) log += `<div class="meta"><span>${timeOf(c.sent_at)}</span><span>· отправлено Координатору</span></div>`;
-  }
+  for (const m of history) log += youHTML(m.text || '', m.at, m.attachments || []);
+  const last = history[history.length - 1];
+  const echoed = state.optimistic && last && last.text === state.optimistic.text
+    && sameShots(last.attachments || [], state.optimistic.attachments || []);
+  if (state.optimistic && !echoed) log += youHTML(state.optimistic.text, state.optimistic.at, state.optimistic.attachments);
+  if (!history.length && !state.optimistic && sent) log += youHTML(sent, c.sent_at, []);
   if (c.busy && !err) {
     log += `<div class="rep"><span class="pr">›</span><span class="tx">читает доску<span class="dots"><i></i><i></i><i></i></span></span></div>`;
   } else if (reply) {
     log += `<div class="rep"><span class="pr">›</span><span class="tx">${keysHTML(reply)}</span></div>`;
     log += `<div class="meta"><span>последнее из окна Координатора</span><span>· ${esc(c.status || '')}</span></div>`;
     if (reply.length > 220) log += `<button class="more" data-chat="toggle" type="button">${state.expanded ? 'свернуть ▴' : 'развернуть ▾'}</button>`;
-  } else if (err) {
+  }
+  if (err) {
     log += `<div class="rep err"><span class="pr">›</span><span class="tx">${esc(err)}</span></div><button class="more" data-chat="retry" type="button">отправить ещё раз</button>`;
-  } else {
+  } else if (!log) {
     log += `<div class="rep empty"><span class="pr">›</span><span class="tx">Скажи Координатору, что сделать, — ответ появится здесь.</span></div>`;
   }
-  $('clog').innerHTML = log;
-  $('clog').classList.toggle('expanded', state.expanded);
+  const logEl = $('clog');
+  const follow = state.chatPinned !== false;
+  const keepTop = logEl.scrollTop;
+  logEl.innerHTML = log;
+  logEl.classList.toggle('expanded', state.expanded);
+  // The history starts at the top unless we put the view at its end: a full
+  // log otherwise hides both the message just sent and the Coordinator's reply.
+  if (follow) logEl.scrollTop = logEl.scrollHeight;
+  else logEl.scrollTop = Math.min(keepTop, Math.max(0, logEl.scrollHeight - logEl.clientHeight));
+  state.chatPinned = follow;
 
   const variants = $('cvariants');
   if (options.length) {
@@ -696,16 +894,17 @@ function renderConsole() {
 
   const busy = !!c.busy;
   $('cstate').textContent = err ? '● ошибка' : c.dialog ? '● диалог' : busy ? '● думает' : `● ${c.status || 'готов'}`;
-  $('send').dataset.ready = String($('ask-in').value.trim().length > 0);
+  syncSend();
 }
 
 function setupChat() {
   const ta = $('ask-in'), send = $('send');
   const sync = () => {
-    send.dataset.ready = String(ta.value.trim().length > 0);
+    syncSend();
     ta.style.height = '18px';
     ta.style.height = Math.min(ta.scrollHeight, 76) + 'px';
   };
+  $('clog').addEventListener('scroll', () => { state.chatPinned = chatFollowsEnd(); });
   ta.addEventListener('input', sync);
   ta.addEventListener('keydown', (e) => {
     if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); $('ask').requestSubmit(); }
@@ -714,22 +913,46 @@ function setupChat() {
   });
   $('ask').addEventListener('submit', async (e) => {
     e.preventDefault();
-    const v = ta.value.trim();
-    if (!v) return;
-    state.chatError = '';
-    state.optimisticSent = v;
-    ta.value = '';
-    sync();
-    renderConsole();
+    if (state.sending) return;
+    const text = ta.value.trim();
+    if (!text && !state.pending.length) return;
+    state.sending = true;
+    // Sending is always an explicit request to look at the newest message.
+    state.chatPinned = true;
     try {
-      await post('/api/chat', { text: v });
-      setTimeout(refresh, 700);
-      setTimeout(refresh, 2200);
-    } catch (err) {
-      state.chatError = 'Не получилось передать: ' + err.message;
-      ta.value = v;
+      const pending = [...state.pending];
+      await Promise.all(pending.map((p) => p.task).filter(Boolean));
+      const failed = pending.find((p) => p.state !== 'ready');
+      if (failed) {
+        state.chatError = 'Картинка не загрузилась: ' + (failed.error || 'попробуйте ещё раз');
+        renderConsole();
+        return;
+      }
+      const attachments = pending.map((p) => ({ id: p.id, name: p.name }));
+      state.chatError = '';
+      state.optimisticSent = text;
+      state.optimistic = { text, at: Date.now(), attachments };
+      ta.value = '';
       sync();
       renderConsole();
+      try {
+        await post('/api/chat', { text, attachments });
+        const sentKeys = new Set(pending.map((p) => p.key));
+        for (const p of pending) if (p.local) URL.revokeObjectURL(p.local);
+        state.pending = state.pending.filter((p) => !sentKeys.has(p.key));
+        renderAttach();
+        setTimeout(refresh, 700);
+        setTimeout(refresh, 2200);
+      } catch (err) {
+        state.optimistic = null;
+        state.chatError = 'Не получилось передать: ' + err.message;
+        ta.value = text;
+        sync();
+        renderConsole();
+      }
+    } finally {
+      state.sending = false;
+      syncSend();
     }
   });
 }
@@ -1321,6 +1544,13 @@ document.addEventListener('click', (e) => {
   if (!e.target.closest('.pop,[data-pop]')) {
     if (state.pop) { state.pop = null; renderTop(); }
   }
+  const removeAtt = e.target.closest('[data-att-rm]');
+  if (removeAtt) {
+    e.stopPropagation();
+    e.preventDefault();
+    removePending(removeAtt.dataset.attRm);
+    return;
+  }
   const tag = e.target.closest('[data-tag]');
   if (tag) {
     e.stopPropagation();
@@ -1477,6 +1707,15 @@ async function refresh() {
   state.refreshing = true;
   try {
     const s = await api('/api/state');
+    if (state.optimistic && s.coordinator) {
+      const hist = s.coordinator.history || [];
+      const last = hist[hist.length - 1];
+      if (last && last.text === state.optimistic.text
+        && sameShots(last.attachments || [], state.optimistic.attachments || [])) {
+        state.optimistic = null;
+        state.optimisticSent = '';
+      }
+    }
     if (state.optimisticSent && s.coordinator && s.coordinator.last_sent === state.optimisticSent) state.optimisticSent = '';
     if (s.coordinator && !s.coordinator.busy && s.coordinator.reply) state.chatError = '';
     applyState(s);
@@ -1489,6 +1728,7 @@ async function refresh() {
     state.refreshing = false;
   }
 }
+
 
 function applyWidth() {
   state.narrow = innerWidth < 900;
@@ -1510,6 +1750,7 @@ document.addEventListener('visibilitychange', () => { if (!document.hidden) refr
 applySimple();
 applyWidth();
 setupChat();
+setupAttach();
 setupTodo();
 refresh();
 setInterval(refresh, 4000);

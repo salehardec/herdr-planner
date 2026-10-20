@@ -178,6 +178,12 @@ impl AppConfig {
             .map(|p| p.join("reports"))
             .unwrap_or_else(|| home().join(".herdr-projects/reports"))
     }
+
+    /// Images sent to the Coordinator: the planner's own state folder, never
+    /// the repository or the board's data folder.
+    pub fn attachments_dir(&self) -> PathBuf {
+        self.state_dir.join("attachments")
+    }
 }
 
 pub fn listen_is_loopback(listen: &str) -> bool {

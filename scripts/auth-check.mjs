@@ -5,7 +5,7 @@
 //   AUTH_BASE=http://127.0.0.1:PORT node scripts/auth-check.mjs
 
 import { spawn } from 'node:child_process';
-import { mkdtempSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -98,6 +98,64 @@ const authed = await get('/api/state', cookie);
 check('the session opens the API', authed.status === 200, String(authed.status));
 const remoteAuthed = await get('/api/limits', cookie, { headers: { 'x-forwarded-for': '203.0.113.5' } });
 check('a logged-in remote caller reads limits', remoteAuthed.status === 200, String(remoteAuthed.status));
+
+// Images for the Coordinator: behind the login, type by bytes, size limit,
+// and the full path (not the browser's path) in the message.
+const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAFgwJ/lK3Q6wAAAABJRU5ErkJggg==', 'base64');
+const form = (bytes, name, type) => {
+  const fd = new FormData();
+  fd.append('file', new Blob([bytes], { type }), name);
+  return fd;
+};
+const upload = (body, withCookie = true) => fetch(base + '/api/chat/attach', {
+  method: 'POST', headers: withCookie ? { cookie } : {}, body,
+});
+const anonymous = await upload(form(png, 'shot.png', 'image/png'), false);
+check('an upload without a session is 401', anonymous.status === 401, String(anonymous.status));
+const uploaded = await upload(form(png, 'shot.png', 'image/png'));
+const uploadedBody = await uploaded.json().catch(() => ({}));
+check('a PNG upload is accepted', uploaded.status === 200 && uploadedBody.attachment?.mime === 'image/png', `${uploaded.status} ${JSON.stringify(uploadedBody)}`);
+const imageId = uploadedBody.attachment?.id || '';
+check('the upload gets a generated safe name', /^[0-9a-f]{32}\.png$/.test(imageId), imageId);
+const imageAnon = await fetch(base + `/api/attachments/${imageId}`);
+check('the image file is behind the login too', imageAnon.status === 401, String(imageAnon.status));
+const image = await fetch(base + `/api/attachments/${imageId}`, { headers: { cookie } });
+check('the uploaded image loads with its type', image.status === 200 && image.headers.get('content-type') === 'image/png', `${image.status} ${image.headers.get('content-type')}`);
+check('the served image is the uploaded one', Buffer.from(await image.arrayBuffer()).equals(png));
+const html = await upload(form(Buffer.from('<html>not an image</html>'), 'fake.png', 'image/png'));
+check('a file that is not really an image is refused', html.status === 415, String(html.status));
+const empty = await upload(new FormData());
+check('an upload without a file is refused', empty.status === 400, String(empty.status));
+const huge = Buffer.alloc(10 * 1024 * 1024 + 1, 0);
+const oversized = await upload(form(huge, 'big.png', 'image/png'));
+check('an image over 10 MB is refused', oversized.status === 413, String(oversized.status));
+const overBody = await upload(form(Buffer.alloc(11 * 1024 * 1024 + 1, 0), 'huge.png', 'image/png'));
+check('a body over the request limit is 413 too', overBody.status === 413, String(overBody.status));
+
+const chat = await fetch(base + '/api/chat', {
+  method: 'POST',
+  headers: { 'content-type': 'application/json', cookie },
+  body: JSON.stringify({ text: 'посмотри картинку', attachments: [imageId] }),
+});
+check('a message with an image reaches the Coordinator', chat.status === 200, String(chat.status));
+const fixture = process.env.FIXTURE;
+if (fixture) {
+  let history = null;
+  for (let i = 0; i < 40; i++) {
+    const s = await (await fetch(base + '/api/state', { headers: { cookie } })).json();
+    history = s.coordinator?.history?.at(-1);
+    if (history?.attachments?.length === 1) break;
+    await sleep(150);
+  }
+  check('the chat history keeps the image with the message', history?.text === 'посмотри картинку' && history?.attachments?.length === 1, JSON.stringify(history));
+  const tells = readFileSync(join(fixture, 'log', 'coordinator.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l));
+  const tell = tells.at(-1);
+  const path = tell.text.split('\n').find((l) => l.startsWith(join(fixture, 'state-auth', 'herdr-planner', 'attachments') + '/'));
+  check('the Coordinator gets the absolute path on this machine', tell.text.includes('посмотри картинку') && !!path, tell.text.replace(/\n/g, ' | '));
+  check('the path in the message exists', path && existsSync(path));
+} else {
+  console.log('skip the path-in-message check: FIXTURE is not set');
+}
 
 for (let i = 0; i < 5; i++) await fetch(base + '/api/login', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ user: 'me', password: 'wrong' }) });
 const limited = await json(await fetch(base + '/api/login', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ user: 'me', password: 'secret' }) }));

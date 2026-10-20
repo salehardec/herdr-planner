@@ -195,7 +195,7 @@ check('the open limits panel does not cover its own chip', limitsBox.chip === tr
 const limitsText = (await text('.pop.limits')).replace(/\s+/g, ' ');
 check('the panel lists Claude, omp and pi', /Claude/.test(limitsText) && /OMP/.test(limitsText) && /Pi/.test(limitsText), limitsText.slice(0, 240));
 check('remaining is the inverse of the used share', /осталось 79 %/.test(limitsText) && /осталось 9 %/.test(limitsText) && /осталось 3 %/.test(limitsText), limitsText.slice(0, 260));
-check('reset shows local time and the hours left', /сброс \d\d:\d\d · через \d+ ч/.test(limitsText), limitsText.slice(0, 260));
+check('reset shows local time and the hours left', /сброс (?:\d\d\.\d\d, )?\d\d:\d\d · через \d+ ч/.test(limitsText), limitsText.slice(0, 260));
 check('a later reset carries its date', /сброс \d\d\.\d\d, \d\d:\d\d/.test(limitsText), limitsText.slice(0, 260));
 check('80% is a warning and 95% is critical', (await evalJs('document.querySelectorAll(".lim-win.warn").length')) === 1 && (await evalJs('document.querySelectorAll(".lim-win.crit").length')) === 1);
 check('omp and pi honestly say there is no data', (await text('.lim-agent[data-agent="omp"]')).includes('нет данных') && (await text('.lim-agent[data-agent="pi"]')).includes('нет данных') && limitsText.includes('API keys · no subscription'));
@@ -370,13 +370,18 @@ check('the board received after with the remaining waits', await waitLog(() => c
 // Target the removal toast by its text: other toasts (a refused circle, an
 // unknown task) can still be on screen, and an undo must not be lost because
 // the last node happened to be one of them.
-const undoClicked = await evalJs(`(() => {
+// The fixture writes its log when the command starts, so the board call can be
+// visible before the browser has the server's answer and the toast; wait for
+// the toast itself instead of racing it.
+await waitFor(`[...document.querySelectorAll(".toast")].some((n) => n.innerText.startsWith("ALP-11: начнётся после GAM-2, ALP-9") && n.querySelector(".undo"))`, 12000);
+const undoState = await evalJs(`(() => {
+  const all = [...document.querySelectorAll(".toast")].map((n) => n.innerText.replace(/\\n/g, ' | '));
   const t = [...document.querySelectorAll(".toast")].reverse().find((n) => n.innerText.startsWith("ALP-11: начнётся после GAM-2, ALP-9") && n.querySelector(".undo"));
   const b = t && t.querySelector(".undo");
   if (b) b.click();
-  return !!b;
+  return { clicked: !!b, toasts: all };
 })()`);
-check('the removal toast has an undo', undoClicked === true);
+check('the removal toast has an undo', undoState?.clicked === true, JSON.stringify(undoState?.toasts));
 check('undo restores the previous wait', await waitFor(`fetch('/api/state').then(r=>r.json()).then(s => s.links.some(l => l.from === 'alpha/6' && l.to === 'alpha/11'))`, 12000), JSON.stringify((await debug())?.links));
 
 // Coordinator: options from its words, then a dialog on its screen.
@@ -446,6 +451,77 @@ check('a low-angle view leaves planets visible', low && low.below.length === 0, 
 check('a stage filter button exists', await click('[data-stage="review"]'));
 check('a stage filter dims the rest', await waitFor('world.debug().dim > 0 && document.querySelectorAll(".lbl3d.dim").length > 0', 8000), JSON.stringify({ d: await debug(), dom: await evalJs('document.querySelectorAll(".lbl3d.dim").length') }));
 await click('[data-stage="review"]');
+// Chat: the fake Coordinator answers.
+await evalJs('document.querySelector("#ask-in").value = "проверка чата"; document.querySelector("#ask").requestSubmit()');
+check('the chat sends coordinator tell', await waitFor(`fetch('/api/state').then(r => r.json()).then(s => s.coordinator.last_sent === 'проверка чата')`, 8000));
+check('the Coordinator answer is shown in the console', await waitFor('document.querySelector("#clog").innerText.includes("Принял")', 10000));
+const helpChat = await api('/api/chat', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ text: '--help' }) });
+check('a Coordinator message starting with -- is literal', helpChat[0] === 200 && calls('coordinator.jsonl').some((c) => c.text === '--help'), JSON.stringify(lastCall('coordinator.jsonl')));
+
+// Images: paste, drop and the file picker all upload through HTTP; previews
+// can be removed; one message carries several images; the history shows them.
+const pngB64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAFgwJ/lK3Q6wAAAABJRU5ErkJggg==';
+await evalJs(`window.__shot = (name) => new File([Uint8Array.from(atob('${pngB64}'), (c) => c.charCodeAt(0))], name, { type: 'image/png' }); true`);
+check('the chat has an attach button', await evalJs('!!document.querySelector("#attach-btn") && !!document.querySelector("#file-in")?.multiple'));
+await evalJs(`(() => { const dt = new DataTransfer(); dt.items.add(__shot('paste.png')); const e = new ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true }); document.querySelector('#ask-in').dispatchEvent(e); return e.defaultPrevented; })()`);
+check('pasting an image shows a preview', await waitFor('document.querySelectorAll("#attach .att").length === 1', 6000));
+check('the pasted image is uploaded', await waitFor('document.querySelector("#attach .att")?.dataset.state === "ready"', 10000));
+await evalJs(`(() => { const dt = new DataTransfer(); dt.items.add(__shot('drop.png')); document.querySelector('#console').dispatchEvent(new DragEvent('drop', { dataTransfer: dt, bubbles: true, cancelable: true })); return true; })()`);
+check('dropping an image adds a second preview', await waitFor('document.querySelectorAll("#attach .att").length === 2', 6000));
+await sleep(600);
+await click('#attach .att .rm');
+check('a preview can be removed before sending', await evalJs('document.querySelectorAll("#attach .att").length === 1'));
+await evalJs(`(() => { const dt = new DataTransfer(); dt.items.add(__shot('picker.png')); const input = document.querySelector('#file-in'); input.files = dt.files; input.dispatchEvent(new Event('change', { bubbles: true })); return true; })()`);
+check('the file picker adds another image', await waitFor('document.querySelectorAll("#attach .att").length === 2', 6000));
+check('both images are ready', await waitFor('[...document.querySelectorAll("#attach .att")].every((a) => a.dataset.state === "ready")', 10000));
+await evalJs('document.querySelector("#ask-in").value = "вот скриншоты"; document.querySelector("#ask").requestSubmit()');
+check('the message and its images reach the Coordinator', await waitFor(`fetch('/api/state').then(r => r.json()).then(s => { const m = s.coordinator.history?.at(-1); return m?.text === 'вот скриншоты' && m.attachments?.length === 2; })`, 10000));
+check('sent previews are cleared after sending', await waitFor('document.querySelectorAll("#attach .att").length === 0'));
+check('the chat history shows thumbnails', await waitFor('document.querySelectorAll("#clog .shot img").length >= 2', 6000));
+check('thumbnails load from the protected attachment route', await evalJs('[...document.querySelectorAll("#clog .shot img")].every((i) => i.getAttribute("src").startsWith("/api/attachments/"))'));
+const imageTell = calls('coordinator.jsonl').at(-1);
+const imagePaths = imageTell.text.split('\n').filter((l) => l.startsWith(join(fixture, 'state', 'herdr-planner', 'attachments') + '/'));
+check('the Coordinator message carries both absolute image paths', imageTell.text.includes('вот скриншоты') && imagePaths.length === 2, imageTell.text.replace(/\n/g, ' | '));
+check('the image files exist on this machine', imagePaths.length === 2 && imagePaths.every(existsSync));
+check('the stored images are really PNG', imagePaths.every((p) => readFileSync(p).subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))));
+
+// A long history must open at its end: the newest message and the reply are
+// what the chat is for, and the log is shorter than its contents.
+for (let i = 0; i < 8; i++) {
+  const sentOne = await api('/api/chat', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ text: `история ${i}` }),
+  });
+  if (sentOne[0] !== 200) check(`history message ${i} is accepted`, false, JSON.stringify(sentOne));
+}
+await sleep(900);
+await send('Page.reload');
+await sleep(2400);
+const chatEnd = await evalJs(`(() => {
+  const e = document.querySelector('#clog');
+  const last = [...e.querySelectorAll('.you')].at(-1);
+  const lr = last && last.getBoundingClientRect();
+  const er = e.getBoundingClientRect();
+  const reps = [...e.querySelectorAll('.rep')];
+  const rr = reps.at(-1) && reps.at(-1).getBoundingClientRect();
+  const visible = (r) => !!r && r.bottom <= er.bottom + 1 && r.top >= er.top - 1;
+  return {
+    overflow: e.scrollHeight > e.clientHeight + 20,
+    atEnd: e.scrollHeight - e.scrollTop - e.clientHeight < 4,
+    lastVisible: visible(lr),
+    replyVisible: visible(rr),
+    lastText: last?.innerText.slice(0, 80) || '',
+    scrollTop: e.scrollTop, scrollHeight: e.scrollHeight, clientHeight: e.clientHeight,
+  };
+})()`);
+check('a long chat history opens at the newest message', chatEnd.overflow && chatEnd.atEnd && chatEnd.lastVisible && chatEnd.replyVisible, JSON.stringify(chatEnd));
+await evalJs('document.querySelector("#ask-in").value = "после перезагрузки"; document.querySelector("#ask").requestSubmit()');
+check('sending scrolls the chat to the new message', await waitFor(`(() => {
+  const e = document.querySelector('#clog');
+  const texts = [...e.querySelectorAll('.you .you-text')];
+  return texts.at(-1)?.textContent.includes('после перезагрузки') && e.scrollHeight - e.scrollTop - e.clientHeight < 4;
+})()`, 8000), await evalJs(`(() => { const e = document.querySelector('#clog'); return { top: e.scrollTop, h: e.scrollHeight, c: e.clientHeight }; })()`));
 await click('[data-act="archive-view"]');
 check('the archive view lists tasks', await waitFor('document.querySelectorAll(".arc-row").length > 0', 5000), await evalJs('document.querySelectorAll(".arc-row").length'));
 const archivedBefore = await stateApi();

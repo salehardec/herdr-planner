@@ -29,6 +29,7 @@
     <symbol id="g-help" viewBox="0 0 16 16"><circle cx="8" cy="8" r="5.8"/><path d="M6.6 6.3a1.5 1.5 0 1 1 2.2 1.2c-.5.3-.8.7-.8 1.2"/><circle cx="8" cy="11.1" r=".2" fill="currentColor"/></symbol>
     <symbol id="g-send" viewBox="0 0 16 16"><path d="M2.4 8h10M8.6 4.2 12.4 8l-3.8 3.8"/></symbol>
     <symbol id="g-close" viewBox="0 0 16 16"><path d="m4 4 8 8M12 4l-8 8"/></symbol>
+    <symbol id="g-attach" viewBox="0 0 16 16"><path d="M10.8 5.2 6.1 9.9a1.7 1.7 0 0 0 2.4 2.4l5-5a3.1 3.1 0 0 0-4.4-4.4l-5 5a4.5 4.5 0 0 0 6.4 6.4l4.2-4.2"/></symbol>
     <symbol id="g-link" viewBox="0 0 16 16"><path d="M6.2 9.8 9.8 6.2M5.4 7.4 3.9 8.9a2.6 2.6 0 0 0 3.7 3.7l1.5-1.5M10.6 8.6l1.5-1.5a2.6 2.6 0 0 0-3.7-3.7L6.9 4.9"/></symbol>
     <symbol id="g-bell" viewBox="0 0 16 16"><path d="M8 2.2a4 4 0 0 1 4 4v3l1.2 2H2.8L4 9.2v-3a4 4 0 0 1 4-4zM6.6 13a1.5 1.5 0 0 0 2.8 0"/></symbol>
     <symbol id="g-universe" viewBox="0 0 16 16"><circle cx="8" cy="8" r="2"/><ellipse cx="8" cy="8" rx="6.4" ry="2.6" transform="rotate(-24 8 8)"/></symbol>
@@ -76,12 +77,15 @@
       <div class="c-log" id="clog" aria-live="polite"></div>
       <div class="c-dialog" id="cdialog" hidden></div>
       <div class="c-variants" id="cvariants" hidden></div>
+      <div class="drop-hint" id="drop-hint" aria-hidden="true">Отпустите картинку, чтобы прикрепить</div>
+      <div class="c-attach" id="attach" hidden></div>
       <form class="c-in" id="ask" autocomplete="off">
         <span class="pr">›</span>
-        <textarea id="ask-in" rows="1" placeholder="Сказать Координатору: «заведи задачу…», «как дела по APC?»" aria-label="Сообщение Координатору"></textarea>
+        <textarea id="ask-in" rows="1" placeholder="Сказать Координатору: «заведи задачу…», «как дела по APC?»  ·  Ctrl+V — картинка" aria-label="Сообщение Координатору"></textarea>
+        <button class="attach" type="button" id="attach-btn" aria-label="Прикрепить картинку" title="Прикрепить картинку: Ctrl+V, перетащить или выбрать файл"><svg class="gl" aria-hidden="true"><use href="#g-attach"/></svg></button>
+        <input type="file" id="file-in" accept="image/png,image/jpeg,image/webp,image/gif" multiple hidden>
         <button class="send" type="submit" id="send" data-ready="false" aria-label="Отправить"><kbd style="font:inherit">↵</kbd><span class="sendlbl"> отправить</span></button>
       </form>
-      <div class="c-attach" id="attach" hidden></div>
     </div>
   </div>
 

@@ -4,6 +4,7 @@
 //! It does not need herdr or herdr-gpui to run.
 
 mod app;
+mod attachments;
 mod auth;
 mod board;
 mod config;
