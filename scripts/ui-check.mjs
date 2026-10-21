@@ -2315,6 +2315,15 @@ section('memory guard', async () => {
     const r = await save('docs', text);
     check(`${kind}: found and shown to the human, nothing written`, r?.[0] === 200 && r[1].preview === true && r[1].findings.some((f) => f.kind === kind) && r[1].risk === 'confirm' && filesIn(draftsOf('docs')).length === 0 && gitStatus(docsRepo).replace('A  OTHER.txt\n', '') === '', JSON.stringify(r?.[1]?.findings));
   }
+  // passwords: in a URL query next to other findings, in plain phrasing, glued to an option
+  for (const t of ['строка jdbc:postgresql://db.internal:5432/app?user=app&password=Secr3t', 'пароль от стенда: Qwerty123', 'Пароль — Qwerty123', 'мой пароль Qwerty123 не показывать', 'mysql -u root -pSecr3t123 app']) {
+    const r = await save('docs', t);
+    check(`a password is found: ${t.slice(0, 40)}`, r?.[0] === 200 && r[1].findings.some((f) => f.kind === 'secret'), JSON.stringify(r?.[1]?.findings));
+  }
+  const jd = await save('docs', 'строка jdbc:postgresql://db.internal:5432/app?user=app&password=Secr3t');
+  const jdRedacted = jd[1].redacted[0]?.body || '';
+  const jdAgain = await save('docs', jdRedacted);
+  check('what «Обезличить» offers is really clean: no password left, nothing found', !jdRedacted.includes('Secr3t') && jdAgain[1].risk === 'none' && jdAgain[1].findings.length === 0, jdRedacted);
   const secret = await save('docs', samples.secret);
   check('a secret is shown only by its beginning', secret[1].findings.every((f) => !f.text.includes('abcdefghijkl')) && secret[1].findings[0].text.endsWith('…'), JSON.stringify(secret[1].findings));
   const clean = await save('docs', 'Решили сливать squash: ветки задач короткие.');
@@ -2350,8 +2359,11 @@ section('memory guard', async () => {
   check('the ordinary «да» is not enough there', apRisk?.[0] === 403 && filesIn(draftsOf('alpha')).length === before, JSON.stringify(apRisk));
   const apPublic = await save('alpha', samples.email, { confirm: true, token: apr[1].token, accept_public: true });
   check('only the explicit public confirmation writes it', apPublic?.[0] === 200 && filesIn(draftsOf('alpha')).length === before + 1, JSON.stringify(apPublic));
-  const dropped = await post('/api/memory/discard', { repo: 'alpha', id: apPublic[1].entry.id });
-  check('a draft can be thrown away', dropped?.[0] === 200 && filesIn(draftsOf('alpha')).length === before, JSON.stringify(dropped));
+  const dprev = await post('/api/memory/discard', { repo: 'alpha', id: apPublic[1].entry.id });
+  const dnoTok = await post('/api/memory/discard', { repo: 'alpha', id: apPublic[1].entry.id, confirm: true });
+  check('throwing a draft away is a change too: a preview (draft → nothing), and no token, no discard', dprev?.[0] === 200 && dprev[1].preview && dprev[1].changes[0].before.includes('ivan@corp-mail') && dprev[1].changes[0].after === null && dnoTok?.[0] === 409 && filesIn(draftsOf('alpha')).length === before + 1, JSON.stringify([dprev?.[0], dnoTok?.[0]]));
+  const dropped = await post('/api/memory/discard', { repo: 'alpha', id: apPublic[1].entry.id, confirm: true, token: dprev[1].token });
+  check('with the card\'s token the draft is thrown away', dropped?.[0] === 200 && filesIn(draftsOf('alpha')).length === before, JSON.stringify(dropped));
 
   // 5. on the page: the card for a public repository, anonymise, and «в память Галактики»
   const alphaStatus = gitStatus(alphaRoot);
@@ -2373,6 +2385,13 @@ section('memory guard', async () => {
   await sayYes();
   check('the anonymised draft is written, the original text is nowhere', await waitLog(() => filesIn(draftsOf('alpha')).some((f) => readFile(join(draftsOf('alpha'), f)).includes('<ip>')) && !filesIn(draftsOf('alpha')).some((f) => readFile(join(draftsOf('alpha'), f)).includes('203.0.113.7')), 8000));
   await waitFor('!document.querySelector("#mem-form")', 5000);
+  // «Отбросить черновик» shows the card too (the draft → nothing), and drops it only after the yes
+  await waitFor('!!document.querySelector(\'#mem-universe-list [data-mem="stend"] .mm-line\')', 8000);
+  await click('[data-mem="stend"] .mm-line');
+  await click('[data-mem="stend"] [data-act="mem-discard"]');
+  check('discarding a draft shows the card and keeps the draft until the yes', await waitCard() && (await text('#mem-chg-dest')).includes('отброшен') && (await text('#mem-chg .mm-was')).includes('<ip>') && (await text('#mem-chg .mm-now')).includes('удалена') && filesIn(draftsOf('alpha')).some((f) => readFile(join(draftsOf('alpha'), f)).includes('<ip>')), await text('#mem-chg'));
+  await sayYes();
+  check('the yes throws the draft away', await waitLog(() => !filesIn(draftsOf('alpha')).some((f) => readFile(join(draftsOf('alpha'), f)).includes('<ip>')), 8000));
   await click('#mem-add');
   await waitFor('!!document.querySelector("#mem-form")', 3000);
   await typeIn('#mem-title', 'Стенд для себя');
@@ -2390,6 +2409,7 @@ section('memory guard', async () => {
   const mem = await api('/api/memory');
   const block = mem?.[1]?.connect?.block || '';
   check('the block for the Coordinator says: show «было → стало», wait for «да»', block.includes('«было → стало»') && block.includes('«да»') && block.includes('ничего не пиши'), block.slice(0, 200));
+  check('the Coordinator is told never to write a universe into the checkout (that would make it dirty for the board): a task instead', block.includes('никогда в чекаут') && block.includes('задачу «Запомнить в docs/memory'), block.slice(0, 200));
   check('and: no personal data or secrets in a universe, anonymise or write it to the Galaxy', block.includes('персональные данные') && block.includes('обезличить') && block.includes('в Галактику'));
   await resetUi();
 });

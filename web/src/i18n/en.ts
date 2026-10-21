@@ -431,6 +431,7 @@ export const en: Record<string, string | string[]> = {
   'mem.chg.destGalaxy': 'The file goes to the Galaxy memory folder on this machine; it does not reach git.',
   'mem.chg.destDraft': 'The entry becomes a draft kept by the planner, outside the checkout (the checkout stays clean); it reaches git only after «Commit the memory».',
   'mem.chg.destFile': 'The file goes to docs/memory/ of the repository (that folder is not under git — nothing to commit).',
+  'mem.chg.destDiscard': 'The draft will be thrown away: git and the checkout are not changed, the entry goes back to what git has (or disappears if it is not there).',
   'mem.chg.destCommit': 'These files will be written into docs/memory/ and committed (only them; the rest of the checkout is untouched).',
   'mem.chg.op.add': 'add', 'mem.chg.op.change': 'change', 'mem.chg.op.delete': 'delete',
   'mem.chg.was': 'Was', 'mem.chg.now': 'Will be', 'mem.chg.nothing': '(there was no such entry)', 'mem.chg.removed': '(the entry will be deleted)',

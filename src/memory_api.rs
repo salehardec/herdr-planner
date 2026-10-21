@@ -868,9 +868,41 @@ pub async fn memory_delete(State(app): State<Shared>, headers: HeaderMap, Json(b
 pub struct DiscardBody {
     repo: String,
     id: String,
+    #[serde(flatten)]
+    gate: Gate,
 }
 
-/// `POST /api/memory/discard`: drops a draft of a universe's entry (what git has stays). Nothing committed changes.
+/// What throwing a draft away would change: the draft goes back to what git has (or disappears).
+fn discard_plan(cfg: &crate::config::AppConfig, repo: &str, id: &str) -> Result<Vec<Change>, Fail> {
+    let root = memory::repo_root(cfg, repo).ok_or_else(|| Fail::new(404, "у этой вселенной нет папки на этой машине"))?;
+    let drafts = memory::Drafts::new(cfg, repo);
+    let committed = memory::universe_store(&root, repo).get(id);
+    let file = format!("{}/{id}.md", memory::UNIVERSE_DIR);
+    if let Some(d) = drafts.puts().into_iter().find(|e| e.id == id) {
+        return Ok(vec![Change {
+            op: if committed.is_some() { "change" } else { "delete" },
+            id: id.to_string(),
+            file,
+            before: Some(memory::render_entry(&d)),
+            after: committed.as_ref().map(memory::render_entry),
+            entry: None,
+        }]);
+    }
+    if drafts.dels().iter().any(|d| d == id) {
+        return Ok(vec![Change {
+            op: "change",
+            id: id.to_string(),
+            file,
+            before: Some("(запись помечена на удаление)".to_string()),
+            after: committed.as_ref().map(memory::render_entry),
+            entry: None,
+        }]);
+    }
+    Err(Fail::new(404, "черновика этой записи нет"))
+}
+
+/// `POST /api/memory/discard`: drops a draft of a universe's entry (what git has stays). A change like any other: without
+/// `confirm` the answer is «было → стало» (the draft → what git has), with `confirm` and its token the draft goes.
 pub async fn memory_discard(State(app): State<Shared>, headers: HeaderMap, Json(body): Json<DiscardBody>) -> Response {
     if !same_origin(&headers) {
         return error(StatusCode::FORBIDDEN, "cross-origin request refused");
@@ -878,12 +910,26 @@ pub async fn memory_discard(State(app): State<Shared>, headers: HeaderMap, Json(
     if !taskmeta::valid_repo(&body.repo) || !memory::valid_stem(&body.id) {
         return error(StatusCode::BAD_REQUEST, "bad name");
     }
-    let drafts = memory::Drafts::new(&app.cfg, &body.repo);
-    if drafts.discard(&body.id) {
-        Json(json!({"ok": true})).into_response()
-    } else {
-        error(StatusCode::NOT_FOUND, "черновика этой записи нет")
-    }
+    let (cfg, repo, id) = (app.cfg.clone(), body.repo.clone(), body.id.clone());
+    let result = tokio::task::spawn_blocking(move || -> Result<Value, Fail> {
+        let changes = discard_plan(&cfg, &repo, &id)?;
+        let token = token_of(&changes, &[]);
+        if body.gate.confirm != Some(true) {
+            return Ok(json!({
+                "ok": true, "preview": true, "token": token, "level": "universe", "galaxy": "", "repo": repo, "draft": true,
+                "discard": true, "changes": changes, "findings": [], "risk": "none", "visibility": null, "redacted": [],
+            }));
+        }
+        if body.gate.token.as_deref() != Some(token.as_str()) {
+            return Err(Fail::new(409, "черновик изменился с тех пор, как вы смотрели: посмотрите ещё раз"));
+        }
+        memory::Drafts::new(&cfg, &repo).discard(&id);
+        Ok(json!({"ok": true}))
+    })
+    .await
+    .map_err(|e| Fail::new(500, e.to_string()))
+    .and_then(|r| r);
+    respond(result)
 }
 
 #[derive(Deserialize)]

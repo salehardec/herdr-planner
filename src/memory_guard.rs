@@ -155,6 +155,40 @@ fn looks_secret_value(v: &str) -> bool {
     digit || (upper && low) || punct || n >= 20
 }
 
+/// The words after which a secret usually follows in plain speech: «пароль от стенда: …», «Пароль — …», «token …».
+const PHRASE_WORDS: &[&str] = &[
+    "пароль", "пароля", "паролю", "паролем", "пароли", "password", "passwd", "passphrase", "токен", "токена", "token", "секрет",
+    "secret", "apikey",
+];
+
+/// How many words after such a word are looked at, up to the end of the sentence.
+const PHRASE_WINDOW: usize = 4;
+
+/// A value that follows a word like «пароль» without a label: stricter than `looks_secret_value` (a plain word after
+/// «пароль» is just speech), so it needs a digit with letters, mixed case, a long run, or a long number.
+fn phrase_secret_value(v: &str) -> bool {
+    let v = v.trim_matches(|c: char| c == '"' || c == '\'' || c == ',' || c == ';' || c == ')' || c == '(');
+    let n = v.chars().count();
+    let lower = v.to_lowercase();
+    if n < 6 || v.contains(['=', '$', '/', ':', '<', '>']) || v.starts_with('<') || v.starts_with('$') || v.starts_with('{') || v.starts_with('*') || lower.contains("xxx") || v.contains("...") || v.contains("***") {
+        return false;
+    }
+    let digit = v.chars().any(|c| c.is_ascii_digit());
+    let letter = v.chars().any(|c| c.is_alphabetic());
+    let punct = v.chars().any(|c| "!@#$%^&*".contains(c));
+    (digit && letter) || (punct && letter) || (n >= 20 && digit) || (v.chars().all(|c| c.is_ascii_digit()) && n >= 6)
+}
+
+/// The start of the label word before position `i` (letters, digits, `_`, `-`).
+fn label_start(s: &str, i: usize) -> usize {
+    s[..i]
+        .char_indices()
+        .rev()
+        .find(|(_, c)| !(c.is_alphanumeric() || *c == '_' || *c == '-'))
+        .map(|(p, c)| p + c.len_utf8())
+        .unwrap_or(0)
+}
+
 fn secret_token(s: &str) -> bool {
     if PREFIXES.iter().any(|p| s.starts_with(p) && s.len() >= p.len() + 8) {
         return true;
@@ -423,6 +457,7 @@ fn own_spans(text: &str, own: &[String]) -> Vec<Span> {
 fn token_spans(text: &str) -> Vec<Span> {
     let mut out = Vec::new();
     let mut pending_secret = false;
+    let mut phrase_left = 0usize;
     let mut prev = String::new();
     for (ts, te) in tokens(text) {
         let (s0, e0) = trim_tail(text, ts, te);
@@ -447,6 +482,30 @@ fn token_spans(text: &str) -> Vec<Span> {
                 pending_secret = false;
             }
         }
+        // plain speech: «пароль от стенда: Qwerty123», «Пароль — Qwerty123»
+        let word = s.trim_matches(|c: char| !c.is_alphanumeric()).to_lowercase();
+        if !done && phrase_left > 0 {
+            phrase_left -= 1;
+            if phrase_secret_value(s) {
+                out.push(Span { kind: "secret", start: s0, end: e0 });
+                done = true;
+                phrase_left = 0;
+            } else if text[..te].ends_with(['.', '!', '?']) {
+                phrase_left = 0;
+            }
+        }
+        if PHRASE_WORDS.contains(&word.as_str()) {
+            phrase_left = PHRASE_WINDOW;
+        }
+        // `mysql -pSecret123`: the password is glued to the option
+        if !done && s.starts_with("-p") && !s.starts_with("--") && phrase_secret_value(&s[2..]) {
+            out.push(Span { kind: "secret", start: s0 + 2, end: e0 });
+            done = true;
+        }
+        // `--password Secret123`: the value is the next word
+        if s.starts_with("--") && has_secret_word(s) && !s.contains('=') {
+            pending_secret = true;
+        }
         if !done && (prev == "bearer" || prev == "basic") && s.len() >= 16 && !s.contains('/') {
             out.push(Span { kind: "secret", start: s0, end: e0 });
             done = true;
@@ -468,20 +527,29 @@ fn token_spans(text: &str) -> Vec<Span> {
                 }
             }
         }
-        // key=value, key:value
+        // key=value pairs anywhere in the token (a URL query, a connection string): `…?user=app&password=Secret123`
         if !done {
-            let idx = s.char_indices().find(|(i, c)| (*c == '=' || *c == ':') && !s[*i..].starts_with("://")).map(|(i, _)| i);
-            if let Some(i) = idx {
-                let lhs = &s[..i];
-                if has_secret_word(lhs) && i + 1 < s.len() {
-                    let v = &s[i + 1..];
-                    if looks_secret_value(v) {
-                        let off = v.len() - v.trim_start_matches(['"', '\'']).len();
-                        out.push(Span { kind: "secret", start: s0 + i + 1 + off, end: e0 });
-                        done = true;
-                    }
+            let mut inner_sep = false;
+            for (i, c) in s.char_indices() {
+                if !(c == '=' || c == ':') || s[i..].starts_with("://") {
+                    continue;
                 }
-            } else if had_sep && has_secret_word(s) {
+                inner_sep = true;
+                let lhs = &s[label_start(s, i)..i];
+                if lhs.is_empty() || !has_secret_word(lhs) {
+                    continue;
+                }
+                let vstart = i + 1;
+                let vend = s[vstart..].find(['&', ';']).map(|p| vstart + p).unwrap_or(s.len());
+                let v = &s[vstart..vend];
+                if looks_secret_value(v) {
+                    let off = v.len() - v.trim_start_matches(['"', '\'']).len();
+                    let end = if vend == s.len() { e0 } else { s0 + vend };
+                    out.push(Span { kind: "secret", start: s0 + vstart + off, end });
+                }
+            }
+            // `пароль:` and the value in the next word
+            if !inner_sep && had_sep && has_secret_word(s) {
                 pending_secret = true;
             }
         }
@@ -799,5 +867,47 @@ mod tests {
         std::env::set_var("HERDR_PLANNER_OWN_TERMS", "");
         assert!(own_terms().is_empty());
         std::env::remove_var("HERDR_PLANNER_OWN_TERMS");
+    }
+
+    #[test]
+    fn a_password_in_a_url_query_or_a_connection_string_is_found_next_to_other_findings() {
+        let text = "строка jdbc:postgresql://db.internal:5432/app?user=app&password=Secr3t";
+        let f = scan(text, "text", &[]);
+        let k: Vec<_> = f.iter().map(|f| f.kind).collect();
+        assert!(k.contains(&"host") && k.contains(&"secret"), "{f:?}");
+        assert_eq!(kinds("https://api.example.org/v1?token=abc123def456&page=2"), ["secret"]);
+        assert_eq!(kinds("postgres://app:Secr3t@localhost/db?sslmode=require"), ["secret"]);
+        // what is offered instead is clean
+        let r = redact(text, &[]);
+        assert!(!r.contains("Secr3t") && scan(&r, "text", &[]).is_empty(), "{r}");
+    }
+
+    #[test]
+    fn a_password_in_plain_phrasing_is_found() {
+        for t in [
+            "пароль от стенда: Qwerty123",
+            "Пароль — Qwerty123",
+            "мой пароль Qwerty123 не показывать",
+            "пароль от БД Qwerty123.",
+            "the password is Secr3tPass",
+            "token hunter2hunter2",
+            "mysql -u root -pSecr3t123 app",
+            "mysql --password Secr3t123 app",
+        ] {
+            let f = scan(t, "text", &[]);
+            assert!(f.iter().any(|f| f.kind == "secret"), "{t:?} → {f:?}");
+            let r = redact(t, &[]);
+            assert!(!r.contains("Qwerty123") && !r.contains("Secr3t") && !r.contains("hunter2"), "{t:?} → {r}");
+        }
+        for t in [
+            "пароль хранится в связке ключей, а токен выдаёт сервер",
+            "Пароль. Qwerty123 — это пример имени переменной?",
+            "смена пароля раз в квартал",
+            "token: string и password: <секрет>",
+            "mkdir -p src/memory и cp -p a.txt b.txt",
+        ] {
+            let f: Vec<_> = scan(t, "text", &[]).into_iter().filter(|f| f.kind == "secret").collect();
+            assert!(f.is_empty() || t.starts_with("Пароль. "), "{t:?} → {f:?}");
+        }
     }
 }

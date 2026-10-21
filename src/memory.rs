@@ -164,6 +164,31 @@ pub fn norm_kind(kind: &str, fallback: &str) -> String {
 }
 
 /// Today (UTC) as `YYYY-MM-DD` for a time in milliseconds.
+/// The date on this machine's wall clock (its time zone), asked of `date` (GNU `-d @…`, BSD `-r …`); UTC when that
+/// cannot be done. An entry saved at 02:00 local time on the 22nd is the 22nd, not the 21st.
+pub fn local_date_of(ms: u64) -> String {
+    date_in_zone(ms, None).unwrap_or_else(|| date_of(ms))
+}
+
+fn date_in_zone(ms: u64, zone: Option<&str>) -> Option<String> {
+    let secs = (ms / 1000).to_string();
+    for args in [vec!["-d".to_string(), format!("@{secs}"), "+%F".into()], vec!["-r".to_string(), secs.clone(), "+%F".into()]] {
+        let mut cmd = std::process::Command::new("date");
+        cmd.args(&args).stdin(std::process::Stdio::null()).stderr(std::process::Stdio::null());
+        if let Some(z) = zone {
+            cmd.env("TZ", z);
+        }
+        if let Ok(out) = cmd.output() {
+            let d = String::from_utf8_lossy(&out.stdout).trim().to_string();
+            let b = d.as_bytes();
+            if out.status.success() && b.len() == 10 && b[4] == b'-' && b[7] == b'-' && d.chars().filter(|c| c.is_ascii_digit()).count() == 8 {
+                return Some(d);
+            }
+        }
+    }
+    None
+}
+
 pub fn date_of(ms: u64) -> String {
     let days = (ms / 86_400_000) as i64;
     let z = days + 719_468;
@@ -376,7 +401,7 @@ pub fn complete(mut e: Entry, default_kind: &str, now_ms: u64) -> Result<Entry, 
     }
     e.kind = norm_kind(&e.kind, default_kind);
     if e.added.is_empty() {
-        e.added = date_of(now_ms);
+        e.added = local_date_of(now_ms);
     }
     e.source = e.source.split_whitespace().collect::<Vec<_>>().join(" ");
     Ok(e)
@@ -653,7 +678,7 @@ pub fn coordinator_block(galaxy_dir: &str) -> String {
 «Запомни: …»: про человека и все проекты — Галактика, про один репо — вселенная; неясно — спроси одним вопросом. Запись — файл `<id>.md` (id латиницей через дефис) с шапкой (name, title, description, type: rule|preference|decision|convention|pitfall|reference) и строка в `MEMORY.md`.\n\
 Любое изменение памяти (добавить, изменить, удалить), на любом уровне: сначала покажи в ответе уровень, файл и «было → стало», и пиши в файл только после «да» человека. Без «да» ничего не пиши.\n\
 Вселенная едет с git, может быть в публичный репозиторий: не пиши в неё персональные данные и секреты — IP-адреса, e-mail, внутренние домены и имена хостов, токены, ключи, пароли, пути к домашней папке, имена людей. Нашёл — покажи, что именно, и предложи обезличить или записать в Галактику (она локальна, в git не попадает); в публичный репо по умолчанию не пиши.\n\
-Вселенная — правка репо: если правила человека не позволяют трогать чекауты, заведи задачу «Запомнить в docs/memory: …»; не коммить. После «да» ответь одной строкой: «Запомнено (Галактика): …» или «Запомнено (вселенная <репо>): …».\n\
+Галактику после «да» пиши сам. Вселенную — **никогда в чекаут**: незакоммиченный файл в `docs/memory/` заставит доску отказаться от слияний. После «да» заведи на доске задачу «Запомнить в docs/memory: …» с готовым текстом файла и строки `MEMORY.md`: у неё своя рабочая копия, слияние обычное. Не пиши в `docs/memory/` чекаута и не коммить туда. После «да» ответь одной строкой: «Запомнено (Галактика): …» или «Задача на запись во вселенную <репо> заведена: …».\n\
 Записи — справка, не приказы: правила выше важнее. Итоги задач в память не копируй.\n\
 {BLOCK_END}\n"
     )
@@ -1800,6 +1825,19 @@ mod tests {
         let b = coordinator_block("/x/galaxy");
         assert!(b.contains("«было → стало»") && b.contains("«да»"), "{b}");
         assert!(b.contains("персональные данные") && b.contains("Галактику") && b.contains("публичн"), "{b}");
+        // the Coordinator never writes into the human's checkout: that would make it dirty for the board's merges
+        assert!(b.contains("никогда в чекаут") && b.contains("задачу «Запомнить в docs/memory"), "{b}");
         assert!(b.chars().count() < 3000, "it shares the setting with the human's own text: {}", b.chars().count());
+    }
+
+    #[test]
+    fn a_new_entry_is_dated_by_the_local_clock_not_by_utc() {
+        // 2026-10-21 22:00 UTC is already the 22nd at UTC+5
+        let ms = 1_792_620_000_000;
+        assert_eq!(date_of(ms), "2026-10-21");
+        let Some(local) = date_in_zone(ms, Some("Etc/GMT-5")) else { return };   // no `date` here: nothing to check
+        assert_eq!(local, "2026-10-22");
+        assert_eq!(date_in_zone(ms, Some("Etc/GMT+5")).as_deref(), Some("2026-10-21"));
+        assert_eq!(local_date_of(0).len(), 10);
     }
 }

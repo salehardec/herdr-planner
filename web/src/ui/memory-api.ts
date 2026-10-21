@@ -128,6 +128,8 @@ export interface MemPreview {
   draft: boolean;
   /** This is a commit of the drafts, not a change of an entry. */
   commit?: boolean;
+  /** This throws a draft away. */
+  discard?: boolean;
   changes: MemChange[];
   findings: MemFinding[];
   risk: 'none' | 'confirm' | 'block';
@@ -161,9 +163,11 @@ export const deleteEntry = async (galaxy: string, repo: string, id: string, toke
   void loadMemory(galaxy, repo);
 };
 
-/** Drops a universe's draft of an entry (what git has stays). */
-export const discardDraft = async (repo: string, id: string): Promise<void> => {
-  await post('/api/memory/discard', { repo, id });
+export const previewDiscard = (repo: string, id: string): Promise<MemPreview> => post<MemPreview>('/api/memory/discard', { repo, id });
+
+/** Drops a universe's draft of an entry (what git has stays), after its card was confirmed. */
+export const discardDraft = async (repo: string, id: string, token: string): Promise<void> => {
+  await post('/api/memory/discard', { repo, id, confirm: true, token });
   void loadMemory('', repo);
 };
 

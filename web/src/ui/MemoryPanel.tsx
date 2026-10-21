@@ -11,7 +11,7 @@ import { dayTimeOf } from '../util/dates';
 import { Gl } from './Gl';
 import {
   commitMemory, deleteEntry, discardDraft, dismissSuggestion, keepSuggestion, KINDS, kindLabel, loadMemory, memFocus, memoryOf, previewCommit,
-  previewDelete, previewSave, previewSuggestion, rememberDlg, saveEntry, connectMemory, setSuggest,
+  previewDelete, previewDiscard, previewSave, previewSuggestion, rememberDlg, saveEntry, connectMemory, setSuggest,
   type Accept, type MemData, type MemEntry, type MemPreview, type MemSuggestion, type SaveBody,
 } from './memory-api';
 import { ChangeCard } from './MemoryChange';
@@ -344,7 +344,7 @@ export function MemoryPanel(props: { galaxy: string; repo: string }): JSX.Elemen
   const [q, setQ] = useState('');
   const [openIds, setOpen] = useState<Record<string, boolean>>({});
   const [editing, setEditing] = useState<Draft | null>(null);
-  const [delCard, setDelCard] = useState<{ p: MemPreview; id: string } | null>(null);
+  const [delCard, setDelCard] = useState<{ p: MemPreview; id: string; discard?: boolean } | null>(null);
   const [delBusy, setDelBusy] = useState(false);
   const [delErr, setDelErr] = useState('');
   const focus = memFocus.value;
@@ -398,11 +398,14 @@ export function MemoryPanel(props: { galaxy: string; repo: string }): JSX.Elemen
 
       {delCard && (
         <ChangeCard
-          p={delCard.p} busy={delBusy} error={delErr} confirmLabel={t('mem.delete')} onCancel={() => setDelCard(null)}
+          p={delCard.p} busy={delBusy} error={delErr} confirmLabel={delCard.discard ? t('mem.discard') : t('mem.delete')} onCancel={() => setDelCard(null)}
           onConfirm={(a) => {
             setDelBusy(true);
-            deleteEntry(galaxy, repo, delCard.id, delCard.p.token, a)
-              .then(() => { toast(t(delCard.p.draft ? 'mem.deletedDraft' : 'mem.deleted')); setDelCard(null); })
+            const done = delCard.discard
+              ? discardDraft(repo, delCard.id, delCard.p.token).then(() => toast(t('mem.discarded')))
+              : deleteEntry(galaxy, repo, delCard.id, delCard.p.token, a).then(() => toast(t(delCard.p.draft ? 'mem.deletedDraft' : 'mem.deleted')));
+            done
+              .then(() => setDelCard(null))
               .catch((er) => setDelErr(failWords(er)))
               .finally(() => setDelBusy(false));
           }}
@@ -426,7 +429,11 @@ export function MemoryPanel(props: { galaxy: string; repo: string }): JSX.Elemen
                   setDelErr('');
                   previewDelete(galaxy, repo, e.id).then((p) => setDelCard({ p, id: e.id })).catch((er) => toast(failWords(er), { icon: 'failed' }));
                 }}
-                onDiscard={() => { void discardDraft(repo, e.id).then(() => toast(t('mem.discarded'))).catch((er) => toast(failWords(er), { icon: 'failed' })); }}
+                // throwing a draft away shows «было → стало» too (the draft → what git has)
+                onDiscard={() => {
+                  setDelErr('');
+                  previewDiscard(repo, e.id).then((p) => setDelCard({ p, id: e.id, discard: true })).catch((er) => toast(failWords(er), { icon: 'failed' }));
+                }}
               />
             )
         ))}
