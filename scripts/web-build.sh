@@ -5,6 +5,7 @@
 #   scripts/web-build.sh          build once
 #   scripts/web-build.sh --dev    start the Vite dev server from the copy
 #   scripts/web-build.sh --test   run the page's unit tests (vitest)
+#   scripts/web-build.sh --check  type-check the page (tsc --noEmit)
 set -eu
 cd "$(dirname "$0")/.."
 CACHE="${XDG_CACHE_HOME:-$HOME/.cache}/herdr-planner/web"
@@ -28,6 +29,7 @@ fi
 case "${1:-}" in
   --dev) exec npx vite ;;
   --test) exec npx vitest run ;;
+  --check) exec npx tsc --noEmit ;;
 esac
 HERDR_PLANNER_DIST="$DIST" npx vite build --logLevel warn
 echo "web-build: $DIST"

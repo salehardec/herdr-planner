@@ -1,17 +1,60 @@
 name: CI
 
+# One required check, `checks` (ruleset protect-main), made of jobs that run side by side:
+#   web      vitest + tsc of the page
+#   bin      the page + the debug binary (built once, handed on as an artifact)
+#   rust     cargo test
+#   scripts  the installer and the launcher checks
+#   pages    the page in headless Chromium, one runner per part (a matrix), instead of six browsers on one runner
+# `checks` waits for all of them. A push to main (after a squash merge) runs only the quick parts: the same code has just
+# passed on its pull request. Caches: npm (setup-node), cargo registry/git/target (rust-cache, written by main only).
 on:
-  push:
   pull_request:
+  push:
+    branches: [main]
+  # Run by hand to prove the page checks stable: they are run `repeat` times in a row (the «stability» job), or to get the
+  # whole set on any branch.
+  workflow_dispatch:
+    inputs:
+      repeat:
+        description: How many times in a row to run the page checks (the «stability» job; 0 = skip it)
+        default: "10"
 
 permissions:
   contents: read
 
+# A newer push to the same pull request replaces the run in progress; main is never cancelled.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  CARGO_TERM_COLOR: never
+  CARGO_INCREMENTAL: "0"
+
 jobs:
-  checks:
+  web:
     runs-on: ubuntu-24.04
-    # a hung check must end as a failure, not hold the run for hours
-    timeout-minutes: 30
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Frontend unit tests (vitest)
+        run: sh scripts/web-build.sh --test
+
+      - name: Frontend types (tsc)
+        run: sh scripts/web-build.sh --check
+
+  bin:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
 
@@ -25,25 +68,186 @@ jobs:
       - name: Rust stable
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: ci
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
       - name: Frontend build
         run: sh scripts/web-build.sh
 
-      - name: Frontend unit tests (vitest)
+      - name: Debug binary
         run: |
-          cd web
-          npm ci
-          npm test
+          cargo build --locked
+          mkdir -p handover
+          cp target/debug/herdr-planner handover/
+          # A debug build does not embed the page: it reads the folder build.rs found, at run time. It travels with the binary.
+          cp -r "$HOME/.cache/herdr-planner/web/dist" handover/dist
+
+      - name: Hand the binary and the page on
+        uses: actions/upload-artifact@v4
+        with:
+          name: herdr-planner-debug
+          path: handover
+          if-no-files-found: error
+          retention-days: 1
+
+  rust:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: ci-test
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: Frontend build (the binary embeds it)
+        run: sh scripts/web-build.sh
 
       - name: Rust tests
         run: cargo test --locked
 
+  scripts:
+    # not after a squash merge: the same code has just passed on its pull request
+    if: github.event_name != 'push'
+    needs: bin
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: herdr-planner-debug
+          path: handover
+
+      - name: Installer and launcher checks
+        run: |
+          chmod +x handover/herdr-planner
+          mkdir -p "$HOME/.cache/herdr-planner/web"
+          cp -r handover/dist "$HOME/.cache/herdr-planner/web/dist"
+          sh scripts/check-install.sh "$PWD/handover/herdr-planner"
+          sh scripts/check-open.sh
+
+  pages:
+    if: github.event_name != 'push'
+    needs: bin
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        # the parts of scripts/run-checks.sh: the Galaxy in five, the big world, the login
+        shard: [ui1, ui2, ui3, ui4, ui5, big, auth]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: herdr-planner-debug
+          path: handover
+
+      - name: The binary where scripts/run-checks.sh looks for it
+        run: |
+          mkdir -p "$HOME/.cache/herdr-planner/target/debug" "$HOME/.cache/herdr-planner/web"
+          cp handover/herdr-planner "$HOME/.cache/herdr-planner/target/debug/"
+          chmod +x "$HOME/.cache/herdr-planner/target/debug/herdr-planner"
+          # the page, where build.rs baked its path into the debug binary
+          cp -r handover/dist "$HOME/.cache/herdr-planner/web/dist"
+
       - name: Chromium for the page checks
-        id: chromium
         run: |
           npx --yes @puppeteer/browsers install chrome@stable > "$RUNNER_TEMP/chromium.txt"
           path=$(tail -n 1 "$RUNNER_TEMP/chromium.txt" | awk '{print $2}')
           test -x "$path"
           echo "CHROMIUM=$path" >> "$GITHUB_ENV"
 
-      - name: Checks (installer, launcher, page in headless Chromium)
+      - name: The page in headless Chromium (${{ matrix.shard }})
+        env:
+          PAGE_ONLY: "1"
+          SHARDS: ${{ matrix.shard }}
         run: sh scripts/run-checks.sh
+
+  # The one check the ruleset asks for. It stays green only when every part is green (a part skipped on purpose is fine).
+  checks:
+    if: always()
+    needs: [web, bin, rust, scripts, pages]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Every part passed
+        env:
+          RESULTS: ${{ toJSON(needs) }}
+        run: |
+          echo "$RESULTS" | node -e '
+            const needs = JSON.parse(require("fs").readFileSync(0, "utf8"));
+            let bad = 0;
+            for (const [name, n] of Object.entries(needs)) {
+              console.log(name.padEnd(8), n.result);
+              if (n.result !== "success" && n.result !== "skipped") bad++;
+            }
+            process.exit(bad ? 1 : 0);'
+
+  # Only on a manual run: the page checks again and again on a fresh runner, retries off (a check that needs its second go
+  # is a failure here).
+  stability:
+    if: github.event_name == 'workflow_dispatch' && inputs.repeat != '0'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: ci
+          save-if: "false"
+
+      - name: Frontend build and the binary
+        run: |
+          sh scripts/web-build.sh
+          cargo build --locked
+          # where scripts/run-checks.sh looks for the binary
+          mkdir -p "$HOME/.cache/herdr-planner/target/debug"
+          cp target/debug/herdr-planner "$HOME/.cache/herdr-planner/target/debug/"
+
+      - name: Chromium for the page checks
+        run: |
+          npx --yes @puppeteer/browsers install chrome@stable > "$RUNNER_TEMP/chromium.txt"
+          path=$(tail -n 1 "$RUNNER_TEMP/chromium.txt" | awk '{print $2}')
+          test -x "$path"
+          echo "CHROMIUM=$path" >> "$GITHUB_ENV"
+
+      - name: The page checks, repeated
+        env:
+          REPEAT: ${{ inputs.repeat }}
+        run: sh scripts/stress-checks.sh "$REPEAT" 0

@@ -42,6 +42,12 @@ run() {
     PATH="$T/bin:$T/sys" /bin/sh "$OPEN" "$@" >"$T/out" 2>&1
   status=$?
   set -e
+  # The launches go on in the background after open.sh has returned: wait until the log is what it should be (at most 10 s on
+  # a loaded machine, at once on a free one), then a moment more to catch a call that should not have been made.
+  tries=0
+  while [ "$(sort "$LOG" | tr '\n' '|')" != "$want_log" ] && [ "$tries" -lt 100 ]; do
+    tries=$((tries + 1)); sleep 0.1 2>/dev/null || true
+  done
   sleep 0.3 2>/dev/null || true
   got="$(sort "$LOG" | tr '\n' '|')"
   if [ "$status" = "$want_status" ] && [ "$got" = "$want_log" ]; then echo "ok   $name"; else

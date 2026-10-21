@@ -8,7 +8,19 @@ export class ApiError extends Error {
 }
 
 export async function api<T = any>(path: string, opts: RequestInit = {}): Promise<T> {
-  const r = await fetch(path, { credentials: 'same-origin', ...opts });
+  // A reading that breaks on the way (the browser says «Failed to fetch» and has no answer of the server: a connection reset,
+  // a socket the server closed at that moment) is asked again, twice, a moment later. Only a reading: asking again is harmless.
+  const reading = !opts.method || opts.method.toUpperCase() === 'GET';
+  let r: Response;
+  for (let attempt = 0; ; attempt++) {
+    try {
+      r = await fetch(path, { credentials: 'same-origin', ...opts });
+      break;
+    } catch (e) {
+      if (!reading || attempt >= 2) throw e;
+      await new Promise((done) => setTimeout(done, 300 * (attempt + 1)));
+    }
+  }
   if (r.status === 401) {
     location.href = '/login?next=' + encodeURIComponent(location.pathname + location.search);
     throw new ApiError('unauthorized');

@@ -6,7 +6,7 @@ import { render, h } from 'preact';
 import { SPRITE } from './ui/glyphs';
 import { App } from './ui/App';
 import {
-  aim, answered, attention, currentView, edge, filter, flight, fresh, galaxyId, hover, invertY, level, locked, mode, narrow, notifyOn,
+  aim, answered, armed, attention, currentView, edge, filter, flight, fresh, galaxyId, hover, invertY, level, locked, mode, narrow, notifyOn,
   panels, QUERY, requests, selected, sensitivity, showQuiet, simple, snap, speed, universe, webgl, views, SIMPLE_KEY, persist,
   linkStatus, linkSel,
 } from './store';
@@ -199,6 +199,7 @@ w.plannerDebug = () => ({
   galaxy: galaxyId.value, selected: selected.value, mode: mode.value, level: level.value, universe: universe.value,
   panels: Object.fromEntries(Object.entries(panels).map(([k, v]) => [k, v.value])), filter: filter.value,
   requests: requests.value.length, answered: [...answered.value], link: linkStatus.value, flight: flight.value, simple: simple.value,
+  armed: armed.value,
 });
 w.setLang = setLang;
 w.plannerSnap = () => snap.value;

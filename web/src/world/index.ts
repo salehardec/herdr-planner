@@ -622,8 +622,10 @@ export function createWorld(opts: WorldOptions): World {
   }
 
   function frame(now: number): void {
-    const dt = Math.min(0.1, (now - last) / 1000);
-    if (now - last < 250) frameTimes.push(now - last);
+    // A frame's own timestamp can be earlier than the moment `last` was taken (a frame that began before the loop was
+    // restarted): time never runs backwards, or the sparks of the links would look up a point before the first one.
+    const dt = Math.max(0, Math.min(0.1, (now - last) / 1000));
+    if (now - last >= 0 && now - last < 250) frameTimes.push(now - last);
     last = now;
     time += dt;
     frames++;

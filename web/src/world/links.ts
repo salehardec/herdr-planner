@@ -203,8 +203,8 @@ export class Links {
         this.arrows.setMatrixAt(arrows++, _m);
         // The spark travels from the predecessor to the waiting task.
         if (rec.link.kind !== 'done' && this.moving) {
-          const k = (time * 0.22 + (hash(rec.link.from + rec.link.to) % 100) / 100) % 1;
-          const idx = Math.min(SAMPLES, Math.floor(k * SAMPLES));
+          const k = ((time * 0.22 + (hash(rec.link.from + rec.link.to) % 100) / 100) % 1 + 1) % 1;
+          const idx = Math.max(0, Math.min(SAMPLES, Math.floor(k * SAMPLES)));
           sp.setXYZ(i, rec.points[idx].x, rec.points[idx].y, rec.points[idx].z);
         } else {
           sp.setXYZ(i, 0, -1e5, 0);
