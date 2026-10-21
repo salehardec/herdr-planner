@@ -202,6 +202,11 @@ const resetPage = async () => {
   await navigate(base + '/?noauto&nocoach&bloom=0');
   await waitFor('window.world && world.debug().planets > 0', 20000);
 };
+// The page has handled what was queued and the world has drawn a couple of frames (a panel opened, a key pressed): what the
+// geometry checks and the next step see is the result, not a half-moved panel.
+const beat = async () => { await pageTurn(); await frames(2); };
+// After a new window size: the resize reaches the page, which lays itself out again.
+const resized = async () => { await frames(2); await evalJs('window.dispatchEvent(new Event("resize")); true'); await beat(); };
 // Esc four times (closes whatever is open), each press after the page has handled the one before.
 const resetUi = async () => {
   for (let i = 0; i < 4; i++) { await press('Escape'); await pageTurn(); }
@@ -565,7 +570,7 @@ const rectOf = (sel) => evalJs(`(() => { const e = document.querySelector(${JSON
 const apart = (a, b) => a.r <= b.l + 1 || b.r <= a.l + 1 || a.b <= b.t + 1 || b.b <= a.t + 1;
 // The rectangles of some panels once they have stopped moving (slow software GL draws few frames, so a transition takes a while).
 async function settled(sels, ok, ms = 6000) {
-  const end = Date.now() + ms;
+  const end = Date.now() + ms * WAIT_SCALE;
   let r = {};
   while (Date.now() < end) {
     r = {};
@@ -582,6 +587,8 @@ const MK = `window.__mk = (name, type, chars) => new File([Uint8Array.from(chars
   window.__wav = (name) => __mk(name, 'audio/wav', 'RIFF\\x00\\x00\\x00\\x00WAVEfmt \\x10\\x00\\x00\\x00');
   window.__text = (name, body) => new File([body], name, { type: 'text/markdown' });
   true`;
+// a new item is waited for by its own text (a count would be satisfied by an item that has not left the list yet)
+const todoShown = (txt, ms = 8000) => waitFor(`[...document.querySelectorAll('#todo-list .titem')].some((e) => e.querySelector('.txt')?.innerText === ${JSON.stringify(txt)})`, ms);
 const todoIdByText = (txt) => evalJs(`[...document.querySelectorAll('#todo-list .titem')].find((e) => e.querySelector('.txt')?.innerText === ${JSON.stringify(txt)})?.dataset.todo`);
 // An item made through the server with files it holds already (the page uploads them like any file).
 const addTodo = (txt, kinds) => evalJs(`(async () => {
@@ -605,8 +612,8 @@ const todoState = () => evalJs(`fetch('/api/state').then(r => r.json()).then(s =
 section('todo drawer', async () => {
   await resetUi();
   await evalJs(MK);
-  await evalJs('planner.goOverview()');
-  await sleep(300);
+  await evalJs('planner.goOverview(); true');
+  await waitFor('world.debug().flight === "idle" && plannerDebug().selected === null', 15000);
   const q = await rectOf('#q');
   check('the search is in the middle of the top, not at the right', Math.abs((q.l + q.r) / 2 - 1500 / 2) < 12 && q.t < 40, JSON.stringify(q));
   check('the drawer is hidden above the screen while closed', (await rectOf('#todo')).b <= 60 && (await evalJs('getComputedStyle(document.querySelector("#todo")).opacity')) === '0');
@@ -644,7 +651,7 @@ section('todo drawer', async () => {
   await waitFor('!document.querySelector("#chat").classList.contains("off")', 3000);
   await click('#btodo');
   await waitFor('document.querySelector("#todo").classList.contains("open")', 3000);
-  await sleep(600);
+  await beat();
   for (const [w, h] of [[1500, 950], [1280, 940]]) {
     await send('Emulation.setDeviceMetricsOverride', { width: w, height: h, deviceScaleFactor: 1, mobile: false });
     const [ok, r] = await settled({ todo: '#todo', chat: '#chat', nav: '#nav', focus: '#focus' }, (x) => [['todo', 'chat'], ['todo', 'nav'], ['todo', 'focus'], ['chat', 'nav'], ['chat', 'focus'], ['nav', 'focus']].every(([a, b]) => apart(x[a], x[b])) && x.todo.t > 40);
@@ -655,7 +662,7 @@ section('todo drawer', async () => {
     await shot(`todo-chat-${w}.png`);
   }
   await send('Emulation.setDeviceMetricsOverride', { width: 1500, height: 950, deviceScaleFactor: 1, mobile: false });
-  await sleep(400);
+  await resized();
   await resetUi();
 });
 
@@ -669,8 +676,6 @@ section('todo', async () => {
   await evalJs('(() => { const i = document.querySelector("#todo-in"); i.value = "Проверить деплой"; document.querySelector("#todo-new").requestSubmit(); })()');
   check('a new item is kept on the server', await waitFor('document.querySelectorAll("#todo-list .titem").length === 3', 6000) && (await evalJs(`fetch('/api/state').then(r=>r.json()).then(s => s.todo.some(x => x.text === 'Проверить деплой'))`)));
   // addressing
-  // a new item is waited for by its own text (a count would be satisfied by an item that has not left the list yet)
-  const todoShown = (txt, ms = 8000) => waitFor(`[...document.querySelectorAll('#todo-list .titem')].some((e) => e.querySelector('.txt')?.innerText === ${JSON.stringify(txt)})`, ms);
   const id1 = await todoIdByText('Починить кэш отчётов');
   await evalJs(`(() => { const sel = document.querySelector('#todo-list .titem[data-todo="${id1}"] select'); sel.value = 'quasar'; sel.dispatchEvent(new Event('change', { bubbles: true })); })()`);
   check('an item can be addressed to the Quasar', await waitFor(`fetch('/api/state').then(r=>r.json()).then(s => s.todo.find(x => x.id === '${id1}')?.to === 'quasar')`, 6000));
@@ -746,8 +751,8 @@ section('todo', async () => {
 section('todo files', async () => {
   await resetUi();
   await evalJs(MK);
-  await evalJs('planner.goOverview()');
-  await sleep(300);
+  await evalJs('planner.goOverview(); true');
+  await waitFor('world.debug().flight === "idle" && plannerDebug().selected === null', 15000);
   await click('#btodo');
   await waitFor('document.querySelector("#todo").classList.contains("open")', 4000);
   check('the composer has «Обзор…»', (await text('#todo-browse')).includes('Обзор'), await text('#todo-browse'));
@@ -812,12 +817,12 @@ section('todo files', async () => {
 section('todo to chat', async () => {
   await resetUi();
   await evalJs(MK);
-  await evalJs('planner.goOverview()');
-  await sleep(300);
+  await evalJs('planner.goOverview(); true');
+  await waitFor('world.debug().flight === "idle" && plannerDebug().selected === null', 15000);
   check('a todo with files is added (through the server)', (await addTodo('Черновик для Квазара', ['md', 'png'])) === 200);
   await click('#btodo');
   await waitFor('document.querySelector("#todo").classList.contains("open")', 4000);
-  const id = await waitFor(`!!document.querySelector('#todo-list .titem')`, 4000) && await todoIdByText('Черновик для Квазара');
+  const id = await todoShown('Черновик для Квазара') && await todoIdByText('Черновик для Квазара');
   check('the chat is folded', await evalJs('document.querySelector("#chat").classList.contains("off")'));
   const placeChat = JSON.stringify((await pd()).selected);
   await evalJs(`(() => { const dt = new DataTransfer(); dt.setData('text/plain', '${id}'); document.querySelector('#todo-list .titem[data-todo="${id}"]').dispatchEvent(new DragEvent('dragstart', { bubbles: true, dataTransfer: dt })); return true; })()`);
@@ -853,7 +858,7 @@ section('todo to chat', async () => {
   await addTodo('Никуда не летит', []);
   await click('#btodo');
   await waitFor('document.querySelector("#todo").classList.contains("open")', 3000);
-  const any = await waitFor(`!!document.querySelector('#todo-list .titem')`, 4000) && await todoIdByText('Никуда не летит');
+  const any = await todoShown('Никуда не летит') && await todoIdByText('Никуда не летит');
   await dragToScene(any, 2, 400);
   check('a card dropped on empty space closes the chat that opened for it', await waitFor('document.querySelector("#chat").classList.contains("off")', 3000) && (await todoCount()) >= 1);
   await resetUi();
@@ -862,13 +867,13 @@ section('todo to chat', async () => {
 section('todo to planet', async () => {
   await resetUi();
   await evalJs(MK);
-  await evalJs('planner.goOverview()');
-  await sleep(300);
+  await evalJs('planner.goOverview(); true');
+  await waitFor('world.debug().flight === "idle" && plannerDebug().selected === null', 15000);
   check('a todo with a text and a sound is added', (await addTodo('Разобрать запись', ['md', 'wav'])) === 200);
   await go('alpha/6');
   await click('#btodo');
   await waitFor('document.querySelector("#todo").classList.contains("open")', 4000);
-  await waitFor(`!!document.querySelector('#todo-list .titem')`, 4000);
+  await todoShown('Разобрать запись');
   const id = await todoIdByText('Разобрать запись');
   const pos = await evalJs(`world.screenOf(${planet('alpha/6')})`);
   await dragToScene(id, pos.x, pos.y);
@@ -881,14 +886,13 @@ section('todo to planet', async () => {
   const dir = join(fixture, 'state', 'herdr-planner', 'attachments');
   check('the agent is told the words and the one file left (a path on this machine)', await waitLog(() => calls().some((c) => c.argv[0] === 'tell' && c.argv[1] === 'alpha/6' && c.argv[3].startsWith('Разобрать запись') && c.argv[3].split('\n').filter((l) => l.startsWith(dir + '/')).length === 1), 10000), JSON.stringify(lastCall()));
   check('the item is gone', await waitFor(`!document.querySelector('#todo-list .titem[data-todo="${id}"]')`, 6000));
-  await sleep(600);
+  await quiet(); await frames(3);
   const placeAfter = await here();
   const moved = Math.abs(placeAfter.cam.x - placeBefore.cam.x) + Math.abs(placeAfter.cam.y - placeBefore.cam.y) + Math.abs(placeAfter.cam.z - placeBefore.cam.z);
   check('an action leaves the operator where they are: the same selection and level, the camera where it was, no flight', placeAfter.sel === placeBefore.sel && placeAfter.galaxy === placeBefore.galaxy && placeAfter.level === placeBefore.level && moved < 8 && (await debug()).flight === 'idle', JSON.stringify({ placeBefore, placeAfter }));
   // a nebula: the files go into the description of the new task
   check('another todo with an image', (await addTodo('Сделать по макету', ['png'])) === 200);
-  await waitFor(`!!document.querySelector('#todo-list .titem')`, 4000);
-  const id2 = await waitFor('document.querySelectorAll("#todo-list .titem").length >= 1', 4000) && await todoIdByText('Сделать по макету');
+  const id2 = await todoShown('Сделать по макету') && await todoIdByText('Сделать по макету');
   await evalJs(`planner.navigateTo({kind:'universe',galaxy:'',id:'delta'}); true`);
   await waitFor('world.debug().flight === "idle"', 12000);
   const upos = await evalJs(`world.screenOf({kind:'universe',galaxy:'',id:'delta'})`);
@@ -903,8 +907,8 @@ section('chat wide', async () => {
   await resetUi();
   await evalJs(MK);
   await evalJs('try { localStorage.removeItem("herdr-planner.chatWide"); localStorage.removeItem("herdr-planner.chatWideTodo"); } catch {} true');
-  await evalJs('planner.goOverview()');
-  await sleep(300);
+  await evalJs('planner.goOverview(); true');
+  await waitFor('world.debug().flight === "idle" && plannerDebug().selected === null', 15000);
   await press('Slash', '/');
   await waitFor('!document.querySelector("#chat").classList.contains("off")', 3000);
   check('the chat has an «Развернуть» button', (await text('#cwide')).includes('Развернуть'), await text('#cwide'));
@@ -927,7 +931,7 @@ section('chat wide', async () => {
   // the chat stays usable at every common width: the columns, or the focus card steps aside while the todos are open
   const useful = async (w, h, label) => {
     await send('Emulation.setDeviceMetricsOverride', { width: w, height: h, deviceScaleFactor: 1, mobile: false });
-    await sleep(500); await evalJs('window.dispatchEvent(new Event("resize")); true');
+    await resized();
     const [ok, r] = await settled({ nav: '#nav', todo: '#todo', chat: '#chat', focus: '#focus', inp: '#ask-in' }, (x) => x.chat.w >= 340 && x.inp.w >= 160 && x.chat.r <= w + 1 && apart(x.todo, x.chat) && apart(x.todo, x.nav) && apart(x.chat, x.nav) && apart(x.chat, x.focus), 9000);
     const focusShown = await evalJs('document.querySelector("#focus").getBoundingClientRect().left < innerWidth - 20');
     check(`${label}${w}px, wide chat with the todos open: the chat ${Math.round(r.chat.w)} px (input ${Math.round(r.inp.w)}), nothing over anything${focusShown ? '' : ', the focus card stepped aside'}`, ok, JSON.stringify(r));
@@ -937,7 +941,7 @@ section('chat wide', async () => {
   for (const [w, h] of [[1920, 1080], [1500, 950], [1366, 768], [1280, 800], [1100, 800]]) wideRooms[w] = await useful(w, h, '');
   check('where there is room the focus card stays beside the chat (1920) and a chat is never narrower than 30 rem by choice (1500 and up)', wideRooms[1920].chat.w >= 480 && wideRooms[1500].chat.w >= 440 && wideRooms[1366].chat.w >= 440 && wideRooms[1280].chat.w >= 440, JSON.stringify(Object.fromEntries(Object.entries(wideRooms).map(([k, v]) => [k, Math.round(v.chat.w)]))));
   await send('Emulation.setDeviceMetricsOverride', { width: 1500, height: 950, deviceScaleFactor: 1, mobile: false });
-  await sleep(500); await evalJs('window.dispatchEvent(new Event("resize")); true');
+  await resized();
   // a card dragged into the wide chat becomes the draft there too
   check('a todo is added', (await addTodo('Из дел в широкий чат', ['md'])) === 200);
   const id = await waitFor(`!![...document.querySelectorAll('#todo-list .titem')].find((e) => e.querySelector('.txt')?.innerText === 'Из дел в широкий чат')`, 5000) && await todoIdByText('Из дел в широкий чат');
@@ -955,7 +959,7 @@ section('chat wide', async () => {
   const usableAt = async (w, h, label, scale = 1) => {
     const eff = w / scale;
     await send('Emulation.setDeviceMetricsOverride', { width: w, height: h, deviceScaleFactor: 1, mobile: false });
-    await sleep(500); await evalJs('window.dispatchEvent(new Event("resize")); true');
+    await resized();
     // the navigator and the focus card are open (a page loaded on a small window starts with them closed)
     await evalJs('document.activeElement?.blur(); true');
     if (await evalJs('document.querySelector("#nav").classList.contains("off")')) await press('KeyN', 'n');
@@ -1010,7 +1014,7 @@ section('scale', async () => {
   const roots = [];
   for (const [w, h] of sizes) {
     await send('Emulation.setDeviceMetricsOverride', { width: w, height: h, deviceScaleFactor: 1, mobile: false });
-    await sleep(600); await evalJs('window.dispatchEvent(new Event("resize")); true'); await sleep(900);
+    await resized();
     await evalJs('planner.goOverview(); true');
     // the three panels at the bottom and the top, as the operator uses them
     await evalJs('(() => { if (!document.querySelector("#todo").classList.contains("open")) document.querySelector("#btodo").click(); if (document.querySelector("#chat").classList.contains("off")) document.querySelector("#bchat").click(); return true; })()');
@@ -1027,7 +1031,7 @@ section('scale', async () => {
   check('a bigger screen gets a bigger interface (and 1366×768 is not made smaller than before)', roots[0] === 16 && roots[1] > roots[0] && roots[2] > roots[1] && roots[3] > roots[2], JSON.stringify(roots));
   // the setting in the ship's computer and the keys
   await send('Emulation.setDeviceMetricsOverride', { width: 1500, height: 950, deviceScaleFactor: 1, mobile: false });
-  await sleep(600); await evalJs('window.dispatchEvent(new Event("resize")); true'); await sleep(500);
+  await resized();
   await resetUi();
   const rootNow = () => evalJs('parseFloat(getComputedStyle(document.documentElement).fontSize)');
   check('the ship\'s computer opens', await menuPick('Бортовой компьютер') && await waitFor('!!document.querySelector("#ship-scale")', 6000));
@@ -1798,7 +1802,7 @@ section('theme and language', async () => {
   await waitFor('!document.querySelector("#chat").classList.contains("off")', 3000);
   await evalJs('planner.goOverview()');
   await click('#menu-btn');
-  await sleep(500);
+  await waitFor('!!document.querySelector(".menupop")', 3000); await beat();
   check('the Russian interface: «Сжать» and «Новый» under the Quasar, not «Compact» and «New»', (await text('#memory-c #compact')) === 'Сжать' && (await text('#memory-c #newcoord')) === 'Новый', (await text('#memory-c #compact')) + ' | ' + (await text('#memory-c #newcoord')));
   const leftRu = await evalJs(english);
   check('the Russian interface has no English words left in its buttons, hints and tooltips', Array.isArray(leftRu) && leftRu.length === 0, JSON.stringify(leftRu));
@@ -1831,14 +1835,14 @@ section('simple mode and no WebGL', async () => {
   await click('#btodo'); await waitFor('document.querySelector("#todo").classList.contains("open")', 3000);
   for (const [w, h] of [[1500, 950], [1366, 768], [1100, 900]]) {
     await send('Emulation.setDeviceMetricsOverride', { width: w, height: h, deviceScaleFactor: 1, mobile: false });
-    await sleep(500); await evalJs('window.dispatchEvent(new Event("resize")); true');
+    await resized();
     const [ok, r] = await settled({ nav: '#nav', todo: '#todo', chat: '#chat', focus: '#focus' }, (x) => apart(x.nav, x.todo) && apart(x.nav, x.chat) && apart(x.todo, x.chat) && apart(x.todo, x.focus) && apart(x.chat, x.focus) && x.todo.t > 40);
     check(`simple mode, ${w}px: the navigator (wider here), the drawer, the chat and the focus card stay apart`, ok, JSON.stringify(r));
     if (w === 1100) await shot('calm-1100.png');
   }
   await send('Emulation.setDeviceMetricsOverride', { width: 1500, height: 950, deviceScaleFactor: 1, mobile: false });
-  await sleep(400);
-  await press('Escape'); await press('Escape'); await sleep(300);
+  await resized();
+  await press('Escape'); await press('Escape'); await beat();
   // no WebGL at all: the navigator is the world
   const gl = await evalJs(`(() => { const f = HTMLCanvasElement.prototype.getContext; return typeof f; })()`);
   void gl;
@@ -1872,23 +1876,23 @@ section('narrow', async () => {
   check('the page body never scrolls sideways at phone width', await waitFor('document.documentElement.scrollWidth <= innerWidth + 1', 5000));
   await shot('narrow.png');
   // the drawer of todos at phone width: under the two rows of the top bar, the chat apart below, nothing sideways
-  await press('Escape'); await sleep(200);
-  await evalJs('document.querySelector("#btodo").click(); true'); await sleep(900);
-  await press('Slash', '/'); await sleep(900);
+  await press('Escape'); await beat();
+  await evalJs('document.querySelector("#btodo").click(); true'); await beat();
+  await press('Slash', '/'); await beat();
   const [nok, nr] = await settled({ todo: '#todo', chat: '#chat', q: '#q' }, (r) => r.todo.t >= r.q.b && r.todo.l >= 0 && r.todo.r <= 621 && apart(r.todo, r.chat));
   check('phone: the drawer hangs under the search and inside the screen, the chat apart below it', nok, JSON.stringify(nr));
   check('phone: nothing scrolls sideways with both open', await evalJs('document.documentElement.scrollWidth <= innerWidth + 1'));
   await shot('narrow-todo.png');
-  await press('Escape'); await press('Escape'); await sleep(300);
+  await press('Escape'); await press('Escape'); await beat();
   for (const w of [1100, 1000]) {
     await send('Emulation.setDeviceMetricsOverride', { width: w, height: 900, screenWidth: w, screenHeight: 900, deviceScaleFactor: 1, mobile: false });
-    await sleep(400); await evalJs('window.dispatchEvent(new Event("resize")); true'); await sleep(700);
+    await resized();
     await evalJs('document.querySelector("#btodo").click(); true');
-    await press('Slash', '/'); await sleep(900);
+    await press('Slash', '/'); await beat();
     const navOpen = !(await evalJs('document.querySelector("#nav").classList.contains("off")'));
     const [ok, r] = await settled({ todo: '#todo', chat: '#chat', nav: '#nav', focus: '#focus' }, (x) => apart(x.todo, x.chat) && (!navOpen || (apart(x.todo, x.nav) && (w > 1000 ? apart(x.chat, x.nav) : true))));
     check(`${w}px: the drawer and the chat are open and apart${navOpen ? ', the navigator too' : ''}`, ok, JSON.stringify(r));
-    await press('Escape'); await press('Escape'); await sleep(300);
+    await press('Escape'); await press('Escape'); await beat();
   }
   await send('Emulation.setDeviceMetricsOverride', { width: 500, height: 900, screenWidth: 500, screenHeight: 900, deviceScaleFactor: 1, mobile: false });
   await waitFor('innerWidth === 500', 5000);
