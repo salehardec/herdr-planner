@@ -25,8 +25,8 @@
 :root.bp1000 #cwide{display:none}
 /* the keys card has nothing to say behind an open chat */
 .win.chat-open .hintcard{display:none}
-/* 901–1000 (as the interface sees the window: a 950 px window, 1366 px at 150 %, 1920 px at 200 %): no columns, but nothing
-   covers anything. The chat and the todos stay between the navigator and the edge; the focus card steps aside while
-   either is open. */
-:root.bp1000:not(.bp900) .win.chat-open,:root.bp1000:not(.bp900) .win.todo-open{--mid-r:0.75rem}
-:root.bp1000:not(.bp900) .win.chat-open .focus,:root.bp1000:not(.bp900) .win.todo-open .focus{transform:translateX(110%);opacity:0;pointer-events:none}
+/* Not enough room between the navigator and the focus card for a chat (30 rem; the class `chat-tight` comes from the page's own measure,
+   chat-wide.ts, so it follows the window, the scale and the navigator's width): nothing covers anything. The chat and the todos stay between
+   the navigator and the edge; the focus card steps aside while either is open. (A phone-sized window has its own sheets: bp900.) */
+:root:not(.bp900) .win.chat-tight.chat-open,:root:not(.bp900) .win.chat-tight.todo-open{--mid-r:0.75rem}
+:root:not(.bp900) .win.chat-tight.chat-open .focus,:root:not(.bp900) .win.chat-tight.todo-open .focus{transform:translateX(110%);opacity:0;pointer-events:none}

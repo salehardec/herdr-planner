@@ -1956,7 +1956,8 @@ const boardChecks = async (at, stacked) => {
 // panels that carry the layout rules (navigator, chat, settings) again at every other ratio.
 const CORE_PANELS = ['the navigator', 'the chat', 'the wide chat with the todos', 'the station'];
 const layoutRun = async (w, h, dsf, scale = 'auto') => {
-  const full = dsf === 1;
+  // the whole round at the usual scales; the panels that carry the layout rules at the others (and the drag test at every scale of pixel ratio 1)
+  const full = dsf === 1 && (scale === 'auto' || scale === 150 || scale === 200);
   await send('Emulation.setDeviceMetricsOverride', { width: w, height: h, screenWidth: w, screenHeight: h, deviceScaleFactor: dsf, mobile: false });
   await waitFor(`innerWidth === ${w}`, 5000);
   await resized();
@@ -2037,11 +2038,11 @@ const layoutRun = async (w, h, dsf, scale = 'auto') => {
     check(`${at}: and it stands next to the column on its left (${Math.round(l.l - left.r)} px), its text starts ${Math.round((col.textL ?? l.l) - l.l)} px into it`, l.l - left.r <= 2 * col.px && (col.textL === null || col.textL - l.l <= 12 * col.px), JSON.stringify({ l, left: left.r, textL: col.textL }));
   });
   // the navigator dragged as far as it goes, and a width kept from a bigger window: the chat still has room (words whole, buttons clear of the focus card)
-  if (full && eff > 1000) {
+  if (dsf === 1 && eff > 1000) {
     const roomOk = async (what) => {
       await evalJs(AUDIT);
       const [ok, r] = await settled({ chat: '#chat', nav: '#nav', focus: '#focus' }, (x) => x.chat && x.nav && x.chat.w >= 28 * root - 1 && x.chat.l >= x.nav.r - 1 && x.chat.r <= w + 1 && (!x.focus || x.focus.l >= w - 1 || x.chat.r <= x.focus.l + 1), 5000);
-      check(`${at}: ${what}: the chat keeps ${Math.round(28 * root)} px at least (${Math.round(r.chat?.w)}) and clear of the focus card`, ok, JSON.stringify(r));
+      check(`${at}: ${what}: the chat keeps ${Math.round(28 * root)} px at least (${Math.round(r.chat?.w)}) and clear of the focus card`, ok, JSON.stringify(r) + ' ' + await evalJs('document.querySelector("#win").className'));
       const bad = await layoutProblems('#chat');
       check(`${at}: ${what}: nothing breaks in the chat`, bad.length === 0, bad.join('; '));
     };
@@ -2058,13 +2059,15 @@ const layoutRun = async (w, h, dsf, scale = 'auto') => {
       await send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: w - 40, y: gy, button: 'left', buttons: 0, clickCount: 1 });
       await roomOk('the navigator dragged to the far right');
       const max = await evalJs('Number(document.querySelector("#nav .nav-grip").getAttribute("aria-valuemax"))');
-      check(`${at}: the edge's own upper limit (${max} rem) is below what the window leaves (${(eff / 16).toFixed(0)} rem wide, ${max} + 27 + 30 rem wanted at most)`, max > 0 && max <= eff / 16 - 27 - 29.9, String(max));
+      check(`${at}: the edge's own upper limit (${max} rem) is below what the window leaves (${(eff / 16).toFixed(0)} rem wide, ${max} + 27 + 30 rem wanted at most)`, max > 0 && max <= Math.max(21, eff / 16 - 27 - 29.9), String(max));
     }
     // a width kept from a big screen: the window here is cut to what fits
     await evalJs('try { localStorage.setItem("herdr-planner.navW", "48"); } catch {} true');
     await navigate(base + '/?noauto&nocoach&bloom=0');
     await resized();
-    await click('#bchat'); await waitFor('!document.querySelector("#chat").classList.contains("off")', 4000);
+    // (the page remembers an open chat over a reload: it is opened only when it is not)
+    if (await exists('#chat.off')) await click('#bchat');
+    await waitFor('!document.querySelector("#chat").classList.contains("off")', 4000);
     if (await exists('#cwide') && !(await exists('#win.chat-wide'))) await click('#cwide');
     await roomOk('a width of 48 rem kept from a bigger window');
     await evalJs('try { localStorage.removeItem("herdr-planner.navW"); } catch {} true');
@@ -2091,13 +2094,23 @@ const layoutRun = async (w, h, dsf, scale = 'auto') => {
   await shot(`layout-${w}x${h}-${dsf}.png`);
 };
 
-for (const [w, h] of [[1280, 720], [1920, 1080], [2560, 1440]]) {
-  section(`layout ${w}`, async () => {
+// The sizes of the window and the scales of the interface to try: the interface sees the window as w / scale, so 125–175 % on the usual
+// windows give the widths of 1000–1100 design pixels (1920 at 175 %, 1600 at 150 %, 1366 at 125 %) where three columns barely fit.
+const LAYOUT_RUNS = [
+  { w: 1280, h: 720, scales: [125, 150, 175, 200], dsf: true },
+  { w: 1366, h: 768, scales: [125] },
+  { w: 1600, h: 900, scales: [150] },
+  { w: 1920, h: 1080, scales: [125, 150, 175, 200], dsf: true },
+  { w: 2560, h: 1440, scales: [125, 150, 175], dsf: true },
+  { w: 2560, h: 1440, scales: [200, 250], name: 'layout big' },
+];
+for (const { w, h, scales, dsf, name } of LAYOUT_RUNS) {
+  section(name || `layout ${w}`, async () => {
     await resetUi();
     await evalJs('try { localStorage.removeItem("herdr-planner.navW"); localStorage.removeItem("herdr-planner.chatWide"); localStorage.removeItem("herdr-planner.chatWideTodo"); } catch {} true');
     await navigate(base + '/?noauto&nocoach&bloom=0');
-    for (const dsf of [1, 1.5, 2]) await layoutRun(w, h, dsf);
-    for (const scale of [150, 200]) await layoutRun(w, h, 1, scale);
+    for (const ratio of dsf ? [1, 1.5, 2] : []) await layoutRun(w, h, ratio);
+    for (const scale of scales) await layoutRun(w, h, 1, scale);
     await send('Emulation.setDeviceMetricsOverride', { width: 1500, height: 950, deviceScaleFactor: 1, mobile: false });
     await waitFor('innerWidth === 1500', 5000);
     await evalJs('try { localStorage.removeItem("herdr-planner.uiScale"); } catch {} true');

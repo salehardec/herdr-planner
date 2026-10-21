@@ -37,7 +37,10 @@ export function installChatWide(): void {
   });
 }
 
-/* With the todos beside the chat the middle needs room for both: a column of todos (20 rem) and a chat that can be
+/* The middle between the navigator and the focus card (as wide as the interface's own size makes it, rem) must be wide enough for what
+   opens in it. Two measures, two classes on #win: `chat-tight` (less than a chat that can be used, 30 rem) and `wide-tight` (less than the
+   todos' column and such a chat).
+   With the todos beside the chat the middle needs room for both: a column of todos (20 rem) and a chat that can be
    used (30 rem). Where the middle between the navigator and the focus card is smaller, the focus card steps aside
    while the todos are open (it comes back when they close), so the chat is never squeezed. */
 const TODO_COL_REM = 20;
@@ -60,6 +63,8 @@ export function installWideRoom(): void {
     const room = probe.getBoundingClientRect().width;
     const need = (TODO_COL_REM + CHAT_MIN_REM + GAP_REM) * rootPx();
     win.classList.toggle('wide-tight', room < need);
+    // not even room for the chat alone (its header needs about 27 rem): the focus card steps aside while the chat or the todos are open
+    win.classList.toggle('chat-tight', room < (CHAT_MIN_REM + GAP_REM) * rootPx());
   };
   effect(measure);
   addEventListener('resize', measure);
