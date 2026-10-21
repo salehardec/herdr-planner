@@ -9,7 +9,6 @@ import {
   searchChat, send, sending,
 } from '../chat';
 import { hasFiles, pastedFiles } from '../attach';
-import { rootPx } from '../scale';
 import { parseOptions } from '../requests';
 import { post, refreshNow, onChatEvent } from '../api';
 import { fetchScreen, sendKey, todoToDraft } from '../actions';
@@ -19,6 +18,7 @@ import { Gl } from './Gl';
 import { RichText } from './RichText';
 import { Memory } from './FocusOther';
 import { PendingFiles, SavedFiles } from './Attached';
+import { AutoTextarea, fitText } from './AutoText';
 import { chatBack, chatWide, setChatWide } from '../chat-wide';
 import { dragTodo } from '../todo-drag';
 import type { TurnData } from '../types';
@@ -32,6 +32,39 @@ function Shots(props: { list: { id: string; name: string; mime?: string }[] }): 
 }
 
 const todoOver = signal(false);
+
+/**
+ * Where the caret is in the wrapped text: on the first or on the last visual line. A paragraph without
+ * line breaks may still take several lines, so the line breaks alone do not answer this.
+ */
+function caretLines(ta: HTMLTextAreaElement): { first: boolean; last: boolean } {
+  const cs = getComputedStyle(ta);
+  const mirror = document.createElement('div');
+  mirror.setAttribute('aria-hidden', 'true');
+  mirror.style.cssText = 'position:absolute;visibility:hidden;left:-100000px;top:0;height:auto;margin:0;border:0;box-sizing:border-box;overflow:visible;';
+  mirror.style.width = `${ta.clientWidth}px`;
+  for (const p of [
+    'font', 'font-family', 'font-size', 'font-weight', 'font-style', 'letter-spacing', 'line-height',
+    'text-transform', 'word-spacing', 'tab-size', 'padding-top', 'padding-right', 'padding-bottom',
+    'padding-left', 'white-space', 'overflow-wrap', 'word-break', 'direction',
+  ]) mirror.style.setProperty(p, cs.getPropertyValue(p));
+  mirror.textContent = ta.value.slice(0, ta.selectionStart);
+  const marker = document.createElement('span');
+  marker.textContent = '\u200b';
+  mirror.appendChild(marker);
+  document.body.appendChild(mirror);
+  const box = mirror.getBoundingClientRect();
+  const at = marker.getBoundingClientRect();
+  const padTop = parseFloat(cs.paddingTop) || 0;
+  const padBottom = parseFloat(cs.paddingBottom) || 0;
+  const line = parseFloat(cs.lineHeight) || at.height || 16;
+  // The marker's rect is the glyph, not the line box: take half of the line's leading off.
+  const lineTop = at.top - Math.max(0, (line - at.height) / 2);
+  const first = lineTop <= box.top + padTop + 1;
+  const last = lineTop >= box.top + mirror.scrollHeight - padBottom - line - 1;
+  mirror.remove();
+  return { first, last };
+}
 
 function Turn(props: { turn: TurnData; hit: boolean; onReuse: (q: string) => void }): JSX.Element {
   const tn = props.turn;
@@ -124,40 +157,31 @@ export function Chat(): JSX.Element {
     if (open && showTurns && el.scrollTop < 40) void older();
   };
 
-  const submit = async (e: Event): Promise<void> => {
-    e.preventDefault();
+  const submit = async (): Promise<void> => {
     const ta = taRef.current;
     if (!ta) return;
     stuck.value = true;
     const text = ta.value;
     const ok = await send(text);
-    if (ok) { ta.value = ''; ta.style.height = ''; }
+    if (ok) { ta.value = ''; fitText(ta); }
   };
 
   const onKey = (e: KeyboardEvent): void => {
     const ta = e.target as HTMLTextAreaElement;
-    if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); void submit(e); return; }
-    if (e.key === 'Escape') { ta.value = ''; draftTodos.value = []; ta.blur(); chatBack(); e.stopPropagation(); return; }
+    if (e.key === 'Escape') { ta.value = ''; fitText(ta); draftTodos.value = []; ta.blur(); chatBack(); e.stopPropagation(); return; }
     const log = logRef.current;
     if (!log || !showTurns) return;
-    const caret = ta.selectionStart;
-    const firstRow = !ta.value.slice(0, caret).includes('\n');
-    const lastRow = !ta.value.slice(ta.selectionEnd).includes('\n');
+    if (!['ArrowUp', 'ArrowDown', 'PageUp', 'PageDown'].includes(e.key)) return;
+    const edge = ta.selectionStart === ta.selectionEnd ? caretLines(ta) : { first: false, last: false };
     const step = e.key === 'PageUp' || e.key === 'PageDown' ? log.clientHeight * 0.85 : 70;
-    if ((e.key === 'ArrowUp' && firstRow) || e.key === 'PageUp') {
+    if ((e.key === 'ArrowUp' && edge.first) || (e.key === 'PageUp' && edge.first)) {
       e.preventDefault();
       stuck.value = false;
       if (log.scrollTop <= 1) void older(); else log.scrollTop -= step;
-    } else if ((e.key === 'ArrowDown' && lastRow) || e.key === 'PageDown') {
+    } else if ((e.key === 'ArrowDown' && edge.last) || (e.key === 'PageDown' && edge.last)) {
       e.preventDefault();
       log.scrollTop += step;
     }
-  };
-
-  const grow = (e: Event): void => {
-    const ta = e.target as HTMLTextAreaElement;
-    ta.style.height = '';
-    ta.style.height = Math.min(ta.scrollHeight, 7.5 * rootPx()) + 'px';
   };
 
   const onPaste = (e: ClipboardEvent): void => {
@@ -199,7 +223,7 @@ export function Chat(): JSX.Element {
     if (!draft || !ta) return;
     draftRequest.value = null;
     ta.value = ta.value.trim() ? `${ta.value.replace(/\s+$/, '')}\n${draft.text}` : draft.text;
-    grow({ target: ta } as unknown as Event);
+    fitText(ta);
     ta.focus();
     ta.setSelectionRange(ta.value.length, ta.value.length);
   }, [draft]);
@@ -247,7 +271,7 @@ export function Chat(): JSX.Element {
               </button>
             ) : <div class="meta start">{t('chat.start')}</div>}
             {c.turns.map((x) => (
-              <Turn key={x.n} turn={x} hit={c.highlight === x.n} onReuse={(q) => { if (taRef.current) { taRef.current.value = q; taRef.current.focus(); grow({ target: taRef.current } as unknown as Event); } }} />
+              <Turn key={x.n} turn={x} hit={c.highlight === x.n} onReuse={(q) => { const ta = taRef.current; if (ta) { ta.value = q; fitText(ta); ta.focus(); ta.setSelectionRange(q.length, q.length); } }} />
             ))}
           </>
         ) : (
@@ -300,16 +324,17 @@ export function Chat(): JSX.Element {
         </div>
       )}
       <PendingFiles files={pendingFiles.value} onRemove={removeFile} id="attach" />
-      <form class="compose" id="ask" autocomplete="off" onSubmit={(e) => void submit(e)}>
-        <textarea
-          id="ask-in" ref={taRef} rows={1} placeholder={t('chat.placeholder')} aria-label={t('chat.aria')}
-          onInput={grow} onKeyDown={onKey} onPaste={onPaste} onFocus={() => { panels.chat.value = true; }}
+      <form class="compose" id="ask" autocomplete="off" onSubmit={(e) => { e.preventDefault(); void submit(); }}>
+        <AutoTextarea
+          id="ask-in" elRef={taRef} placeholder={t('chat.placeholder')} aria-label={t('chat.aria')}
+          onSend={() => void submit()} onKeyDown={onKey} onPaste={onPaste} onFocus={() => { panels.chat.value = true; }}
         />
         <label class="attachbtn" title={t('chat.attachTitle')}>
           <Gl n="attach" />
           <input type="file" id="file-in" accept="image/png,image/jpeg,image/webp,image/gif,audio/*,text/*,.md,.log,.json,.yaml,.yml,.toml,.csv" multiple hidden onChange={(e) => { addFiles((e.target as HTMLInputElement).files); (e.target as HTMLInputElement).value = ''; }} />
         </label>
         <button class={`btn primary send`} type="submit" id="send" data-ready={String(typed)} disabled={sending.value} aria-label={t('chat.send')}>{t('chat.send')}</button>
+        <div class="keyhint" id="ask-hint">{t('text.keys.send')}</div>
       </form>
     </section>
   );

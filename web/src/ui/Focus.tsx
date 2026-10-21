@@ -1,6 +1,6 @@
 import { signal } from '@preact/signals';
 import type { JSX } from 'preact';
-import { useEffect } from 'preact/hooks';
+import { useEffect, useRef } from 'preact/hooks';
 import {
   armed, currentView, details, galaxies, galaxyId, linkSel, panels, requests, screens, selected, snap, taskOf, tellDraft,
 } from '../store';
@@ -14,6 +14,7 @@ import { Gl, Badge } from './Gl';
 import { RichText } from './RichText';
 import { Translatable } from './Translatable';
 import { RequestBlock, Screen } from './Request';
+import { AutoTextarea } from './AutoText';
 import { dayTimeOf } from '../util/dates';
 import { duration } from '../util/format';
 import type { Entity, Subagent, Task } from '../types';
@@ -37,20 +38,22 @@ const remoteLink = (l: { from: string; kind: string }): boolean => l.kind === 'f
 function TellBox(props: { task: Task }): JSX.Element {
   const task = props.task;
   const dis = !boardOk() && galaxyId.value === '';
+  const ref = useRef<HTMLTextAreaElement>(null);
   const submit = async (): Promise<void> => {
-    const el = document.getElementById('tell') as HTMLInputElement | null;
+    const el = ref.current;
     if (!el) return;
-    if (await tellTask(task, el.value, galaxyId.value || undefined)) el.value = '';
+    await tellTask(task, el.value, galaxyId.value || undefined);
   };
   return (
     <div class="tell">
-      <input
-        id="tell" data-id={task.id} class="field" autocomplete="off" disabled={dis} value={tellDraft.value[task.id] ?? ''}
+      <AutoTextarea
+        id="tell" data-id={task.id} class="field" elRef={ref} autocomplete="off" disabled={dis} value={tellDraft.value[task.id] ?? ''}
         placeholder={t('focus.tellPlaceholder', { tag: task.tag })} aria-label={t('focus.tell')}
-        onInput={(e) => { tellDraft.value = { ...tellDraft.value, [task.id]: (e.target as HTMLInputElement).value }; }}
-        onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); void submit(); } }}
+        onInput={(e) => { tellDraft.value = { ...tellDraft.value, [task.id]: (e.target as HTMLTextAreaElement).value }; }}
+        onSend={() => void submit()}
       />
       <button class="btn" type="button" data-act="tell-agent" data-id={task.id} aria-disabled={dis} onClick={() => void submit()}>{t('focus.send')}</button>
+      <div class="keyhint" id="tell-hint">{t('text.keys.send')}</div>
     </div>
   );
 }

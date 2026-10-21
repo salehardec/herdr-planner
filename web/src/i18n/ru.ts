@@ -52,7 +52,9 @@ export const ru: Record<string, string | string[]> = {
   // дела
   'todo.title': 'Дела', 'todo.aria': 'Список дел', 'todo.button': 'Дела · {n}', 'todo.empty': 'Пусто. Запиши, что ещё не стало задачей.',
   'todo.note': 'Перетащи дело в чат — черновик сообщения Координатору; на планету — сказать её агенту; на Квазар — Координатору; на туманность — новая задача. Порядок — перетаскиванием или Alt+↑↓.',
-  'todo.new': 'новое дело…', 'todo.edit': 'Двойной щелчок — изменить', 'todo.to': 'Кому', 'todo.toNobody': 'без адресата', 'todo.toQuasar': 'Квазар',
+  'todo.new': 'новое дело…', 'todo.edit': 'Двойной щелчок — изменить', 'todo.more': 'ещё', 'todo.less': 'свернуть', 'todo.to': 'Кому', 'todo.toNobody': 'без адресата', 'todo.toQuasar': 'Квазар',
+  'text.keys.send': 'Enter — отправить · Shift+Enter — новая строка', 'text.keys.add': 'Enter — добавить · Shift+Enter — новая строка',
+  'text.keys.save': 'Enter — сохранить · Shift+Enter — новая строка', 'text.keys.create': 'Enter — создать задачу · Shift+Enter — новая строка',
   'todo.send': 'Отправить', 'todo.remove': 'Убрать', 'todo.popTitle': 'Новая задача из дела', 'todo.popProject': 'Вселенная', 'todo.popProgram': 'Программа',
   'todo.popModel': 'Модель', 'todo.popGo': 'Создать задачу', 'todo.modelPh': 'например claude-sonnet-5-5', 'todo.modelsLoading': 'список моделей загружается…',
   'todo.modelsCount': 'моделей: {n}', 'todo.modelsFree': 'список недоступен — впиши название сам',

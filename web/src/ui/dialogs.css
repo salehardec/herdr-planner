@@ -31,4 +31,5 @@
 .dlg .bar i{display:block;height:100%;background:var(--pl-accent);transition:width .2s}
 .dlg .hint.bad{color:var(--pl-danger)}
 .dlg .dfiles{margin-top:0.375rem}
-.dlg textarea.field{resize:vertical;min-height:3.375rem;font:inherit}
+.dlg textarea.field{resize:none;overflow-y:auto;min-height:3.375rem;max-height:12rem;font:inherit;line-height:1.35}
+.dlg label .keyhint{text-transform:none;letter-spacing:0}

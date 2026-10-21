@@ -60,7 +60,7 @@ function ArmBtn(props: { id: string; cmd: string; label: string; armLabel: strin
 }
 
 export function focusTell(): void {
-  setTimeout(() => (document.getElementById('tell') as HTMLInputElement | null)?.focus(), 30);
+  setTimeout(() => (document.getElementById('tell') as HTMLTextAreaElement | null)?.focus(), 30);
 }
 
 /** What the task asks of the human, with the answers that fit it. */
@@ -73,7 +73,7 @@ export function RequestBlock(props: { task: Task }): JSX.Element | null {
   const dis = !boardOk();
   const draft = (text: string): void => {
     tellDraft.value = { ...tellDraft.value, [task.id]: text };
-    setTimeout(() => { const i = document.getElementById('tell') as HTMLInputElement | null; if (i) { i.value = text; i.focus(); i.select(); } }, 30);
+    setTimeout(() => { const i = document.getElementById('tell') as HTMLTextAreaElement | null; if (i) { i.value = text; i.focus(); i.select(); } }, 30);
   };
   return (
     <div class={`req s-${task.status}`} data-type={type}>

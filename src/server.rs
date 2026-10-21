@@ -26,6 +26,10 @@ use std::time::{Duration, SystemTime};
 use tokio::process::Command;
 use tokio::time::timeout;
 
+/// The longest text a person can write in a todo or a chat message: a page of a spec or a log,
+/// far past the old one-line limits. Longer texts are refused with a message, never cut by the page.
+const MAX_TEXT_CHARS: usize = 100_000;
+
 /// The built page (Vite): embedded into the binary; a debug build reads the folder.
 #[derive(rust_embed::RustEmbed)]
 #[folder = "$HERDR_PLANNER_DIST"]
@@ -452,14 +456,20 @@ fn valid_repo(repo: &str) -> bool {
             .all(|c| c.is_alphanumeric() || matches!(c, '-' | '_' | '.' | '/'))
 }
 
-/// A God's-list text, made one line; the board's `add` takes it as a title.
+/// A God's-list text with the lines a person wrote; the board's `add` takes it as a title.
 fn todo_text(text: &str) -> Result<String, String> {
-    let t = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    // The line breaks a person wrote stay: a todo may be several lines. Blank lines at the ends go,
+    // and so does the indentation of each line, but what is inside is kept as it is.
+    let normalized = text.replace("\r\n", "\n").replace('\r', "\n");
+    let lines: Vec<&str> = normalized.lines().map(str::trim).collect();
+    let start = lines.iter().position(|l| !l.is_empty()).unwrap_or(lines.len());
+    let end = lines.iter().rposition(|l| !l.is_empty()).map_or(start, |i| i + 1);
+    let t = lines[start..end].join("\n");
     if t.is_empty() {
         return Err("пустое дело".into());
     }
-    if t.chars().count() > 400 {
-        return Err("дело длиннее 400 символов".into());
+    if t.chars().count() > MAX_TEXT_CHARS {
+        return Err(format!("дело длиннее {MAX_TEXT_CHARS} символов"));
     }
     if t.starts_with('-') {
         return Err("дело не может начинаться с «-»".into());
@@ -669,8 +679,11 @@ async fn api_chat(
             ),
         );
     }
-    if text.chars().count() > 4000 {
-        return error(StatusCode::BAD_REQUEST, "message is too long");
+    if text.chars().count() > MAX_TEXT_CHARS {
+        return error(
+            StatusCode::BAD_REQUEST,
+            format!("сообщение длиннее {MAX_TEXT_CHARS} символов"),
+        );
     }
     if let Some(g) = body.galaxy.as_deref().filter(|g| !g.is_empty()) {
         if !crate::machines::valid_label(g) {
@@ -1508,15 +1521,19 @@ mod tests {
     }
 
     #[test]
-    fn todo_text_is_one_safe_title() {
+    fn todo_text_keeps_lines_and_stays_safe() {
         assert_eq!(
             todo_text("  Починить   кэш \n отчётов ").unwrap(),
-            "Починить кэш отчётов"
+            "Починить   кэш\nотчётов"
         );
+        assert_eq!(todo_text("first\r\nsecond\rthird").unwrap(), "first\nsecond\nthird");
+        assert_eq!(todo_text("\n  first\n\nsecond  \n\n").unwrap(), "first\n\nsecond");
         assert!(todo_text("").is_err());
-        assert!(todo_text("   ").is_err());
+        assert!(todo_text("\n \n").is_err());
         assert!(todo_text("--all").is_err());
-        assert!(todo_text(&"x".repeat(401)).is_err());
+        assert!(todo_text(&"x".repeat(401)).is_ok());
+        assert!(todo_text(&"x".repeat(MAX_TEXT_CHARS)).is_ok());
+        assert!(todo_text(&"x".repeat(MAX_TEXT_CHARS + 1)).is_err());
         assert!(valid_todo_id("t1792407710774-1"));
         assert!(!valid_todo_id("../../etc"));
         assert!(!valid_todo_id(""));
