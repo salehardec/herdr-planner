@@ -151,8 +151,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # the parts of scripts/run-checks.sh: the Galaxy in four, the big world, the login
-        shard: [ui1, ui2, ui3, ui4, big, auth]
+        # the parts of scripts/run-checks.sh: the Galaxy in five, the big world, the login
+        shard: [ui1, ui2, ui3, ui4, ui5, big, auth]
     steps:
       - uses: actions/checkout@v4
 

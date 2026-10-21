@@ -202,11 +202,11 @@ const resetPage = async () => {
   await navigate(base + '/?noauto&nocoach&bloom=0');
   await waitFor('window.world && world.debug().planets > 0', 20000);
 };
-// The page has handled what was queued and the world has drawn a couple of frames (a panel opened, a key pressed): what the
-// geometry checks and the next step see is the result, not a half-moved panel.
-const beat = async () => { await pageTurn(); await frames(2); };
+// The page has handled what was queued (a panel opened, a key pressed); the geometry checks then wait for the panels to stop
+// moving themselves (settled). No frames are waited for: layout does not need the world to draw.
+const beat = async () => { await pageTurn(); await pageTurn(); };
 // After a new window size: the resize reaches the page, which lays itself out again.
-const resized = async () => { await frames(2); await evalJs('window.dispatchEvent(new Event("resize")); true'); await beat(); };
+const resized = async () => { await evalJs('window.dispatchEvent(new Event("resize")); true'); await beat(); };
 // Esc four times (closes whatever is open), each press after the page has handled the one before.
 const resetUi = async () => {
   for (let i = 0; i < 4; i++) { await press('Escape'); await pageTurn(); }
@@ -1958,7 +1958,9 @@ for (const [name, fn, opts] of sections) {
   for (let go = 1; ; go++) {
     console.log(`\n── ${name}${go > 1 ? ' (second go)' : ''}`);
     failedNow = [];
+    const t0 = Date.now();
     try { await fn(); } catch (e) { check(`${name}: no exception`, false, e.stack || e.message); }
+    console.log(`   (${name}: ${Math.round((Date.now() - t0) / 1000)} s)`);
     if (go === 1 && failedNow.length && opts.retry && !noRetry) {
       first = { name, first: failedNow.slice(), errors: errors.splice(0) };
       failed -= failedNow.length;

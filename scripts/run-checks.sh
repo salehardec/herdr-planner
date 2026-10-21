@@ -4,7 +4,7 @@
 # Chromium (the Galaxy), a big fixture (50 universes / 500 planets) and the login.
 #   scripts/run-checks.sh [screenshot-dir]
 #   PAGE_ONLY=1 scripts/run-checks.sh   only the page checks, on the binary and the page already built
-#   SHARDS="ui2 big" scripts/run-checks.sh   only these parts of the page checks (ui1 ui2 ui3 ui4 big auth; default: all);
+#   SHARDS="ui2 big" scripts/run-checks.sh   only these parts of the page checks (ui1 ui2 ui3 ui4 ui5 big auth; default: all);
 #                                      CI runs each part on a runner of its own
 # The builds live outside the repository (NTFS): ~/.cache/herdr-planner/{target,web}.
 set -eu
@@ -25,7 +25,7 @@ if [ -z "${PAGE_ONLY:-}" ]; then
   sh scripts/check-open.sh
 fi
 # The page checks run side by side, each against its own fixture board, its own server and its own
-# headless browser: the Galaxy in four shards (the sections do not depend on each other), a big world
+# headless browser: the Galaxy in five shards (the sections do not depend on each other), a big world
 # (50 universes / 500 planets), and the login. Their output is kept apart and printed in order.
 FX="$(mktemp -d)"
 PIDS=
@@ -100,7 +100,10 @@ mkdir -p "$OUT"
 # Six headless Chromium instances at once on a four-core runner make the page checks miss their own
 # waits (the checks are about behaviour, not throughput). At most three run at a time; each keeps its
 # own browser, server and fixture.
-MAX_JOBS=${RUN_CHECKS_JOBS:-3}
+# (A machine with more cores takes more of them at once: half the cores, between three and six. RUN_CHECKS_JOBS sets it.)
+CORES="$(nproc 2>/dev/null || getconf _NPROCESSORS_ONLN 2>/dev/null || echo 4)"
+DEFAULT_JOBS=$((CORES / 2)); [ "$DEFAULT_JOBS" -ge 3 ] || DEFAULT_JOBS=3; [ "$DEFAULT_JOBS" -le 6 ] || DEFAULT_JOBS=6
+MAX_JOBS=${RUN_CHECKS_JOBS:-$DEFAULT_JOBS}
 JOBQ="$FX.jobs"
 mkfifo "$JOBQ"
 exec 9<>"$JOBQ"
@@ -112,16 +115,18 @@ job_release() { printf 'x\n' >&9; }
 # The Galaxy: sections split in four, each with a fresh board (a section that needs another's state is a bug).
 n=0
 for only in "boot,live,navigator,autopilot,manual,stack,queue,search" \
-            "chat,todo,focus,requests,links,archive,limits" \
+            "chat,todo" \
             "far,lag,galaxies,remote,scale" \
-            "station,crew,arrival,ship,theme,simple,narrow"; do
+            "station,crew,arrival,ship,theme,simple,narrow" \
+            "focus,requests,links,archive,limits"; do
   n=$((n + 1))
   want "ui$n" || continue
   start_server "ui$n"
   job_slot
   ( set +e
+    t0=$(date +%s)
     FIXTURE="$D" HERDR_PLANNER_TARGET_DIR="$TARGET" ONLY="$only" limited node scripts/ui-check.mjs "http://127.0.0.1:$P" ${SHOTS:+"$SHOTS"} >"$OUT/ui$n.txt" 2>&1
-    rc=$?; job_release; exit "$rc"
+    rc=$?; echo "(ui$n took $(($(date +%s) - t0)) s)" >>"$OUT/ui$n.txt"; job_release; exit "$rc"
   ) &
   JOBS="$JOBS $!:ui$n"
 done
