@@ -17,6 +17,8 @@ mod galaxy_setup;
 mod gitlag;
 mod history;
 mod machines;
+mod memory;
+mod memory_api;
 mod models;
 mod search;
 mod server;
@@ -265,6 +267,7 @@ fn spawn_loops(app: Shared) {
                 _ = tokio::time::sleep(Duration::from_secs(60)) => {}
             }
             refresh(&a).await;
+            memory_api::keep_indexes(&a).await;
             app::index_snapshot(&a).await;
             // Bursts of changes (a working agent rewrites its record all the time) merge into one read.
             tokio::time::sleep(Duration::from_millis(3500)).await;
@@ -297,6 +300,15 @@ fn spawn_loops(app: Shared) {
         tokio::time::sleep(Duration::from_secs(2)).await;
         loop {
             app::update_lag(&a).await;
+            tokio::time::sleep(Duration::from_secs(300)).await;
+        }
+    });
+    // The far galaxies' memory, for the search: read over ssh now and then (the panel reads fresh).
+    let a = app.clone();
+    tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_secs(8)).await;
+        loop {
+            memory_api::refresh_all_far(&a).await;
             tokio::time::sleep(Duration::from_secs(300)).await;
         }
     });

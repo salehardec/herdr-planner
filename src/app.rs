@@ -141,6 +141,8 @@ pub struct Snapshot {
     pub limits: Usage,
     /// The God's own list: ideas to drop into a universe as a new task.
     pub todo: Vec<TodoItem>,
+    /// Lines worth keeping in a universe's memory, proposed when a task was done; they wait for the human.
+    pub memory_suggestions: Vec<crate::memory_api::SuggestOut>,
     pub journal: Vec<JournalEntry>,
     pub coordinator: CoordinatorState,
     /// Other machines of the board: far galaxies.
@@ -179,6 +181,8 @@ pub struct Journal {
     entries: VecDeque<JournalEntry>,
     prev: HashMap<String, (Status, String)>,
     primed: bool,
+    /// Tasks that were seen not done and are done now (taken by the refresh, which proposes memory lines for them).
+    done: Vec<String>,
 }
 
 
@@ -218,6 +222,8 @@ pub struct App {
     pub lag_remote: Mutex<BTreeMap<String, BTreeMap<String, gitlag::Lag>>>,
     /// Labels of the galaxies a connection is being made to.
     pub connecting: Mutex<Vec<String>>,
+    /// The memory of the far galaxies as last read (for the search).
+    pub far_memory: Mutex<HashMap<String, crate::memory_api::FarMemory>>,
 }
 
 pub type Shared = Arc<App>;
@@ -245,6 +251,7 @@ impl App {
             eprintln!("herdr-planner: database: {e}; working in memory");
             Db::memory().expect("in-memory database")
         });
+        db.suggest_recover();
         match db.import_legacy(&cfg.state_dir) {
             Ok(done) if !done.is_empty() => {
                 eprintln!("herdr-planner: imported {} into the database", done.join(", "))
@@ -269,6 +276,7 @@ impl App {
             links: Vec::new(),
             limits: usage,
             todo: db.todo_list(),
+            memory_suggestions: Vec::new(),
             journal: Vec::new(),
             coordinator: CoordinatorState {
                 view: CoordinatorView::default(),
@@ -340,6 +348,7 @@ impl App {
             lag_local: Mutex::new(BTreeMap::new()),
             lag_remote: Mutex::new(BTreeMap::new()),
             connecting: Mutex::new(Vec::new()),
+            far_memory: Mutex::new(HashMap::new()),
         })
     }
 }
@@ -386,6 +395,7 @@ fn load_journal(db: &Db) -> Journal {
         entries: entries.into_iter().collect(),
         prev: HashMap::new(),
         primed: false,
+        done: Vec::new(),
     }
 }
 
@@ -851,6 +861,7 @@ async fn refresh_inner(app: &Shared) {
         program,
     };
 
+    let mut finished: Vec<Task> = Vec::new();
     match active {
         Ok(active) => {
             let projects = build_projects(&active, &repos, &lag_now, &cfg.data_dir);
@@ -858,6 +869,8 @@ async fn refresh_inner(app: &Shared) {
             let mut journal = app.journal.lock().await;
             let before = journal.seq;
             update_journal(&mut journal, &active, now);
+            let done_ids = std::mem::take(&mut journal.done);
+            finished = active.iter().filter(|t| done_ids.contains(&t.id)).cloned().collect();
             let fresh: Vec<JournalEntry> = journal
                 .entries
                 .iter()
@@ -878,6 +891,21 @@ async fn refresh_inner(app: &Shared) {
             snap.summary = summary;
             snap.links = links;
             snap.todo = app.db.todo_list();
+            snap.memory_suggestions = app
+                .db
+                .suggest_pending()
+                .iter()
+                .map(|r| {
+                    let title = snap
+                        .tasks
+                        .iter()
+                        .chain(snap.archived.iter())
+                        .find(|t| t.id == r.task)
+                        .map(|t| t.title.clone())
+                        .unwrap_or_default();
+                    crate::memory_api::suggest_out(r, title)
+                })
+                .collect();
             snap.board = BoardStatus {
                 ok: true,
                 error: String::new(),
@@ -885,6 +913,11 @@ async fn refresh_inner(app: &Shared) {
             };
         }
         Err(e) => stale(&mut snap, e, now),
+    }
+    // A task that was done just now: the model proposes what its universe should remember (the human decides).
+    for t in finished {
+        let app = app.clone();
+        tokio::spawn(async move { crate::memory_api::suggest_for(&app, &t).await });
     }
 }
 
@@ -1003,6 +1036,9 @@ fn update_journal(journal: &mut Journal, tasks: &[Task], now: u64) {
     let mut changed = false;
     for t in tasks {
         let prev = journal.prev.get(&t.id).cloned();
+        if t.status == Status::Done && prev.as_ref().is_some_and(|(s, _)| *s != Status::Done) {
+            journal.done.push(t.id.clone());
+        }
         if prev.as_ref().map(|(s, _)| *s) != Some(t.status) {
             journal.seq += 1;
             journal.entries.push_front(JournalEntry {
@@ -1280,7 +1316,21 @@ pub async fn index_snapshot(app: &Shared) {
         status: snap.coordinator.view.status.clone(),
         at: 0,
     });
+    // Memory (the Galaxy's, every universe's, the Coordinator program's own) and the tasks' closing notes.
+    {
+        let cfg = app.cfg.clone();
+        let host = snap.host.clone();
+        let tasks: Vec<Task> = snap.tasks.iter().chain(snap.archived.iter()).cloned().collect();
+        let (mem, closing) = tokio::task::spawn_blocking(move || {
+            (crate::memory::home_docs(&cfg, &host), crate::memory::closing_docs(&cfg, &host, &tasks))
+        })
+        .await
+        .unwrap_or_default();
+        home.extend(mem);
+        home.extend(closing);
+    }
     sets.push((String::new(), home));
+    let far_memory = app.far_memory.lock().await.clone();
     for g in app.galaxies.lock().await.iter() {
         let projects: Vec<Project> = g
             .projects
@@ -1299,6 +1349,22 @@ pub async fn index_snapshot(app: &Shared) {
             status: if g.ok { "working".into() } else { "failed".into() },
             at: g.fetched_at_ms,
         });
+        if let Some(fm) = far_memory.get(&g.label) {
+            docs.extend(crate::memory::docs_of(
+                &g.label,
+                "",
+                &format!("Память › {} (Галактика)", g.label),
+                &fm.galaxy,
+            ));
+            for (repo, entries) in &fm.universes {
+                docs.extend(crate::memory::docs_of(
+                    &g.label,
+                    repo,
+                    &format!("Память › {repo} (вселенная, {})", g.label),
+                    entries,
+                ));
+            }
+        }
         sets.push((g.label.clone(), docs));
     }
     let db = app.db.clone();

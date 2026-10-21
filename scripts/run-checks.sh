@@ -118,7 +118,7 @@ for only in "boot,live,navigator,autopilot,manual,stack,queue,search" \
             "chat,todo" \
             "far,lag,galaxies,remote,scale" \
             "station,crew,arrival,ship,theme,simple,narrow" \
-            "focus,requests,links,archive,limits"; do
+            "focus,requests,links,archive,limits,memory"; do
   n=$((n + 1))
   want "ui$n" || continue
   start_server "ui$n"

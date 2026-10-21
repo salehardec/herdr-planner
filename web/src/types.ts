@@ -247,6 +247,8 @@ export interface Snapshot {
   links: Link[];
   limits: Usage;
   todo: TodoItem[];
+  /** Lines worth keeping in a universe's memory, proposed when a task was done; they wait for the human. */
+  memory_suggestions: { task: string; repo: string; tag: string; title: string; lines: { kind: string; text: string }[]; at: number }[];
   journal: JournalEntry[];
   coordinator: CoordinatorState;
   galaxies: Galaxy[];
@@ -305,7 +307,7 @@ export interface Request {
 }
 
 export interface SearchHit {
-  kind: 'galaxy' | 'quasar' | 'universe' | 'planet' | 'moon' | 'todo' | 'chat';
+  kind: 'galaxy' | 'quasar' | 'universe' | 'planet' | 'moon' | 'todo' | 'chat' | 'memory' | 'closing';
   id: string;
   galaxy: string;
   path: string;
