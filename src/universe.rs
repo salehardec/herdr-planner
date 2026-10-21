@@ -2298,7 +2298,7 @@ fn encode_path(path: &str) -> String {
     path.replace('/', "%2F")
 }
 
-/// The word after `key` in a CLI's status text (`account salehardec (keyring)` → `salehardec`).
+/// The word after `key` in a CLI's status text (`account me (keyring)` → `me`).
 fn word_after(text: &str, key: &str) -> Option<String> {
     text.split_whitespace()
         .skip_while(|w| *w != key)
@@ -2632,7 +2632,7 @@ esac
             s.path(),
             "gh",
             r#"case "$1 $2" in
-  "auth status") echo "Logged in to github.com account salehardec (keyring)" >&2; exit 0 ;;
+  "auth status") echo "Logged in to github.com account me (keyring)" >&2; exit 0 ;;
   "repo view") echo '{"viewerPermission":"WRITE","isFork":false,"parent":null,"defaultBranchRef":{"name":"main"},"nameWithOwner":"o/r","isPrivate":false}'; exit 0 ;;
 esac
 exit 1
@@ -2647,7 +2647,7 @@ exit 1
         assert_eq!(got.default_branch.as_deref(), Some("main"));
         let login = got.login.unwrap();
         assert!(login.ok);
-        assert_eq!(login.user.as_deref(), Some("salehardec"));
+        assert_eq!(login.user.as_deref(), Some("me"));
         assert_eq!(got.suggested_name, "r");
         assert_eq!(got.clone_dir, format!("{}/r", cfg.projects_dir.display()));
 
@@ -2678,7 +2678,7 @@ esac
                 &format!("glab-{level}"),
                 &format!(
                     r#"case "$1" in
-  auth) echo "Logged in to gitlab.example.com as salehardec" >&2; exit 0 ;;
+  auth) echo "Logged in to gitlab.example.com as me" >&2; exit 0 ;;
   api) echo '{{"permissions":{{"project_access":{{"access_level":{level}}},"group_access":null}},"forked_from_project":null,"default_branch":"main","visibility":"internal"}}'; exit 0 ;;
 esac
 exit 1
@@ -2692,7 +2692,7 @@ exit 1
             .unwrap();
         assert_eq!(got.can_write, Some(true));
         assert_eq!(got.private, Some(true));
-        assert_eq!(got.login.unwrap().user.as_deref(), Some("salehardec"));
+        assert_eq!(got.login.unwrap().user.as_deref(), Some("me"));
 
         let t = tools_with("/nonexistent/gh".into(), glab(10));
         let got = inspect_with(&cfg, "git@gitlab.example.com:group/sub/r.git", &t)

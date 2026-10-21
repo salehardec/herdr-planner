@@ -9,7 +9,7 @@
   "todayPrompts": 55,
   "todaySessions": 1,
   "todayTotalTokens": 3631930,
-  "todayTokensByModel": { "example/small": 3631930 },
+  "todayTokensByModel": { "acme/small": 3631930 },
   "recentDays": [],
   "modelUsage": {},
   "hasLocalStats": true,

@@ -379,7 +379,7 @@ let PROJECTS=[
  {id:'herdr-planner',key:'PLN',color:'accent',angle:4.4,lag:{behind:3,ahead:0},bridge:'vm-a'},
  {id:'portal-web',key:'PRT',color:'magenta',angle:2.35,lag:{behind:0,ahead:0}},
  {id:'beta',key:'BET',color:'green',angle:.3,lag:null,fork:{up:'acme/beta',behind:12,tool:'gh',kind:'GitHub'}},
- {id:'docs',key:'DOC',color:'cyan',angle:5.25,quiet:true,lag:null,gitlab:true,research:{up:'gis/geo-docs',behind:5,tool:'glab',kind:'GitLab'}},
+ {id:'docs',key:'DOC',color:'cyan',angle:5.25,quiet:true,lag:null,gitlab:true,research:{up:'team/docs',behind:5,tool:'glab',kind:'GitLab'}},
 ];
 const T=(p,n,title,st,d,extra={})=>({id:`${p}/${n}`,repo:p,tag:`${PROJECTS.find(x=>x.id===p).key}-${n}`,title,st,created:day(d),agent:'claude/sonnet-5.5',...extra});
 let TASKS=[
@@ -404,7 +404,7 @@ let TASKS=[
 const QUASAR={subs:[{id:'q1',role:'Explore',title:'Где живёт поиск по доске',doing:'Grep «search_fts»',min:3,state:'running',kind:'claude'}]};
 let GALAXIES=[
  {id:'orion',label:'orion',here:true},
- {id:'vm-a',label:'vm-a',target:'deploy@192.0.2.12',ok:true,tasks:136,wait:2,version:'1.2.4',angle:4.55},
+ {id:'vm-a',label:'vm-a',target:'deploy@vm-a',ok:true,tasks:136,wait:2,version:'1.2.4',angle:4.55},
  {id:'vm-b',label:'vm-b',target:'me@vm-b.lan',ok:false,why:'herdr-projects is not found there',detail:'Поставь herdr-projects в login-shell PATH на vm-b, затем «Повторить».',angle:5.35},
 ];
 
@@ -994,13 +994,13 @@ $('btodo').onclick=()=>toggleTodo();$('tclose').onclick=()=>toggleTodo(false);
 /* ───────── добавить вселенную ───────── */
 // файловые системы машин (макет): папка → {git, origin, branch, board}
 const FS={
- orion:{'~/Projects':['AI/','herdr/','site-old/','notes.txt'],'~/Projects/AI':['ditis/','gis-next/','scratch/'],'~/Projects/herdr':['herdr-planner/','celestune-bar/'],
-  meta:{'~/Projects/AI/ditis':{git:1,origin:'git@github.com:me/ditis.git',branch:'main'},'~/Projects/AI/gis-next':{git:1,origin:'https://github.com/me/gis-next',branch:'develop'},'~/Projects/AI/scratch':{git:0},
-   '~/Projects/herdr/herdr-planner':{git:1,board:'herdr-planner'},'~/Projects/herdr/celestune-bar':{git:1,origin:'git@github.com:me/celestune-bar.git',branch:'main'},'~/Projects/site-old':{git:1,origin:'',branch:'master'}}},
+ orion:{'~/Projects':['AI/','herdr/','site-old/','notes.txt'],'~/Projects/AI':['billing/','portal/','scratch/'],'~/Projects/herdr':['herdr-planner/','bar-widget/'],
+  meta:{'~/Projects/AI/billing':{git:1,origin:'git@github.com:me/billing.git',branch:'main'},'~/Projects/AI/portal':{git:1,origin:'https://github.com/me/portal',branch:'develop'},'~/Projects/AI/scratch':{git:0},
+   '~/Projects/herdr/herdr-planner':{git:1,board:'herdr-planner'},'~/Projects/herdr/bar-widget':{git:1,origin:'git@github.com:me/bar-widget.git',branch:'main'},'~/Projects/site-old':{git:1,origin:'',branch:'master'}}},
  'vm-a':{'~/Projects':['infra/','site/','api/'],meta:{'~/Projects/infra':{git:1,board:'infra'},'~/Projects/site':{git:1,board:'site'},'~/Projects/api':{git:1,origin:'git@github.com:me/api.git',branch:'main'}}},
 };
 // хостинги: где человек залогинен (в продукте — gh auth status / glab auth status на той машине)
-const LOGINS={'github.com':{tool:'gh',user:'me'},'gitlab.example.com':{tool:'glab',user:'jdoe'}};
+const LOGINS={'github.com':{tool:'gh',user:'me'},'gitlab.example.com':{tool:'glab',user:'me'}};
 function hostOf(url){const m=url.match(/^(?:https?:\/\/|ssh:\/\/)?(?:[^@\/]+@)?([^:\/]+)[:\/]+([^\/]+)\/([^\/]+?)(?:\.git)?\/?$/);if(!m)return null;
   const h=m[1].toLowerCase(),kind=h==='github.com'?'GitHub':/gitlab/.test(h)?'GitLab':null;const lg=LOGINS[h];
   return{h,kind,tool:kind==='GitHub'?'gh':kind==='GitLab'?'glab':null,owner:m[2],repo:m[3],login:lg&&lg.user,own:lg&&lg.user===m[2]}}
@@ -1036,7 +1036,7 @@ function renderAddU(){const g=GALAXIES.find(x=>x.id===AU.g);const far=!g.here;co
   el.innerHTML=`<header><b>Добавить вселенную в Галактику ${g.label}</b><button class="btn" id="au-x" style="min-height:22px;padding:0 8px">✕</button></header><div class="bd">
    <div class="tabs" role="tablist"><button class="btn ${AU.tab==='dir'?'on':''}" data-tab="dir">Папка с git ${far?'на '+g.label:'на этой машине'}</button><button class="btn ${AU.tab==='url'?'on':''}" data-tab="url">Адрес репозитория</button></div>
    ${AU.tab==='dir'?`<label>Папка</label><input id="au-path" value="${esc(AU.path)}" autocomplete="off" spellcheck="false" aria-autocomplete="list">${ss.length?`<div class="sug">${ss.map((x,i)=>`<div data-p="${esc(x.full)}" class="${i===AU.cur?'cur':''}"><span>${esc(x.full)}</span><span class="m ${!x.m?'':x.m.board?'on':x.m.git?'ok':'no'}">${!x.m?'папка':x.m.board?'уже на доске':x.m.git?'git · '+(x.m.branch||''):'не git'}</span></div>`).join('')}</div>`:''}`
-   :`<label>Адрес репозитория</label><input id="au-url" value="${esc(AU.url)}" placeholder="git@github.com:me/project.git · https://gitlab.example.com/team/app" spellcheck="false"><div class="dim" style="font-size:11px;margin-top:3px">примеры: <a href="#" data-ex="git@github.com:me/notes.git">своё на GitHub</a> · <a href="#" data-ex="https://github.com/torvalds/subsurface">чужое на GitHub</a> · <a href="#" data-ex="https://gitlab.example.com/gis/geo-portal">GitLab example</a> · <a href="#" data-ex="https://gitlab.com/inkscape/inkscape">gitlab.com (не залогинен)</a></div>
+   :`<label>Адрес репозитория</label><input id="au-url" value="${esc(AU.url)}" placeholder="git@github.com:me/project.git · https://gitlab.example.com/team/app" spellcheck="false"><div class="dim" style="font-size:11px;margin-top:3px">примеры: <a href="#" data-ex="git@github.com:me/notes.git">своё на GitHub</a> · <a href="#" data-ex="https://github.com/torvalds/subsurface">чужое на GitHub</a> · <a href="#" data-ex="https://gitlab.example.com/team/app">GitLab example</a> · <a href="#" data-ex="https://gitlab.com/inkscape/inkscape">gitlab.com (не залогинен)</a></div>
      <label>Клонировать в</label><input id="au-dest" value="${esc(dest)}" spellcheck="false"><div class="dim" style="font-size:11px;margin-top:3px">Папка по умолчанию — <code>${esc(AU.dir)}</code> на ${g.label} (настройки планировщика: <code>projects_dir</code>) · <a href="#" id="au-dir" style="color:var(--pl-accent)">изменить</a></div>`}
    <div class="info">${info}</div>
    ${ready?`<div class="grid2"><div><label>Ключ задач</label><div class="dim" style="font-size:11px">${key}-1, ${key}-2… — доска даёт ключ сама; если поменять, планировщик выполнит <code>herdr-projects set repo.key</code></div></div><div><label>&nbsp;</label><input id="au-key" value="${key}" maxlength="6" style="text-transform:uppercase"></div></div>`:''}
@@ -1102,7 +1102,7 @@ $('addu').addEventListener('click',e=>{if(e.target.name==='au-mode'){AU.mode=e.t
 
 /* ───────── первый запуск: доска пуста ───────── */
 // найденные git-папки в ~/Projects (в продукте — обход projects_dir на глубину 2, только чтение)
-const FOUND=[['~/Projects/AI/ditis','main','github.com/me/ditis'],['~/Projects/AI/gis-next','develop','github.com/me/gis-next'],['~/Projects/herdr/celestune-bar','main','github.com/me/celestune-bar'],['~/Projects/site-old','master','без origin']];
+const FOUND=[['~/Projects/AI/billing','main','github.com/me/billing'],['~/Projects/AI/portal','develop','github.com/me/portal'],['~/Projects/herdr/bar-widget','main','github.com/me/bar-widget'],['~/Projects/site-old','master','без origin']];
 function renderFirst(){const el=$('first');const none=QS.has('noprojects');
   el.innerHTML=`<h2>Галактика пуста — добавь первую вселенную</h2>
    <p>Вселенная — это проект с git. Доска herdr-projects заводит в нём задачи и ставит на них агентов. ${none?`В <code>${AU.dir}</code> git-папок нет — укажи адрес репозитория, склонирую туда.`:`Нашёл git-папки в <code>${AU.dir}</code> — отметь нужные:`}</p>

@@ -214,10 +214,10 @@ mod tests {
         "id": "herdr-planner/2",
         "repo": "herdr-planner",
         "n": 2,
-        "root": "/home/me/Projects/herdr/herdr-planner",
+        "root": "/srv/projects/herdr-planner",
         "title": "Дизайн галактики",
         "description": "Сделать макеты трёх экранов; см. ветку work/2.",
-        "owner": "salehardec",
+        "owner": "me",
         "app": "omp",
         "stage": "done",
         "created": 1792389651900,
@@ -257,7 +257,7 @@ mod tests {
         assert_eq!(t.model, "", "a null model is empty");
         assert!(t.session.ends_with(".jsonl"));
         assert_eq!(t.branch, "work/2");
-        assert_eq!(t.root, "/home/me/Projects/herdr/herdr-planner");
+        assert_eq!(t.root, "/srv/projects/herdr-planner");
         assert_eq!(t.exited_at_ms, 1_792_390_700_000);
         assert_eq!(t.after, vec!["herdr-planner/1", "herdr-planner/7"]);
     }

@@ -120,7 +120,7 @@ function common(DATA, mods) {
     const after = ((w.after || {})[row.id] || []).map((r) => resolve(w, r) || r);
     fs.writeFileSync(path.join(dirT, 'task.json'), JSON.stringify({
       id: row.id, repo, n: Number(n), root: (w.folders || {})[repo] || '', title: row.title,
-      description: m.description || '', owner: 'salehardec', app: row.app, stage: row.stage, state: row.state,
+      description: m.description || '', owner: 'me', app: row.app, stage: row.stage, state: row.state,
       created: m.created || 0, at: m.at || m.created || 0, settings: m.settings || {}, model: m.model ?? null,
       session: m.session || '', worktree: m.worktree || '', branch: m.branch || '',
       after, afterDone: m.afterDone || [], exitedAt: m.exitedAt ?? null,
