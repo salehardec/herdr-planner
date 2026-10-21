@@ -17,6 +17,7 @@ import { clearStack, getWorld, goHome, goOverview, navigateTo, openRequest, setW
 import { escape, installKeys, setMode } from './keys';
 import { effectiveWidth, installScale } from './scale';
 import { chatWide, installChatWide, installWideRoom } from './chat-wide';
+import { installNavWidth } from './nav-width';
 import { connectTasks } from './actions';
 import { installTodoDnD } from './ui/Todo';
 import { toast } from './toast';
@@ -180,6 +181,7 @@ onState((s: Snapshot) => {
 
 /* ───────── start ───────── */
 
+installNavWidth();
 installChatWide();
 installWideRoom();
 installKeys();

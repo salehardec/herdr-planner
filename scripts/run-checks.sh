@@ -4,7 +4,7 @@
 # Chromium (the Galaxy), a big fixture (50 universes / 500 planets) and the login.
 #   scripts/run-checks.sh [screenshot-dir]
 #   PAGE_ONLY=1 scripts/run-checks.sh   only the page checks, on the binary and the page already built
-#   SHARDS="ui2 big" scripts/run-checks.sh   only these parts of the page checks (ui1 ui2 ui3 ui4 ui5 big auth; default: all);
+#   SHARDS="ui2 big" scripts/run-checks.sh   only these parts of the page checks (ui1 … ui8, big, auth; default: all; ui6–ui8 are the layout at every scale);
 #                                      CI runs each part on a runner of its own
 # The builds live outside the repository (NTFS): ~/.cache/herdr-planner/{target,web}.
 set -eu
@@ -25,7 +25,7 @@ if [ -z "${PAGE_ONLY:-}" ]; then
   sh scripts/check-open.sh
 fi
 # The page checks run side by side, each against its own fixture board, its own server and its own
-# headless browser: the Galaxy in five shards (the sections do not depend on each other), a big world
+# headless browser: the Galaxy in eight shards (the sections do not depend on each other), a big world
 # (50 universes / 500 planets), and the login. Their output is kept apart and printed in order.
 FX="$(mktemp -d)"
 PIDS=
@@ -118,7 +118,8 @@ for only in "boot,live,navigator,autopilot,manual,stack,queue,search" \
             "chat,todo" \
             "far,lag,galaxies,remote,scale" \
             "station,crew,arrival,ship,theme,simple,narrow" \
-            "focus,requests,links,archive,limits"; do
+            "focus,requests,links,archive,limits" \
+            "layout 1280" "layout 1920" "layout 2560"; do
   n=$((n + 1))
   want "ui$n" || continue
   start_server "ui$n"

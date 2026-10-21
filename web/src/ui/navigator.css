@@ -9,7 +9,10 @@
 .ti .tw .gl{width:0.6875rem;height:0.6875rem}
 .ti .lab{min-width:0;overflow:hidden;text-overflow:ellipsis;flex:1}
 .ti .lab em{font-style:normal;color:var(--pl-faint);margin-left:0.4375rem;font-size:0.6562rem}
-.ti .meta{color:var(--pl-faint);font-size:0.6562rem;max-width:42%;overflow:hidden;text-overflow:ellipsis}
+.ti .meta{color:var(--pl-faint);font-size:0.6562rem;max-width:42%;overflow:hidden;text-overflow:ellipsis;flex:none}
+/* the status of a task is the glyph before its name and a short word after it; the whole text is in the tooltip. The name takes the rest. */
+.ti .meta.st{max-width:5.5rem}
+.ti.planet .lab{min-width:6rem}
 .ti .cnt{color:var(--pl-faint);font-size:0.6562rem;border:1px solid var(--pl-line);border-radius:0.5rem;padding:0 0.3125rem;flex:none}
 .ti .cnt.hot,.ti.attn>.cnt{color:var(--c-yellow);border-color:color-mix(in srgb,var(--c-yellow) 40%,var(--pl-line))}
 .ti .lag{color:var(--c-yellow);font-size:0.6562rem;border:1px solid color-mix(in srgb,var(--c-yellow) 40%,transparent);border-radius:0.5rem;padding:0 0.3125rem;flex:none}
@@ -28,5 +31,11 @@
 .ti.addUniverse,.ti.addGalaxy{color:var(--pl-accent-ink);font-size:0.7188rem}
 .ti.addUniverse .gl,.ti.addGalaxy .gl{color:var(--pl-accent-ink)}
 .win.calm .ti{min-height:2rem;font-size:0.8125rem}
-.win.calm{--nav-w:23.75rem}
 :root.bp900 .nav{left:0.5rem;right:0.5rem;width:auto;top:auto;bottom:0.5rem;max-height:62vh;z-index:40}:root.bp900 .nav.off{transform:translateY(110%)}
+
+/* the right edge of the panel: drag it to change the width (double click: back to the default) */
+.nav-grip{position:absolute;top:0;bottom:0;right:0;width:0.5rem;cursor:col-resize;z-index:2;touch-action:none;border-radius:0.3125rem}
+.nav-grip::after{content:"";position:absolute;top:50%;left:0.25rem;width:0.125rem;height:2.5rem;margin-top:-1.25rem;border-radius:0.0625rem;background:var(--pl-line);opacity:0;transition:opacity var(--m-fast),background var(--m-fast)}
+.nav:hover .nav-grip::after,.nav-grip:focus-visible::after,.nav-grip.drag::after{opacity:1}
+.nav-grip:hover::after,.nav-grip.drag::after{background:var(--pl-accent)}
+:root.bp900 .nav-grip{display:none}
