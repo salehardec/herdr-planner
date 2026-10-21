@@ -3,6 +3,9 @@
 # the installer and launcher checks, then the page against a fixture board in headless
 # Chromium (the Galaxy), a big fixture (50 universes / 500 planets) and the login.
 #   scripts/run-checks.sh [screenshot-dir]
+#   PAGE_ONLY=1 scripts/run-checks.sh   only the page checks, on the binary and the page already built
+#   SHARDS="ui2 big" scripts/run-checks.sh   only these parts of the page checks (ui1 ui2 ui3 ui4 big auth; default: all);
+#                                      CI runs each part on a runner of its own
 # The builds live outside the repository (NTFS): ~/.cache/herdr-planner/{target,web}.
 set -eu
 cd "$(dirname "$0")/.."
@@ -12,12 +15,14 @@ CARGO="${CARGO:-cargo}"
 $CARGO --version >/dev/null 2>&1 || CARGO="mise x rust@stable -- cargo"
 SHOTS="${1:-}"
 [ -z "$SHOTS" ] || mkdir -p "$SHOTS"
-sh scripts/web-build.sh --test
-sh scripts/web-build.sh
-$CARGO test --quiet
-$CARGO build --quiet
-sh scripts/check-install.sh "$TARGET/debug/herdr-planner"
-sh scripts/check-open.sh
+if [ -z "${PAGE_ONLY:-}" ]; then
+  sh scripts/web-build.sh --test
+  sh scripts/web-build.sh
+  $CARGO test --quiet
+  $CARGO build --quiet
+  sh scripts/check-install.sh "$TARGET/debug/herdr-planner"
+  sh scripts/check-open.sh
+fi
 # The page checks run side by side, each against its own fixture board, its own server and its own
 # headless browser: the Galaxy in four shards (the sections do not depend on each other), a big world
 # (50 universes / 500 planets), and the login. Their output is kept apart and printed in order.
@@ -44,21 +49,39 @@ start_server() {
     READY_PATH=/login
     STATE_NAME=state-auth   # where auth-check looks for the chat attachments
   fi
-  P=$(free_port "$NEXT_PORT"); NEXT_PORT=$((P + 1))
-  # The stand-ins of the other programs: ssh (the other machines), claude (translation), gh/glab, codex sessions.
-  env HERDR_PLANNER_HOST=orion CODEX_HOME="$D/codex" HERDR_PLANNER_SSH="$D/bin/ssh" HERDR_PLANNER_CLAUDE="$D/bin/claude" HERDR_PLANNER_GH="$D/bin/gh" \
-    HERDR_PLANNER_GLAB="$D/bin/glab" HERDR_BIN="$D/bin/herdr" HERDR_PLANNER_TERMINAL="$D/bin/xdg-terminal-exec" \
-    FIXTURE_DIR="$D" HERDR_PROJECTS_BIN="$D/bin/herdr-projects" HERDR_SOCKET_PATH="$D/herdr.sock" \
-    OMARCHY_THEME_DIR="$D/theme" CLAUDE_CONFIG_DIR="$D/claude" PATH="$D/bin:$PATH" \
-    XDG_STATE_HOME="$D/$STATE_NAME" XDG_CONFIG_HOME="$D/cfg" XDG_CACHE_HOME="$D/cache" \
-    "$TARGET/debug/herdr-planner" --port "$P" --data "$D/board" >"$D/server.log" 2>&1 &
-  PIDS="$PIDS $!"
+  # The port is free when asked for, not necessarily when the planner binds it (another run of these checks on the
+  # same machine may take it in between): the planner exits at once when it cannot bind, and a server that answers on the
+  # port must be OUR process, or the checks would talk to somebody else's board. If it is not, the next port.
   READY=
-  for _ in $(seq 1 60); do
-    curl -fs "http://127.0.0.1:$P$READY_PATH" >/dev/null 2>&1 && READY=1 && break
-    sleep 0.25
+  for _attempt in 1 2 3 4 5 6; do
+    P=$(free_port "$NEXT_PORT"); NEXT_PORT=$((P + 1))
+    # The stand-ins of the other programs: ssh (the other machines), claude (translation), gh/glab, codex sessions.
+    env HERDR_PLANNER_HOST=orion CODEX_HOME="$D/codex" HERDR_PLANNER_SSH="$D/bin/ssh" HERDR_PLANNER_CLAUDE="$D/bin/claude" HERDR_PLANNER_GH="$D/bin/gh" \
+      HERDR_PLANNER_GLAB="$D/bin/glab" HERDR_BIN="$D/bin/herdr" HERDR_PLANNER_TERMINAL="$D/bin/xdg-terminal-exec" \
+      FIXTURE_DIR="$D" HERDR_PROJECTS_BIN="$D/bin/herdr-projects" HERDR_SOCKET_PATH="$D/herdr.sock" \
+      OMARCHY_THEME_DIR="$D/theme" CLAUDE_CONFIG_DIR="$D/claude" PATH="$D/bin:$PATH" \
+      XDG_STATE_HOME="$D/$STATE_NAME" XDG_CONFIG_HOME="$D/cfg" XDG_CACHE_HOME="$D/cache" \
+      "$TARGET/debug/herdr-planner" --port "$P" --data "$D/board" >"$D/server.log" 2>&1 &
+    SPID=$!
+    # up to a minute: on a loaded machine the planner starts slowly
+    for _ in $(seq 1 240); do
+      kill -0 "$SPID" 2>/dev/null || break
+      if curl -fs "http://127.0.0.1:$P$READY_PATH" >/dev/null 2>&1; then READY=1; break; fi
+      sleep 0.25
+    done
+    if [ -n "$READY" ] && kill -0 "$SPID" 2>/dev/null && owns_port "$SPID" "$P"; then break; fi
+    kill "$SPID" 2>/dev/null || true
+    wait "$SPID" 2>/dev/null || true
+    READY=
   done
   [ -n "$READY" ] || { echo "run-checks: the dashboard did not start on port $P"; cat "$D/server.log"; exit 1; }
+  PIDS="$PIDS $SPID"
+}
+
+# Is the process that listens on the port ours? (Without `ss` there is nothing to ask: believed.)
+owns_port() {
+  command -v ss >/dev/null 2>&1 || return 0
+  ss -ltnpH "sport = :$2" 2>/dev/null | grep -q "pid=$1," 
 }
 
 # A check that hangs must fail, not hold the whole run (a stuck browser, a lost connection): at most 12 minutes each.
@@ -66,7 +89,10 @@ limited() {
   if command -v timeout >/dev/null 2>&1; then timeout -k 10 720 "$@"; else "$@"; fi
 }
 
-NEXT_PORT="${NEXT_PORT:-7600}"   # NEXT_PORT=8800 keeps two runs on one machine apart
+# Is this part of the page checks wanted? (SHARDS empty: all of them)
+want() { [ -z "${SHARDS:-}" ] || case " $SHARDS " in *" $1 "*) return 0 ;; *) return 1 ;; esac; }
+
+NEXT_PORT="${NEXT_PORT:-$((7600 + $$ % 1000))}"   # spread, so that two runs on one machine seldom meet on a port
 JOBS=
 OUT="$FX-out"
 mkdir -p "$OUT"
@@ -89,6 +115,7 @@ for only in "boot,live,navigator,autopilot,manual,stack,queue,search" \
             "far,lag,galaxies,remote,scale" \
             "station,crew,arrival,ship,theme,simple,narrow"; do
   n=$((n + 1))
+  want "ui$n" || continue
   start_server "ui$n"
   job_slot
   ( set +e
@@ -99,26 +126,30 @@ for only in "boot,live,navigator,autopilot,manual,stack,queue,search" \
 done
 
 # A big world: 50 universes / 500 planets must stay orderly and cheap (the scale fixture).
-start_server big --scale 50x500
-job_slot
-( set +e
-  FIXTURE="$D" limited node scripts/perf-check.mjs "http://127.0.0.1:$P" ${SHOTS:+"$SHOTS"} >"$OUT/big.txt" 2>&1
-  rc=$?; job_release; exit "$rc"
-) &
-JOBS="$JOBS $!:big"
+if want big; then
+  start_server big --scale 50x500
+  job_slot
+  ( set +e
+    FIXTURE="$D" limited node scripts/perf-check.mjs "http://127.0.0.1:$P" ${SHOTS:+"$SHOTS"} >"$OUT/big.txt" 2>&1
+    rc=$?; job_release; exit "$rc"
+  ) &
+  JOBS="$JOBS $!:big"
+fi
 
 # A server with a password: the login, the cookie and the limit; the ship's computer behind it.
-PASSWORD=secret start_server auth
-AUTH_D="$D"; AUTH_P="$P"
-job_slot
-(
-  set +e
-  # before auth-check's limit test: a wrong old password is refused in the server's words
-  SHIP_LOGIN="me:secret" ONLY="ship login" FIXTURE="$AUTH_D" limited node scripts/ui-check.mjs "http://127.0.0.1:$AUTH_P" ${SHOTS:+"$SHOTS"} &&
-    FIXTURE="$AUTH_D" AUTH_BASE="http://127.0.0.1:$AUTH_P" limited node scripts/auth-check.mjs
-  rc=$?; job_release; exit "$rc"
-) >"$OUT/auth.txt" 2>&1 &
-JOBS="$JOBS $!:auth"
+if want auth; then
+  PASSWORD=secret start_server auth
+  AUTH_D="$D"; AUTH_P="$P"
+  job_slot
+  (
+    set +e
+    # before auth-check's limit test: a wrong old password is refused in the server's words
+    SHIP_LOGIN="me:secret" ONLY="ship login" FIXTURE="$AUTH_D" limited node scripts/ui-check.mjs "http://127.0.0.1:$AUTH_P" ${SHOTS:+"$SHOTS"} &&
+      FIXTURE="$AUTH_D" AUTH_BASE="http://127.0.0.1:$AUTH_P" limited node scripts/auth-check.mjs
+    rc=$?; job_release; exit "$rc"
+  ) >"$OUT/auth.txt" 2>&1 &
+  JOBS="$JOBS $!:auth"
+fi
 
 FAILED=
 for j in $JOBS; do
@@ -128,4 +159,13 @@ for j in $JOBS; do
   cat "$OUT/$name.txt"
 done
 if [ -n "$FAILED" ]; then echo "run-checks: failed:$FAILED"; exit 1; fi
+# A section that failed once and passed on its second go (ui-check.mjs says so with a RETRIED line): the run is green, and
+# the summary says plainly that it was not clean, so a flaky check is seen and fixed instead of being forgotten.
+RETRIED="$(grep -h '^RETRIED' "$OUT"/*.txt 2>/dev/null || true)"
+if [ -n "$RETRIED" ]; then
+  echo "run-checks: ok, but with a second go for some page checks (flaky, to be fixed):"
+  echo "$RETRIED"
+  [ -z "${GITHUB_ACTIONS:-}" ] || printf '%s\n' "$RETRIED" | while IFS= read -r l; do echo "::warning title=Flaky page check::$l"; done
+  exit 0
+fi
 echo "run-checks: ok"

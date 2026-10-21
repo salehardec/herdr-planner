@@ -67,10 +67,10 @@ process.on('exit', () => {
 let ws;
 const pending = new Map(); let id = 0;
 // A browser that stopped answering (a crashed renderer) would leave the check waiting for ever: when the latest call
-// has had no reply for 120 s, say so and stop. (A call somebody gave up on earlier does not count: later ones are answered.)
+// has had no reply for 300 s, say so and stop. (A call somebody gave up on earlier does not count: later ones are answered.)
 let lastSentAt = 0; let lastRepliedAt = 0;
 setInterval(() => {
-  if (lastSentAt > lastRepliedAt && Date.now() - lastSentAt > 120000) { console.log('FAIL the browser stopped answering'); process.exit(1); }
+  if (lastSentAt > lastRepliedAt && Date.now() - lastSentAt > 300000) { console.log('FAIL the browser stopped answering'); process.exit(1); }
 }, 5000).unref();
 const send = (method, params = {}) => new Promise((r) => {
   const i = ++id;
@@ -79,7 +79,13 @@ const send = (method, params = {}) => new Promise((r) => {
   ws.send(JSON.stringify({ id: i, method, params }));
 });
 const evaluate = async (expr) => (await send('Runtime.evaluate', { expression: expr, returnByValue: true, awaitPromise: true })).result?.result?.value;
-for (let i = 0; i < 60; i++) {
+// Waits for a state of the page (not for a time); the limit only ends a wait that will never come.
+const waitFor = async (expr, ms = 30000) => {
+  const end = Date.now() + ms;
+  while (Date.now() < end) { if (await evaluate(expr)) return true; await sleep(100); }
+  return false;
+};
+for (let i = 0; i < 300; i++) {
   port = port || readPort();
   try { if (port) { const r = await fetch(`http://127.0.0.1:${port}/json/version`); if (r.ok) break; } } catch {}
   await sleep(200);
@@ -91,27 +97,21 @@ ws.onmessage = (e) => { const m = JSON.parse(e.data); if (m.id && pending.has(m.
 await send('Runtime.enable');
 await send('Page.enable');
 await send('Page.navigate', { url: base + '/' });
-await sleep(900);
-check('the browser lands on the login form', await evaluate('location.pathname === "/login" && !!document.querySelector("#user")'));
+check('the browser lands on the login form', await waitFor('location.pathname === "/login" && document.readyState === "complete" && !!document.querySelector("#user") && typeof safeNext === "function"'));
 check('the post-login next stays on this site', await evaluate("typeof safeNext === 'function' && safeNext('/' + String.fromCharCode(92) + 'evil.example/x') === '/' && safeNext('//evil.example') === '/' && safeNext('/tasks?x=1') === '/tasks?x=1'"), await evaluate("typeof safeNext === 'function' ? safeNext('/' + String.fromCharCode(92) + 'evil.example/x') : 'missing safeNext'"));
 
 // A remote client on plain HTTP must be told to use HTTPS before its
 // credentials are sent; the Secure cookie would otherwise be dropped.
 await send('Page.navigate', { url: `http://remote.test:${new URL(base).port}/login` });
-await sleep(800);
+await waitFor('location.hostname === "remote.test" && document.readyState === "complete" && !!document.querySelector("#user")');
 await evaluate('document.querySelector("#user").value = "me"; document.querySelector("#pass").value = "secret"; document.querySelector("#login").requestSubmit()');
-await sleep(500);
-check('remote plain HTTP login is refused with a clear message', await evaluate('location.hostname === "remote.test" && location.pathname === "/login" && document.querySelector("#err").textContent.includes("HTTPS")'), await evaluate('document.querySelector("#err").textContent'));
+check('remote plain HTTP login is refused with a clear message', await waitFor('location.hostname === "remote.test" && location.pathname === "/login" && document.querySelector("#err").textContent.includes("HTTPS")'), await evaluate('document.querySelector("#err").textContent'));
 await send('Page.navigate', { url: base + '/' });
-await sleep(900);
+await waitFor('location.hostname === "127.0.0.1" && document.readyState === "complete" && !!document.querySelector("#user")');
 await evaluate('document.querySelector("#user").value = "me"; document.querySelector("#pass").value = "secret"; document.querySelector("#login").requestSubmit()');
-let loggedIn = false;
 // The 3D world compiles its shaders under SwiftShader; login plus the first
 // frame can take longer than the old flat page.
-for (let i = 0; i < 150; i++) {
-  if (await evaluate('location.pathname === "/" && !!document.querySelector("#top") && !!window.world && world.debug().planets > 0')) { loggedIn = true; break; }
-  await sleep(200);
-}
+const loggedIn = await waitFor('location.pathname === "/" && !!document.querySelector("#top") && !!window.world && world.debug().planets > 0', 90000);
 check('the browser logs in and sees the dashboard', loggedIn);
 check('the session cookie is HttpOnly', (await evaluate('document.cookie')) === '', await evaluate('document.cookie'));
 ws.close();
@@ -225,7 +225,7 @@ check('the files of an item can be cut down', todoCut.status === 200 && todoCutB
 const fixture = process.env.FIXTURE;
 if (fixture) {
   let history = null;
-  for (let i = 0; i < 40; i++) {
+  for (let i = 0; i < 200; i++) {
     const s = await (await fetch(base + '/api/state', { headers: { cookie } })).json();
     history = s.coordinator?.history?.at(-1);
     if (history?.attachments?.length === 1) break;

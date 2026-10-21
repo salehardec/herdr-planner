@@ -5,7 +5,7 @@
 // the DevTools protocol and writes JPEG stills and the flight GIF. The planner binary comes from
 // $HERDR_PLANNER_BIN, else ${HERDR_PLANNER_TARGET_DIR:-~/.cache/herdr-planner/target}/release|debug (build it first:
 // scripts/web-build.sh, cargo build --release). Needs Chromium (CHROMIUM=...), Node 22+, ffmpeg for the GIF.
-// The fixture folder is under the system temp dir and is named without anything personal: paths of worktrees,
+// The fixture folder is a fresh folder under the system temp dir (demo-XXXXXX) and is named without anything personal: paths of worktrees,
 // folders and the machine name (`orion`, `vm-a`) show on the pictures, so they must not be a real user's.
 
 import { spawn, execFileSync } from 'node:child_process';
@@ -27,8 +27,8 @@ const target = process.env.HERDR_PLANNER_TARGET_DIR || join(cache, 'herdr-planne
 const bin = process.env.HERDR_PLANNER_BIN
   || ['release', 'debug'].map((p) => join(target, p, 'herdr-planner')).find((p) => existsSync(p));
 if (!bin) { console.error('readme-shots: build the planner first (see the header of this file)'); process.exit(2); }
-const work = join(tmpdir(), 'demo');
-rmSync(work, { recursive: true, force: true });
+// Its own folder on every run (two runs, or a stale one, must not share a fixture, a port or a profile).
+const work = mkdtempSync(join(tmpdir(), 'demo-'));
 mkdirSync(join(work, 'home'), { recursive: true });
 const D = join(work, 'world');
 execFileSync('node', [join(root, 'scripts/fixture.mjs'), D], { stdio: 'ignore' });

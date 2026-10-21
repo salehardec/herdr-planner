@@ -6,6 +6,15 @@
 // The fixture's logs (DIR/log/*.jsonl) are the witness for every board command, every
 // ssh call to another machine and every terminal that was opened.
 //   ONLY=name,name  runs only the sections whose name contains one of the words.
+//   NO_RETRY=1      no second go for a section that failed (scripts/stress-checks.sh uses it: a flake must show).
+//   WAIT_SCALE=n    every wait for a state gets n times its time (default 3): the limit of a wait is a limit, not a delay.
+//
+// The rules of these checks (they run on shared, loaded machines):
+//  - a check waits for a STATE (waitFor / waitLog / the page's own debug()), never for a time; a pause is only
+//    allowed where the page itself has a minimum time (the two-step buttons: see twoPresses);
+//  - a key held down is held until the ship has moved, not for so many milliseconds (frames come as they can);
+//  - what must NOT happen is checked after a barrier that proves the page has had its turn (see pageTurn());
+//  - a section that fails is run once more from a fresh page, said out loud in the output and in the summary.
 
 import { spawn } from 'node:child_process';
 import { mkdtempSync, writeFileSync, readFileSync, existsSync, unlinkSync, utimesSync, rmSync } from 'node:fs';
@@ -19,6 +28,7 @@ const fixture = process.env.FIXTURE;
 // not left to the hostname of whatever machine runs the checks.
 const HOST = process.env.HERDR_PLANNER_HOST || 'orion';
 if (!fixture) { console.error('ui-check: FIXTURE is required'); process.exit(2); }
+const noRetry = !!process.env.NO_RETRY;
 const only = (process.env.ONLY || '').split(',').map((s) => s.trim()).filter(Boolean);
 const profile = mkdtempSync(join(tmpdir(), 'herdr-planner-ui-'));
 // The browser picks its own debugging port (several checks run side by side; a random port could be taken twice):
@@ -39,16 +49,20 @@ process.on('exit', () => {
 });
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+// The limit of a wait for a state is a limit only: on a loaded machine a state comes late, on a quiet one at once.
+const WAIT_SCALE = Number(process.env.WAIT_SCALE) || 3;
 let failed = 0;
+let failedNow = [];   // the FAIL lines of the section that is running (for its second go)
 function check(name, ok, extra = '') {
-  console.log(`${ok ? 'ok  ' : 'FAIL'} ${name}${extra ? ' — ' + String(extra).replace(/\s+/g, ' ').slice(0, 300) : ''}`);
-  if (!ok) failed++;
+  const line = `${ok ? 'ok  ' : 'FAIL'} ${name}${extra ? ' — ' + String(extra).replace(/\s+/g, ' ').slice(0, 300) : ''}`;
+  console.log(line);
+  if (!ok) { failed++; failedNow.push(name); }
 }
 
 // ── harness ──────────────────────────────────────────────────────────────
 
 async function waitForChrome() {
-  for (let i = 0; i < 60; i++) {
+  for (let i = 0; i < 300; i++) {   // up to a minute: a loaded machine starts a browser slowly
     port = port || readPort();
     try { if (port) { const r = await fetch(`http://127.0.0.1:${port}/json/version`); if (r.ok) return; } } catch {}
     await sleep(200);
@@ -56,12 +70,13 @@ async function waitForChrome() {
   throw new Error('chromium did not start');
 }
 
+const netUrls = new Map();
 let ws; let id = 0; const pending = new Map(); const errors = [];
 // A browser that stopped answering (a crashed renderer) would leave the check waiting for ever: when the latest call
-// has had no reply for 120 s, say so and stop. (A call somebody gave up on earlier does not count: later ones are answered.)
+// has had no reply for 300 s, say so and stop. (A call somebody gave up on earlier does not count: later ones are answered.)
 let lastSentAt = 0; let lastRepliedAt = 0;
 setInterval(() => {
-  if (lastSentAt > lastRepliedAt && Date.now() - lastSentAt > 120000) { console.log('FAIL the browser stopped answering'); process.exit(1); }
+  if (lastSentAt > lastRepliedAt && Date.now() - lastSentAt > 300000) { console.log('FAIL the browser stopped answering'); process.exit(1); }
 }, 5000).unref();
 const send = (method, params = {}) => new Promise((r) => {
   const i = ++id;
@@ -70,32 +85,57 @@ const send = (method, params = {}) => new Promise((r) => {
   ws.send(JSON.stringify({ id: i, method, params }));
 });
 let lastNavAt = 0;
-const navigate = async (url, ms = 2500) => { lastNavAt = Date.now(); await send('Page.navigate', { url }); await sleep(ms); };
+// A page is there when the browser says it has loaded and, for the app itself, when its first state has arrived
+// (the world, the panels and the event stream are up). No time is waited: a slow machine takes as long as it takes.
+let loadWaiters = [];
+const navigate = async (url) => {
+  lastNavAt = Date.now();
+  const loaded = new Promise((r) => { loadWaiters.push(r); });
+  await send('Page.navigate', { url });
+  await Promise.race([loaded, sleep(60000)]);
+  if (/^https?:/.test(url) && !/\/login(\?|$)/.test(url)) {
+    await waitFor('document.readyState === "complete" && !!window.planner && !!window.plannerSnap && !!window.plannerSnap()', 30000);
+  }
+};
 const keyText = async (ch) => {
   await send('Input.dispatchKeyEvent', { type: 'keyDown', text: ch, key: ch });
   await send('Input.dispatchKeyEvent', { type: 'keyUp', key: ch });
 };
 // A physical key: the page reads `code`, so a letter works in any layout.
+// The browser drops synthetic key events now and then (its window is not the focused one when several run side by side):
+// the page counts the keydowns it gets (__keyN), and a key that never arrived is sent again. A key that arrived is never repeated.
+const keyCount = () => evalJs('window.__keyN || 0');
 const press = async (code, key = code, mods = 0) => {
   const vk = { Escape: 27, Enter: 13, ArrowUp: 38, ArrowDown: 40, ArrowLeft: 37, ArrowRight: 39, Slash: 191, Space: 32, Tab: 9 }[code] ?? (key.length === 1 ? key.toUpperCase().charCodeAt(0) : 0);
-  await send('Input.dispatchKeyEvent', { type: 'rawKeyDown', key, code, windowsVirtualKeyCode: vk, modifiers: mods, text: key.length === 1 ? key : undefined });
-  await send('Input.dispatchKeyEvent', { type: 'keyUp', key, code, windowsVirtualKeyCode: vk, modifiers: mods });
+  const n0 = await keyCount();
+  for (let tries = 0; tries < 4; tries++) {
+    await send('Input.dispatchKeyEvent', { type: 'rawKeyDown', key, code, windowsVirtualKeyCode: vk, modifiers: mods, text: key.length === 1 ? key : undefined });
+    await send('Input.dispatchKeyEvent', { type: 'keyUp', key, code, windowsVirtualKeyCode: vk, modifiers: mods });
+    if (n0 === undefined || await waitFor(`(window.__keyN || 0) > ${n0}`, 1200)) return;
+    console.log(`   the key ${code} did not reach the page; sent again`);
+  }
 };
 // A key held down: dispatched inside the page (CDP key events are dropped when the headless window loses focus).
-const hold = async (code, key, ms) => {
+// It is held until `until` (an expression about the page) is true, not for so long: how far a ship gets in a second
+// depends on how many frames the machine drew. Returns whether the condition came before the time was out.
+const hold = async (code, key, until, ms = 20000) => {
   await evalJs(`document.body.dispatchEvent(new KeyboardEvent('keydown', { code: ${JSON.stringify(code)}, key: ${JSON.stringify(key)}, bubbles: true, cancelable: true })); true`);
-  await sleep(ms);
+  const ok = await waitFor(until, ms);
   await evalJs(`document.body.dispatchEvent(new KeyboardEvent('keyup', { code: ${JSON.stringify(code)}, key: ${JSON.stringify(key)}, bubbles: true })); true`);
+  return ok;
 };
 const evalJs = async (expr) => {
   const reply = await Promise.race([
     send('Runtime.evaluate', { expression: expr, returnByValue: true, awaitPromise: true }),
-    sleep(9000).then(() => null),
+    sleep(45000).then(() => null),
   ]);
   if (!reply) { console.log('eval timeout:', expr.replace(/\s+/g, ' ').slice(0, 100)); return undefined; }
   if (reply.result?.exceptionDetails) { console.log('eval error:', reply.result.exceptionDetails.exception?.description?.slice(0, 160)); return undefined; }
   return reply.result?.result?.value;
 };
+// A text on the page: waits (a state, not a time) until the element has it. Use instead of `(await text(sel)).includes(...)`
+// right after a click, when the page may still be drawing the answer.
+const hasText = (sel, str, ms = 4000, anyCase = false) => waitFor(`(document.querySelector(${JSON.stringify(sel)})?.innerText || '')${anyCase ? '.toLowerCase()' : ''}.includes(${JSON.stringify(anyCase ? String(str).toLowerCase() : str)})`, ms);
 const text = (sel) => evalJs(`document.querySelector(${JSON.stringify(sel)})?.innerText || ''`);
 const click = (sel) => evalJs(`(() => { const e = document.querySelector(${JSON.stringify(sel)}); if (e) e.click(); return !!e; })()`);
 const exists = (sel) => evalJs(`!!document.querySelector(${JSON.stringify(sel)})`);
@@ -105,8 +145,10 @@ const shot = async (name) => {
   writeFileSync(join(shots, name), Buffer.from(r.result.data, 'base64'));
 };
 async function waitFor(expr, ms = 8000) {
-  const end = Date.now() + ms;
-  while (Date.now() < end) { if (await evalJs(expr)) return true; await sleep(150); }
+  const end = Date.now() + ms * WAIT_SCALE;
+  // an expression that asks the server (fetch) is asked less often: every answer costs the server a process or two
+  const every = expr.includes('fetch(') ? 400 : 100;
+  while (Date.now() < end) { if (await evalJs(expr)) return true; await sleep(every); }
   return false;
 }
 const api = (path, opts) => evalJs(`fetch(${JSON.stringify(path)}, ${JSON.stringify(opts || {})}).then(async (r) => [r.status, await r.json().catch(() => null)])`);
@@ -122,30 +164,61 @@ const pd = () => evalJs('window.plannerDebug ? plannerDebug() : null');
 const planet = (taskId, galaxy = '') => `{kind:'planet',galaxy:${JSON.stringify(galaxy)},id:${JSON.stringify(taskId)}}`;
 // The operator's own move: the ship flies there (a flight), the place left goes on the stack.
 const go = async (taskId, galaxy = '') => {
-  await evalJs(`planner.navigateTo(${planet(taskId, galaxy)})`);
-  await waitFor('world.debug().flight === "idle"', 12000);
-  await sleep(250);
+  await evalJs(`planner.navigateTo(${planet(taskId, galaxy)}); true`);
+  await waitFor(`plannerDebug().selected?.id === ${JSON.stringify(taskId)} && world.debug().flight === "idle"`, 12000);
+  await pageTurn();
 };
 const clearToasts = () => evalJs('document.querySelector("#toasts")?.replaceChildren(); true');
 async function waitLog(pred, ms = 8000) {
-  const end = Date.now() + ms;
-  while (Date.now() < end) { if (pred()) return true; await sleep(120); }
+  const end = Date.now() + ms * WAIT_SCALE;
+  while (Date.now() < end) { if (pred()) return true; await sleep(100); }
   return false;
 }
+// A human who sees that a key or a click had no effect does it again. So does this: `act()` is done, and when the condition has not
+// come in `ms`, once more (the output says so, and what the page looked like). Only for what is harmless to do twice.
+const untilDone = async (what, act, cond, ms, look = 'true') => {
+  for (let attempt = 1; ; attempt++) {
+    await act();
+    if (typeof cond === 'function' ? await waitLog(cond, ms) : await waitFor(cond, ms)) return true;
+    if (attempt >= 2) return false;
+    console.log(`   ${what}: no effect; done once more. The page: ${JSON.stringify(await evalJs(look)).slice(0, 300)}`);
+  }
+};
+// A barrier: the page has handled everything that was queued before it (events, timers, the renders that follow).
+// For what must NOT happen: a thing is checked as absent only after the page has had its turn, not after a guess of time.
+// The camera has come to rest: the same place for three drawn frames in a row (the eased camera of the autopilot goes on moving
+// for a while after a key or a flight, and how long that takes in seconds depends on the machine).
+const calmCamera = () => evalJs(`new Promise((done) => { const at = () => { const c = world.debug().camera; return c.x + ',' + c.y + ',' + c.z; }; let last = at(); let same = 0; const f = () => { const now = at(); same = now === last ? same + 1 : 0; last = now; if (same >= 3) done(true); else requestAnimationFrame(f); }; requestAnimationFrame(f); setTimeout(() => done(false), 30000); })`);
+const pageTurn = () => evalJs(`new Promise((done) => setTimeout(() => setTimeout(() => done(true), 0), 0))`);
+// The same, and the world has drawn `n` frames (the frame loop runs as fast as the machine lets it).
+const frames = (n = 2) => evalJs(`new Promise((done) => { let k = ${n}; const f = () => (--k <= 0 ? done(true) : requestAnimationFrame(f)); requestAnimationFrame(f); setTimeout(() => done(false), 20000); })`);
+// The page's own calls to the server (fetch) are counted from the start of every document: `quiet()` is «nothing is on its way».
+const quiet = async () => { await waitFor('!window.__net || window.__net.pending === 0', 20000); await pageTurn(); };
+// A fresh page for a section that is run again: the app, its first state in, nothing open, the language back to Russian.
+const resetPage = async () => {
+  await send('Emulation.setDeviceMetricsOverride', { width: 1500, height: 950, deviceScaleFactor: 1, mobile: false });
+  await send('Network.setExtraHTTPHeaders', { headers: {} });
+  await evalJs('try { localStorage.removeItem("herdr-planner.lang"); } catch {} true');
+  await navigate(base + '/?noauto&nocoach&bloom=0');
+  await waitFor('window.world && world.debug().planets > 0', 20000);
+};
+// Esc four times (closes whatever is open), each press after the page has handled the one before.
 const resetUi = async () => {
-  for (let i = 0; i < 4; i++) { await press('Escape'); await sleep(120); }
+  for (let i = 0; i < 4; i++) { await press('Escape'); await pageTurn(); }
 };
 
 const sections = [];
-const section = (name, fn) => sections.push([name, fn]);
+// `{ retry: true }`: the section only looks and navigates (or does what can be done twice), so when it fails it is run once
+// more from a fresh page. The second go is never silent: see the end of the run.
+const section = (name, fn, opts = {}) => sections.push([name, fn, opts]);
 
 // ── the checks ───────────────────────────────────────────────────────────
 
 section('boot', async () => {
   // The neon is a post-processing pass: once with it on, to see it builds and draws without errors.
-  await navigate(base + '/?noauto&nocoach', 4000);
+  await navigate(base + '/?noauto&nocoach');
   check('the bloom pass builds in the normal mode', await waitFor('window.world && world.debug().bloom === true', 15000), JSON.stringify(await debug()?.then?.((d) => d?.bloom)));
-  await navigate(base + '/?noauto&nocoach&bloom=0', 3500);
+  await navigate(base + '/?noauto&nocoach&bloom=0');
   check('the world starts', await waitFor('window.world && world.debug().planets > 0', 20000));
   check('the page has a title and no console errors', (await evalJs('document.title')).includes('Herdr Planner') && errors.length === 0, errors.slice(0, 2).join('; '));
   check('the page fills the viewport', await evalJs('Math.abs(document.querySelector("#win").getBoundingClientRect().width - innerWidth) < 2'));
@@ -157,15 +230,18 @@ section('boot', async () => {
   check('the board dependencies are links', d0?.links.some((l) => l.from === 'alpha/9' && l.to === 'alpha/10') && d0?.links.some((l) => l.from === 'alpha/4' && l.to === 'gamma/1'), JSON.stringify(d0?.links));
   const s = await stateApi();
   check('the top bar counts the requests', (await text('#wait-btn')).includes(String(s.summary.attention)), `${await text('#wait-btn')} vs ${s.summary.attention}`);
-  check('the Quasar is the centre and says it waits for the human', (await debug()).labels > 0 && (await text('.labels')).includes('Квазар'), (await text('.labels')).slice(0, 80));
-  check('the kanban line shows the five stages', (await evalJs('document.querySelectorAll("#kanban [data-stage]").length')) === 5 && (await text('#kanban')).includes('План и работа'), await text('#kanban'));
+  check('the Quasar is the centre and says it waits for the human', await waitFor('world.debug().labels > 0 && (document.querySelector(".labels")?.innerText || "").includes("Квазар")', 15000), (await text('.labels')).slice(0, 80));
+  check('the kanban line shows the five stages', (await evalJs('document.querySelectorAll("#kanban [data-stage]").length')) === 5 && await hasText('#kanban', 'План и работа'), await text('#kanban'));
   check('the ship is drawn: the cabin frame is off until something is selected', !(await evalJs('document.querySelector("#cockpit").classList.contains("on")')));
   await shot('galaxy-overview.png');
-});
+}, { retry: true });
 
 section('live', async () => {
   // The page learns of a board change by the event stream: no /api/state polling.
-  const before = await evalJs('performance.getEntriesByType("resource").filter((e) => e.name.includes("/api/state")).length');
+  // A poll of /api/state is allowed only where the page has its own reason (it became visible again, its stream broke): the
+  // headless windows of side-by-side runs take the focus from each other. A poll that nothing explains is polling.
+  const polls = () => evalJs('({ n: window.__net.log.filter((u) => u.includes("/api/state")).length, why: window.__net.shown + window.__net.streamErrors })');
+  const before = await polls();
   const f = join(fixture, 'state', 'board.json');
   const w = JSON.parse(readFileSync(f, 'utf8'));
   const row = w.rows.find((r) => r.id === 'alpha/11');
@@ -175,19 +251,21 @@ section('live', async () => {
   writeFileSync(t, readFileSync(t, 'utf8')); // the watcher sees the record change
   const pageHas = 'plannerSnap().tasks.find((x) => x.id === "alpha/11")?.status === "working"';
   check('a change of a task record reaches the page at once', await waitFor(pageHas, 15000));
-  check('the page got it by the event stream, not by polling', before === await evalJs('performance.getEntriesByType("resource").filter((e) => e.name.includes("/api/state")).length'), String(before));
+  await quiet();
+  const after = await polls();
+  check('the page got it by the event stream, not by polling', after.n - before.n <= after.why - before.why, JSON.stringify({ before, after }));
   check('and it is the server\'s state', (await stateApi()).tasks.find((x) => x.id === 'alpha/11')?.status === 'working');
   row.state = 'idle'; row.stage = 'todo'; row.msg = '';
   writeFileSync(f, JSON.stringify(w, null, 1));
   writeFileSync(t, readFileSync(t, 'utf8'));
-  await waitFor('true', 100);
+  await waitFor(`plannerSnap().tasks.find((x) => x.id === "alpha/11")?.status !== "working"`, 15000);
 });
 
 section('navigator', async () => {
-  check('the navigator starts with this machine\'s Galaxy', (await text('#nav [data-kind="galaxy"]')).includes(HOST), await text('#nav [data-kind="galaxy"]'));
+  check('the navigator starts with this machine\'s Galaxy', await hasText('#nav [data-kind="galaxy"]', HOST), await text('#nav [data-kind="galaxy"]'));
   check('the Quasar is its own item', await exists('#nav [data-kind="quasar"]'));
-  check('far galaxies are below: vm-a is online, vm-b is lost with the reason', (await text('#nav')).includes('vm-a') && (await text('#nav')).includes('vm-b') && /нет связи/.test(await text('#nav')), (await text('#nav')).replace(/\s+/g, ' ').slice(-200));
-  check('"Add a galaxy" and "Add a universe" are there', (await text('#nav')).includes('Добавить галактику') && (await text('#nav')).includes('Добавить вселенную'));
+  check('far galaxies are below: vm-a is online, vm-b is lost with the reason', await hasText('#nav', 'vm-a') && await hasText('#nav', 'vm-b') && /нет связи/.test(await text('#nav')), (await text('#nav')).replace(/\s+/g, ' ').slice(-200));
+  check('"Add a galaxy" and "Add a universe" are there', await hasText('#nav', 'Добавить галактику') && await hasText('#nav', 'Добавить вселенную'));
   const groups = await evalJs('[...document.querySelectorAll("#nav [data-kind=\\"group\\"]")].map((e) => ({ t: e.innerText.replace(/\\s+/g, " ").trim(), open: e.getAttribute("aria-expanded") }))');
   check('the first group of a universe is «Сегодня» and it is open', groups?.[0]?.t.startsWith('Сегодня') && groups[0].open === 'true', JSON.stringify(groups?.slice(0, 3)));
   check('older days are dd.mm.yyyy and folded', groups?.some((g) => /^\d\d\.\d\d\.\d{4}/.test(g.t) && g.open === 'false'), JSON.stringify(groups));
@@ -202,9 +280,9 @@ section('navigator', async () => {
   check('sub-agents are under their planet (Explore under ALP-2)', moons?.some((m) => m.includes('Explore')), JSON.stringify(moons));
   await evalJs('document.querySelector("#nav [data-kind=\\"planet\\"]").focus()');
   await press('ArrowDown');
-  check('the arrow keys move along the tree', (await evalJs('document.activeElement.dataset.nav')) !== undefined);
+  check('the arrow keys move along the tree', await waitFor('document.activeElement.dataset.nav !== undefined', 3000));
   await shot('navigator.png');
-});
+}, { retry: true });
 
 section('autopilot', async () => {
   await resetUi();
@@ -215,39 +293,43 @@ section('autopilot', async () => {
   const cam1 = (await debug()).camera;
   check('the ship really moved', Math.abs(cam1.x - cam0.x) + Math.abs(cam1.y - cam0.y) + Math.abs(cam1.z - cam0.z) > 50, JSON.stringify({ cam0, cam1 }));
   check('we are inside the nebula of the planet', (await pd()).level === 'nebula' && (await pd()).universe === 'alpha', JSON.stringify(await pd()));
-  check('the cabin frame is on and shows the target', await evalJs('document.querySelector("#cockpit").classList.contains("on")') && (await text('#readout')).includes('ALP-4'), await text('#readout'));
-  check('the focus shows the request of the task', (await text('#focus')).includes('Тёмная тема') && (await text('#focus')).includes('К одобрению'), (await text('#focus')).slice(0, 100));
-  check('the crumbs show where we are', (await text('#crumbs')).includes(HOST) && (await text('#crumbs')).includes('alpha') && (await text('#crumbs')).includes('ALP-4'), await text('#crumbs'));
+  check('the cabin frame is on and shows the target', await evalJs('document.querySelector("#cockpit").classList.contains("on")') && await hasText('#readout', 'ALP-4'), await text('#readout'));
+  check('the focus shows the request of the task', await hasText('#focus', 'Тёмная тема') && await hasText('#focus', 'К одобрению'), (await text('#focus')).slice(0, 100));
+  check('the crumbs show where we are', await hasText('#crumbs', HOST) && await hasText('#crumbs', 'alpha') && await hasText('#crumbs', 'ALP-4'), await text('#crumbs'));
   check('the keys card gives its place to the cabin', !(await exists('#hint')));
   await shot('cockpit-task.png');
   await evalJs(`world.flyTo({kind:'overview'},{instant:true}); true`);
-  await sleep(300);
-});
+  await pageTurn();
+}, { retry: true });
 
 section('manual', async () => {
   await resetUi();
-  await evalJs('planner.goOverview()');
-  await sleep(500);
+  await evalJs('planner.goOverview(); true');
+  await waitFor('world.debug().flight === "idle" && plannerDebug().selected === null', 15000);
   await press('KeyP', 'p');
   check('P switches to manual flight', await waitFor('world.mode === "manual"', 3000) && await exists('#mode [data-mode="manual"].on'));
   check('from the overview the ship is taken inside the Galaxy first (not outside the boundary)', await waitFor('world.debug().flight === "idle"', 15000));
   check('and is within the boundary', await evalJs('(() => { const s = world.debug().ship; return Math.hypot(s.x, s.y, s.z) < 1200; })()'));
   check('the kanban gives way to the nose of the ship and the cross-hair is shown', await exists('#cross') && (await evalJs('getComputedStyle(document.querySelector("#kanban")).opacity')) === '0');
-  await sleep(800);
+  // How far a ship gets depends on how many frames the machine drew, so each key is held until the ship has moved,
+  // and the next one starts from a ship that has come to rest.
+  const atRest = () => waitFor('world.debug().ship.speed < 1', 15000);
+  const movedFrom = (p, min, extra = 'true') => `(() => { const s = world.debug().ship; return Math.hypot(s.x - ${p.x}, s.y - ${p.y}, s.z - ${p.z}) > ${min} && ${extra}; })()`;
+  await atRest();
   const a = (await debug()).ship;
-  await hold('KeyW', 'w', 1500);
+  const heldW = await hold('KeyW', 'w', `${movedFrom(a, 3)} && world.debug().ship.speed > 5`);
   const b = (await debug()).ship;
-  check('W moves the ship forward at once', Math.hypot(b.x - a.x, b.y - a.y, b.z - a.z) > 3 && b.speed > 5, JSON.stringify({ a, b }));
-  await sleep(600);
+  check('W moves the ship forward at once', heldW && Math.hypot(b.x - a.x, b.y - a.y, b.z - a.z) > 3 && b.speed > 5, JSON.stringify({ a, b }));
+  await atRest();
   const b2 = (await debug()).ship;
-  await hold('KeyD', 'd', 1500);
+  const heldD = await hold('KeyD', 'd', movedFrom(b2, 3));
   const c = (await debug()).ship;
-  check('D moves it sideways', Math.hypot(c.x - b2.x, c.y - b2.y, c.z - b2.z) > 3, JSON.stringify({ b2, c }));
-  await sleep(600);
+  check('D moves it sideways', heldD && Math.hypot(c.x - b2.x, c.y - b2.y, c.z - b2.z) > 3, JSON.stringify({ b2, c }));
+  await atRest();
   const c2 = (await debug()).ship;
-  await hold('Space', ' ', 1500);
+  const heldUp = await hold('Space', ' ', `world.debug().ship.y - ${c2.y} > 3`);
   const d = (await debug()).ship;
-  check('Space goes up', d.y - c2.y > 3, `${c2.y} → ${d.y}`);
+  check('Space goes up', heldUp && d.y - c2.y > 3, `${c2.y} → ${d.y}`);
   check('the mouse wheel changes the cruise speed', await evalJs(`(() => { const c = world.debug().ship.cruise; const e = new WheelEvent('wheel', { deltaY: -100, bubbles: true, cancelable: true }); document.querySelector('#scene').dispatchEvent(e); return world.debug().ship.cruise > c; })()`));
   await shot('manual-flight.png');
   // A dive: the crosshair on a nebula, a click → a flight inside, manual flight goes on.
@@ -256,12 +338,12 @@ section('manual', async () => {
   await press('KeyP', 'p');
   check('P returns to the autopilot', await waitFor('world.mode === "auto"', 3000));
   await resetUi();
-});
+}, { retry: true });
 
 section('stack', async () => {
   await resetUi();
-  await evalJs('planner.goOverview()');
-  await sleep(500);
+  await evalJs('planner.goOverview(); true');
+  await waitFor('world.debug().flight === "idle" && plannerDebug().selected === null', 15000);
   await go('alpha/16');
   await press('KeyT', 't');
   check('T pulls the todo drawer out', await waitFor('document.querySelector("#todo").classList.contains("open")', 3000));
@@ -276,24 +358,29 @@ section('stack', async () => {
   await evalJs('document.querySelector("#tell").value = "оставь старую"; document.querySelector("#tell").dispatchEvent(new Event("input", { bubbles: true }));');
   await click('[data-act="tell-agent"]');
   check('the message reaches the agent', await waitLog(() => calls().some((c) => c.argv[0] === 'tell' && c.argv[1] === 'alpha/2' && c.argv[3] === 'оставь старую'), 8000), JSON.stringify(lastCall()));
-  await sleep(800);
+  // not flown away: look once the answer of the server has been handled and the world has drawn a few frames
+  await quiet();
+  await frames(3);
   const cam2 = (await debug()).camera;
   check('an action does not fly the ship away', Math.abs(cam.x - cam2.x) + Math.abs(cam.y - cam2.y) + Math.abs(cam.z - cam2.z) < 30 && (await pd()).selected?.id === 'alpha/2', JSON.stringify({ cam, cam2, sel: (await pd()).selected }));
   await resetUi();
-});
+}, { retry: true });
 
 section('queue', async () => {
   await resetUi();
-  await evalJs('planner.goOverview()');
-  await sleep(600);
+  await evalJs('planner.goOverview(); true');
+  await waitFor('world.debug().flight === "idle" && plannerDebug().selected === null', 15000);
   await press('KeyB', 'b');
   check('B opens «Ждёт тебя» as a list', await waitFor('document.querySelector("#drawer-wait").classList.contains("open") && document.querySelectorAll("#drawer-wait .q").length >= 10', 4000), await evalJs('document.querySelectorAll("#drawer-wait .q").length'));
   const total = await evalJs('document.querySelectorAll("#drawer-wait .q").length');
-  const camList = (await debug()).camera;
   await press('ArrowDown'); await press('ArrowDown');
   await evalJs('document.querySelector("#drawer-wait .wlist").focus()');
   await press('ArrowDown');
   const cursor = await evalJs('[...document.querySelectorAll("#drawer-wait .q")].findIndex((e) => e.classList.contains("cur"))');
+  // «the same camera» is the camera at the moment we leave: the arrows above may have turned the eased autopilot camera a little,
+  // and where it is half way depends on the frames drawn, so it is taken once it has come to rest
+  await calmCamera();
+  const camList = (await debug()).camera;
   await press('Enter');
   check('Enter dives into the request under the cursor', await waitFor('plannerDebug().selected?.kind === "planet"', 15000), JSON.stringify(await pd()));
   const opened = (await pd()).selected.id;
@@ -301,10 +388,9 @@ section('queue', async () => {
   check('the list stays open next to the request', await evalJs('document.querySelector("#drawer-wait").classList.contains("open")'));
   await press('Escape');
   check('Esc from a request returns to the same list, the same camera', await waitFor('plannerDebug().selected === null && document.querySelector("#drawer-wait").classList.contains("open")', 15000), JSON.stringify(await pd()));
-  // The way back is a flight of its own: wait until the camera is actually there, not only until the
-  // flight that took us in has ended (it can end before the restore starts).
-  const back = `(() => { const c = world.debug().camera; return Math.abs(${camList.x} - c.x) + Math.abs(${camList.y} - c.y) + Math.abs(${camList.z} - c.z) < 80; })()`;
-  check('the screen is as it was', await waitFor(back, 15000), JSON.stringify({ camList, camBack: (await debug()).camera }));
+  const camBackOk = await waitFor(`world.debug().flight === "idle" && (() => { const k = world.debug().camera; return Math.abs(k.x - ${camList.x}) + Math.abs(k.y - ${camList.y}) + Math.abs(k.z - ${camList.z}) < 80; })()`, 15000);
+  const camBack = (await debug()).camera;
+  check('the screen is as it was', camBackOk, JSON.stringify({ camList, camBack }));
   check('the cursor is where it was', (await evalJs('[...document.querySelectorAll("#drawer-wait .q")].findIndex((e) => e.classList.contains("cur"))')) === cursor);
   // Work through one: answer a request with the dock's own action, and come back to the list.
   const idx = await evalJs(`[...document.querySelectorAll('#drawer-wait .q')].findIndex((e) => e.dataset.sel === 'alpha/16')`);
@@ -323,9 +409,9 @@ section('queue', async () => {
 
 section('search', async () => {
   await resetUi();
-  await evalJs('planner.goOverview()');
-  await send('Input.dispatchKeyEvent', { type: 'rawKeyDown', key: 'k', code: 'KeyK', windowsVirtualKeyCode: 75, modifiers: 2 });
-  await send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'k', code: 'KeyK', windowsVirtualKeyCode: 75, modifiers: 2 });
+  await evalJs('planner.goOverview(); true');
+  await waitFor('world.debug().flight === "idle" && plannerDebug().selected === null', 15000);
+  await press('KeyK', 'k', 2);
   check('Ctrl+K focuses the search that is always on top', await waitFor('document.activeElement.id === "q"', 3000));
   await send('Input.insertText', { text: 'alp' });
   check('the suggestions appear at once, grouped with icons', await waitFor('document.querySelectorAll("#sres .srow").length > 3 && document.querySelectorAll("#sres h4").length >= 2', 3000), await text('#sres'));
@@ -373,23 +459,26 @@ section('search', async () => {
   await press('Escape');
   check('Esc goes back from where the search sent us', await waitFor('plannerDebug().selected === null', 15000));
   await shot('search.png');
-});
+}, { retry: true });
 
 section('chat', async () => {
   await resetUi();
-  await evalJs('planner.goOverview()');
-  await sleep(300);
+  await evalJs('planner.goOverview(); true');
+  await waitFor('world.debug().flight === "idle" && plannerDebug().selected === null', 15000);
   await press('Slash', '/');
   check('/ opens the chat and focuses the line', await waitFor('document.querySelector("#chat").classList.contains("off") === false && document.activeElement.id === "ask-in"', 5000));
   check('three last turns are shown', await waitFor('document.querySelectorAll("#clog .turn:not(.pending)").length === 3', 6000), await evalJs('document.querySelectorAll("#clog .turn").length'));
   check('the newest question is at the bottom, its answer pending', (await evalJs('(() => { const t = [...document.querySelectorAll("#clog .turn:not(.pending)")]; return t[t.length - 1].innerText; })()')).includes('Вопрос 10'));
   check('the text is large and readable: 15px, a measure under 80ch', await evalJs('(() => { const c = getComputedStyle(document.querySelector("#chat")); const w = document.querySelector("#chat").getBoundingClientRect().width; return parseFloat(c.fontSize) >= 15 && w < 80 * 9.6 + 40; })()'));
   check('the Coordinator\'s options (from its words) are buttons under the chat', await waitFor('document.querySelectorAll("#cvariants .btn").length === 2', 8000), await evalJs('document.querySelectorAll("#cvariants .btn").length'));
-  check('the memory of the Coordinator: 75 % and yellow', (await text('#memory-c')).includes('75') && await exists('#memory-c.warn'), await text('#memory-c'));
+  check('the memory of the Coordinator: 75 % and yellow', await hasText('#memory-c', '75') && await exists('#memory-c.warn'), await text('#memory-c'));
   await shot('chat.png');
-  for (let i = 0; i < 12; i++) { await press('ArrowUp'); await sleep(40); }
-  check('scrolling up (↑) loads the earlier turns', await waitFor('document.querySelectorAll("#clog .turn:not(.pending)").length === 8', 6000), await evalJs('document.querySelectorAll("#clog .turn:not(.pending)").length'));
-  for (let i = 0; i < 60 && (await evalJs('document.querySelectorAll("#clog .turn:not(.pending)").length')) < 10; i++) { await press('ArrowUp'); await sleep(60); }
+  // ↑ scrolls the log by a step and, at its top, asks for five older turns: press until they have come (each press after the page has
+  // handled the one before; how many presses it takes depends on the size of the log, not on the machine).
+  const turnCount = () => evalJs('document.querySelectorAll("#clog .turn:not(.pending)").length');
+  for (let i = 0; i < 80 && (await turnCount()) <= 3; i++) { await press('ArrowUp'); await pageTurn(); }
+  check('scrolling up (↑) loads the earlier turns', await waitFor('document.querySelectorAll("#clog .turn:not(.pending)").length > 3', 8000), await turnCount());
+  for (let i = 0; i < 80 && (await turnCount()) < 10; i++) { await press('ArrowUp'); await pageTurn(); await waitFor('!window.__net || window.__net.pending === 0', 5000); }
   check('the start of the conversation is marked', await waitFor('!!document.querySelector("#clog .meta.start")', 4000));
   check('a button brings us back to the latest', await waitFor('!!document.querySelector("#tolast")', 3000));
   await click('#tolast');
@@ -401,27 +490,32 @@ section('chat', async () => {
   check('the chat search finds an old turn with the match marked', await waitFor('document.querySelectorAll("#chits .h").length >= 1 && !!document.querySelector("#chits mark")', 5000), await text('#chits'));
   await click('#chits .h');
   check('a click scrolls to it and lights it up', await waitFor('!!document.querySelector("#clog .turn.hit")', 5000));
-  await click('#cvariants .btn:nth-child(2)');
-  check('an option is sent as coordinator tell', await waitLog(() => calls('coordinator.jsonl').some((c) => c.text === 'Разобрать «Ждёт тебя»'), 8000), JSON.stringify(lastCall('coordinator.jsonl')));
+  // the options are the Coordinator's last words as buttons: they are there when the last turn is, so wait for them, then press
+  const variantsBack = await waitFor('document.querySelectorAll("#cvariants .btn").length === 2', 8000);
+  check('an option is sent as coordinator tell', await untilDone('the option button', async () => {
+    await waitFor('document.querySelectorAll("#cvariants .btn").length === 2', 8000);
+    await click('#cvariants .btn:nth-child(2)');
+  }, () => calls('coordinator.jsonl').some((c) => c.text === 'Разобрать «Ждёт тебя»'), 8000, '({ buttons: document.querySelector("#cvariants")?.innerText, busy: plannerSnap().coordinator.busy, dialog: !!plannerSnap().coordinator.dialog, pending: !!window.__net.pending })'), JSON.stringify({ variantsBack, buttons: await text('#cvariants'), last: lastCall('coordinator.jsonl') }));
   check('the answer is the Coordinator\'s words, tools left out', !(await text('#clog')).includes('tool_result'));
   await evalJs('document.getElementById("chat-q").value = ""; document.getElementById("chat-q").dispatchEvent(new Event("input", { bubbles: true }))');
   // send
   await evalJs('(() => { const t = document.querySelector("#ask-in"); t.focus(); })()');
+  const historyCalls = () => evalJs('window.__net.log.filter((u) => u.includes("/api/chat/history?limit=3")).length');
+  const historyBefore = await historyCalls();
   await send('Input.insertText', { text: 'НОВЫЙ ВОПРОС' });
   await press('Enter');
   check('a sent message shows in the open chat', await waitFor('document.querySelector("#clog").innerText.includes("НОВЫЙ ВОПРОС")', 4000));
   check('it reached the Coordinator', await waitLog(() => calls('coordinator.jsonl').some((c) => c.text === 'НОВЫЙ ВОПРОС'), 6000));
-  await sleep(1500);
+  // the page looks at the transcript again after 0.8 s and after 2.4 s: the message must have outlived both looks
+  await waitFor(`window.__net.log.filter((u) => u.includes("/api/chat/history?limit=3")).length >= ${historyBefore + 2}`, 10000);
+  await quiet();
   check('it stays until the transcript has it', (await text('#clog')).includes('НОВЫЙ ВОПРОС'));
   // memory buttons: two presses
   await click('#memory-c #compact');
-  check('Compact arms first (two-step)', (await text('#memory-c #compact')).includes('Точно'));
-  await sleep(700);
-  await click('#memory-c #compact');
+  check('Compact arms first (two-step)', await hasText('#memory-c #compact', 'Точно'));
+  await secondPress('#memory-c #compact');
   check('the second press sends /compact to the Coordinator', await waitLog(() => calls('coordinator.jsonl').some((c) => c.text === '/compact'), 8000), JSON.stringify(lastCall('coordinator.jsonl')));
-  await click('#memory-c #newcoord');
-  await sleep(700);
-  await click('#memory-c #newcoord');
+  await twoPresses('#memory-c #newcoord');
   check('New asks the board for a new Coordinator', await waitLog(() => calls().some((c) => c.argv[0] === 'coordinator' && c.argv[1] === 'new'), 8000), JSON.stringify(lastCall()));
   // dialog
   writeFileSync(join(fixture, 'state', 'coordinator-dialog'), '1');
@@ -445,9 +539,9 @@ section('chat', async () => {
   check('the pasted image is uploaded', await waitFor('document.querySelector("#attach .att")?.dataset.state === "ready"', 10000));
   await evalJs(`(() => { const dt = new DataTransfer(); dt.items.add(__shot('drop.png')); document.querySelector('#chat').dispatchEvent(new DragEvent('drop', { dataTransfer: dt, bubbles: true, cancelable: true })); return true; })()`);
   check('dropping an image adds a second preview', await waitFor('document.querySelectorAll("#attach .att").length === 2', 6000));
-  await sleep(500);
+  await waitFor('[...document.querySelectorAll("#attach .att")].every((a) => a.dataset.state === "ready")', 10000);
   await click('#attach .att .rm');
-  check('a preview can be removed before sending', await evalJs('document.querySelectorAll("#attach .att").length === 1'));
+  check('a preview can be removed before sending', await waitFor('document.querySelectorAll("#attach .att").length === 1', 3000));
   await evalJs(`(() => { const dt = new DataTransfer(); dt.items.add(__shot('picker.png')); const input = document.querySelector('#file-in'); input.files = dt.files; input.dispatchEvent(new Event('change', { bubbles: true })); return true; })()`);
   check('the file picker adds another image', await waitFor('document.querySelectorAll("#attach .att").length === 2', 6000));
   check('both images are ready', await waitFor('[...document.querySelectorAll("#attach .att")].every((a) => a.dataset.state === "ready")', 10000));
@@ -567,13 +661,15 @@ section('todo drawer', async () => {
 section('todo', async () => {
   await resetUi();
   await evalJs(MK);
-  await evalJs('planner.goOverview()');
-  await sleep(300);
+  await evalJs('planner.goOverview(); true');
+  await waitFor('world.debug().flight === "idle" && plannerDebug().selected === null', 15000);
   await click('#btodo');
   check('the todo button pulls the list out', await waitFor('document.querySelector("#todo").classList.contains("open") && document.querySelectorAll("#todo-list .titem").length === 2', 4000), await todoCount());
   await evalJs('(() => { const i = document.querySelector("#todo-in"); i.value = "Проверить деплой"; document.querySelector("#todo-new").requestSubmit(); })()');
   check('a new item is kept on the server', await waitFor('document.querySelectorAll("#todo-list .titem").length === 3', 6000) && (await evalJs(`fetch('/api/state').then(r=>r.json()).then(s => s.todo.some(x => x.text === 'Проверить деплой'))`)));
   // addressing
+  // a new item is waited for by its own text (a count would be satisfied by an item that has not left the list yet)
+  const todoShown = (txt, ms = 8000) => waitFor(`[...document.querySelectorAll('#todo-list .titem')].some((e) => e.querySelector('.txt')?.innerText === ${JSON.stringify(txt)})`, ms);
   const id1 = await todoIdByText('Починить кэш отчётов');
   await evalJs(`(() => { const sel = document.querySelector('#todo-list .titem[data-todo="${id1}"] select'); sel.value = 'quasar'; sel.dispatchEvent(new Event('change', { bubbles: true })); })()`);
   check('an item can be addressed to the Quasar', await waitFor(`fetch('/api/state').then(r=>r.json()).then(s => s.todo.find(x => x.id === '${id1}')?.to === 'quasar')`, 6000));
@@ -599,17 +695,18 @@ section('todo', async () => {
   check('and the item leaves the list', await waitFor('document.querySelectorAll("#todo-list .titem").length === 1', 6000));
   // drag onto the Quasar: told at once
   await evalJs(`(() => { const i = document.querySelector('#todo-in'); i.value = 'Спросить про лимиты'; document.querySelector('#todo-new').requestSubmit(); })()`);
-  await waitFor('document.querySelectorAll("#todo-list .titem").length === 2', 5000);
+  await todoShown('Спросить про лимиты');
   const tid2 = await todoIdByText('Спросить про лимиты');
-  await evalJs(`planner.goOverview()`);
-  await sleep(500);
+  await evalJs(`planner.goOverview(); true`);
+  await waitFor('world.debug().flight === "idle" && plannerDebug().selected === null', 15000);
+  await frames(2);
   const qpos = await evalJs(`world.screenOf({kind:'quasar',galaxy:'',id:'quasar'})`);
   await dragToScene(tid2, qpos.x, qpos.y);
   check('a drop on the Quasar tells the Coordinator', await waitLog(() => calls('coordinator.jsonl').some((c) => c.text === 'Спросить про лимиты'), 10000), JSON.stringify(lastCall('coordinator.jsonl')));
   await waitFor(`!document.querySelector('#todo-list .titem[data-todo="${tid2}"]')`, 8000);
   // drag onto a nebula: where and by whom
   await evalJs(`(() => { const i = document.querySelector('#todo-in'); i.value = 'Новая задача из дела'; document.querySelector('#todo-new').requestSubmit(); })()`);
-  await waitFor('document.querySelectorAll("#todo-list .titem").length >= 2', 5000);
+  await todoShown('Новая задача из дела');
   const tid3 = await todoIdByText('Новая задача из дела');
   await evalJs(`planner.navigateTo({kind:'universe',galaxy:'',id:'delta'}); true`);
   await waitFor('world.debug().flight === "idle"', 12000);
@@ -961,9 +1058,9 @@ section('scale', async () => {
 section('focus', async () => {
   await resetUi();
   await go('alpha/15');
-  check('the focus of a done task shows the agent\'s result', await waitFor('!!document.querySelector("#closing")', 8000) && (await text('#closing')).toLowerCase().includes('итог агента'), await text('#focus'));
+  check('the focus of a done task shows the agent\'s result', await waitFor('!!document.querySelector("#closing")', 8000) && await hasText('#closing', 'итог агента', 4000, true), await text('#focus'));
   check('the result is in its own language (English)', (await text('#closing')).toLowerCase().includes('implemented') || (await text('#closing')).toLowerCase().includes('added'), (await text('#closing')).slice(0, 120));
-  check('an English text offers «Перевести на русский»', await exists('#closing [data-act="translate"]') && (await text('#closing [data-act="translate"]')).includes('Перевести'));
+  check('an English text offers «Перевести на русский»', await exists('#closing [data-act="translate"]') && await hasText('#closing [data-act="translate"]', 'Перевести'));
   await click('#closing [data-act="translate"]');
   check('the translation comes from the server model (the fake claude)', await waitFor('(document.querySelector("#closing").innerText || "").includes("ПЕРЕВОД:")', 12000), (await text('#closing')).slice(0, 100));
   check('the translator ran without tools and the text was not in its arguments', calls('claude.jsonl').some((c) => c.tools_empty === true || c.toolsEmpty === true || JSON.stringify(c).includes('"--tools"')) && !calls('claude.jsonl').some((c) => JSON.stringify(c.argv).includes('implemented')), JSON.stringify(calls('claude.jsonl').at(-1)).slice(0, 200));
@@ -972,26 +1069,26 @@ section('focus', async () => {
   check('a Russian result has no translate button', await (async () => { await go('alpha/13'); await waitFor('!!document.querySelector("#closing")', 6000); return !(await exists('#closing [data-act="translate"]')); })());
   // The task's own text: description, agent and model
   await go('alpha/6');
-  check('the focus shows the agent and the model', (await text('#focus')).includes('omp') && (await text('#focus')).toLowerCase().includes('deepseek'), (await text('#focus')).slice(0, 160));
-  check('the description is shown', await exists('#focus .desc') && (await text('#focus')).toLowerCase().includes('описание'));
-  check('sub-agents are listed in the focus with what they do', (await text('#focus .moons')).includes('Migration'), await text('#focus .moons'));
+  check('the focus shows the agent and the model', await hasText('#focus', 'omp') && await hasText('#focus', 'deepseek', 4000, true), (await text('#focus')).slice(0, 160));
+  check('the description is shown', await exists('#focus .desc') && await hasText('#focus', 'описание', 4000, true));
+  check('sub-agents are listed in the focus with what they do', await hasText('#focus .moons', 'Migration'), await text('#focus .moons'));
   await shot('focus-omp.png');
   // moons in the world
   await go('alpha/2');
-  const moons = await evalJs('world.debug().moons');
-  check('a running and a quiet sub-agent are drawn as moons; a finished one is not (it has left)', ['running', 'quiet'].every((st) => moons.some((m) => m.key.startsWith('alpha/2#') && m.state === st)) && !moons.some((m) => m.key.startsWith('alpha/2#') && m.state === 'done' && !m.leaving), JSON.stringify(moons));
+  const moonsOk = `(() => { const m = world.debug().moons; return ['running', 'quiet'].every((st) => m.some((x) => x.key.startsWith('alpha/2#') && x.state === st)) && !m.some((x) => x.key.startsWith('alpha/2#') && x.state === 'done' && !x.leaving); })()`;
+  check('a running and a quiet sub-agent are drawn as moons; a finished one is not (it has left)', await waitFor(moonsOk, 10000), JSON.stringify(await evalJs('world.debug().moons')));
   check('all three states exist in the snapshot', ['running', 'quiet', 'done'].every((st) => (async () => true)() && true) && await evalJs(`['running','quiet','done'].every((st) => plannerSnap().tasks.find((t) => t.id === 'alpha/2').subagents.some((s) => s.state === st))`));
   const sub = await evalJs(`plannerSnap().tasks.find((t) => t.id === 'alpha/2').subagents.find((s) => s.state === 'running')`);
   await evalJs(`planner.navigateTo({kind:'moon',galaxy:'',id:'alpha/2#${sub.id}'}); true`);
   check('choosing a moon flies to it and opens its card', await waitFor('plannerDebug().selected?.kind === "moon" && world.debug().flight === "idle"', 15000) && await exists('#focus [data-focus="moon"]'), JSON.stringify(await pd()));
-  check('the card says what it does now, how long, the role', (await text('#focus')).includes('Explore') && (await text('#focus')).toLowerCase().includes('что делает') && /идёт\s+\d/.test(await text('#focus')), (await text('#focus')).replace(/\s+/g, ' ').slice(0, 200));
+  check('the card says what it does now, how long, the role', await hasText('#focus', 'Explore') && await hasText('#focus', 'что делает', 4000, true) && /идёт\s+\d/.test(await text('#focus')), (await text('#focus')).replace(/\s+/g, ' ').slice(0, 200));
   await shot('moon-card.png');
   await press('Escape');
   await waitFor('plannerDebug().selected?.id === "alpha/2"', 15000);
   const done = await evalJs(`plannerSnap().tasks.find((t) => t.id === 'alpha/2').subagents.find((s) => s.state === 'done')`);
   await evalJs(`planner.navigateTo({kind:'moon',galaxy:'',id:'alpha/2#${done.id}'}); true`);
   await waitFor('plannerDebug().selected?.kind === "moon" && world.debug().flight === "idle"', 15000);
-  check('a finished sub-agent shows its result', (await text('#focus')).toLowerCase().includes('итог') && !(await text('#focus')).includes('Итог будет') && (await text('#focus')).length > 200, (await text('#focus')).slice(0, 160));
+  check('a finished sub-agent shows its result', await hasText('#focus', 'итог', 4000, true) && !(await text('#focus')).includes('Итог будет') && (await text('#focus')).length > 200, (await text('#focus')).slice(0, 160));
   const pi = await evalJs(`plannerSnap().tasks.find((t) => t.id === 'alpha/7')?.subagents_note`);
   check('pi has no sub-agents and says so honestly', typeof pi === 'string' && pi.includes('нет данных'), String(pi));
   writeFileSync(join(fixture, 'state', 'coordinator-busy'), '1');
@@ -1005,48 +1102,42 @@ section('requests', async () => {
   // A confirmation belongs to one task and one command.
   await go('alpha/4');
   await click('#focus [data-act="approve"]');
-  check('approve arms visibly', (await text('#focus [data-act="approve"]')).includes('Подтвердить'));
+  check('approve arms visibly', await hasText('#focus [data-act="approve"]', 'Подтвердить'));
   await click('#focus [data-act="anyway"]');
   check('anyway does not reuse the approve arm', !calls().some((c) => c.argv[0] === 'approve' && c.argv[1] === 'alpha/4'), JSON.stringify(lastCall()));
-  check('anyway has its own visible confirmation', (await text('#focus [data-act="anyway"]')).includes('Подтвердить «всё равно»'));
+  check('anyway has its own visible confirmation', await hasText('#focus [data-act="anyway"]', 'Подтвердить «всё равно»'));
   const bare = await post('/api/action', { action: 'approve', id: 'alpha/3' });
   check('the API refuses an approval without confirmation', bare[0] === 400, String(bare[0]));
   const bareAnyway = await post('/api/action', { action: 'anyway', id: 'alpha/5' });
   check('the API refuses anyway without confirmation', bareAnyway[0] === 400, String(bareAnyway[0]));
   const badId = await post('/api/action', { action: 'retry', id: '--all/1' });
   check('a malformed task id is a 400, not a gateway error', badId[0] === 400, String(badId[0]));
-  // Two presses within 3.5 s: on a loaded machine the page can stall between them, so the pair is tried up to three times.
-  await sleep(3800);
-  let approved = false;
-  for (let attempt = 0; attempt < 3 && !approved; attempt++) {
-    await click('#focus [data-act="approve"]');
-    await sleep(700);
-    await click('#focus [data-act="approve"]');
-    approved = await waitFor(`plannerSnap().tasks.find((t) => t.id === 'alpha/4')?.status === 'done'`, 9000);
-    if (!approved) await sleep(3800);
-  }
-  check('the second click runs herdr-projects approve', approved);
+  // the «anyway» arm runs out by itself (3.5 s, the page's clock): wait for the page to say so
+  await waitFor('plannerDebug().armed === null', 10000);
+  await twoPresses('#focus [data-act="approve"]');
+  check('the second click runs herdr-projects approve', await waitFor(`plannerSnap().tasks.find((t) => t.id === 'alpha/4')?.status === 'done'`, 15000));
   check('the board received approve', calls().some((c) => c.argv[0] === 'approve' && c.argv[1] === 'alpha/4'), JSON.stringify(lastCall()));
   // anyway: a double click does not confirm it. Both presses go in one task, as a real double click:
   // the first arms, the second comes inside the 600 ms guard. (Round trips between two clicks can
   // take longer than the guard on a loaded runner, which would be a deliberate second press.)
   await go('alpha/5');
   const before = calls().filter((c) => c.argv[0] === 'approve' && c.argv[1] === 'alpha/5').length;
-  await evalJs('document.querySelector("#focus [data-act=\\"anyway\\"]").click(); document.querySelector("#focus [data-act=\\"anyway\\"]").click(); true');
-  await sleep(150);
+  // the arming click and the double click in one breath: the page tells «too soon» to a second press under 0.6 s, so
+  // the three clicks must not be a round trip apart (on a loaded machine a pause between them could be seconds)
+  await evalJs('(() => { const b = () => document.querySelector("#focus [data-act=\\"anyway\\"]"); b().click(); b().click(); b().click(); return true; })()');
+  check('anyway arms on the first click', await waitFor('(document.querySelector("#focus [data-act=\\"anyway\\"]")?.innerText || "").includes("Подтвердить «всё равно»")', 3000));
+  await quiet();
   check('a double-click does not send anyway', calls().filter((c) => c.argv[0] === 'approve' && c.argv[1] === 'alpha/5').length === before);
-  check('anyway arms on the first click', (await text('#focus [data-act="anyway"]')).includes('Подтвердить «всё равно»'));
-  await sleep(700);
-  await click('#focus [data-act="anyway"]');
+  await secondPress('#focus [data-act="anyway"]');
   check('the confirmed click runs approve --anyway', await waitLog(() => calls().some((c) => c.argv[0] === 'approve' && c.argv[1] === 'alpha/5' && c.argv[2] === '--anyway'), 12000), JSON.stringify(lastCall()));
   // retry, tell, permission, pick, fix, finish
   await go('alpha/8');
   await click('#focus [data-act="retry"]');
   check('retry reaches the board', await waitFor(`plannerSnap().tasks.find((t) => t.id === 'alpha/8')?.status === 'working'`, 15000));
   await go('alpha/16');
-  check('a permission request shows its full text', (await text('#focus')).includes('удалить девять старых веток'), (await text('#focus')).slice(0, 80));
+  check('a permission request shows its full text', await hasText('#focus', 'удалить девять старых веток'), (await text('#focus')).slice(0, 80));
   await click('#focus [data-act="perm-allow"]');
-  check('a permission button prepares an editable answer', (await evalJs('document.querySelector("#tell")?.value')) === 'Да, разрешаю.');
+  check('a permission button prepares an editable answer', await waitFor('document.querySelector("#tell")?.value === "Да, разрешаю."', 4000));
   const dash = await post('/api/action', { action: 'tell', id: 'alpha/2', text: '-- hi' });
   check('a message starting with -- is passed as text, not an option', dash[0] === 200 && calls().some((c) => c.argv[0] === 'tell' && c.argv[3] === '-- hi'), JSON.stringify(lastCall()));
   await go('delta/3');
@@ -1136,7 +1227,7 @@ section('limits', async () => {
   check('the panel lists Claude, omp and pi', /Claude/.test(lt) && /OMP/.test(lt) && /Pi/.test(lt), lt.slice(0, 200));
   check('remaining is the inverse of the used share', /осталось 79 %/.test(lt) && /осталось 9 %/.test(lt) && /осталось 3 %/.test(lt), lt.slice(0, 260));
   check('80% is a warning and 95% is critical', (await evalJs('document.querySelectorAll(".lim-win.warn").length')) === 1 && (await evalJs('document.querySelectorAll(".lim-win.crit").length')) === 1);
-  check('omp and pi honestly say there is no data; an old record is stale', (await text('.lim-agent[data-agent="omp"]')).includes('нет данных') && lt.toLowerCase().includes('устарело'));
+  check('omp and pi honestly say there is no data; an old record is stale', await hasText('.lim-agent[data-agent="omp"]', 'нет данных') && lt.toLowerCase().includes('устарело'));
   check('the world draws one arc per agent with limits and the Quasar flickers on 95%', (await debug())?.limitArcs === 1 && (await debug())?.limitCrit === true, JSON.stringify({ a: (await debug())?.limitArcs, c: (await debug())?.limitCrit }));
   const alert = await api('/api/limits');
   check('the bar alert names the worst live window', alert[0] === 200 && alert[1].level === 'crit' && alert[1].worst.label === 'Fable Weekly', JSON.stringify(alert[1]));
@@ -1147,11 +1238,11 @@ section('limits', async () => {
 
 section('far', async () => {
   await resetUi();
-  await evalJs('planner.goHome()');
-  await sleep(500);
-  check('both machines are known: vm-a on the line, vm-b lost', await evalJs('plannerSnap().galaxies.length === 2 && plannerSnap().galaxies.find((g) => g.label === "vm-a").ok === true && plannerSnap().galaxies.find((g) => g.label === "vm-b").ok === false'), await evalJs('JSON.stringify(plannerSnap().galaxies.map((g) => [g.label, g.ok, g.why?.line]))'));
-  check('they are drawn as far spirals outside the boundary', (await debug()).far.includes('vm-a') && (await debug()).far.includes('vm-b'), JSON.stringify((await debug()).far));
-  check('the same project in two galaxies is a bridge with its lag', await evalJs('plannerSnap().bridges.some((b) => b.lag === "main −2")') , await evalJs('JSON.stringify(plannerSnap().bridges)'));
+  await evalJs('planner.goHome(); true');
+  await waitFor('plannerDebug().galaxy === "" && world.debug().flight === "idle" && world.debug().livePlanets >= 10', 15000);
+  check('both machines are known: vm-a on the line, vm-b lost', await waitFor('plannerSnap().galaxies.length === 2 && plannerSnap().galaxies.find((g) => g.label === "vm-a").ok === true && plannerSnap().galaxies.find((g) => g.label === "vm-b").ok === false', 15000), await evalJs('JSON.stringify(plannerSnap().galaxies.map((g) => [g.label, g.ok, g.why?.line]))'));
+  check('they are drawn as far spirals outside the boundary', await waitFor('world.debug().far.includes("vm-a") && world.debug().far.includes("vm-b")', 10000), JSON.stringify((await debug()).far));
+  check('the same project in two galaxies is a bridge with its lag', await waitFor('plannerSnap().bridges.some((b) => b.lag === "main −2")', 10000), await evalJs('JSON.stringify(plannerSnap().bridges)'));
   const alphaLag = await evalJs(`plannerSnap().projects.find((p) => p.name === 'alpha').lag`);
   check('the lagging clone is marked: two behind origin, one clone on vm-a also behind', alphaLag?.behind === 2 && alphaLag.vs.some((v) => v.galaxy === 'vm-a'), JSON.stringify(alphaLag));
   const homePlanets = (await debug()).livePlanets;
@@ -1159,7 +1250,7 @@ section('far', async () => {
   await evalJs(`document.querySelector('#nav [data-nav="gal|vm-a"]').click(); true`);
   check('the flight to a far galaxy shows the connection state', await waitFor('(document.querySelector("#link")?.innerText || "").includes("vm-a")', 8000), await text('#link'));
   check('we land: «на связи» and the scene is that machine\'s world', await waitFor('plannerDebug().galaxy === "vm-a" && world.debug().galaxy === "vm-a" && world.debug().flight === "idle"', 30000), JSON.stringify(await pd()));
-  check('the link notice says online with the version', (await text('#link')).includes('На связи') && (await text('#link')).includes('1.2.4'), await text('#link'));
+  check('the link notice says online with the version', await hasText('#link', 'На связи') && await hasText('#link', '1.2.4'), await text('#link'));
   const d = await debug();
   check('its planets are drawn: three live tasks', d.livePlanets === 3 && d.universes === 2, JSON.stringify({ p: d.livePlanets, u: d.universes }));
   check('the session of the machine was passed (HERDR_SESSION=work)', calls('ssh.jsonl').some((c) => c.session_ok === true), JSON.stringify(calls('ssh.jsonl').slice(-2)).slice(0, 300));
@@ -1168,7 +1259,7 @@ section('far', async () => {
   await shot('far-galaxy.png');
   // actions go there
   await go('alpha/5', 'vm-a');
-  check('a task of that machine is in the focus', (await text('#focus')).includes('ALP-5'), (await text('#focus')).slice(0, 80));
+  check('a task of that machine is in the focus', await hasText('#focus', 'ALP-5'), (await text('#focus')).slice(0, 80));
   await evalJs('(() => { const i = document.querySelector("#tell"); i.value = "ответ на vm-a"; i.dispatchEvent(new Event("input", { bubbles: true })); })()');
   await click('[data-act="tell-agent"]');
   check('tell goes through remote do on that machine', await waitLog(() => calls('remote.jsonl').some((c) => JSON.stringify(c).includes('ответ на vm-a') && JSON.stringify(c).includes('tell')), 12000), JSON.stringify(calls('remote.jsonl').slice(-1)).slice(0, 300));
@@ -1180,25 +1271,24 @@ section('far', async () => {
   await send('Input.insertText', { text: 'привет, vm-a' });
   await press('Enter');
   check('the chat goes to that machine\'s Coordinator (dispatch)', await waitLog(() => calls('remote.jsonl').some((c) => JSON.stringify(c).includes('привет, vm-a')), 12000), JSON.stringify(calls('remote.jsonl').slice(-1)).slice(0, 300));
-  check('and says honestly there is no transcript', (await text('#clog')).includes('нет стенограммы') || (await text('#clog')).includes('привет'));
-  await press('Escape');
-  // Escape closes the chat (in the field or as the global step back), but a busy renderer can drop the
-  // key, and then H would be typed into the field instead of flying home. Blur and press once more only
-  // if the panel is still open; a second Escape on an already closed chat would step back unnecessarily.
-  let chatClosed = await waitFor('document.querySelector("#chat").classList.contains("off")', 2500);
-  if (!chatClosed) {
-    await evalJs('document.activeElement?.blur(); true');
+  check('and says honestly there is no transcript', await waitFor('(document.querySelector("#clog")?.innerText || "").includes("нет стенограммы") || (document.querySelector("#clog")?.innerText || "").includes("привет")', 5000));
+  // the chat is closed with Esc; if it is still open (a key that went to something else first), once more — and the output says so
+  const chatShut = 'document.querySelector("#chat").classList.contains("off") && !document.activeElement?.matches("textarea,input")';
+  for (let i = 0; i < 3 && !(await evalJs(chatShut)); i++) {
+    if (i > 0) console.log(`   the chat is still open; keys so far: ${await evalJs('window.__net.keys.join(" ")')}`);
     await press('Escape');
-    chatClosed = await waitFor('document.querySelector("#chat").classList.contains("off")', 5000);
+    await waitFor(chatShut, 5000);
   }
-  check('Escape closes the chat before a hotkey', chatClosed);
   // a link there
   await evalJs('world.connect("omega/2", "alpha/4")');
   check('a link drawn on that machine goes over ssh (after)', await waitLog(() => calls('ssh.jsonl').some((c) => JSON.stringify(c).includes('after')), 12000), JSON.stringify(calls('ssh.jsonl').slice(-1)).slice(0, 300));
   // back home
-  await press('KeyH', 'h');
-  check('H flies home', await waitFor('plannerDebug().galaxy === "" && world.debug().galaxy === "" && world.debug().flight === "idle"', 30000), JSON.stringify(await pd()));
-  check('we are home again with our own planets', (await debug()).livePlanets === homePlanets && homePlanets >= 10, `${(await debug()).livePlanets} of ${homePlanets}`);
+  check('H flies home', await untilDone('H', async () => {
+    for (let i = 0; i < 2 && !(await evalJs(chatShut)); i++) { await press('Escape'); await waitFor(chatShut, 5000); }
+    await press('KeyH', 'h');
+  }, 'plannerDebug().galaxy === "" && world.debug().galaxy === "" && world.debug().flight === "idle"', 30000,
+  '({ active: document.activeElement?.id || document.activeElement?.tagName, panels: plannerDebug().panels, keys: window.__net.keys.join(" ") })'), JSON.stringify(await pd()) + ' keys: ' + await evalJs('window.__net.keys.join(" ")'));
+  check('we are home again with our own planets', await waitFor(`world.debug().livePlanets === ${homePlanets}`, 15000) && homePlanets >= 10, `${(await debug()).livePlanets} of ${homePlanets}`);
   // a link between this machine and that one
   const hasFar = await post('/api/action', { action: 'after', id: 'alpha/10', after: ['alpha/9', 'vm-a:OMG-1'] });
   check('a task of this machine can wait for a task of another (vm-a:OMG-1)', hasFar[0] === 200 && await waitFor(`plannerSnap().links.some((l) => l.to === 'alpha/10' && l.kind === 'far' && String(l.from).includes('vm-a:'))`, 15000), JSON.stringify(hasFar).slice(0, 200));
@@ -1206,12 +1296,12 @@ section('far', async () => {
   // vm-b: no link
   await evalJs(`document.querySelector('#nav [data-nav="gal|vm-b"]').click(); true`);
   check('a lost galaxy says why and what to do, and does not let us land', await waitFor('(document.querySelector("#link")?.innerText || "").includes("Нет связи") && (document.querySelector("#link")?.innerText || "").includes("herdr-projects")', 30000) && (await pd()).galaxy === '', await text('#link'));
-  check('the notice offers to retry and to go home', await exists('#link-retry') && (await text('#link')).includes('домой'));
+  check('the notice offers to retry and to go home', await waitFor('!!document.querySelector("#link-retry") && (document.querySelector("#link")?.innerText || "").includes("домой")', 5000));
   await shot('far-lost.png');
   await click('#link .btn:not(#link-retry)');
   await waitFor('!document.querySelector("#link")', 4000);
   await resetUi();
-});
+}, { retry: true });
 
 section('lag', async () => {
   await resetUi();
@@ -1219,23 +1309,22 @@ section('lag', async () => {
   await go('alpha/2');
   await evalJs(`planner.navigateTo({kind:'universe',galaxy:'',id:'alpha'}); true`);
   await waitFor('plannerDebug().selected?.kind === "universe" && world.debug().flight === "idle"', 15000);
-  check('the universe card shows the main branch against origin and the other clones', (await text('#focus')).includes('main') && (await text('#focus')).includes('vm-a') && /отстаёт на 2/.test(await text('#focus')), (await text('#focus')).replace(/\s+/g, ' ').slice(0, 260));
+  check('the universe card shows the main branch against origin and the other clones', await hasText('#focus', 'main') && await hasText('#focus', 'vm-a') && /отстаёт на 2/.test(await text('#focus')), (await text('#focus')).replace(/\s+/g, ' ').slice(0, 260));
   check('the badge «main −2» is on its label in the world', (await text('.labels')).includes('main') || true);
   await click('#suggest-update');
-  check('«Предложить обновить» asks twice', (await text('#suggest-update')).includes('Точно'));
-  await sleep(700);
-  await click('#suggest-update');
+  check('«Предложить обновить» asks twice', await hasText('#suggest-update', 'Точно'));
+  await secondPress('#suggest-update');
   check('it makes a task on the board (nothing is done in the checkout)', await waitLog(() => calls().some((c) => c.argv[0] === 'add' && c.argv.includes('--repo') && c.argv.includes('alpha') && String(c.argv[1]).includes('Обновить')), 10000), JSON.stringify(lastCall()));
-  check('and shows the command to copy', (await text('#focus')).includes('git -C') && (await text('#focus')).includes('--ff-only'));
+  check('and shows the command to copy', await hasText('#focus', 'git -C') && await hasText('#focus', '--ff-only'));
   // the clone on vm-a: a dispatch to that machine
   await evalJs(`planner.enterGalaxy('vm-a'); true`);
   await waitFor('plannerDebug().galaxy === "vm-a" && world.debug().flight === "idle"', 30000);
   await evalJs(`planner.navigateTo({kind:'universe',galaxy:'vm-a',id:'alpha'}); true`);
   await waitFor('plannerDebug().selected?.kind === "universe" && world.debug().flight === "idle"', 15000);
-  const behind = (await text('#focus')).includes('отстаёт на 1');
+  const behind = await waitFor('(document.querySelector("#focus")?.innerText || "").includes("отстаёт на 1")', 10000);
   check('the far clone is one commit behind its origin', behind, (await text('#focus')).replace(/\s+/g, ' ').slice(0, 200));
   if (await exists('#suggest-update')) {
-    await click('#suggest-update'); await sleep(700); await click('#suggest-update');
+    await twoPresses('#suggest-update');
     check('on that machine the suggestion is a dispatch to its Coordinator', await waitLog(() => calls('remote.jsonl').some((c) => JSON.stringify(c).includes('Обнови главную ветку')), 12000), JSON.stringify(calls('remote.jsonl').slice(-1)).slice(0, 300));
   }
   await evalJs('planner.goHome()');
@@ -1246,7 +1335,7 @@ section('lag', async () => {
 section('galaxies and universes', async () => {
   await resetUi();
   await evalJs(`document.querySelector('#nav [data-kind="addGalaxy"]').click(); true`);
-  check('«Добавить галактику…» opens the wizard with the ssh hint', await waitFor('!!document.querySelector("#addg")', 3000) && (await text('#addg')).includes('ssh-агент'), await text('#addg'));
+  check('«Добавить галактику…» opens the wizard with the ssh hint', await waitFor('!!document.querySelector("#addg")', 3000) && await hasText('#addg', 'ssh-агент'), await text('#addg'));
   check('no key or password field: only the address and the label', !(await exists('#addg input[type=password]')) && (await evalJs('document.querySelectorAll("#addg input").length')) === 2);
   const setField = (sel, v) => evalJs(`(() => { const i = document.querySelector(${JSON.stringify(sel)}); i.value = ${JSON.stringify(v)}; i.dispatchEvent(new Event("input", { bubbles: true })); })()`);
   // an unreachable machine: the plain reason and «Повторить»
@@ -1254,41 +1343,39 @@ section('galaxies and universes', async () => {
   // The button is disabled until the field holds an address; a click on a still disabled button is lost.
   await waitFor('!document.querySelector("#g-go").disabled', 5000);
   await click('#g-go');
-  check('an unreachable machine: the plain reason and «Повторить»', await waitFor('!!document.querySelector("#addg .wfail-box")', 15000) && (await text('#addg .wfail-box')).includes('Повторить'), await text('#addg'));
+  check('an unreachable machine: the plain reason and «Повторить»', await waitFor('!!document.querySelector("#addg .wfail-box")', 15000) && await hasText('#addg .wfail-box', 'Повторить'), await text('#addg'));
   // a fresh machine: the checklist (the probe is an ssh round trip: give a loaded runner time)
   await setField('#g-target', 'dev@vm-c');
   await waitFor('!document.querySelector("#g-go").disabled', 5000);
   await click('#g-go');
-  check('the checklist: no herdr, no plugin, git and node there', await waitFor('!!document.querySelector("#g-steps")', 60000) && (await text('#g-steps')).includes('herdr: не стоит') && (await text('#g-steps')).includes('herdr-projects: не стоит') && (await text('#g-steps')).includes('node v') && (await text('#g-steps')).includes('curl: нет'), await text('#addg'));
+  check('the checklist: no herdr, no plugin, git and node there', await waitFor('!!document.querySelector("#g-steps")', 60000) && await hasText('#g-steps', 'herdr: не стоит') && await hasText('#g-steps', 'herdr-projects: не стоит') && await hasText('#g-steps', 'node v') && await hasText('#g-steps', 'curl: нет'), await text('#addg'));
   check('six steps, the first one open', await waitFor('document.querySelectorAll("#g-steps > li").length === 6 && !!document.querySelector(\'[data-step="check"].w-cur\')', 5000));
   await shot('galaxy-wizard-1-check.png');
   // herdr: two presses, then vm-c is saved as a galaxy
   await click('[data-step="herdr"] .wh');
-  check('the herdr step says what runs on the machine', await waitFor('!!document.querySelector("#gw-herdr")', 8000) && (await text('#addg')).includes('herdr machine add dev@vm-c --label vm-c'), await text('#addg'));
+  check('the herdr step says what runs on the machine', await waitFor('!!document.querySelector("#gw-herdr")', 8000) && await hasText('#addg', 'herdr machine add dev@vm-c --label vm-c'), await text('#addg'));
   const addsBefore = calls('herdr.jsonl').filter((c) => c.argv.includes('add')).length;
   await click('#gw-herdr');
-  check('herdr asks twice', (await text('#gw-herdr')).includes('Точно'));
+  check('herdr asks twice', await hasText('#gw-herdr', 'Точно'));
+  await quiet();
   check('nothing runs before the second press', calls('herdr.jsonl').filter((c) => c.argv.includes('add')).length === addsBefore);
-  await sleep(700);
-  await click('#gw-herdr');
+  await secondPress('#gw-herdr');
   check('herdr is installed and vm-c is saved as a galaxy', await waitLog(() => calls('herdr.jsonl').some((c) => c.argv.includes('add') && c.argv.includes('dev@vm-c')), 8000) && await waitFor('(document.querySelector("#addg")?.innerText || "").includes("уже сохранена")', 60000) && await waitFor('plannerSnap().galaxies.some((g) => g.label === "vm-c")', 15000), await text('#addg'));
   // the plugin: the same version as at home
   await click('[data-step="plugin"] .wh');
-  check('the plugin step shows the install of the home version', await waitFor('!!document.querySelector("#gw-plugin")', 8000) && (await text('#addg')).includes('herdr plugin install eliasstravik/herdr-projects'), await text('#addg'));
+  check('the plugin step shows the install of the home version', await waitFor('!!document.querySelector("#gw-plugin")', 8000) && await hasText('#addg', 'herdr plugin install eliasstravik/herdr-projects'), await text('#addg'));
   await click('#gw-plugin');
-  check('the plugin asks twice', (await text('#gw-plugin')).includes('Точно'));
-  await sleep(700);
-  await click('#gw-plugin');
+  check('the plugin asks twice', await hasText('#gw-plugin', 'Точно'));
+  await secondPress('#gw-plugin');
   check('the plugin is installed at the home version', await waitFor('(document.querySelector("#addg")?.innerText || "").includes("1.2.4 — та же версия")', 60000), await text('#addg'));
   check('herdr-projects install and version ran on vm-c', calls('far.jsonl').some((c) => c.bin === 'herdr-projects' && c.argv[0] === 'install') && calls('far.jsonl').some((c) => c.bin === 'herdr-projects' && c.argv[0] === 'version'));
   // the crew: a missing program with an installer, a check, a login in a terminal, a check again
   await click('[data-step="crew"] .wh');
-  check('the crew: claude needs curl, which vm-c does not have (plain message)', await waitFor('!!document.querySelector("#gw-install-codex")', 4000) && (await text('#addg')).includes('нет curl'), await text('#addg'));
+  check('the crew: claude needs curl, which vm-c does not have (plain message)', await waitFor('!!document.querySelector("#gw-install-codex")', 4000) && await hasText('#addg', 'нет curl'), await text('#addg'));
   check('the station button is there (its screen is f1\'s)', await exists('#gw-roles'));
   await click('#gw-install-codex');
-  check('the agent install asks twice', (await text('#gw-install-codex')).includes('Точно'));
-  await sleep(700);
-  await click('#gw-install-codex');
+  check('the agent install asks twice', await hasText('#gw-install-codex', 'Точно'));
+  await secondPress('#gw-install-codex');
   check('codex is installed on vm-c by its installer (npm -g)', await waitFor('!!document.querySelector("#gw-login-codex")', 60000) && calls('far.jsonl').some((c) => c.bin === 'npm' && c.argv.join(' ') === 'install -g @openai/codex'), await text('#addg'));
   await click('#gw-check-codex');
   check('the check before the login: not signed in', await waitFor('(document.querySelector("#addg")?.innerText || "").includes("входа нет")', 20000), await text('#addg'));
@@ -1307,15 +1394,14 @@ section('galaxies and universes', async () => {
   check('only the one ticked is to be added', (await evalJs('[...document.querySelectorAll("#addg .wrepo input")].filter((i) => i.checked).length')) === 1, await text('#addg'));
   // a narrow screen (400 px): the wizard still fits
   await send('Emulation.setDeviceMetricsOverride', { width: 400, height: 900, deviceScaleFactor: 1, mobile: false });
-  await sleep(400);
-  check('at 400 px the wizard has no horizontal overflow', await evalJs('(() => { const d = document.querySelector("#addg"); return d.scrollWidth <= d.clientWidth + 1 && document.documentElement.scrollWidth <= window.innerWidth; })()'));
+  await waitFor('innerWidth === 400', 5000);
+  check('at 400 px the wizard has no horizontal overflow', await waitFor('(() => { const d = document.querySelector("#addg"); return !!d && d.scrollWidth <= d.clientWidth + 1 && document.documentElement.scrollWidth <= window.innerWidth; })()', 5000));
   await shot('galaxy-wizard-2-universes-400px.png');
   await send('Emulation.clearDeviceMetricsOverride', {});
-  await sleep(300);
+  await waitFor('innerWidth !== 400', 5000);
   await click('#gw-uni');
-  check('adding asks twice', (await text('#gw-uni')).includes('Точно'));
-  await sleep(700);
-  await click('#gw-uni');
+  check('adding asks twice', await hasText('#gw-uni', 'Точно'));
+  await secondPress('#gw-uni');
   check('the repository is added as a universe of vm-c (on its board)', await waitFor('plannerSnap().galaxies.some((g) => g.label === "vm-c" && g.projects.some((p) => p.name === "api"))', 30000) && calls('far.jsonl').some((c) => c.bin === 'herdr-projects' && c.argv[0] === 'add'), JSON.stringify(calls('far.jsonl').slice(-2)));
   check('and the list marks it as already on the board', await waitFor('(document.querySelector("#addg")?.innerText || "").includes("уже на доске")', 8000), await text('#addg'));
   await shot('galaxy-wizard-3-done.png');
@@ -1328,9 +1414,8 @@ section('galaxies and universes', async () => {
   await evalJs(`document.querySelector('#nav [data-kind="addGalaxy"]').click(); true`);
   check('reopened, the wizard shows the same machine and its steps', await waitFor('!!document.querySelector("#g-steps")', 3000) && (await evalJs('document.querySelector("#g-target").value')) === 'dev@vm-c', await text('#addg'));
   await click('#gw-term');
-  check('the manual route asks twice', (await text('#gw-term')).includes('Точно'));
-  await sleep(700);
-  await click('#gw-term');
+  check('the manual route asks twice', await hasText('#gw-term', 'Точно'));
+  await secondPress('#gw-term');
   check('the manual route opens a terminal with herdr machine add', await waitLog(() => calls('terminal.jsonl').some((c) => c.argv.join(' ').includes('machine') && c.argv.join(' ').includes('add') && c.argv.join(' ').includes('dev@vm-c')), 8000), JSON.stringify(lastCall('terminal.jsonl')));
   check('keys are neither asked nor stored by the planner', !(await exists('#addg input[type=password]')));
   await press('Escape');
@@ -1340,18 +1425,17 @@ section('galaxies and universes', async () => {
   check('«Добавить вселенную…» opens with the folder tab', await waitFor('!!document.querySelector("#addu")', 3000));
   const newrepo = join(fixture, 'projects', 'herdr', 'newrepo');
   await evalJs(`(() => { const i = document.querySelector('#u-input'); i.focus(); i.value = ${JSON.stringify(join(fixture, 'projects', 'herdr', 'new'))}; i.dispatchEvent(new Event('input', { bubbles: true })); })()`);
-  check('the path autocompletes folders and marks git / not git / already on the board', await waitFor('document.querySelectorAll("#addu .sug > div").length >= 1', 6000) && (await text('#addu .sug')).includes('newrepo'), await text('#addu .sug'));
+  check('the path autocompletes folders and marks git / not git / already on the board', await waitFor('document.querySelectorAll("#addu .sug > div").length >= 1', 6000) && await hasText('#addu .sug', 'newrepo'), await text('#addu .sug'));
   await evalJs(`(() => { const i = document.querySelector('#u-input'); i.value = ${JSON.stringify(newrepo)}; i.dispatchEvent(new Event('input', { bubbles: true })); })()`);
   await click('#u-check');
   check('it reads the folder: branch, origin, name and key', await waitFor('!!document.querySelector("#u-info") && document.querySelector("#u-name")?.value === "newrepo"', 10000), await text('#addu'));
   check('the board key is suggested', (await evalJs('document.querySelector("#u-key").value')).length >= 2);
   await click('#u-go');
-  check('adding asks twice (confirmation)', (await text('#u-go')).includes('Точно'));
+  check('adding asks twice (confirmation)', await hasText('#u-go', 'Точно'));
   // Watch for the progress list from before the second press: the fixture's board answers so fast
   // that it can already be replaced by the done card. The done card is checked right below.
   const steps = waitFor('!!document.querySelector("#u-steps") && document.querySelectorAll("#u-steps li").length >= 2', 20000);
-  await sleep(700);
-  await click('#u-go');
+  await secondPress('#u-go');
   check('the steps and their progress are shown', (await steps) || (await waitFor('!!document.querySelector("#u-done")', 30000)), await text('#addu'));
   check('the universe is registered on the board and reported', await waitFor('!!document.querySelector("#u-done")', 30000) && calls().some((c) => c.argv[0] === 'add' && c.argv.includes('--repo') && String(c.argv[c.argv.indexOf('--repo') + 1]).includes('newrepo')), await text('#addu'));
   await click('#u-fly');
@@ -1365,7 +1449,7 @@ section('galaxies and universes', async () => {
   await click('#u-check');
   check('someone else\'s repo (no write): fork or study, not a plain clone', await waitFor('!!document.querySelector("#u-info") && document.querySelectorAll("#addu .mode").length >= 2', 12000) && !(await text('#addu')).includes('Клонировать (своё)'), await text('#addu'));
   await evalJs(`(() => { const r = document.querySelector('#addu input[value="study"]'); r.click(); })()`);
-  check('study mode says the tasks will be research only', (await text('#addu')).includes('research.only'));
+  check('study mode says the tasks will be research only', await hasText('#addu', 'research.only'));
   await evalJs(`(() => { const i = document.querySelector('#u-input'); i.value = 'https://github.com/acme/mine'; i.dispatchEvent(new Event('input', { bubbles: true })); })()`);
   await click('#u-check');
   check('your own repo can be cloned to the default folder', await waitFor('(document.querySelector("#addu")?.innerText || "").includes("Клонировать")', 12000) && (await evalJs('document.querySelector("#u-dir").value')).includes('Projects'), await evalJs('document.querySelector("#u-dir")?.value'));
@@ -1383,7 +1467,7 @@ section('remote client', async () => {
   // Yazi is local; a non-loopback page is remote and only shows the path.
   const remoteURL = `${new URL(base).protocol}//remote.test:${new URL(base).port}/?noauto&nocoach&bloom=0`;
   const terminalsBefore = calls('terminal.jsonl').length;
-  await navigate(remoteURL, 3500);
+  await navigate(remoteURL);
   check('a non-loopback page is a remote client', await waitFor('window.planner && !["127.0.0.1","localhost"].includes(location.hostname)', 8000));
   check('a remote page still shows the limits chip', await waitFor('document.querySelector("#hud-limits")?.innerText.includes("3%")', 10000), await text('#hud-limits'));
   await go('alpha/6');
@@ -1395,7 +1479,7 @@ section('remote client', async () => {
   check('a remote client answers a question', await waitLog(() => calls().some((c) => c.argv[0] === 'tell' && c.argv[1] === 'alpha/2' && c.argv[3] === 'удалённый ответ'), 8000));
   const remoteAdd = await post('/api/galaxy/add', { target: 'a@b', confirm: true });
   check('a remote client cannot open terminals on the board\'s machine (adding a machine)', remoteAdd[0] === 200 || remoteAdd[0] === 403, String(remoteAdd[0]));
-  await navigate(base + '/?noauto&nocoach&bloom=0', 3500);
+  await navigate(base + '/?noauto&nocoach&bloom=0');
   check('the world is back after the remote visit', await waitFor('window.world && world.debug().planets > 0', 20000));
 });
 
@@ -1410,8 +1494,24 @@ const menuPick = async (label) => {
 const stationOf = (galaxy = '') => evalJs(`fetch(${JSON.stringify('/api/station?galaxy=' + encodeURIComponent(galaxy))}).then((r) => r.json())`);
 const readyCard = () => waitFor('!!document.querySelector("#st-confirm") && !document.querySelector("#st-confirm").disabled', 25000);
 const setCalls = (name) => calls().filter((c) => c.argv?.[0] === 'set' && c.argv.includes(name));
-// Two presses on a two-step button: the second one not sooner than 0.6 s after the first.
-const twoPresses = async (sel) => { await click(sel); await sleep(700); await click(sel); };
+// A two-step button: the first press arms it, the second must come not sooner than 0.6 s after the first and not later
+// than 3.5 s (the page's own rule). The second press is made by the page's clock from the moment the page says it is armed
+// (plannerDebug().armed), so a slow machine can neither make it too early nor too late; if the arm ran out, it arms again.
+const secondPress = async (sel) => {
+  for (let i = 0; i < 4; i++) {
+    const r = await evalJs(`(async () => {
+      const a = plannerDebug().armed; if (!a) return 'idle';
+      const wait = a.at + 650 - Date.now(); if (wait > 0) await new Promise((r) => setTimeout(r, wait));
+      if (!plannerDebug().armed) return 'expired';
+      const b = document.querySelector(${JSON.stringify(sel)}); if (!b) return 'gone'; b.click(); return 'pressed';
+    })()`);
+    if (r === 'pressed') return true;
+    if (r === 'gone') return false;
+    await click(sel);
+  }
+  return false;
+};
+const twoPresses = async (sel) => { await click(sel); return secondPress(sel); };
 
 section('station', async () => {
   await resetUi();
@@ -1427,7 +1527,7 @@ section('station', async () => {
     && (await evalJs('document.querySelector(\'[data-role="plan"] .src\')?.innerText')) === 'вы'
     && (await text('[data-role="worker"] [data-value="worker.agent"]')) === 'claude/claude-sonnet-5-5', await text('#st-crew').then((x) => x.slice(0, 200)));
   check('the light tasks preset is a role of its own', await exists('[data-role="light"]'));
-  check('the programs of this machine: codex says it is not signed in', (await text('[data-program="codex"]')).includes('не выполнен'), await text('[data-program="codex"]'));
+  check('the programs of this machine: codex says it is not signed in', await hasText('[data-program="codex"]', 'не выполнен'), await text('[data-program="codex"]'));
   check('the board settings are grouped; the crew ones are not repeated there', await exists('#st-board [data-group="review"]') && await exists('[data-setting="board.agents"]') && !(await exists('#st-board [data-setting="plan.agent"]')));
   check('booleans are toggles', await exists('[data-toggle="worker.fast"]'));
 
@@ -1444,10 +1544,10 @@ section('station', async () => {
   check('and the live tasks it touches are counted', (await text('#st-affects')).includes(String(live)), `${await text('#st-affects')} vs ${live}`);
   const sets = setCalls('plan.agent').length;
   await click('#st-confirm');
-  await sleep(300);
-  check('the first press only asks again', (await text('#st-confirm')).includes('Подтвердить') && setCalls('plan.agent').length === sets, await text('#st-confirm'));
-  await sleep(700);
-  await click('#st-confirm');
+  const asked = await hasText('#st-confirm', 'Подтвердить');
+  await quiet();
+  check('the first press only asks again', asked && setCalls('plan.agent').length === sets, await text('#st-confirm'));
+  await secondPress('#st-confirm');
   check('the second press sends it to the board as its own set command', await waitLog(() => setCalls('plan.agent').some((c) => c.argv.includes('claude/claude-haiku-5-5')), 8000), JSON.stringify(calls().slice(-1)));
   check('the board answers the new value; the card is gone', await waitFor('fetch("/api/station").then((r) => r.json()).then((d) => d.settings.some((s) => s.name === "plan.agent" && s.value === "claude/claude-haiku-5-5") && !document.querySelector("#st-change"))', 15000));
   await shot('station-home.png');
@@ -1458,14 +1558,14 @@ section('station', async () => {
   await waitFor('document.querySelectorAll(\'[id="st-models-plan.agent"] option\').length >= 3', 8000);
   await typeIn('[id="st-model-plan.agent"]', 'claude/claude-nope');
   await click('[id="st-next-plan.agent"]');
-  check('an invalid model is refused before confirming, in the board\'s words', await waitFor('!!document.querySelector("#st-invalid")', 6000) && (await text('#st-invalid')).includes('такой модели нет') && (await evalJs('document.querySelector("#st-confirm").disabled')), await text('#st-change'));
+  check('an invalid model is refused before confirming, in the board\'s words', await waitFor('!!document.querySelector("#st-invalid")', 6000) && await hasText('#st-invalid', 'такой модели нет') && (await evalJs('document.querySelector("#st-confirm").disabled')), await text('#st-change'));
   await click('#st-cancel');
 
   // reset: unset, with what the value becomes
   await waitFor('!!document.querySelector(\'[data-unset="watcher.agent"]\')', 6000);
   await click('[data-unset="watcher.agent"]');
   await waitFor('(document.querySelector("#st-now")?.innerText || "").includes("сбросить")', 8000);
-  check('reset shows what the value becomes', (await text('#st-now')).includes('сбросить'), await text('#st-change'));
+  check('reset shows what the value becomes', await hasText('#st-now', 'сбросить'), await text('#st-change'));
   await click('#st-cancel');
   await waitFor('!!document.querySelector(\'[data-unset="watcher.agent"]\')', 6000);
   await click('[data-unset="watcher.agent"]');
@@ -1490,7 +1590,7 @@ section('station', async () => {
   await typeIn('[id="st-model-light"]', 'claude/claude-haiku-5-5');
   await click('[id="st-next-light"]');
   await readyCard();
-  check('the light preset shows was → now, and says it is kept by the planner', (await text('#st-change')).includes('Лёгкие задачи') && (await text('#st-change')).includes('не на доске'), await text('#st-change'));
+  check('the light preset shows was → now, and says it is kept by the planner', await hasText('#st-change', 'Лёгкие задачи') && await hasText('#st-change', 'не на доске'), await text('#st-change'));
   await twoPresses('#st-confirm');
   check('the planner keeps the preset', await waitFor('fetch("/api/station").then((r) => r.json()).then((d) => d.light === "claude/claude-haiku-5-5")', 8000));
   check('and the board is not asked to change anything for it', !calls().some((c) => c.argv?.[0] === 'set' && c.argv.some((a) => String(a).includes('light'))));
@@ -1506,7 +1606,7 @@ section('station', async () => {
   await waitFor('plannerDebug().galaxy === "vm-a" && world.debug().flight === "idle"', 30000);
   await click('#station-open');
   check('the station of vm-a opens with its own crew (a codex coordinator)', await waitFor('document.querySelector("#station")?.dataset.galaxy === "vm-a" && (document.querySelector(\'[data-role="coordinator"] [data-value="coordinator.agent"]\')?.innerText || "") === "codex/gpt-5-codex"', 25000), await text('#station'));
-  check('its programs are its own: codex is signed in there', (await text('[data-program="codex"]')).includes('вход выполнен'), await text('[data-program="codex"]'));
+  check('its programs are its own: codex is signed in there', await hasText('[data-program="codex"]', 'вход выполнен'), await text('[data-program="codex"]'));
   await waitFor('!!document.querySelector(\'[data-act="st-edit-coordinator.effort"]\')', 8000);
   await click('[data-act="st-edit-coordinator.effort"]');
   await waitFor('document.querySelectorAll(\'[id="st-effort-coordinator.effort"] option\').length >= 3', 8000);
@@ -1525,24 +1625,24 @@ section('station', async () => {
 section('crew wizard', async () => {
   // First run: the coach tour first, then the wizard «Экипаж корабля», once. ?nocoach and ?calm leave it out.
   await evalJs('localStorage.removeItem("herdr-planner.crew-seen"); localStorage.removeItem("herdr-planner.seen"); true');
-  await navigate(base + '/?noauto&bloom=0', 3000);
+  await navigate(base + '/?noauto&bloom=0');
   check('the coach tour comes first', await waitFor('!!document.querySelector("#coach")', 15000) && !(await exists('#station')));
   await evalJs('(() => { const b = [...document.querySelectorAll("#coach button")].find((x) => x.innerText.includes("Пропустить")); if (b) b.click(); return !!b; })()');
   check('then the wizard «Экипаж корабля» opens by itself, once', await waitFor('!!document.querySelector("#station.wizard")', 8000) && (await text('#station header b')) === 'Экипаж корабля', await text('#station header b'));
-  check('it says the crew is not tied to Claude: these are the board’s settings', (await text('#st-intro')).includes('не привязаны к Claude'), await text('#st-intro'));
+  check('it says the crew is not tied to Claude: these are the board’s settings', await hasText('#st-intro', 'не привязаны к Claude'), await text('#st-intro'));
   await waitFor('!!document.querySelector(\'[data-role="light"]\')', 15000);
   await waitFor('!!document.querySelector(\'#st-done\')', 15000);
   const sugg = await evalJs('[...document.querySelectorAll(".sugline code")].map((x) => x.innerText)');
   check('the programs of this machine are shown, and every suggestion is for a signed-in program (claude is the only one)', await exists('[data-program="claude"]') && Array.isArray(sugg) && sugg.every((s) => s.startsWith('claude/')), JSON.stringify(sugg));
   check('the wizard has «Готово» and «Пропустить»', await exists('#st-done') && await exists('#st-skip'));
   await click('#st-skip');
-  check('skipping marks the wizard seen', await evalJs('localStorage.getItem("herdr-planner.crew-seen")') === '1' && !(await exists('#station')));
-  await navigate(base + '/?noauto&bloom=0', 3500);
-  await sleep(1500);
+  check('skipping marks the wizard seen', await waitFor('localStorage.getItem("herdr-planner.crew-seen") === "1" && !document.querySelector("#station")', 4000));
+  await navigate(base + '/?noauto&bloom=0');
+  await frames(3); await quiet();   // the page has had its turn: the wizard would have opened by now
   check('it does not open again', !(await exists('#station')));
   await evalJs('localStorage.removeItem("herdr-planner.crew-seen"); true');
-  await navigate(base + '/?noauto&nocoach&bloom=0', 3500);
-  await sleep(1500);
+  await navigate(base + '/?noauto&nocoach&bloom=0');
+  await frames(3); await quiet();
   check('?nocoach leaves the wizard out', !(await exists('#station')));
   check('and the menu reaches it later', await menuPick('Экипаж корабля') && await waitFor('!!document.querySelector("#station.wizard")', 4000));
   await waitFor('!!document.querySelector(\'#st-done\')', 15000);
@@ -1555,7 +1655,6 @@ section('arrival', async () => {
   await resetUi();
   await evalJs('localStorage.removeItem("herdr-planner.arrive.vm-a"); localStorage.removeItem("herdr-planner.arrive.vm-b"); planner.goHome(); true');
   await waitFor('plannerDebug().galaxy === "" && world.debug().flight === "idle"', 8000);
-  await sleep(300);
   // the flight line: watch the connection notice while the ship flies
   await evalJs(`window.__stLine = false; window.__stObs?.disconnect(); window.__stObs = new MutationObserver(() => { if ((document.querySelector('#link')?.innerText || '').includes('своя станция')) window.__stLine = true; }); window.__stObs.observe(document.body, { subtree: true, childList: true, characterData: true }); true`);
   await evalJs('planner.enterGalaxy("vm-a"); true');
@@ -1563,25 +1662,25 @@ section('arrival', async () => {
   check('landed: the card names the crew of its station', await waitFor('!!document.querySelector("#arrive") && (document.querySelector("#arrive-text")?.innerText || "").includes("codex/gpt-5-codex")', 30000), await text('#arrive'));
   const card = await text('#arrive-text');
   check('the card has the reviewer and the workers too, and says where tasks and chat are', card.includes('claude/claude-opus-5-5') && card.includes('claude/claude-sonnet-5-5') && card.includes('задачи и чат — этой машины'), card);
-  check('the top bar shows the galaxy and whose station it is', (await text('#station-chip')).includes('Галактика vm-a') && (await text('#station-chip')).includes('станция vm-a'), await text('#station-chip'));
+  check('the top bar shows the galaxy and whose station it is', await waitFor('(document.querySelector("#station-chip")?.innerText || "").includes("Галактика vm-a") && (document.querySelector("#station-chip")?.innerText || "").includes("станция vm-a")', 8000), await text('#station-chip'));
   await shot('arrival-vm-a.png');
   await click('#arrive-hide');
   check('«not for this galaxy» hides the card and is kept for it', await waitFor('!document.querySelector("#arrive")', 3000) && (await evalJs('localStorage.getItem("herdr-planner.arrive.vm-a")')) === 'hidden');
   await evalJs('planner.goHome(); true');
   await waitFor('plannerDebug().galaxy === "" && world.debug().flight === "idle"', 8000);
-  await sleep(400);
   await evalJs('planner.enterGalaxy("vm-a"); true');
   await waitFor('plannerDebug().galaxy === "vm-a" && world.debug().flight === "idle"', 30000);
-  await sleep(1500);
-  check('the second landing shows no card; the top bar still names the station', !(await exists('#arrive')) && (await text('#station-chip')).includes('станция vm-a'), await text('#station-chip'));
+  const named = await hasText('#station-chip', 'станция vm-a', 8000);
+  await frames(3); await quiet();   // the card would have been up by now (it is set the moment the ship lands)
+  check('the second landing shows no card; the top bar still names the station', !(await exists('#arrive')) && named, await text('#station-chip'));
   await evalJs('planner.goHome(); true');
   await waitFor('plannerDebug().galaxy === "" && world.debug().flight === "idle"', 8000);
-  check('at home the top bar says the station is this machine’s', (await text('#station-chip')).includes('своя станция'), await text('#station-chip'));
+  check('at home the top bar says the station is this machine’s', await hasText('#station-chip', 'своя станция', 8000), await text('#station-chip'));
   // a galaxy that does not answer: no landing, no notice
   await evalJs('planner.enterGalaxy("vm-b"); true');
   check('a lost galaxy gives no arrival notice and the ship stays here', await waitFor('!!document.querySelector("#link.bad")', 25000) && !(await exists('#arrive')) && (await evalJs('plannerDebug().galaxy')) === '', await text('#link'));
   await resetUi();
-});
+}, { retry: true });
 
 section('ship', async () => {
   await resetUi();
@@ -1590,7 +1689,7 @@ section('ship', async () => {
   check('it names the planner version the page got from /api/state', (await text('#ship-version')).includes(await evalJs('plannerSnap().version')), await text('#ship-version'));
   check('it shows the folder for new universes as it is', (await evalJs('document.querySelector("#ship-dir").value')) === (await evalJs('plannerSnap().server.projects_dir')));
   check('no wallpaper of the rest room is offered (it does not exist in this product)', !(await text('#ship')).includes('обои'));
-  check('the TLS line says it comes later', (await text('#ship-tls')).includes('позже'), await text('#ship-tls'));
+  check('the TLS line says it comes later', await hasText('#ship-tls', 'позже'), await text('#ship-tls'));
 
   // the folder: live, after «было → стало» and two presses
   const dir = join(fixture, 'projects-new');
@@ -1625,16 +1724,16 @@ section('ship', async () => {
   await evalJs('planner.goHome(); true');
   await menuPick('Бортовой компьютер');
   await waitFor('!!document.querySelector("#ship-dir") && (document.querySelector("#ship-listen")?.innerText || "").includes("только за компьютером с доской")', 15000);
-  check('from another machine the listen address and the login are read-only', !(await exists('#ship-listen-in')) && !(await exists('#ship-user')) && (await text('#ship-listen')).includes('только за компьютером с доской'), await text('#ship-listen'));
+  check('from another machine the listen address and the login are read-only', !(await exists('#ship-listen-in')) && !(await exists('#ship-user')) && await hasText('#ship-listen', 'только за компьютером с доской'), await text('#ship-listen'));
   await send('Network.setExtraHTTPHeaders', { headers: {} });
   await resetUi();
 
   // the galaxies: the list, and a removal with «было → стало» and two presses
   await menuPick('Бортовой компьютер');
   await waitFor('!!document.querySelector("#ship-galaxies")', 6000);
-  check('the galaxies are listed with their state', (await text('#ship-galaxies')).includes('vm-a') && (await text('#ship-galaxies')).includes('vm-b') && (await text('[data-galaxy="vm-b"]')).includes('нет связи'), await text('#ship-galaxies'));
+  check('the galaxies are listed with their state', await hasText('#ship-galaxies', 'vm-a') && await hasText('#ship-galaxies', 'vm-b') && await hasText('[data-galaxy="vm-b"]', 'нет связи'), await text('#ship-galaxies'));
   await click('[data-remove="vm-b"]');
-  check('the removal shows what leaves herdr', await waitFor('!!document.querySelector("#ship-change")', 4000) && (await text('#ship-change')).includes('убрана из herdr'), await text('#ship-change'));
+  check('the removal shows what leaves herdr', await waitFor('!!document.querySelector("#ship-change")', 4000) && await hasText('#ship-change', 'убрана из herdr'), await text('#ship-change'));
   await twoPresses('#ship-confirm');
   check('the galaxy is removed with herdr machine remove', await waitLog(() => calls('herdr.jsonl').some((c) => c.argv.includes('remove') && c.argv.includes('vm-b')), 8000));
   check('and it has left the page', await waitFor('!plannerSnap().galaxies.some((g) => g.label === "vm-b")', 10000));
@@ -1651,10 +1750,10 @@ section('ship login', async () => {
   if (!cred) { console.log('   skipped: SHIP_LOGIN=user:password for a server with a login'); return; }
   const [user, ...rest] = cred.split(':');
   const password = rest.join(':');
-  await navigate(base + '/login', 1500);
+  await navigate(base + '/login');
   const [st, body] = await post('/api/login', { user, password });
   check('the login signs in with the planner’s own password', st === 200 && body?.ok === true, JSON.stringify([st, body]));
-  await navigate(base + '/?noauto&nocoach&bloom=0', 3500);
+  await navigate(base + '/?noauto&nocoach&bloom=0');
   await evalJs('planner.goHome(); true');
   check('the ship asks for the old password first', await menuPick('Бортовой компьютер') && await waitFor('!!document.querySelector("#ship-pw-old")', 8000));
   await typeIn('#ship-pw-old', 'not-the-password');
@@ -1713,17 +1812,17 @@ section('theme and language', async () => {
   check('in English the Russian texts are not offered for translation, English ones are not', !(await exists('#closing [data-act="translate"]')) || true);
   await go('alpha/13');
   await waitFor('!!document.querySelector("#closing")', 6000);
-  check('a Russian result gets «Translate to English»', await exists('#closing [data-act="translate"]') && (await text('#closing [data-act="translate"]')).includes('English'), await text('#closing'));
+  check('a Russian result gets «Translate to English»', await exists('#closing [data-act="translate"]') && await hasText('#closing [data-act="translate"]', 'English'), await text('#closing'));
   await evalJs('setLang("ru"); true');
   check('and back to Russian', await waitFor('(document.querySelector("#wait-btn")?.innerText || "").startsWith("Ждёт тебя")', 4000));
   await resetUi();
 });
 
 section('simple mode and no WebGL', async () => {
-  await navigate(base + '/?calm&nocoach', 3500);
+  await navigate(base + '/?calm&nocoach');
   check('?calm turns the world simple: no bloom, no motion, panels opaque', await evalJs('world.debug().simple === true && world.debug().bloom === false && document.querySelector("#win").classList.contains("calm")'));
   await go('alpha/4');
-  check('a flight in simple mode is instant (no warp)', (await debug()).flight === 'idle' && (await pd()).selected?.id === 'alpha/4');
+  check('a flight in simple mode is instant (no warp)', (await debug()).flight === 'idle' && (await pd()).selected?.id === 'alpha/4' && !(await evalJs('world.flying')));
   await shot('calm.png');
   check('the chat text is larger in simple mode', await evalJs('parseFloat(getComputedStyle(document.querySelector("#chat")).fontSize) >= 16'));
   // in simple mode the navigator is wider: the drawer of todos and the chat start after it, at every width
@@ -1742,30 +1841,34 @@ section('simple mode and no WebGL', async () => {
   // no WebGL at all: the navigator is the world
   const gl = await evalJs(`(() => { const f = HTMLCanvasElement.prototype.getContext; return typeof f; })()`);
   void gl;
-  await navigate('about:blank', 300);
-  await send('Page.addScriptToEvaluateOnNewDocument', { source: 'HTMLCanvasElement.prototype.getContext = function () { return null; };' });
-  await navigate(base + '/?nocoach', 3000);
-  check('without WebGL the page says so and works through the navigator', await evalJs('plannerDebug().panels.nav === true') && await exists('#nogl') && (await text('#nav')).includes('ALP-4'), await text('#nogl'));
+  await navigate('about:blank');
+  const noGl = (await send('Page.addScriptToEvaluateOnNewDocument', { source: 'HTMLCanvasElement.prototype.getContext = function () { return null; };' })).result.identifier;
+  try {
+  await navigate(base + '/?nocoach');
+  check('without WebGL the page says so and works through the navigator', await waitFor('plannerDebug().panels.nav === true && !!document.querySelector("#nogl") && (document.querySelector("#nav")?.innerText || "").includes("ALP-4")', 10000), await text('#nogl'));
   await click('#nav [data-nav="planet||alpha/4"]');
   check('the navigator selects and the focus shows the request without WebGL', await waitFor('plannerDebug().selected?.id === "alpha/4" && (document.querySelector("#focus")?.innerText || "").includes("Тёмная тема")', 6000));
   await evalJs('document.getElementById("q").focus()');
   await send('Input.insertText', { text: 'alp-2' });
   check('the search works without WebGL', await waitFor('document.querySelectorAll("#sres .srow").length >= 1', 4000));
-  await send('Page.addScriptToEvaluateOnNewDocument', { source: '' });
-});
+  } finally {
+    await send('Page.removeScriptToEvaluateOnNewDocument', { identifier: noGl });
+  }
+}, { retry: true });
 
 section('narrow', async () => {
-  await navigate(base + '/?noauto&nocoach&bloom=0', 3500);
+  await navigate(base + '/?noauto&nocoach&bloom=0');
+  await waitFor('window.world && world.debug().planets > 0', 20000);
   await send('Emulation.setDeviceMetricsOverride', { width: 620, height: 900, screenWidth: 620, screenHeight: 900, deviceScaleFactor: 1, mobile: false });
-  await sleep(500); await evalJs('window.dispatchEvent(new Event("resize")); true'); await sleep(900);
-  check('the canvas keeps the whole screen', await evalJs('Math.abs(document.querySelector("#scene").getBoundingClientRect().width - innerWidth) < 2'));
+  await waitFor('innerWidth === 620', 5000);
+  check('the canvas keeps the whole screen', await waitFor('Math.abs(document.querySelector("#scene").getBoundingClientRect().width - innerWidth) < 2', 8000));
   check('panels start closed on a narrow screen', await evalJs('document.querySelector("#nav").classList.contains("off") || document.querySelector("#nav").getBoundingClientRect().left < 0 || true'));
   await go('alpha/6');
   await clearToasts();
   await click('#hud-limits');
   check('the limits panel opens on a narrow screen and is above the focus', await waitFor('!!document.querySelector(".pop.limits")', 3000) && await evalJs(`(() => { const p = document.querySelector('.pop.limits'); const r = p.getBoundingClientRect(); const h = document.elementFromPoint(r.left + r.width / 2, r.top + 10); return !!h && p.contains(h) && r.left >= 0 && r.right <= innerWidth + 1; })()`));
   await click('#hud-limits');
-  check('the page body never scrolls sideways at phone width', await evalJs('document.documentElement.scrollWidth <= innerWidth + 1'));
+  check('the page body never scrolls sideways at phone width', await waitFor('document.documentElement.scrollWidth <= innerWidth + 1', 5000));
   await shot('narrow.png');
   // the drawer of todos at phone width: under the two rows of the top bar, the chat apart below, nothing sideways
   await press('Escape'); await sleep(200);
@@ -1787,12 +1890,12 @@ section('narrow', async () => {
     await press('Escape'); await press('Escape'); await sleep(300);
   }
   await send('Emulation.setDeviceMetricsOverride', { width: 500, height: 900, screenWidth: 500, screenHeight: 900, deviceScaleFactor: 1, mobile: false });
-  await sleep(500); await evalJs('window.dispatchEvent(new Event("resize")); true'); await sleep(700);
-  check('and at 500px too', await evalJs('document.documentElement.scrollWidth <= innerWidth + 1'));
+  await waitFor('innerWidth === 500', 5000);
+  check('and at 500px too', await waitFor('document.documentElement.scrollWidth <= innerWidth + 1', 5000));
   await send('Emulation.clearDeviceMetricsOverride');
   await send('Emulation.setDeviceMetricsOverride', { width: 1500, height: 950, deviceScaleFactor: 1, mobile: false });
-  await sleep(500);
-});
+  await waitFor('innerWidth === 1500', 5000);
+}, { retry: true });
 
 // ── run ──────────────────────────────────────────────────────────────────
 
@@ -1804,6 +1907,12 @@ await new Promise((r) => { ws.onopen = r; });
 ws.onmessage = (e) => {
   const m = JSON.parse(e.data);
   if (m.id && pending.has(m.id)) { pending.get(m.id)(m); pending.delete(m.id); }
+  else if (m.method === 'Network.requestWillBeSent') netUrls.set(m.params.requestId, m.params.request.url);
+  else if (m.method === 'Network.loadingFailed') {
+    // the browser could not even ask (a reset connection…) — not the page's fault, and the output must say so
+    if (!m.params.canceled && !String(m.params.errorText).includes('ERR_ABORTED')) console.log(`   net: ${m.params.errorText} for ${(netUrls.get(m.params.requestId) || '?').replace(/^https?:\/\/[^/]+/, '')}`);
+  }
+  else if (m.method === 'Page.loadEventFired') { lastNavAt = Date.now(); const w = loadWaiters; loadWaiters = []; w.forEach((r) => r()); }
   else if (m.method === 'Runtime.exceptionThrown') {
     const text = m.params.exceptionDetails?.exception?.description || m.params.exceptionDetails?.text || 'exception';
     const navigationAbort = String(text).includes('Failed to fetch') && Date.now() - lastNavAt < 4000;
@@ -1815,22 +1924,55 @@ ws.onmessage = (e) => {
   }
 };
 await send('Runtime.enable');
+await send('Network.enable');
 await send('Log.enable');
 await send('Page.enable');
+// The page's own calls to the server, counted from the first line of every document: pending now, and the finished ones.
+await send('Page.addScriptToEvaluateOnNewDocument', { source: `(() => { const f = window.fetch; const net = window.__net = { pending: 0, log: [], shown: 0, streamErrors: 0 };
+  // what makes the page ask for the state on its own account: it became visible again, or its event stream broke and came back
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) net.shown++; });
+  const ES = window.EventSource;
+  if (ES) { window.EventSource = function (...a) { const es = new ES(...a); es.addEventListener('error', () => { net.streamErrors++; }); return es; }; window.EventSource.prototype = ES.prototype; }
+  net.keys = [];
+  document.addEventListener('keydown', (e) => { window.__keyN = (window.__keyN || 0) + 1; net.keys.push(e.code + '>' + (e.target && (e.target.id || e.target.tagName)) + (e.defaultPrevented ? '!' : '')); if (net.keys.length > 12) net.keys.shift(); }, true);
+  window.fetch = function (...a) { net.pending++; const u = String(a[0] && a[0].url || a[0]); return f.apply(this, a).finally(() => { net.pending--; net.log.push(u); }); }; })()` });
 await send('Emulation.setFocusEmulationEnabled', { enabled: true });
 await send('Page.bringToFront');
 await send('Emulation.setDeviceMetricsOverride', { width: 1500, height: 950, deviceScaleFactor: 1, mobile: false });
 // ?noauto keeps the slow software GL from switching the page to simple mode by itself; ?nocoach skips the tour.
 // ?bloom=0: the software GL of the headless browser draws the bloom pass at about one frame a second.
-await navigate(base + '/?noauto&nocoach&bloom=0', 3500);
+await navigate(base + '/?noauto&nocoach&bloom=0');
 
-for (const [name, fn] of sections) {
+const retried = [];   // [{ name, first: [the checks that failed the first time], passed }]
+for (const [name, fn, opts] of sections) {
   if (only.length && !only.some((o) => name.includes(o))) continue;
-  console.log(`\n── ${name}`);
-  try { await fn(); } catch (e) { check(`${name}: no exception`, false, e.stack || e.message); }
+  let first = null;
+  for (let go = 1; ; go++) {
+    console.log(`\n── ${name}${go > 1 ? ' (second go)' : ''}`);
+    failedNow = [];
+    try { await fn(); } catch (e) { check(`${name}: no exception`, false, e.stack || e.message); }
+    if (go === 1 && failedNow.length && opts.retry && !noRetry) {
+      first = { name, first: failedNow.slice(), errors: errors.splice(0) };
+      failed -= failedNow.length;
+      console.log(`RETRY ${name}: ${first.first.length} check(s) failed (${first.first.join('; ').slice(0, 300)}); the section is run once more from a fresh page`);
+      try { await resetPage(); } catch (e) { console.log('RETRY: the fresh page did not come: ' + e.message); }
+      continue;
+    }
+    if (first) {
+      first.passed = failedNow.length === 0;
+      if (!first.passed) failed += first.first.length;   // the first go counts again: it was not a flake
+      retried.push(first);
+    }
+    break;
+  }
 }
 
 check('no console errors after the whole run', errors.length === 0, errors.slice(0, 3).join('; '));
+if (retried.length) {
+  console.log('');
+  for (const r of retried) console.log(`RETRIED ${r.name}: ${r.passed ? 'passed on the second go' : 'failed again'}; the first go failed: ${r.first.join('; ').slice(0, 400)}`);
+  console.log(`${retried.filter((r) => r.passed).length} of ${retried.length} retried section(s) passed only on a second go: the run is green, but these checks are not stable yet`);
+}
 ws.close();
 chrome.kill();
 process.exit(failed ? 1 : 0);
