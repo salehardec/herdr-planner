@@ -504,14 +504,18 @@ section('chat', async () => {
   }, () => calls('coordinator.jsonl').some((c) => c.text === 'Разобрать «Ждёт тебя»'), 8000, '({ buttons: document.querySelector("#cvariants")?.innerText, busy: plannerSnap().coordinator.busy, dialog: !!plannerSnap().coordinator.dialog, pending: !!window.__net.pending })'), JSON.stringify({ variantsBack, buttons: await text('#cvariants'), last: lastCall('coordinator.jsonl') }));
   check('the answer is the Coordinator\'s words, tools left out', !(await text('#clog')).includes('tool_result'));
   await evalJs('document.getElementById("chat-q").value = ""; document.getElementById("chat-q").dispatchEvent(new Event("input", { bubbles: true }))');
-  // send
-  await evalJs('(() => { const t = document.querySelector("#ask-in"); t.focus(); })()');
+  // send: the option above is still on its way to the Coordinator, give it the turn it needs first
+  await quiet();
   const historyCalls = () => evalJs('window.__net.log.filter((u) => u.includes("/api/chat/history?limit=3")).length');
   const historyBefore = await historyCalls();
-  await send('Input.insertText', { text: 'НОВЫЙ ВОПРОС' });
-  await press('Enter');
+  const lookAtChat = '({ bad: window.__net.bad.slice(-4), keys: window.__net.keys.join(" "), box: document.querySelector("#ask-in")?.value, err: document.querySelector("#chat .err")?.innerText, sending: plannerDebug().panels.chat })';
+  const delivered = await untilDone('the message', async () => {
+    await evalJs('(() => { const t = document.querySelector("#ask-in"); t.focus(); t.select(); })()');
+    await send('Input.insertText', { text: 'НОВЫЙ ВОПРОС' });
+    await press('Enter');
+  }, () => calls('coordinator.jsonl').some((c) => c.text === 'НОВЫЙ ВОПРОС'), 8000, lookAtChat);
   check('a sent message shows in the open chat', await waitFor('document.querySelector("#clog").innerText.includes("НОВЫЙ ВОПРОС")', 4000));
-  check('it reached the Coordinator', await waitLog(() => calls('coordinator.jsonl').some((c) => c.text === 'НОВЫЙ ВОПРОС'), 6000), JSON.stringify({ bad: await evalJs('window.__net.bad.slice(-4)'), keys: await evalJs('window.__net.keys.join(" ")'), box: await evalJs('document.querySelector("#ask-in")?.value'), err: await text('#chat .err'), last: lastCall('coordinator.jsonl') }));
+  check('it reached the Coordinator', delivered, JSON.stringify({ look: await evalJs(lookAtChat), last: lastCall('coordinator.jsonl') }));
   // the page looks at the transcript again after 0.8 s and after 2.4 s: the message must have outlived both looks
   await waitFor(`window.__net.log.filter((u) => u.includes("/api/chat/history?limit=3")).length >= ${historyBefore + 2}`, 10000);
   await quiet();
