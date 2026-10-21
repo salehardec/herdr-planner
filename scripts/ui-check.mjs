@@ -226,7 +226,7 @@ section('boot', async () => {
   await navigate(base + '/?noauto&nocoach&bloom=0');
   check('the world starts', await waitFor('window.world && world.debug().planets > 0', 20000));
   check('the page has a title and no console errors', (await evalJs('document.title')).includes('Herdr Planner') && errors.length === 0, errors.slice(0, 2).join('; '));
-  check('the page fills the viewport', await evalJs('Math.abs(document.querySelector("#win").getBoundingClientRect().width - innerWidth) < 2'));
+  check('the page fills the viewport', await waitFor('Math.abs(document.querySelector("#win").getBoundingClientRect().width - innerWidth) < 2'));
   const d0 = await debug();
   check('WebGL is on', d0?.webgl === true, JSON.stringify(d0 && { simple: d0.simple, fps: d0.fps }));
   check('every live task is a planet', d0?.livePlanets === 17, String(d0?.livePlanets));
@@ -234,7 +234,7 @@ section('boot', async () => {
   check('universes are projects, quiet ones marked', d0?.universes === 7 && d0?.quiet === 3, JSON.stringify({ u: d0?.universes, q: d0?.quiet }));
   check('the board dependencies are links', d0?.links.some((l) => l.from === 'alpha/9' && l.to === 'alpha/10') && d0?.links.some((l) => l.from === 'alpha/4' && l.to === 'gamma/1'), JSON.stringify(d0?.links));
   const s = await stateApi();
-  check('the top bar counts the requests', (await text('#wait-btn')).includes(String(s.summary.attention)), `${await text('#wait-btn')} vs ${s.summary.attention}`);
+  check('the top bar counts the requests', await hasText('#wait-btn', String(s.summary.attention)), `${await text('#wait-btn')} vs ${s.summary.attention}`);
   check('the Quasar is the centre and says it waits for the human', await waitFor('world.debug().labels > 0 && (document.querySelector(".labels")?.innerText || "").includes("Квазар")', 15000), (await text('.labels')).slice(0, 80));
   check('the kanban line shows the five stages', (await evalJs('document.querySelectorAll("#kanban [data-stage]").length')) === 5 && await hasText('#kanban', 'План и работа'), await text('#kanban'));
   check('the ship is drawn: the cabin frame is off until something is selected', !(await evalJs('document.querySelector("#cockpit").classList.contains("on")')));
@@ -314,7 +314,7 @@ section('manual', async () => {
   await press('KeyP', 'p');
   check('P switches to manual flight', await waitFor('world.mode === "manual"', 3000) && await exists('#mode [data-mode="manual"].on'));
   check('from the overview the ship is taken inside the Galaxy first (not outside the boundary)', await waitFor('world.debug().flight === "idle"', 15000));
-  check('and is within the boundary', await evalJs('(() => { const s = world.debug().ship; return Math.hypot(s.x, s.y, s.z) < 1200; })()'));
+  check('and is within the boundary', await waitFor('(() => { const s = world.debug().ship; return Math.hypot(s.x, s.y, s.z) < 1200; })()'));
   check('the kanban gives way to the nose of the ship and the cross-hair is shown', await exists('#cross') && (await evalJs('getComputedStyle(document.querySelector("#kanban")).opacity')) === '0');
   // How far a ship gets depends on how many frames the machine drew, so each key is held until the ship has moved,
   // and the next one starts from a ship that has come to rest.
@@ -390,7 +390,7 @@ section('queue', async () => {
   check('Enter dives into the request under the cursor', await waitFor('plannerDebug().selected?.kind === "planet"', 15000), JSON.stringify(await pd()));
   const opened = (await pd()).selected.id;
   await waitFor('world.debug().flight === "idle"', 15000);
-  check('the list stays open next to the request', await evalJs('document.querySelector("#drawer-wait").classList.contains("open")'));
+  check('the list stays open next to the request', await waitFor('document.querySelector("#drawer-wait").classList.contains("open")'));
   await press('Escape');
   check('Esc from a request returns to the same list, the same camera', await waitFor('plannerDebug().selected === null && document.querySelector("#drawer-wait").classList.contains("open")', 15000), JSON.stringify(await pd()));
   const camBackOk = await waitFor(`world.debug().flight === "idle" && (() => { const k = world.debug().camera; return Math.abs(k.x - ${camList.x}) + Math.abs(k.y - ${camList.y}) + Math.abs(k.z - ${camList.z}) < 80; })()`, 15000);
@@ -475,7 +475,7 @@ section('chat', async () => {
   check('/ opens the chat and focuses the line', await waitFor('document.querySelector("#chat").classList.contains("off") === false && document.activeElement.id === "ask-in"', 5000));
   check('three last turns are shown', await waitFor('document.querySelectorAll("#clog .turn:not(.pending)").length === 3', 6000), await evalJs('document.querySelectorAll("#clog .turn").length'));
   check('the newest question is at the bottom, its answer pending', (await evalJs('(() => { const t = [...document.querySelectorAll("#clog .turn:not(.pending)")]; return t[t.length - 1].innerText; })()')).includes('Вопрос 10'));
-  check('the text is large and readable: 15px, a measure under 80ch', await evalJs('(() => { const c = getComputedStyle(document.querySelector("#chat")); const w = document.querySelector("#chat").getBoundingClientRect().width; return parseFloat(c.fontSize) >= 15 && w < 80 * 9.6 + 40; })()'));
+  check('the text is large and readable: 15px, a measure under 80ch', await waitFor('(() => { const c = getComputedStyle(document.querySelector("#chat")); const w = document.querySelector("#chat").getBoundingClientRect().width; return parseFloat(c.fontSize) >= 15 && w < 80 * 9.6 + 40; })()'));
   check('the Coordinator\'s options (from its words) are buttons under the chat', await waitFor('document.querySelectorAll("#cvariants .btn").length === 2', 8000), await evalJs('document.querySelectorAll("#cvariants .btn").length'));
   check('the memory of the Coordinator: 75 % and yellow', await hasText('#memory-c', '75') && await exists('#memory-c.warn'), await text('#memory-c'));
   await shot('chat.png');
@@ -531,7 +531,7 @@ section('chat', async () => {
   writeFileSync(join(fixture, 'state', 'coordinator-dialog'), '1');
   writeFileSync(join(fixture, 'state', 'dialog.txt'), '❯ May I remove the old branches?\n  1. Yes\n  2. No');
   check('a Coordinator dialog is shown in the chat', await waitFor('!!document.querySelector("#cdialog") && document.querySelector("#cdialog").innerText.includes("May I remove the old branches")', 15000), await text('#cdialog'));
-  check('Compact is off while a dialog is open', await evalJs('document.querySelector("#memory-c #compact").disabled'));
+  check('Compact is off while a dialog is open', await waitFor('document.querySelector("#memory-c #compact").disabled'));
   await click('#cdialog [data-act="keys"][data-keys="enter"]');
   check('a key reaches herdr agent send-keys', await waitLog(() => calls('keys.jsonl').some((c) => c.target === 'sw-coordinator' && c.keys.includes('enter')), 8000), JSON.stringify(lastCall('keys.jsonl')));
   unlinkSync(join(fixture, 'state', 'coordinator-dialog'));
@@ -626,12 +626,11 @@ section('todo drawer', async () => {
   const [, { d }] = await settled({ d: '#todo' }, (x) => x.d.t >= 50 && x.d.t <= 62);
   check('it is a wide strip in the middle, between the navigator and the focus card', d.w >= 520 && d.l >= (await rectOf('#nav')).r && d.r <= (await rectOf('#focus')).l + 1 && Math.abs((d.l + d.r) / 2 - 750) < 40, JSON.stringify(d));
   check('it slid out from under the search bar: below it, not over it', d.t >= (await rectOf('#q')).b, JSON.stringify({ d, q: await rectOf('#q') }));
-  check('the search stays on top and works', await evalJs('(() => { const q = document.querySelector("#q").getBoundingClientRect(); return !!document.elementFromPoint((q.left + q.right) / 2, (q.top + q.bottom) / 2)?.closest(".top-search"); })()'));
-  await send('Input.dispatchKeyEvent', { type: 'rawKeyDown', key: 'k', code: 'KeyK', windowsVirtualKeyCode: 75, modifiers: 2 });
-  await send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'k', code: 'KeyK', windowsVirtualKeyCode: 75, modifiers: 2 });
+  check('the search stays on top and works', await waitFor('(() => { const q = document.querySelector("#q").getBoundingClientRect(); return !!document.elementFromPoint((q.left + q.right) / 2, (q.top + q.bottom) / 2)?.closest(".top-search"); })()'));
+  await press('KeyK', 'k', 2);
   await send('Input.insertText', { text: 'alp' });
   check('the suggestions drop over the drawer', await waitFor('document.querySelectorAll("#sres .srow").length > 3', 3000));
-  check('and they are above it', await evalJs('(() => { const r = document.querySelector("#sres .srow").getBoundingClientRect(); const e = document.elementFromPoint((r.left + r.right) / 2, (r.top + r.bottom) / 2); return !!e?.closest("#sres"); })()'));
+  check('and they are above it', await waitFor('(() => { const r = document.querySelector("#sres .srow").getBoundingClientRect(); const e = document.elementFromPoint((r.left + r.right) / 2, (r.top + r.bottom) / 2); return !!e?.closest("#sres"); })()'));
   await press('Escape');
   check('Esc: the search closes first, the drawer stays', await waitFor('!document.querySelector("#sres")', 2000) && await evalJs('document.querySelector("#todo").classList.contains("open")'));
   await press('Escape');
@@ -693,7 +692,7 @@ section('todo', async () => {
   check('the planet is under the drop point', (await evalJs(`world.entityAt(${pos.x}, ${pos.y}, ['planet','quasar','universe'])`))?.id === 'alpha/6', JSON.stringify({ pos, hit: await evalJs(`world.entityAt(${pos.x}, ${pos.y}, ['planet','quasar','universe'])`), sel: (await pd()).selected }));
   await dragToScene(todoId, pos.x, pos.y);
   check('a drop on a planet opens a window to correct the words', await waitFor('!!document.querySelector("#pop-tell") && document.querySelector("#tell-text")?.value === "Добавить тёмную тему в настройки"', 5000), await evalJs('document.querySelector("#tell-text")?.value'));
-  check('the window names the task', (await text('#pop-tell header')).includes('ALP-6'), await text('#pop-tell header'));
+  check('the window names the task', await hasText('#pop-tell header', 'ALP-6'), await text('#pop-tell header'));
   check('nothing is sent before the operator says so', !calls().some((c) => c.argv[0] === 'tell' && c.argv[1] === 'alpha/6' && c.argv[3] === todoText));
   await press('Escape');
   check('Esc closes the window and the item stays', await waitFor('!document.querySelector("#pop-tell")', 3000) && (await todoCount()) === 2);
@@ -724,7 +723,7 @@ section('todo', async () => {
   await dragToScene(tid3, upos.x + 3, upos.y + 3);
   check('a drop on a nebula asks where and by whom', await waitFor('!!document.querySelector("#pop")', 5000));
   check('the model list loads (free input first, then names)', await waitFor('document.querySelectorAll("#models-list option").length >= 2', 15000), await evalJs('document.querySelectorAll("#models-list option").length'));
-  check('the words of the task can be corrected there', await evalJs('document.querySelector("#pop-text")?.value === "Новая задача из дела"'));
+  check('the words of the task can be corrected there', await waitFor('document.querySelector("#pop-text")?.value === "Новая задача из дела"'));
   await evalJs('(() => { const i = document.querySelector("#pop-text"); i.value = "Новая задача из дела (правка)"; i.dispatchEvent(new Event("input", { bubbles: true })); })()');
   await click('#pop [data-prog="claude"]');
   await evalJs('(() => { const i = document.querySelector("#pop-model"); i.value = "claude-sonnet-5-5"; i.dispatchEvent(new Event("input", { bubbles: true })); })()');
@@ -759,7 +758,7 @@ section('todo files', async () => {
   await waitFor('world.debug().flight === "idle" && plannerDebug().selected === null', 15000);
   await click('#btodo');
   await waitFor('document.querySelector("#todo").classList.contains("open")', 4000);
-  check('the composer has «Обзор…»', (await text('#todo-browse')).includes('Обзор'), await text('#todo-browse'));
+  check('the composer has «Обзор…»', await hasText('#todo-browse', 'Обзор'), await text('#todo-browse'));
   await evalJs('document.querySelector("#todo-in").value = "Заметка со вложениями"; true');
   // «Обзор…»: a text file
   await evalJs(`(() => { const dt = new DataTransfer(); dt.items.add(__text('notes.md', 'заметка про деплой\\nстрока 2')); const i = document.querySelector('#todo-file'); i.files = dt.files; i.dispatchEvent(new Event('change', { bubbles: true })); return true; })()`);
@@ -775,7 +774,7 @@ section('todo files', async () => {
   check('a paste anywhere on the page lands in the open drawer', await waitFor('document.querySelectorAll("#todo-attach .att[data-cls=image]").length === 2', 5000));
   check('all four are uploaded', await waitFor('[...document.querySelectorAll("#todo-attach .att")].length === 4 && [...document.querySelectorAll("#todo-attach .att")].every((a) => a.dataset.state === "ready")', 10000));
   await click('#todo-attach .att[data-cls=image] .rm');
-  check('a file can be taken away before saving', await evalJs('document.querySelectorAll("#todo-attach .att").length === 3'));
+  check('a file can be taken away before saving', await waitFor('document.querySelectorAll("#todo-attach .att").length === 3'));
   // the wrong kind of file is refused with a word
   await clearToasts();
   await evalJs(`(() => { const dt = new DataTransfer(); dt.items.add(__mk('tool.exe', 'application/x-msdownload', 'MZ\\x90\\x00')); const i = document.querySelector('#todo-file'); i.files = dt.files; i.dispatchEvent(new Event('change', { bubbles: true })); return true; })()`);
@@ -827,7 +826,7 @@ section('todo to chat', async () => {
   await click('#btodo');
   await waitFor('document.querySelector("#todo").classList.contains("open")', 4000);
   const id = await todoShown('Черновик для Квазара') && await todoIdByText('Черновик для Квазара');
-  check('the chat is folded', await evalJs('document.querySelector("#chat").classList.contains("off")'));
+  check('the chat is folded', await waitFor('document.querySelector("#chat").classList.contains("off")'));
   const placeChat = JSON.stringify((await pd()).selected);
   await evalJs(`(() => { const dt = new DataTransfer(); dt.setData('text/plain', '${id}'); document.querySelector('#todo-list .titem[data-todo="${id}"]').dispatchEvent(new DragEvent('dragstart', { bubbles: true, dataTransfer: dt })); return true; })()`);
   check('lifting a card opens the chat below as the place to drop it', await waitFor('!document.querySelector("#chat").classList.contains("off")', 3000));
@@ -848,7 +847,7 @@ section('todo to chat', async () => {
   await evalJs(`(() => { const dt = new DataTransfer(); dt.setData('text/plain', '${id}'); document.querySelector('#todo-list .titem[data-todo="${id}"]').dispatchEvent(new DragEvent('dragstart', { bubbles: true, dataTransfer: dt })); const c = document.querySelector('#chat'); c.dispatchEvent(new DragEvent('dragover', { bubbles: true, cancelable: true, dataTransfer: dt })); c.dispatchEvent(new DragEvent('drop', { bubbles: true, cancelable: true, dataTransfer: dt })); return true; })()`);
   await waitFor('document.querySelector("#ask-in").value === "Черновик для Квазара" && document.querySelectorAll("#attach .att").length === 2', 5000);
   check('dropping into the chat flies nowhere', (await debug()).flight === 'idle' && JSON.stringify((await pd()).selected) === placeChat, placeChat);
-  check('the draft can be corrected before sending', await evalJs('document.activeElement.id === "ask-in"'));
+  check('the draft can be corrected before sending', await waitFor('document.activeElement.id === "ask-in"'));
   await send('Input.insertText', { text: ' — срочно' });
   await press('Enter');
   check('the item leaves the list only when the message is sent', await waitFor(`fetch('/api/state').then(r=>r.json()).then(s => !s.todo.some((x) => x.id === '${id}'))`, 8000));
@@ -883,7 +882,7 @@ section('todo to planet', async () => {
   await dragToScene(id, pos.x, pos.y);
   check('the window shows the words and both files', await waitFor('document.querySelector("#tell-text")?.value === "Разобрать запись" && document.querySelectorAll("#pop-tell .dfiles .sv").length === 2', 5000), await text('#pop-tell'));
   await click('#pop-tell [data-file-rm]');
-  check('a file can be taken out in the window', await evalJs('document.querySelectorAll("#pop-tell .dfiles .sv").length === 1'));
+  check('a file can be taken out in the window', await waitFor('document.querySelectorAll("#pop-tell .dfiles .sv").length === 1'));
   const here = async () => ({ sel: JSON.stringify((await pd()).selected), galaxy: (await pd()).galaxy, level: (await pd()).level, cam: (await debug()).camera });
   const placeBefore = await here();
   await click('#tell-go');
@@ -915,7 +914,7 @@ section('chat wide', async () => {
   await waitFor('world.debug().flight === "idle" && plannerDebug().selected === null', 15000);
   await press('Slash', '/');
   await waitFor('!document.querySelector("#chat").classList.contains("off")', 3000);
-  check('the chat has an «Развернуть» button', (await text('#cwide')).includes('Развернуть'), await text('#cwide'));
+  check('the chat has an «Развернуть» button', await hasText('#cwide', 'Развернуть'), await text('#cwide'));
   check('and no «Дела» button beside it until it is wide', !(await exists('#cwide-todo')));
   await click('#cwide');
   check('«Развернуть» makes the chat wide', await waitFor('document.querySelector("#win").classList.contains("chat-wide")', 3000));
@@ -924,13 +923,13 @@ section('chat wide', async () => {
   check('the world is dimmed behind it', (await evalJs('getComputedStyle(document.querySelector("#scene")).filter')).includes('brightness'));
   const q = await rectOf('#q');
   check('the search stays at the top, in the middle, uncovered', Math.abs((q.l + q.r) / 2 - 750) < 150 && await evalJs('(() => { const q = document.querySelector("#q").getBoundingClientRect(); return !!document.elementFromPoint((q.left + q.right) / 2, (q.top + q.bottom) / 2)?.closest(".top-search"); })()'));
-  check('the button reads «Свернуть» now, with «Дела» beside it', (await text('#cwide')).includes('Свернуть') && (await text('#cwide-todo')).includes('Дела'), await text('#cwide') + '|' + await text('#cwide-todo'));
+  check('the button reads «Свернуть» now, with «Дела» beside it', await hasText('#cwide', 'Свернуть') && await hasText('#cwide-todo', 'Дела'), await text('#cwide') + '|' + await text('#cwide-todo'));
   await shot('chat-wide.png');
   // the todos beside the chat, between the navigator and the chat
   await click('#cwide-todo');
   const [ok2, r2] = await settled({ nav: '#nav', todo: '#todo', chat: '#chat', focus: '#focus' }, (x) => x.todo.l >= x.nav.r - 1 && x.todo.r <= x.chat.l + 1 && x.todo.t > 40 && x.todo.t < 100);
   check('«Дела» opens the todos between the navigator and the chat, none over another', ok2 && apart(r2.todo, r2.nav) && apart(r2.todo, r2.chat) && apart(r2.chat, r2.focus), JSON.stringify(r2));
-  check('and «Дела» is pressed', await evalJs('document.querySelector("#cwide-todo").getAttribute("aria-pressed") === "true"'));
+  check('and «Дела» is pressed', await waitFor('document.querySelector("#cwide-todo").getAttribute("aria-pressed") === "true"'));
   await shot('chat-wide-todo.png');
   // the chat stays usable at every common width: the columns, or the focus card steps aside while the todos are open
   const useful = async (w, h, label) => {
@@ -1550,7 +1549,7 @@ section('station', async () => {
   await readyCard();
   check('a change shows «было → стало» before anything is sent', await waitFor('(document.querySelector("#st-now")?.innerText || "") === "claude/claude-haiku-5-5"', 6000) && (await text('#st-change')).includes('claude/claude-opus-5-5'), await text('#st-change'));
   const live = (await stateApi()).tasks.filter((x) => !x.archived && x.status !== 'done').length;
-  check('and the live tasks it touches are counted', (await text('#st-affects')).includes(String(live)), `${await text('#st-affects')} vs ${live}`);
+  check('and the live tasks it touches are counted', await hasText('#st-affects', String(live)), `${await text('#st-affects')} vs ${live}`);
   const sets = setCalls('plan.agent').length;
   await click('#st-confirm');
   const asked = await hasText('#st-confirm', 'Подтвердить');
@@ -1704,7 +1703,7 @@ section('ship', async () => {
   const dir = join(fixture, 'projects-new');
   await typeIn('#ship-dir', dir);
   await click('#ship-dir-save');
-  check('the folder change shows was → now before anything is saved', await waitFor('!!document.querySelector("#ship-change")', 4000) && (await text('#ship-change')).includes(dir), await text('#ship-change'));
+  check('the folder change shows was → now before anything is saved', await waitFor('!!document.querySelector("#ship-change")', 4000) && await hasText('#ship-change', dir), await text('#ship-change'));
   await twoPresses('#ship-confirm');
   check('the new folder takes effect at once, in the page’s state too', await waitFor(`plannerSnap().server.projects_dir === ${JSON.stringify(dir)}`, 8000), await evalJs('plannerSnap().server.projects_dir'));
 
@@ -1829,11 +1828,11 @@ section('theme and language', async () => {
 
 section('simple mode and no WebGL', async () => {
   await navigate(base + '/?calm&nocoach');
-  check('?calm turns the world simple: no bloom, no motion, panels opaque', await evalJs('world.debug().simple === true && world.debug().bloom === false && document.querySelector("#win").classList.contains("calm")'));
+  check('?calm turns the world simple: no bloom, no motion, panels opaque', await waitFor('world.debug().simple === true && world.debug().bloom === false && document.querySelector("#win").classList.contains("calm")'));
   await go('alpha/4');
   check('a flight in simple mode is instant (no warp)', (await debug()).flight === 'idle' && (await pd()).selected?.id === 'alpha/4' && !(await evalJs('world.flying')));
   await shot('calm.png');
-  check('the chat text is larger in simple mode', await evalJs('parseFloat(getComputedStyle(document.querySelector("#chat")).fontSize) >= 16'));
+  check('the chat text is larger in simple mode', await waitFor('parseFloat(getComputedStyle(document.querySelector("#chat")).fontSize) >= 16'));
   // in simple mode the navigator is wider: the drawer of todos and the chat start after it, at every width
   await press('Slash', '/'); await waitFor('!document.querySelector("#chat").classList.contains("off")', 3000);
   await click('#btodo'); await waitFor('document.querySelector("#todo").classList.contains("open")', 3000);
@@ -1885,7 +1884,7 @@ section('narrow', async () => {
   await press('Slash', '/'); await beat();
   const [nok, nr] = await settled({ todo: '#todo', chat: '#chat', q: '#q' }, (r) => r.todo.t >= r.q.b && r.todo.l >= 0 && r.todo.r <= 621 && apart(r.todo, r.chat));
   check('phone: the drawer hangs under the search and inside the screen, the chat apart below it', nok, JSON.stringify(nr));
-  check('phone: nothing scrolls sideways with both open', await evalJs('document.documentElement.scrollWidth <= innerWidth + 1'));
+  check('phone: nothing scrolls sideways with both open', await waitFor('document.documentElement.scrollWidth <= innerWidth + 1'));
   await shot('narrow-todo.png');
   await press('Escape'); await press('Escape'); await beat();
   for (const w of [1100, 1000]) {
