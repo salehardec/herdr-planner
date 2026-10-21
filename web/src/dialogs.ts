@@ -12,6 +12,8 @@ export const addDialogs = {
   popover: signal<{ id: string; repo: string; galaxy?: string } | null>(null),
   /** A todo item dropped on a planet: the window to correct it before it goes to the task's agent. */
   tell: signal<{ id: string; task: string; galaxy: string } | null>(null),
+  /** The agent's result or the description in a window over the page, with the task's actions. */
+  summary: signal<{ task: string; galaxy: string; part: 'closing' | 'description' } | null>(null),
 };
 
 /** The todo item being corrected in a window before it leaves: its words and its files. */
@@ -37,9 +39,10 @@ export function openNewTask(id: string, repo: string, galaxy: string): void {
 
 export const dialogOpen = (): boolean =>
   addDialogs.galaxy.value || !!addDialogs.universe.value || addDialogs.firstRun.value || !!addDialogs.popover.value || !!addDialogs.tell.value
-  || !!stationDlg.value || shipDlg.value;
+  || !!addDialogs.summary.value || !!stationDlg.value || shipDlg.value;
 
 export function closeDialogs(): void {
+  if (addDialogs.summary.value) { addDialogs.summary.value = null; return; }
   if (addDialogs.popover.value) { addDialogs.popover.value = null; return; }
   if (addDialogs.tell.value) { addDialogs.tell.value = null; return; }
   if (stationDlg.value) { closeStation(); return; }

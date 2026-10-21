@@ -59,6 +59,7 @@ export const en: Record<string, string | string[]> = {
   'focus.remoteFiles': 'Files open only on the board’s machine. Path: {path}', 'focus.none': 'none yet',
   'focus.tellPlaceholder': 'Write to the {tag} agent…', 'focus.tell': 'Write to the agent', 'focus.send': 'Send',
   'focus.closing': 'Agent’s result', 'focus.closingNone': 'The agent left no result.', 'focus.closingLoading': 'The result appears when the agent finishes.', 'focus.closingCut': 'The result is longer: the beginning is shown.',
+  'focus.expand': 'Expand', 'focus.collapse': 'Collapse', 'focus.descriptionNone': 'There is no description.',
   'focus.subagents': 'Sub-agents', 'focus.description': 'Description', 'focus.links': 'Links · this starts after', 'focus.noLinks': 'Depends on nothing. Drag a line from this planet to another (Shift or «Link» mode) to say “starts after”.',
   'focus.link': 'Link', 'focus.linkText': '{a} starts after {b}', 'focus.linkRemote': 'This is another machine: remove it there.', 'focus.unlink': 'Remove link',
   'focus.review': 'Review', 'focus.reviewTally': 'Review: {v}', 'focus.reviewFailed': 'The review failed — send the remarks back to the agent or merge anyway.',

@@ -3,6 +3,7 @@ import { mode, panels, simple, linkMode } from '../store';
 import { Top } from './Top';
 import { Navigator } from './Navigator';
 import { Focus } from './Focus';
+import { AgentSummary } from './AgentSummary';
 import { Chat } from './Chat';
 import { Todo } from './Todo';
 import { Wait } from './Wait';
@@ -47,6 +48,7 @@ export function App(): JSX.Element {
       <Wait />
       <Log />
       <Focus />
+      <AgentSummary />
       <Todo />
       <Chat />
       <Kanban />

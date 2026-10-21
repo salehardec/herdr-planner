@@ -4,6 +4,7 @@ import { post } from '../api';
 import { lang, t } from '../i18n';
 import { needsTranslation } from '../util/lang';
 import { RichText } from './RichText';
+import { Markdown } from './Markdown';
 import { toast } from '../toast';
 
 const cache = new Map<string, string>();
@@ -13,7 +14,7 @@ const showOriginal = signal<Set<string>>(new Set());
 const keyOf = (text: string): string => `${lang.value}|${text.length}|${text.slice(0, 80)}|${text.slice(-40)}`;
 
 /** A text of an agent, a review or a board line, in its own language, with a button that translates it. */
-export function Translatable(props: { text: string; class?: string; plain?: boolean }): JSX.Element {
+export function Translatable(props: { text: string; class?: string; plain?: boolean; md?: boolean; bar?: 'top' | 'bottom' }): JSX.Element {
   const text = props.text;
   const k = keyOf(text);
   const target = lang.value;
@@ -37,23 +38,25 @@ export function Translatable(props: { text: string; class?: string; plain?: bool
     }
   };
   const shown = out && !original ? out : text;
+  const bar = (can || out) && (
+    <div class="trbar">
+      {out && !original ? (
+        <>
+          <span class="hint">{t('translate.done')}</span>
+          <button type="button" class="btn sm" data-act="translate-orig" onClick={() => { const s = new Set(showOriginal.value); s.add(k); showOriginal.value = s; }}>{t('translate.original')}</button>
+        </>
+      ) : (
+        <button type="button" class="btn sm" data-act="translate" disabled={loading} onClick={() => void run()}>
+          {loading ? t('translate.working') : out ? t('translate.show') : t('translate.button')}
+        </button>
+      )}
+    </div>
+  );
   return (
     <div class={`tr ${props.class ?? ''}`}>
-      {props.plain ? <span>{shown}</span> : <RichText text={shown} />}
-      {(can || out) && (
-        <div class="trbar">
-          {out && !original ? (
-            <>
-              <span class="hint">{t('translate.done')}</span>
-              <button type="button" class="btn sm" data-act="translate-orig" onClick={() => { const s = new Set(showOriginal.value); s.add(k); showOriginal.value = s; }}>{t('translate.original')}</button>
-            </>
-          ) : (
-            <button type="button" class="btn sm" data-act="translate" disabled={loading} onClick={() => void run()}>
-              {loading ? t('translate.working') : out ? t('translate.show') : t('translate.button')}
-            </button>
-          )}
-        </div>
-      )}
+      {props.bar === 'top' && bar}
+      {props.md ? <Markdown text={shown} /> : props.plain ? <span>{shown}</span> : <RichText text={shown} />}
+      {props.bar !== 'top' && bar}
     </div>
   );
 }
