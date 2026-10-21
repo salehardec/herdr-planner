@@ -511,7 +511,7 @@ section('chat', async () => {
   await send('Input.insertText', { text: 'НОВЫЙ ВОПРОС' });
   await press('Enter');
   check('a sent message shows in the open chat', await waitFor('document.querySelector("#clog").innerText.includes("НОВЫЙ ВОПРОС")', 4000));
-  check('it reached the Coordinator', await waitLog(() => calls('coordinator.jsonl').some((c) => c.text === 'НОВЫЙ ВОПРОС'), 6000));
+  check('it reached the Coordinator', await waitLog(() => calls('coordinator.jsonl').some((c) => c.text === 'НОВЫЙ ВОПРОС'), 6000), JSON.stringify({ bad: await evalJs('window.__net.bad.slice(-4)'), keys: await evalJs('window.__net.keys.join(" ")'), box: await evalJs('document.querySelector("#ask-in")?.value'), err: await text('#chat .err'), last: lastCall('coordinator.jsonl') }));
   // the page looks at the transcript again after 0.8 s and after 2.4 s: the message must have outlived both looks
   await waitFor(`window.__net.log.filter((u) => u.includes("/api/chat/history?limit=3")).length >= ${historyBefore + 2}`, 10000);
   await quiet();
@@ -1933,14 +1933,14 @@ await send('Network.enable');
 await send('Log.enable');
 await send('Page.enable');
 // The page's own calls to the server, counted from the first line of every document: pending now, and the finished ones.
-await send('Page.addScriptToEvaluateOnNewDocument', { source: `(() => { const f = window.fetch; const net = window.__net = { pending: 0, log: [], shown: 0, streamErrors: 0 };
+await send('Page.addScriptToEvaluateOnNewDocument', { source: `(() => { const f = window.fetch; const net = window.__net = { pending: 0, log: [], bad: [], shown: 0, streamErrors: 0 };
   // what makes the page ask for the state on its own account: it became visible again, or its event stream broke and came back
   document.addEventListener('visibilitychange', () => { if (!document.hidden) net.shown++; });
   const ES = window.EventSource;
   if (ES) { window.EventSource = function (...a) { const es = new ES(...a); es.addEventListener('error', () => { net.streamErrors++; }); return es; }; window.EventSource.prototype = ES.prototype; }
   net.keys = [];
   document.addEventListener('keydown', (e) => { window.__keyN = (window.__keyN || 0) + 1; net.keys.push(e.code + '>' + (e.target && (e.target.id || e.target.tagName)) + (e.defaultPrevented ? '!' : '')); if (net.keys.length > 12) net.keys.shift(); }, true);
-  window.fetch = function (...a) { net.pending++; const u = String(a[0] && a[0].url || a[0]); return f.apply(this, a).finally(() => { net.pending--; net.log.push(u); }); }; })()` });
+  window.fetch = function (...a) { net.pending++; const u = String(a[0] && a[0].url || a[0]); return f.apply(this, a).then((r) => { if (!r.ok) net.bad.push(u + ' ' + r.status); return r; }, (e) => { net.bad.push(u + ' ' + e.message); throw e; }).finally(() => { net.pending--; net.log.push(u); }); }; })()` });
 await send('Emulation.setFocusEmulationEnabled', { enabled: true });
 await send('Page.bringToFront');
 await send('Emulation.setDeviceMetricsOverride', { width: 1500, height: 950, deviceScaleFactor: 1, mobile: false });
