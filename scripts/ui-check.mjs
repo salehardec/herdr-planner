@@ -243,7 +243,7 @@ section('boot', async () => {
 
 section('live', async () => {
   // The page learns of a board change by the event stream: no /api/state polling.
-  // A poll of /api/state is allowed only where the page has its own reason (it became visible again, its stream broke): the
+  // A poll of /api/state is allowed only where the page has its own reason (it became visible again, its stream broke; a stream that broke earlier leaves the page's 30 s fallback poll running until the next state, so one tick of it is allowed): the
   // headless windows of side-by-side runs take the focus from each other. A poll that nothing explains is polling.
   const polls = () => evalJs('({ n: window.__net.log.filter((u) => u.includes("/api/state")).length, why: window.__net.shown + window.__net.streamErrors })');
   const before = await polls();
@@ -258,7 +258,7 @@ section('live', async () => {
   check('a change of a task record reaches the page at once', await waitFor(pageHas, 15000));
   await quiet();
   const after = await polls();
-  check('the page got it by the event stream, not by polling', after.n - before.n <= after.why - before.why, JSON.stringify({ before, after }));
+  check('the page got it by the event stream, not by polling', after.n - before.n <= (after.why - before.why) + (before.why > 0 ? 1 : 0), JSON.stringify({ before, after }));
   check('and it is the server\'s state', (await stateApi()).tasks.find((x) => x.id === 'alpha/11')?.status === 'working');
   row.state = 'idle'; row.stage = 'todo'; row.msg = '';
   writeFileSync(f, JSON.stringify(w, null, 1));
