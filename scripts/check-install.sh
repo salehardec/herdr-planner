@@ -93,17 +93,55 @@ exit 0
 EOF
 stub herdr <<'EOF'
 echo "$*" >>"$ST/herdr.log"
+plugin_bin="$HOME/.herdr-projects/data/bin/herdr-projects"
+write_plugin() {
+  mkdir -p "$HOME/.herdr-projects/data/bin"
+  printf '#!/bin/sh\necho "herdr-projects %s"\n' "$1" >"$plugin_bin"
+  chmod +x "$plugin_bin"
+  printf '%s\n' "$1" >"$ST/plugin-ver"
+}
+# herdr refuses install and update without --yes when stdin is not a terminal.
+plugin_yes() {
+  case " $* " in *" --yes "* | *" -y "*) return 0 ;; esac
+  echo "$1 requires --yes when stdin is not interactive" >&2
+  exit 2
+}
 case "$1" in
   --version) echo "herdr $(cat "$ST/herdr-ver")" ;;
   plugin)
     case "$2" in
-      list) [ -e "$ST/plugin" ] && echo "herdr-projects 1.4.2 enabled" ;;
+      list) [ -e "$ST/plugin" ] && echo "herdr-projects $(cat "$ST/plugin-ver" 2>/dev/null || echo 1.4.2) enabled" ;;
       install)
+        plugin_yes "remote plugin install" "$@"
         : >"$ST/plugin"
-        mkdir -p "$HOME/.herdr-projects/data/bin"
-        printf '#!/bin/sh\necho "herdr-projects 1.4.2"\n' >"$HOME/.herdr-projects/data/bin/herdr-projects"
-        chmod +x "$HOME/.herdr-projects/data/bin/herdr-projects" ;;
+        write_plugin "$(cat "$ST/plugin-latest" 2>/dev/null || echo 1.4.2)" ;;
+      update)
+        plugin_yes "plugin update" "$@"
+        scope=
+        for a in "$@"; do
+          case "$a" in update | --yes | -y) ;; *) scope=$a ;; esac
+        done
+        if [ -n "$scope" ] && [ "$scope" != "herdr-projects" ]; then
+          echo "plugin not installed: $scope" >&2
+          exit 1
+        fi
+        # Another GitHub plugin: an unnamed update touches it too (the real herdr does).
+        if [ -z "$scope" ] && [ -e "$ST/other-plugin" ]; then
+          echo "augie-git is already up to date."
+          echo augie-git >"$ST/other.log"
+        fi
+        [ -e "$ST/plugin" ] || exit 0
+        cur=$(cat "$ST/plugin-ver" 2>/dev/null || true)
+        latest=$(cat "$ST/plugin-latest" 2>/dev/null || echo 1.4.2)
+        if [ "$cur" = "$latest" ]; then
+          echo "herdr-projects is already up to date."
+          exit 0
+        fi
+        write_plugin "$latest"
+        echo "Updated herdr-projects from github:eliasstravik/herdr-projects." ;;
+      *) echo "herdr stand-in: unexpected plugin $*" >&2; exit 1 ;;
     esac ;;
+  *) echo "herdr stand-in: unexpected $*" >&2; exit 1 ;;
 esac
 exit 0
 EOF
@@ -211,8 +249,8 @@ ok "shell syntax"
 check "launchd plist is well-formed XML" python3 -I -c 'import sys, xml.dom.minidom as m; m.parse(sys.argv[1])' packaging/dev.herdr.planner.plist
 
 V1=$("$BIN" --version | awk '{print $2}')
-# The next release: the same binary behind a wrapper that answers --version with 0.3.1.
-V2=0.3.1
+# The next release: the same binary behind a wrapper that answers --version with 0.4.1.
+V2=0.4.1
 mkdir -p "$T/wrap"
 # shellcheck disable=SC2016  # the wrapper's own $1/$@ must stay literal
 printf '#!/bin/sh\ncase "${1:-}" in --version | -V) echo "herdr-planner %s"; exit 0 ;; esac\nexec %s "$@"\n' "$V2" "$BIN" >"$T/wrap/herdr-planner"
@@ -245,6 +283,7 @@ check "first install: open.sh comes from the archive" cmp -s "$H/.local/share/he
 check "first install: the widget is installed from the archive" cmp -s "$H/.local/share/herdr-planner/release/$V1/packaging/omarchy-plugin/Widget.qml" "$H/.config/omarchy/plugins/salehardec.herdr-planner/Widget.qml"
 check "first install: herdr via mise (fresh install)" grep -q 'use -g github:herdrdev/herdr@latest' "$ST/mise.log"
 check "first install: herdr-projects symlinked" test -L "$H/.local/bin/herdr-projects"
+check "first install: the plugin install says --yes without a terminal" grep -q 'plugin install .*--yes' "$ST/herdr.log"
 check "first install: unit enabled and restarted" sh -c "grep -q 'enable herdr-planner.service' '$ST/systemctl.log' && grep -q 'restart herdr-planner.service' '$ST/systemctl.log'"
 check "first install: the unit runs the installed binary" grep -q "ExecStart=$H/.local/bin/herdr-planner" "$H/.config/systemd/user/herdr-planner.service"
 check "first install: one PATH block in ~/.profile" test "$(grep -c '>>> herdr-planner PATH' "$H/.profile")" -eq 1
@@ -260,15 +299,27 @@ check "first install: seven steps" test "$(grep -c '^\[[1-7]/7\] ' "$LAST")" -eq
 ok "first install: planner, herdr, plugin, service, Omarchy bits, summary"
 
 # 3. the same version again: already installed, the tree unchanged, the service not restarted.
+: >"$ST/other-plugin"   # a second GitHub plugin, also current
 before=$(snap)
 rs_before=$(grep -c -- '--user restart' "$ST/systemctl.log" || true)
 inst install --yes --version "v$V1" || fail "second install"
 has "$LAST" "уже стоит $V1" || fail "same version must say it is already installed"
+has "$LAST" 'уже новейший' || fail "an up-to-date plugin must say it is already the newest"
+check "same version: another plugin is not updated" test ! -e "$ST/other.log"
 [ "$before" = "$(snap)" ] || fail "same version changed the home folder"
 [ "$(grep -c -- '--user restart' "$ST/systemctl.log" || true)" -eq "$rs_before" ] || fail "same version restarted the service"
 check "same version: PATH block not repeated" test "$(grep -c '>>> herdr-planner PATH' "$H/.profile")" -eq 1
 check "same version: one shell.json backup only" test "$(find "$H/.config/omarchy" -maxdepth 1 -name 'shell.json.bak-herdr-planner-*' | wc -l)" -eq 1
 ok "same version: already installed, tree unchanged, no restart"
+
+# 3b. the plugin is behind: herdr updates it, still without a terminal.
+printf '1.4.3\n' >"$ST/plugin-latest"
+inst install --yes --version "v$V1" || fail "plugin update"
+has "$LAST" 'обновлён: 1.4.2 → 1.4.3' || fail "plugin update: message"
+check "plugin update: names herdr-projects and passes --yes without a terminal" grep -q 'plugin update herdr-projects --yes' "$ST/herdr.log"
+check "plugin update: another plugin is not updated" test ! -e "$ST/other.log"
+check "plugin update: the plugin is at 1.4.3" sh -c "[ \"\$('$H/.local/bin/herdr-projects' version)\" = 'herdr-projects 1.4.3' ]"
+ok "plugin update: behind, updated with --yes"
 
 # 4. a new version: updated, service restarted, the old release kept.
 rs_before=$(grep -c -- '--user restart' "$ST/systemctl.log" || true)
@@ -281,9 +332,9 @@ check "update: service restarted" sh -c "[ \"\$(grep -c -- '--user restart' '$ST
 ok "new version: updated, service restarted"
 
 # 5. a wrong checksum: refused, nothing changed.
-publish_bad_sum 0.4.0
+publish_bad_sum 0.4.2
 before=$(snap)
-if inst install --yes --version v0.4.0; then fail "a wrong checksum must refuse"; fi
+if inst install --yes --version v0.4.2; then fail "a wrong checksum must refuse"; fi
 has "$LAST" 'контрольная сумма' || fail "wrong checksum: message"
 [ "$before" = "$(snap)" ] || fail "a refused archive changed the home folder"
 ok "wrong checksum: refused, nothing changed"

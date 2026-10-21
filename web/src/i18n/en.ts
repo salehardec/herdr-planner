@@ -370,6 +370,7 @@ export const en: Record<string, string | string[]> = {
   'ship.removeNote': 'The board on that machine and its tasks stay. You can add the galaxy back.',
   'ship.addGalaxy': 'Add a galaxy…',
   'ship.configFile': 'Settings are written to {path}',
+  'ship.version': 'Herdr Planner {v}',
   'ship.changeTitle': 'Change',
   'ship.empty': '—',
   'ship.saved': 'Saved',

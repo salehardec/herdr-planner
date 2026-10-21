@@ -1,6 +1,6 @@
 [package]
 name = "herdr-planner"
-version = "0.3.0"
+version = "0.4.0"
 edition = "2021"
 description = "Herdr Planner: a local dashboard of the herdr-projects board"
 license = "MIT"

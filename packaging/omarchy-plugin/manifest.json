@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "salehardec.herdr-planner",
   "name": "Herdr Planner",
-  "version": "1.2.0",
+  "version": "0.4.0",
   "author": "Aleksey Abaydulin",
   "license": "MIT",
   "description": "Herdr Planner in the bar: one pill that opens the standalone dashboard in its own app window and marks a nearly exhausted agent limit.",

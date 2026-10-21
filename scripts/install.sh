@@ -32,6 +32,7 @@ set -eu
 releases=${HERDR_PLANNER_RELEASES:-https://github.com/salehardec/herdr-planner/releases}
 herdr_min=0.9.3
 plugin_repo=eliasstravik/herdr-projects
+plugin_name=herdr-projects
 label=dev.herdr.planner
 unit=herdr-planner.service
 plugin_id=salehardec.herdr-planner
@@ -66,7 +67,7 @@ Herdr Planner: установка для текущего пользовател
   sh install.sh tls --cert FILE --key FILE
 
 Флаги:
-  --yes                 ставить недостающие системные пакеты без вопроса (через sudo)
+  --yes                 не спрашивать: ставить недостающие пакеты (через sudo) и плагин herdr-projects
   --dry-run             напечатать шаги, ничего не менять
   --version vX.Y.Z      версия релиза (по умолчанию latest)
   --from-source         собрать из клона (scripts/web-build.sh и cargo), а не брать релиз
@@ -117,7 +118,7 @@ parse_args() {
     latest) ;;
     v[0-9]*.[0-9]*.[0-9]*) ;;
     [0-9]*.[0-9]*.[0-9]*) version=v$version ;;
-    *) stop "--version: нужна версия вида v0.3.0 или latest" ;;
+    *) stop "--version: нужна версия вида v0.4.0 или latest" ;;
   esac
 }
 
@@ -411,19 +412,47 @@ step_herdr() {
 
 # ---- step 4: the herdr-projects plugin ----
 
+# herdr asks before installing or updating a plugin, and refuses without --yes when stdin is not a
+# terminal (as with `curl … | sh`). --yes on the installer also means yes here.
+plugin_yes() { [ "$yes" -eq 1 ] || [ ! -t 0 ]; }
+plugin_run() { # subcommand and its arguments
+  if plugin_yes; then herdr plugin "$@" --yes; else herdr plugin "$@"; fi
+}
+plugin_run_dry() { # the line plugin_run would run
+  if plugin_yes; then dry_say "herdr plugin $* --yes"; else dry_say "herdr plugin $*"; fi
+}
+
 step_plugin() {
   step 4 "плагин herdr-projects"
   if [ "$want_plugin" -eq 0 ]; then res "пропущено (--no-plugin)"; return 0; fi
   if [ "$dry" -eq 0 ] && ! have herdr; then res "herdr не найден: плагин пропущен"; return 0; fi
   before=$(hp_version || true)
   listed=0
-  if have herdr && herdr plugin list 2>/dev/null | grep -q 'herdr-projects'; then listed=1; fi
+  if have herdr && herdr plugin list 2>/dev/null | grep -q "$plugin_name"; then listed=1; fi
+  newest=0
   if [ "$listed" -eq 1 ]; then
-    run herdr plugin update || fail "herdr plugin update не удался"
+    if [ "$dry" -eq 1 ]; then
+      plugin_run_dry update "$plugin_name"
+    else
+      # Only this plugin: an unnamed update would also update (and with --yes approve) every other GitHub
+      # plugin, and its output is one line per plugin, which would hide whether this one is current.
+      # herdr compares the remote commit itself: at the same one it prints
+      # «herdr-projects is already up to date.» and reinstalls nothing, so there is nothing to skip here.
+      # stdout is read for that line; stderr stays on the terminal, where herdr asks its question.
+      out=$(plugin_run update "$plugin_name") || { say "$out"; fail "herdr plugin update не удался"; }
+      say "$out"
+      case "$out" in
+        *"$plugin_name is already up to date"*) newest=1 ;;
+      esac
+    fi
   elif [ -n "${HERDR_PROJECTS_REF:-}" ]; then
-    run herdr plugin install "$plugin_repo" --ref "$HERDR_PROJECTS_REF" || fail "herdr plugin install не удался"
+    if [ "$dry" -eq 1 ]; then plugin_run_dry install "$plugin_repo" --ref "$HERDR_PROJECTS_REF"
+    else plugin_run install "$plugin_repo" --ref "$HERDR_PROJECTS_REF" || fail "herdr plugin install не удался"
+    fi
   else
-    run herdr plugin install "$plugin_repo" || fail "herdr plugin install не удался"
+    if [ "$dry" -eq 1 ]; then plugin_run_dry install "$plugin_repo"
+    else plugin_run install "$plugin_repo" || fail "herdr plugin install не удался"
+    fi
   fi
   hp=$HOME/.herdr-projects/data/bin/herdr-projects
   if [ "$dry" -eq 1 ]; then
@@ -436,7 +465,8 @@ step_plugin() {
   fi
   after=$(hp_version || true)
   if [ -z "$after" ]; then res "herdr-projects не найден (проверьте: herdr plugin list)"; return 0; fi
-  if [ -z "$before" ]; then res "поставлен: $after"
+  if [ "$newest" -eq 1 ]; then res "уже новейший: $after"
+  elif [ -z "$before" ]; then res "поставлен: $after"
   elif [ "$after" = "$before" ]; then res "уже стоит: $after"
   else res "обновлён: $before → $after"
   fi

@@ -383,6 +383,7 @@ export const ru: Record<string, string | string[]> = {
   'ship.removeNote': 'Доска на той машине и её задачи останутся. Вернуть можно через «Добавить галактику».',
   'ship.addGalaxy': 'Добавить галактику…',
   'ship.configFile': 'Настройки записаны в {path}',
+  'ship.version': 'Herdr Planner {v}',
   'ship.changeTitle': 'Изменение',
   'ship.empty': '—',
   'ship.saved': 'Сохранено',

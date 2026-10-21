@@ -23,7 +23,7 @@ sh scripts/check-open.sh
 # (50 universes / 500 planets), and the login. Their output is kept apart and printed in order.
 FX="$(mktemp -d)"
 PIDS=
-trap '[ -z "$PIDS" ] || kill $PIDS 2>/dev/null || true; rm -rf "$FX" "$FX"-*' EXIT INT TERM
+trap '[ -z "$PIDS" ] || kill $PIDS 2>/dev/null || true; rm -rf "$FX" "$FX"-* "$FX.jobs"' EXIT INT TERM
 # A stale server on a PID-derived port would answer instead of ours: ask the
 # kernel for a free one (Node is already required by the page checks).
 free_port() {
@@ -70,6 +70,17 @@ NEXT_PORT=7600
 JOBS=
 OUT="$FX-out"
 mkdir -p "$OUT"
+# Six headless Chromium instances at once on a four-core runner make the page checks miss their own
+# waits (the checks are about behaviour, not throughput). At most three run at a time; each keeps its
+# own browser, server and fixture.
+MAX_JOBS=${RUN_CHECKS_JOBS:-3}
+JOBQ="$FX.jobs"
+mkfifo "$JOBQ"
+exec 9<>"$JOBQ"
+i=0
+while [ "$i" -lt "$MAX_JOBS" ]; do printf 'x\n' >&9; i=$((i + 1)); done
+job_slot() { read -r _ <&9 || true; }
+job_release() { printf 'x\n' >&9; }
 
 # The Galaxy: sections split in four, each with a fresh board (a section that needs another's state is a bug).
 n=0
@@ -79,22 +90,33 @@ for only in "boot,live,navigator,autopilot,manual,stack,queue,search" \
             "station,crew,arrival,ship,theme,simple,narrow"; do
   n=$((n + 1))
   start_server "ui$n"
-  FIXTURE="$D" HERDR_PLANNER_TARGET_DIR="$TARGET" ONLY="$only" limited node scripts/ui-check.mjs "http://127.0.0.1:$P" ${SHOTS:+"$SHOTS"} >"$OUT/ui$n.txt" 2>&1 &
+  job_slot
+  ( set +e
+    FIXTURE="$D" HERDR_PLANNER_TARGET_DIR="$TARGET" ONLY="$only" limited node scripts/ui-check.mjs "http://127.0.0.1:$P" ${SHOTS:+"$SHOTS"} >"$OUT/ui$n.txt" 2>&1
+    rc=$?; job_release; exit "$rc"
+  ) &
   JOBS="$JOBS $!:ui$n"
 done
 
 # A big world: 50 universes / 500 planets must stay orderly and cheap (the scale fixture).
 start_server big --scale 50x500
-FIXTURE="$D" limited node scripts/perf-check.mjs "http://127.0.0.1:$P" ${SHOTS:+"$SHOTS"} >"$OUT/big.txt" 2>&1 &
+job_slot
+( set +e
+  FIXTURE="$D" limited node scripts/perf-check.mjs "http://127.0.0.1:$P" ${SHOTS:+"$SHOTS"} >"$OUT/big.txt" 2>&1
+  rc=$?; job_release; exit "$rc"
+) &
 JOBS="$JOBS $!:big"
 
 # A server with a password: the login, the cookie and the limit; the ship's computer behind it.
 PASSWORD=secret start_server auth
 AUTH_D="$D"; AUTH_P="$P"
+job_slot
 (
+  set +e
   # before auth-check's limit test: a wrong old password is refused in the server's words
   SHIP_LOGIN="me:secret" ONLY="ship login" FIXTURE="$AUTH_D" limited node scripts/ui-check.mjs "http://127.0.0.1:$AUTH_P" ${SHOTS:+"$SHOTS"} &&
     FIXTURE="$AUTH_D" AUTH_BASE="http://127.0.0.1:$AUTH_P" limited node scripts/auth-check.mjs
+  rc=$?; job_release; exit "$rc"
 ) >"$OUT/auth.txt" 2>&1 &
 JOBS="$JOBS $!:auth"
 

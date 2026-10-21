@@ -318,6 +318,7 @@ export function Ship(): JSX.Element | null {
         <header><b>{t('ship.title')}</b><button class="btn icon sm" type="button" aria-label={t('close')} onClick={() => { shipDlg.value = false; }}><Gl n="close" /></button></header>
         <div class="bd sh-bd">
           <p class="hint">{t('ship.intro')}</p>
+          <p class="hint" id="ship-version">{t('ship.version', { v: snap.value?.version ?? '—' })}</p>
           {restartNote.value && <div class="notice-in" id="ship-restart">{t('ship.restartNote')}</div>}
           <Device />
           {infoErr.value && !d && <div class="hint bad" id="ship-load-err">{infoErr.value.message}</div>}
