@@ -19,6 +19,7 @@ mod history;
 mod machines;
 mod memory;
 mod memory_api;
+mod memory_guard;
 mod models;
 mod search;
 mod server;

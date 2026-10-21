@@ -14,6 +14,7 @@ use crate::board::Task;
 use crate::config::now_ms;
 use crate::machines::{self, MachineRef};
 use crate::memory::{self, Entry, Line};
+use crate::memory_guard::{self, Finding};
 use crate::server::{clip, error, same_origin};
 use crate::station::{self, galaxy_of, place_of, Fail, Place};
 use crate::{taskmeta, translate};
@@ -156,17 +157,13 @@ pub async fn keep_indexes(app: &Shared) {
     reindex_stores(app).await;
 }
 
-/// The tables of contents that an agent's hand-written files left behind: the Galaxy's, and every universe's that has
-/// one. The file watcher calls this at once when a memory file changes; the refresh loop only now and then.
+/// The table of contents that an agent's hand-written files left behind: the Galaxy's. The file watcher calls this at once when a memory file changes; the refresh loop only now and then.
 pub async fn reindex_stores(app: &Shared) {
     let cfg = app.cfg.clone();
     let _ = tokio::task::spawn_blocking(move || {
         memory::galaxy_store(&cfg).reindex();
-        for r in memory::universes(&cfg) {
-            if taskmeta::valid_repo(&r.name) {
-                memory::universe_store(&r.root, &r.name).reindex_existing();
-            }
-        }
+        // A universe's index is not rewritten here: that would make the human's checkout «dirty» for the board's merges.
+        // It is rebuilt when the memory is committed.
     })
     .await;
 }
@@ -277,18 +274,33 @@ async fn panel_read(app: &Shared, q: GetQuery) -> Result<Value, Fail> {
                     let root = memory::repo_root(&cfg, &repo2)
                         .ok_or_else(|| Fail::new(404, "у этой вселенной нет папки на этой машине"))?;
                     let st = memory::universe_store(&root, &repo2);
-                    let git = match memory::git_dirty(&root) {
-                        None => json!({"checkout": false, "dirty": []}),
+                    let dirty = memory::git_dirty(&root);
+                    // In a git checkout the drafts are in front of the files (and not in the checkout).
+                    let drafts = dirty.is_some().then(|| memory::Drafts::new(&cfg, &repo2));
+                    let entries: Vec<Value> = match &drafts {
+                        Some(d) => memory::effective(&st, d)
+                            .iter()
+                            .map(|(e, mark)| {
+                                let mut j = entry_json(e);
+                                j["draft"] = json!(mark);
+                                j
+                            })
+                            .collect(),
+                        None => st.list().iter().map(entry_json).collect(),
+                    };
+                    let git = match &dirty {
+                        None => json!({"checkout": false, "dirty": [], "drafts": 0}),
                         Some(d) => json!({
                             "checkout": true,
                             "dirty": d.iter().map(|(s, f)| json!({"state": s, "file": f})).collect::<Vec<_>>(),
+                            "drafts": drafts.as_ref().map(|d| d.puts().len() + d.dels().len()).unwrap_or(0),
                         }),
                     };
                     Ok(json!({
                         "dir": st.dir.display().to_string(),
                         "exists": st.exists(),
                         "writable": true,
-                        "entries": st.list().iter().map(entry_json).collect::<Vec<_>>(),
+                        "entries": entries,
                         "git": git,
                     }))
                 }
@@ -343,7 +355,441 @@ pub async fn memory_get(State(app): State<Shared>, Query(q): Query<GetQuery>) ->
     }
 }
 
-#[derive(Deserialize)]
+/* ───────── changes: «было → стало», the personal-data check, the human's «да» ───────── */
+
+/// What the human confirms with: nothing (a preview is made), or `confirm` with the token of the preview they saw and,
+/// when the text holds personal data or secrets, their explicit word about it.
+#[derive(Deserialize, Default)]
+pub struct Gate {
+    confirm: Option<bool>,
+    /// The token of the preview: a hash of «было → стало» and the findings. A write with another token (the file
+    /// changed meanwhile, the text was edited) is refused, so what is written is what was shown.
+    token: Option<String>,
+    /// «Да, записать» when something personal was found (a repository that is not public).
+    accept_risk: Option<bool>,
+    /// The stronger word for a public repository: by default nothing with findings is written there.
+    accept_public: Option<bool>,
+}
+
+/// Whether a universe's repository is public: a text with personal data is stricter there.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Visibility {
+    Public,
+    Private,
+    /// No remote: the repository is only on this machine.
+    Local,
+    /// A remote the hosting could not be asked about (no login, another hosting): treated as public.
+    Unknown,
+}
+
+impl Visibility {
+    pub fn strict(self) -> bool {
+        matches!(self, Visibility::Public | Visibility::Unknown)
+    }
+}
+
+type VisibilityCache = std::sync::Mutex<HashMap<String, (std::time::Instant, Visibility)>>;
+
+/// Asks the hosting once in ten minutes (`gh repo view`, `glab api`: the same as when a universe is added).
+async fn visibility_of(app: &Shared, root: &str) -> Visibility {
+    static CACHE: std::sync::OnceLock<VisibilityCache> = std::sync::OnceLock::new();
+    let cache = CACHE.get_or_init(|| std::sync::Mutex::new(HashMap::new()));
+    if let Some((at, v)) = cache.lock().ok().and_then(|c| c.get(root).copied()) {
+        if at.elapsed() < Duration::from_secs(600) {
+            return v;
+        }
+    }
+    let v = match crate::universe::inspect(&app.cfg, root).await {
+        Ok(i) if i.origin.is_none() => Visibility::Local,
+        Ok(i) => match i.private {
+            Some(true) => Visibility::Private,
+            Some(false) => Visibility::Public,
+            None => Visibility::Unknown,
+        },
+        Err(_) => Visibility::Unknown,
+    };
+    if let Ok(mut c) = cache.lock() {
+        c.insert(root.to_string(), (std::time::Instant::now(), v));
+    }
+    v
+}
+
+/// One file's change.
+#[derive(Debug, Clone, Serialize)]
+pub struct Change {
+    /// `add`, `change` or `delete`.
+    pub op: &'static str,
+    pub id: String,
+    /// Where the file is: a path for the Galaxy, `docs/memory/<id>.md` for a universe.
+    pub file: String,
+    pub before: Option<String>,
+    pub after: Option<String>,
+    #[serde(skip)]
+    entry: Option<Entry>,
+}
+
+#[derive(Debug, Serialize)]
+struct FindingOut {
+    file: String,
+    #[serde(flatten)]
+    f: Finding,
+}
+
+/// A change as the human will see it, before anything is written.
+struct Plan {
+    galaxy: String,
+    repo: String,
+    changes: Vec<Change>,
+    findings: Vec<FindingOut>,
+    visibility: Option<Visibility>,
+    /// The entries go to the drafts (outside the checkout), not to files.
+    draft: bool,
+    /// The same entries with what was found taken out, to offer instead.
+    redacted: Vec<Value>,
+}
+
+/// `none`: nothing found. `confirm`: something found, a «да» is needed. `block`: public repository, forbidden unless
+/// the human says it explicitly.
+fn risk_of(findings: &[FindingOut], vis: Option<Visibility>) -> &'static str {
+    if findings.is_empty() {
+        "none"
+    } else if vis.is_none_or(Visibility::strict) {
+        "block"
+    } else {
+        "confirm"
+    }
+}
+
+impl Plan {
+    fn risk(&self) -> &'static str {
+        risk_of(&self.findings, self.visibility)
+    }
+
+    fn token(&self) -> String {
+        token_of(&self.changes, &self.findings)
+    }
+
+    fn preview(&self) -> Value {
+        let level = if self.repo.is_empty() { "galaxy" } else { "universe" };
+        json!({
+            "ok": true, "preview": true, "token": self.token(), "level": level, "galaxy": self.galaxy, "repo": self.repo,
+            "draft": self.draft, "changes": self.changes, "findings": self.findings, "risk": self.risk(),
+            "visibility": self.visibility, "redacted": self.redacted,
+        })
+    }
+}
+
+fn token_of(changes: &[Change], findings: &[FindingOut]) -> String {
+    use sha2::{Digest, Sha256};
+    let body = serde_json::to_string(&(changes, findings)).unwrap_or_default();
+    let sum = Sha256::digest(body.as_bytes());
+    sum.iter().take(12).map(|b| format!("{b:02x}")).collect()
+}
+
+fn change_of(id: &str, file: String, before: Option<&Entry>, after: Option<Entry>) -> Change {
+    Change {
+        op: match (before, &after) {
+            (None, _) => "add",
+            (Some(_), Some(_)) => "change",
+            (Some(_), None) => "delete",
+        },
+        id: id.to_string(),
+        file,
+        before: before.map(memory::render_entry),
+        after: after.as_ref().map(memory::render_entry),
+        entry: after,
+    }
+}
+
+/// What the check finds in the entries that will be written; for a universe only (the Galaxy's memory is local).
+fn check_entries(changes: &[Change]) -> (Vec<FindingOut>, Vec<Value>) {
+    let own = memory_guard::own_terms();
+    let mut findings = Vec::new();
+    let mut redacted = Vec::new();
+    for c in changes {
+        let Some(e) = &c.entry else {
+            redacted.push(Value::Null);
+            continue;
+        };
+        let before = findings.len();
+        for (field, text) in [("title", &e.title), ("description", &e.description), ("body", &e.body)] {
+            for f in memory_guard::scan(text, field, &own) {
+                // the summary is cut from the body when the human wrote none: one hit, listed once
+                if !findings.iter().any(|o: &FindingOut| o.file == c.file && o.f.kind == f.kind && o.f.text == f.text) {
+                    findings.push(FindingOut { file: c.file.clone(), f });
+                }
+            }
+        }
+        if findings.len() > before {
+            redacted.push(json!({
+                "title": memory_guard::redact(&e.title, &own),
+                "description": memory_guard::redact(&e.description, &own),
+                "body": memory_guard::redact(&e.body, &own),
+            }));
+        } else {
+            redacted.push(Value::Null);
+        }
+    }
+    (findings, redacted)
+}
+
+/// A level of memory on this machine: the files, and (a universe in a git checkout) the drafts in front of them.
+struct Local {
+    store: memory::Store,
+    drafts: Option<memory::Drafts>,
+    root: Option<String>,
+}
+
+impl Local {
+    fn open(cfg: &crate::config::AppConfig, repo: &str) -> Result<Local, Fail> {
+        if repo.is_empty() {
+            return Ok(Local { store: memory::galaxy_store(cfg), drafts: None, root: None });
+        }
+        let root = memory::repo_root(cfg, repo).ok_or_else(|| Fail::new(404, "у этой вселенной нет папки на этой машине"))?;
+        let drafts = memory::git_dirty(&root).is_some().then(|| memory::Drafts::new(cfg, repo));
+        Ok(Local { store: memory::universe_store(&root, repo), drafts, root: Some(root) })
+    }
+
+    fn get(&self, id: &str) -> Option<Entry> {
+        match &self.drafts {
+            Some(d) => memory::effective_get(&self.store, d, id).filter(|(_, m)| *m != "deleted").map(|(e, _)| e),
+            None => self.store.get(id),
+        }
+    }
+
+    fn taken(&self, id: &str) -> bool {
+        self.store.dir.join(format!("{id}.md")).exists() || self.drafts.as_ref().is_some_and(|d| d.puts().iter().any(|e| e.id == id))
+    }
+
+    fn file(&self, id: &str, repo: &str) -> String {
+        if repo.is_empty() {
+            self.store.dir.join(format!("{id}.md")).display().to_string()
+        } else {
+            format!("{}/{id}.md", memory::UNIVERSE_DIR)
+        }
+    }
+}
+
+enum Req {
+    Save(SaveBody),
+    Delete { galaxy: String, repo: String, id: String },
+    Lines { repo: String, task: String, lines: Vec<Line> },
+}
+
+fn far_universe_refused(repo: &str, what: &str) -> Option<Fail> {
+    (!repo.is_empty()).then(|| Fail::new(403, format!("память вселенной живёт в git: {what}")))
+}
+
+/// Works out what a request would change, without writing anything.
+async fn plan(app: &Shared, req: &Req) -> Result<Plan, Fail> {
+    let (galaxy, repo) = match req {
+        Req::Save(b) => (b.galaxy.clone(), b.repo.clone()),
+        Req::Delete { galaxy, repo, .. } => (galaxy.clone(), repo.clone()),
+        Req::Lines { repo, .. } => (String::new(), repo.clone()),
+    };
+    if let Some(f) = bad_scope(&galaxy, &repo) {
+        return Err(f);
+    }
+    match req {
+        Req::Save(b) if !b.id.is_empty() && !memory::valid_stem(&b.id) => return Err(Fail::new(400, "недопустимое имя записи")),
+        Req::Delete { id, .. } if !memory::valid_stem(id) => return Err(Fail::new(400, "недопустимое имя записи")),
+        _ => {}
+    }
+    let default_kind = if repo.is_empty() { "rule" } else { "decision" };
+    let place = place_of(&galaxy).await?;
+    let mut draft = false;
+    let mut root = None;
+    let changes: Vec<Change> = match place {
+        Place::Home => {
+            let (cfg, repo2, req2) = (app.cfg.clone(), repo.clone(), req_clone(req));
+            let (changes, drafted, r) = tokio::task::spawn_blocking(move || -> Result<(Vec<Change>, bool, Option<String>), Fail> {
+                let lv = Local::open(&cfg, &repo2)?;
+                let now = now_ms();
+                let mut out: Vec<Change> = Vec::new();
+                match &req2 {
+                    Req::Save(b) => {
+                        let existing = if b.id.is_empty() { None } else { lv.get(&b.id) };
+                        let mut entry = memory::complete(merged(existing.clone(), b), default_kind, now).map_err(|e| Fail::new(422, e))?;
+                        memory::assign_id(&mut entry, |c| lv.taken(c)).map_err(|e| Fail::new(400, e))?;
+                        let file = lv.file(&entry.id, &repo2);
+                        out.push(change_of(&entry.id.clone(), file, existing.as_ref(), Some(entry)));
+                    }
+                    Req::Delete { id, .. } => {
+                        let existing = lv.get(id).ok_or_else(|| Fail::new(404, "такой записи нет"))?;
+                        out.push(change_of(id, lv.file(id, &repo2), Some(&existing), None));
+                    }
+                    Req::Lines { task, lines, .. } => {
+                        let mut taken: Vec<String> = Vec::new();
+                        for l in lines {
+                            let e = Entry { kind: l.kind.clone(), body: l.text.clone(), source: format!("task {task}"), ..Entry::default() };
+                            let mut e = memory::complete(e, "decision", now).map_err(|er| Fail::new(422, er))?;
+                            memory::assign_id(&mut e, |c| lv.taken(c) || taken.iter().any(|t| t == c)).map_err(|er| Fail::new(400, er))?;
+                            taken.push(e.id.clone());
+                            let (id, file) = (e.id.clone(), lv.file(&e.id, &repo2));
+                            out.push(change_of(&id, file, None, Some(e)));
+                        }
+                    }
+                }
+                Ok((out, lv.drafts.is_some(), lv.root.clone()))
+            })
+            .await
+            .map_err(|e| Fail::new(500, e.to_string()))??;
+            draft = drafted;
+            root = r;
+            changes
+        }
+        Place::Far(m) => {
+            if let Some(f) = far_universe_refused(&repo, "запишите её в своей галактике, а в далёкой она появится после pull") {
+                return Err(f);
+            }
+            let all = far_entries(app, &m, FAR_GALAXY_DIR).await?;
+            match req {
+                Req::Save(b) => {
+                    let existing = all.iter().find(|e| e.id == b.id).cloned();
+                    // a new entry has a slug for a name; one that is there keeps its name
+                    if !b.id.is_empty() && existing.is_none() && !memory::valid_id(&b.id) {
+                        return Err(Fail::new(400, "недопустимое имя записи"));
+                    }
+                    let mut entry = memory::complete(merged(existing.clone(), b), default_kind, now_ms()).map_err(|e| Fail::new(422, e))?;
+                    memory::assign_id(&mut entry, |c| all.iter().any(|e| e.id == c)).map_err(|e| Fail::new(400, e))?;
+                    vec![change_of(&entry.id, format!("{FAR_GALAXY_DIR}/{}.md", entry.id), existing.as_ref(), Some(entry.clone()))]
+                }
+                Req::Delete { id, .. } => {
+                    let existing = all.iter().find(|e| e.id == *id).ok_or_else(|| Fail::new(404, "такой записи нет"))?;
+                    vec![change_of(id, format!("{FAR_GALAXY_DIR}/{id}.md"), Some(existing), None)]
+                }
+                Req::Lines { .. } => return Err(Fail::new(403, "память вселенной живёт в git")),
+            }
+        }
+    };
+    if changes.iter().all(|c| c.op == "change" && c.before == c.after) {
+        return Err(Fail::new(422, "ничего не изменится: запись такая же"));
+    }
+    // The check is for what travels with git: a universe's memory (the Galaxy's stays on this machine).
+    let (findings, redacted, visibility) = if repo.is_empty() {
+        (Vec::new(), Vec::new(), None)
+    } else {
+        let (findings, redacted) = check_entries(&changes);
+        let vis = match (&root, findings.is_empty()) {
+            (Some(r), false) => Some(visibility_of(app, r).await),
+            _ => None,
+        };
+        (findings, redacted, vis)
+    };
+    Ok(Plan { galaxy, repo, changes, findings, visibility, draft, redacted })
+}
+
+fn req_clone(r: &Req) -> Req {
+    match r {
+        Req::Save(b) => Req::Save(b.clone()),
+        Req::Delete { galaxy, repo, id } => Req::Delete { galaxy: galaxy.clone(), repo: repo.clone(), id: id.clone() },
+        Req::Lines { repo, task, lines } => Req::Lines { repo: repo.clone(), task: task.clone(), lines: lines.clone() },
+    }
+}
+
+/// What the human's word allows: refuses a write that the preview did not show, or that holds personal data without
+/// their word for it.
+fn allowed(plan: &Plan, gate: &Gate) -> Result<(), Fail> {
+    if gate.token.as_deref() != Some(plan.token().as_str()) {
+        return Err(Fail::new(409, "запись изменилась с тех пор, как вы смотрели «было → стало»: посмотрите ещё раз"));
+    }
+    match plan.risk() {
+        "block" if gate.accept_public != Some(true) => Err(Fail::new(
+            403,
+            "в тексте найдены персональные данные или секреты, а репозиторий публичный (или это неизвестно): по умолчанию в него не пишем",
+        )),
+        "confirm" if gate.accept_risk != Some(true) && gate.accept_public != Some(true) => Err(Fail::new(
+            422,
+            "в тексте найдены персональные данные или секреты: нужно явное «да» (или обезличьте текст)",
+        )),
+        _ => Ok(()),
+    }
+}
+
+/// Writes a plan: files for the Galaxy (and a folder that is not in git), drafts for a universe in a git checkout.
+async fn execute(app: &Shared, plan: &Plan) -> Result<Value, Fail> {
+    let entries: Vec<(String, Option<Entry>)> = plan.changes.iter().map(|c| (c.id.clone(), c.entry.clone())).collect();
+    let saved: Vec<Entry>;
+    match place_of(&plan.galaxy).await? {
+        Place::Home => {
+            let (cfg, repo) = (app.cfg.clone(), plan.repo.clone());
+            saved = tokio::task::spawn_blocking(move || -> Result<Vec<Entry>, Fail> {
+                let lv = Local::open(&cfg, &repo)?;
+                let mut saved = Vec::new();
+                for (id, entry) in entries {
+                    match (entry, &lv.drafts) {
+                        (Some(e), Some(d)) => {
+                            d.put(&e).map_err(|er| Fail::new(500, er))?;
+                            saved.push(e);
+                        }
+                        (Some(e), None) => saved.push(lv.store.save(e).map_err(|er| Fail::new(500, er))?),
+                        (None, Some(d)) => d.delete(&id, lv.store.get(&id).is_some()).map_err(|er| Fail::new(500, er))?,
+                        (None, None) => {
+                            lv.store.delete(&id).map_err(|er| Fail::new(500, er))?;
+                        }
+                    }
+                }
+                Ok(saved)
+            })
+            .await
+            .map_err(|e| Fail::new(500, e.to_string()))??;
+            app::index_snapshot(app).await;
+        }
+        Place::Far(m) => {
+            let mut all = far_entries(app, &m, FAR_GALAXY_DIR).await?;
+            let mut writes = Vec::new();
+            let mut removes = Vec::new();
+            let mut done = Vec::new();
+            for (id, entry) in entries {
+                all.retain(|e| e.id != id);
+                match entry {
+                    Some(e) => {
+                        writes.push((format!("{}.md", e.id), memory::render_entry(&e)));
+                        all.push(e.clone());
+                        done.push(e);
+                    }
+                    None => removes.push(format!("{id}.md")),
+                }
+            }
+            writes.push((memory::INDEX.to_string(), memory::render_index("Память Галактики", &all)));
+            ssh_run(app, &m, &write_script(FAR_GALAXY_DIR, &writes, &removes)).await?;
+            remember_far(app, &m.label, all).await;
+            saved = done;
+        }
+    }
+    Ok(json!({
+        "ok": true, "draft": plan.draft, "saved": saved.iter().map(entry_json).collect::<Vec<_>>(),
+        "entry": saved.first().map(entry_json), "removed": plan.changes.iter().any(|c| c.op == "delete"),
+    }))
+}
+
+/// A request without `confirm` is a preview; with `confirm` and the preview's token it is written.
+async fn run(app: &Shared, req: Req, gate: &Gate) -> Result<Value, Fail> {
+    let p = plan(app, &req).await?;
+    if gate.confirm != Some(true) {
+        return Ok(p.preview());
+    }
+    allowed(&p, gate)?;
+    execute(app, &p).await
+}
+
+async fn remember_far(app: &Shared, label: &str, galaxy: Vec<Entry>) {
+    {
+        let mut all = app.far_memory.lock().await;
+        all.entry(label.to_string()).or_default().galaxy = galaxy;
+    }
+    app::index_snapshot(app).await;
+}
+
+fn respond(r: Result<Value, Fail>) -> Response {
+    match r {
+        Ok(v) => Json(v).into_response(),
+        Err(f) => f.into_response(),
+    }
+}
+
+#[derive(Deserialize, Clone)]
 pub struct SaveBody {
     #[serde(default)]
     galaxy: String,
@@ -361,6 +807,14 @@ pub struct SaveBody {
     body: String,
     #[serde(default)]
     source: String,
+}
+
+#[derive(Deserialize)]
+pub struct SaveReq {
+    #[serde(flatten)]
+    body: SaveBody,
+    #[serde(flatten)]
+    gate: Gate,
 }
 
 fn merged(existing: Option<Entry>, b: &SaveBody) -> Entry {
@@ -381,82 +835,14 @@ fn merged(existing: Option<Entry>, b: &SaveBody) -> Entry {
     }
 }
 
-async fn save_entry(app: &Shared, b: SaveBody) -> Result<Value, Fail> {
-    if let Some(f) = bad_scope(&b.galaxy, &b.repo) {
-        return Err(f);
-    }
-    if !b.id.is_empty() && !memory::valid_stem(&b.id) {
-        return Err(Fail::new(400, "недопустимое имя записи"));
-    }
-    let default_kind = if b.repo.is_empty() { "rule" } else { "decision" };
-    match place_of(&b.galaxy).await? {
-        Place::Home => {
-            let cfg = app.cfg.clone();
-            let saved = tokio::task::spawn_blocking(move || -> Result<Entry, Fail> {
-                let st = if b.repo.is_empty() {
-                    memory::galaxy_store(&cfg)
-                } else {
-                    let root = memory::repo_root(&cfg, &b.repo)
-                        .ok_or_else(|| Fail::new(404, "у этой вселенной нет папки на этой машине"))?;
-                    memory::universe_store(&root, &b.repo)
-                };
-                let existing = if b.id.is_empty() { None } else { st.get(&b.id) };
-                let entry = memory::complete(merged(existing, &b), default_kind, now_ms()).map_err(|e| Fail::new(422, e))?;
-                st.save(entry).map_err(|e| Fail::new(500, e))
-            })
-            .await
-            .map_err(|e| Fail::new(500, e.to_string()))??;
-            app::index_snapshot(app).await;
-            Ok(json!({"ok": true, "entry": entry_json(&saved)}))
-        }
-        Place::Far(m) => {
-            if !b.repo.is_empty() {
-                return Err(Fail::new(
-                    403,
-                    "память вселенной живёт в git: запишите её в своей галактике, а в далёкой она появится после pull",
-                ));
-            }
-            let mut all = far_entries(app, &m, FAR_GALAXY_DIR).await?;
-            let existing = all.iter().find(|e| e.id == b.id).cloned();
-            // a new entry has a slug for a name; one that is there keeps its name
-            if !b.id.is_empty() && existing.is_none() && !memory::valid_id(&b.id) {
-                return Err(Fail::new(400, "недопустимое имя записи"));
-            }
-            let mut entry = memory::complete(merged(existing, &b), default_kind, now_ms()).map_err(|e| Fail::new(422, e))?;
-            if entry.id.is_empty() {
-                entry.id = memory::unique_id(&memory::slugify(&entry.title), |c| all.iter().any(|e| e.id == c));
-            }
-            all.retain(|e| e.id != entry.id);
-            all.push(entry.clone());
-            let index = memory::render_index("Память Галактики", &all);
-            let writes = vec![
-                (format!("{}.md", entry.id), memory::render_entry(&entry)),
-                (memory::INDEX.to_string(), index),
-            ];
-            ssh_run(app, &m, &write_script(FAR_GALAXY_DIR, &writes, &[])).await?;
-            remember_far(app, &m.label, all).await;
-            Ok(json!({"ok": true, "entry": entry_json(&entry)}))
-        }
-    }
-}
-
-async fn remember_far(app: &Shared, label: &str, galaxy: Vec<Entry>) {
-    {
-        let mut all = app.far_memory.lock().await;
-        all.entry(label.to_string()).or_default().galaxy = galaxy;
-    }
-    app::index_snapshot(app).await;
-}
-
-/// `POST /api/memory/save`: a new entry (no `id`) or an edit.
-pub async fn memory_save(State(app): State<Shared>, headers: HeaderMap, Json(body): Json<SaveBody>) -> Response {
+/// `POST /api/memory/save`: a new entry (no `id`) or an edit. Without `confirm` it answers with what would change
+/// («было → стало», the level and file, what the personal-data check found); with `confirm` and that answer's `token`
+/// it writes. A universe in a git checkout gets a draft outside the checkout; its commit is `/api/memory/commit`.
+pub async fn memory_save(State(app): State<Shared>, headers: HeaderMap, Json(body): Json<SaveReq>) -> Response {
     if !same_origin(&headers) {
         return error(StatusCode::FORBIDDEN, "cross-origin request refused");
     }
-    match save_entry(&app, body).await {
-        Ok(v) => Json(v).into_response(),
-        Err(f) => f.into_response(),
-    }
+    respond(run(&app, Req::Save(body.body), &body.gate).await)
 }
 
 #[derive(Deserialize)]
@@ -466,113 +852,169 @@ pub struct DeleteBody {
     #[serde(default)]
     repo: String,
     id: String,
-    confirm: Option<bool>,
+    #[serde(flatten)]
+    gate: Gate,
 }
 
-async fn delete_entry(app: &Shared, b: DeleteBody) -> Result<Value, Fail> {
-    if b.confirm != Some(true) {
-        return Err(Fail::new(400, "нужно подтверждение"));
-    }
-    if let Some(f) = bad_scope(&b.galaxy, &b.repo) {
-        return Err(f);
-    }
-    if !memory::valid_stem(&b.id) {
-        return Err(Fail::new(400, "недопустимое имя записи"));
-    }
-    match place_of(&b.galaxy).await? {
-        Place::Home => {
-            let cfg = app.cfg.clone();
-            let (repo, id) = (b.repo.clone(), b.id.clone());
-            let gone = tokio::task::spawn_blocking(move || -> Result<bool, Fail> {
-                let st = if repo.is_empty() {
-                    memory::galaxy_store(&cfg)
-                } else {
-                    let root = memory::repo_root(&cfg, &repo)
-                        .ok_or_else(|| Fail::new(404, "у этой вселенной нет папки на этой машине"))?;
-                    memory::universe_store(&root, &repo)
-                };
-                st.delete(&id).map_err(|e| Fail::new(500, e))
-            })
-            .await
-            .map_err(|e| Fail::new(500, e.to_string()))??;
-            app::index_snapshot(app).await;
-            Ok(json!({"ok": true, "removed": gone}))
-        }
-        Place::Far(m) => {
-            if !b.repo.is_empty() {
-                return Err(Fail::new(403, "память вселенной живёт в git: удалите запись в своей галактике"));
-            }
-            let mut all = far_entries(app, &m, FAR_GALAXY_DIR).await?;
-            let had = all.iter().any(|e| e.id == b.id);
-            all.retain(|e| e.id != b.id);
-            let writes = vec![(memory::INDEX.to_string(), memory::render_index("Память Галактики", &all))];
-            ssh_run(app, &m, &write_script(FAR_GALAXY_DIR, &writes, &[format!("{}.md", b.id)])).await?;
-            remember_far(app, &m.label, all).await;
-            Ok(json!({"ok": true, "removed": had}))
-        }
-    }
-}
-
-/// `POST /api/memory/delete`: removes an entry's file (with `confirm: true`).
+/// `POST /api/memory/delete`: removes an entry, with the same preview and confirmation as a save.
 pub async fn memory_delete(State(app): State<Shared>, headers: HeaderMap, Json(body): Json<DeleteBody>) -> Response {
     if !same_origin(&headers) {
         return error(StatusCode::FORBIDDEN, "cross-origin request refused");
     }
-    match delete_entry(&app, body).await {
-        Ok(v) => Json(v).into_response(),
-        Err(f) => f.into_response(),
+    respond(run(&app, Req::Delete { galaxy: body.galaxy, repo: body.repo, id: body.id }, &body.gate).await)
+}
+
+#[derive(Deserialize)]
+pub struct DiscardBody {
+    repo: String,
+    id: String,
+}
+
+/// `POST /api/memory/discard`: drops a draft of a universe's entry (what git has stays). Nothing committed changes.
+pub async fn memory_discard(State(app): State<Shared>, headers: HeaderMap, Json(body): Json<DiscardBody>) -> Response {
+    if !same_origin(&headers) {
+        return error(StatusCode::FORBIDDEN, "cross-origin request refused");
+    }
+    if !taskmeta::valid_repo(&body.repo) || !memory::valid_stem(&body.id) {
+        return error(StatusCode::BAD_REQUEST, "bad name");
+    }
+    let drafts = memory::Drafts::new(&app.cfg, &body.repo);
+    if drafts.discard(&body.id) {
+        Json(json!({"ok": true})).into_response()
+    } else {
+        error(StatusCode::NOT_FOUND, "черновика этой записи нет")
     }
 }
 
 #[derive(Deserialize)]
 pub struct CommitBody {
     repo: String,
-    confirm: Option<bool>,
+    #[serde(flatten)]
+    gate: Gate,
 }
 
-/// `POST /api/memory/commit`: commits the changed files of a universe's `docs/memory` (and only them) in its checkout.
+fn read_text(path: &std::path::Path) -> Option<String> {
+    use std::io::Read;
+    let mut buf = Vec::new();
+    std::fs::File::open(path).ok()?.take(200_000).read_to_end(&mut buf).ok()?;
+    Some(String::from_utf8_lossy(&buf).into_owned())
+}
+
+/// What a commit of a universe's memory would put into git: the drafts, and whatever else in `docs/memory` is uncommitted
+/// in the checkout (the human's or an agent's own files). Nothing is written.
+fn commit_plan(cfg: &crate::config::AppConfig, repo: &str) -> Result<(String, Vec<Change>), Fail> {
+    let root = memory::repo_root(cfg, repo).ok_or_else(|| Fail::new(404, "у этой вселенной нет папки на этой машине"))?;
+    let dirty = memory::git_dirty(&root).ok_or_else(|| Fail::new(422, "это не git-репозиторий"))?;
+    let drafts = memory::Drafts::new(cfg, repo);
+    let conflicts = memory::draft_conflicts(&root, &drafts);
+    if !conflicts.is_empty() {
+        return Err(Fail::new(
+            409,
+            format!("в чекауте есть незакоммиченные правки тех же файлов: {}. Закоммитьте или отмените их, потом коммитьте память.", conflicts.join(", ")),
+        ));
+    }
+    let mut changes: Vec<Change> = Vec::new();
+    let rel = |id: &str| format!("{}/{id}.md", memory::UNIVERSE_DIR);
+    for e in drafts.puts() {
+        let before = memory::git_head_text(&root, &rel(&e.id));
+        changes.push(Change {
+            op: if before.is_some() { "change" } else { "add" },
+            id: e.id.clone(),
+            file: rel(&e.id),
+            before,
+            after: Some(memory::render_entry(&e)),
+            entry: Some(e),
+        });
+    }
+    for id in drafts.dels() {
+        let before = memory::git_head_text(&root, &rel(&id));
+        changes.push(Change { op: "delete", id: id.clone(), file: rel(&id), before, after: None, entry: None });
+    }
+    let index = format!("{}/{}", memory::UNIVERSE_DIR, memory::INDEX);
+    for (state, file) in dirty {
+        if file == index || changes.iter().any(|c| c.file == file) {
+            continue;
+        }
+        let id = file.rsplit('/').next().unwrap_or(&file).trim_end_matches(".md").to_string();
+        let before = memory::git_head_text(&root, &file);
+        let after = read_text(&std::path::Path::new(&root).join(&file));
+        let op = if state.contains('D') || after.is_none() { "delete" } else if before.is_some() { "change" } else { "add" };
+        changes.push(Change { op, id, file, before, after: if op == "delete" { None } else { after }, entry: None });
+    }
+    if changes.is_empty() {
+        return Err(Fail::new(422, "в docs/memory нечего коммитить"));
+    }
+    Ok((root, changes))
+}
+
+/// `POST /api/memory/commit`: puts a universe's drafts into `docs/memory/` and commits them (and only that folder). The
+/// same preview, check and confirmation as a save: the text goes into git here, so it is looked at once more.
 pub async fn memory_commit(State(app): State<Shared>, headers: HeaderMap, Json(body): Json<CommitBody>) -> Response {
     if !same_origin(&headers) {
         return error(StatusCode::FORBIDDEN, "cross-origin request refused");
     }
     let result = async {
-        if body.confirm != Some(true) {
-            return Err(Fail::new(400, "нужно подтверждение"));
-        }
         if !taskmeta::valid_repo(&body.repo) {
             return Err(Fail::new(400, "bad universe name"));
         }
-        let cfg = app.cfg.clone();
-        let repo = body.repo.clone();
-        tokio::task::spawn_blocking(move || -> Result<Value, Fail> {
-            let root = memory::repo_root(&cfg, &repo)
-                .ok_or_else(|| Fail::new(404, "у этой вселенной нет папки на этой машине"))?;
-            let dirty = memory::git_dirty(&root).ok_or_else(|| Fail::new(422, "это не git-репозиторий"))?;
-            if dirty.is_empty() {
-                return Err(Fail::new(422, "в docs/memory нечего коммитить"));
+        let (cfg, repo) = (app.cfg.clone(), body.repo.clone());
+        let (root, changes) = tokio::task::spawn_blocking(move || commit_plan(&cfg, &repo))
+            .await
+            .map_err(|e| Fail::new(500, e.to_string()))??;
+        // what goes into git is checked as a whole, header and body
+        let own = memory_guard::own_terms();
+        let mut findings = Vec::new();
+        for c in &changes {
+            if let Some(after) = &c.after {
+                for f in memory_guard::scan(after, "text", &own) {
+                    findings.push(FindingOut { file: c.file.clone(), f });
+                }
             }
-            let titles: Vec<String> = memory::universe_store(&root, &repo)
-                .list()
-                .into_iter()
-                .filter(|e| dirty.iter().any(|(_, f)| *f == format!("{}/{}.md", memory::UNIVERSE_DIR, e.id)))
-                .map(|e| e.title)
-                .collect();
-            let message = if titles.is_empty() {
-                "Память вселенной".to_string()
-            } else {
-                format!("Память вселенной: {}", memory::cut(&titles.join("; "), 100))
-            };
-            let hash = memory::git_commit(&root, &message).map_err(|e| Fail::new(422, e))?;
-            Ok(json!({"ok": true, "commit": hash, "message": message, "files": dirty.len()}))
+        }
+        let vis = if findings.is_empty() { None } else { Some(visibility_of(&app, &root).await) };
+        let token = token_of(&changes, &findings);
+        let risk = risk_of(&findings, vis);
+        if body.gate.confirm != Some(true) {
+            return Ok(json!({
+                "ok": true, "preview": true, "token": token, "level": "universe", "repo": body.repo, "commit": true,
+                "changes": changes, "findings": findings, "risk": risk, "visibility": vis, "redacted": [],
+            }));
+        }
+        if body.gate.token.as_deref() != Some(token.as_str()) {
+            return Err(Fail::new(409, "память изменилась с тех пор, как вы смотрели список: посмотрите ещё раз"));
+        }
+        match risk {
+            "block" if body.gate.accept_public != Some(true) => {
+                return Err(Fail::new(403, "в файлах найдены персональные данные или секреты, а репозиторий публичный (или это неизвестно): по умолчанию в него не коммитим"));
+            }
+            "confirm" if body.gate.accept_risk != Some(true) && body.gate.accept_public != Some(true) => {
+                return Err(Fail::new(422, "в файлах найдены персональные данные или секреты: нужно явное «да»"));
+            }
+            _ => {}
+        }
+        let titles: Vec<String> = changes
+            .iter()
+            .filter_map(|c| c.entry.as_ref().map(|e| e.title.clone()).or_else(|| c.before.as_deref().map(|b| memory::parse_entry(&c.id, b).title)))
+            .collect();
+        let message = if titles.is_empty() {
+            "Память вселенной".to_string()
+        } else {
+            format!("Память вселенной: {}", memory::cut(&titles.join("; "), 100))
+        };
+        let (cfg, repo, msg) = (app.cfg.clone(), body.repo.clone(), message.clone());
+        let n = changes.len();
+        let hash = tokio::task::spawn_blocking(move || {
+            let drafts = memory::Drafts::new(&cfg, &repo);
+            memory::commit_drafts(&root, &repo, &drafts, &msg)
         })
         .await
         .map_err(|e| Fail::new(500, e.to_string()))?
+        .map_err(|e| Fail::new(422, e))?;
+        app::index_snapshot(&app).await;
+        Ok(json!({"ok": true, "commit": hash, "message": message, "files": n}))
     }
     .await;
-    match result {
-        Ok(v) => Json(v).into_response(),
-        Err(f) => f.into_response(),
-    }
+    respond(result)
 }
 
 #[derive(Deserialize)]
@@ -779,33 +1221,22 @@ pub struct ResolveBody {
     lines: Option<Vec<Line>>,
 }
 
-/// Writes the lines into the universe's memory, all or none: every line is checked before the first is written.
-async fn keep_lines(app: &Shared, repo: &str, task: &str, lines: Vec<Line>) -> Result<Vec<Entry>, Fail> {
-    let (cfg, repo, task) = (app.cfg.clone(), repo.to_string(), task.to_string());
-    let saved = tokio::task::spawn_blocking(move || -> Result<Vec<Entry>, Fail> {
-        let root = memory::repo_root(&cfg, &repo).ok_or_else(|| Fail::new(404, "у этой вселенной нет папки на этой машине"))?;
-        let st = memory::universe_store(&root, &repo);
-        let now = now_ms();
-        let entries = lines
-            .iter()
-            .map(|l| {
-                let e = Entry { kind: l.kind.clone(), body: l.text.clone(), source: format!("task {task}"), ..Entry::default() };
-                memory::complete(e, "decision", now).map_err(|er| Fail::new(422, er))
-            })
-            .collect::<Result<Vec<_>, _>>()?;
-        entries.into_iter().map(|e| st.save(e).map_err(|er| Fail::new(500, er))).collect()
-    })
-    .await
-    .map_err(|e| Fail::new(500, e.to_string()))??;
-    app::index_snapshot(app).await;
-    Ok(saved)
+#[derive(Deserialize)]
+pub struct ResolveReq {
+    #[serde(flatten)]
+    body: ResolveBody,
+    #[serde(flatten)]
+    gate: Gate,
 }
 
-/// `POST /api/memory/suggestion`: keeps the suggested lines in the universe's memory, or drops them.
-pub async fn memory_suggestion(State(app): State<Shared>, headers: HeaderMap, Json(body): Json<ResolveBody>) -> Response {
+/// `POST /api/memory/suggestion`: keeps the suggested lines in the universe's memory, or drops them. Keeping is a
+/// change like any other: without `confirm` the answer is «было → стало» and the check; with it the lines go to the
+/// universe's drafts (or its files, in a folder that is not in git), all or none.
+pub async fn memory_suggestion(State(app): State<Shared>, headers: HeaderMap, Json(req): Json<ResolveReq>) -> Response {
     if !same_origin(&headers) {
         return error(StatusCode::FORBIDDEN, "cross-origin request refused");
     }
+    let (body, gate) = (req.body, req.gate);
     let result = async {
         let row = app
             .db
@@ -829,15 +1260,19 @@ pub async fn memory_suggestion(State(app): State<Shared>, headers: HeaderMap, Js
                 if lines.is_empty() {
                     return Err(Fail::new(422, "нет строк для записи: «Не нужно» отклонит предложение"));
                 }
+                let req = Req::Lines { repo: row.repo.clone(), task: row.task.clone(), lines };
+                if gate.confirm != Some(true) {
+                    return run(&app, req, &gate).await;
+                }
                 // One accept at a time: a second, concurrent one finds the suggestion taken.
                 if !app.db.suggest_take(&row.task) {
                     return Err(Fail::new(409, "это предложение уже обрабатывается"));
                 }
-                match keep_lines(&app, &row.repo, &row.task, lines).await {
-                    Ok(saved) => {
+                match run(&app, req, &gate).await {
+                    Ok(v) => {
                         app.db.suggest_set_state(&row.task, "done");
                         sync_snapshot(&app).await;
-                        Ok(json!({"ok": true, "saved": saved.iter().map(entry_json).collect::<Vec<_>>()}))
+                        Ok(v)
                     }
                     Err(f) => {
                         app.db.suggest_set_state(&row.task, "pending");
@@ -849,10 +1284,7 @@ pub async fn memory_suggestion(State(app): State<Shared>, headers: HeaderMap, Js
         }
     }
     .await;
-    match result {
-        Ok(v) => Json(v).into_response(),
-        Err(f) => f.into_response(),
-    }
+    respond(result)
 }
 
 #[cfg(test)]
@@ -931,5 +1363,77 @@ mod tests {
         assert!(got[1].is_empty());
         run(&write_script(FAR_GALAXY_DIR, &[], &["a.md".into()]));
         assert!(parse_read(&run(&read_script(&[FAR_GALAXY_DIR.into()])), 1)[0].is_empty());
+    }
+
+    fn plan_with(body: &str, vis: Option<Visibility>) -> Plan {
+        let mut e = memory::complete(Entry { title: "Т".into(), body: body.into(), ..Entry::default() }, "decision", 0).unwrap();
+        e.id = "t".into();
+        let changes = vec![change_of("t", "docs/memory/t.md".into(), None, Some(e))];
+        let (findings, redacted) = check_entries(&changes);
+        Plan { galaxy: String::new(), repo: "demo".into(), changes, findings, visibility: vis, draft: true, redacted }
+    }
+
+    fn gate(token: &str, risk: bool, public: bool) -> Gate {
+        Gate { confirm: Some(true), token: Some(token.into()), accept_risk: Some(risk).filter(|r| *r), accept_public: Some(public).filter(|p| *p) }
+    }
+
+    #[test]
+    fn a_change_shows_was_and_now_with_the_level_and_file() {
+        let before = Entry { id: "t".into(), title: "Т".into(), body: "старое".into(), kind: "decision".into(), ..Entry::default() };
+        let after = Entry { body: "новое".into(), ..before.clone() };
+        let c = change_of("t", "docs/memory/t.md".into(), Some(&before), Some(after));
+        assert_eq!(c.op, "change");
+        assert!(c.before.as_deref().unwrap().contains("старое") && c.after.as_deref().unwrap().contains("новое"));
+        assert_eq!(change_of("t", "f".into(), None, Some(before.clone())).op, "add");
+        let d = change_of("t", "f".into(), Some(&before), None);
+        assert_eq!((d.op, d.after.is_none()), ("delete", true));
+    }
+
+    #[test]
+    fn clean_text_needs_only_the_token_of_the_preview() {
+        let p = plan_with("Решили сливать squash.", None);
+        assert_eq!(p.risk(), "none");
+        assert!(allowed(&p, &gate(&p.token(), false, false)).is_ok());
+        let err = allowed(&p, &gate("stale", false, false)).unwrap_err();
+        assert!(format!("{err:?}").len() > 0);
+        let other = plan_with("Решили сливать merge.", None);
+        assert_ne!(p.token(), other.token(), "another text is another token: what is written is what was shown");
+        assert!(allowed(&p, &Gate::default()).is_err(), "no token, no write");
+    }
+
+    #[test]
+    fn personal_data_in_a_private_repository_needs_an_explicit_yes() {
+        let p = plan_with("Сервер 203.0.113.7 за VPN", Some(Visibility::Private));
+        assert_eq!(p.risk(), "confirm");
+        assert!(p.findings.iter().any(|f| f.f.kind == "ip"));
+        assert!(p.redacted[0]["body"].as_str().unwrap_or("").contains("<ip>"), "an anonymised text is offered");
+        assert!(allowed(&p, &gate(&p.token(), false, false)).is_err(), "without the «да» nothing is written");
+        assert!(allowed(&p, &gate(&p.token(), true, false)).is_ok());
+        let local = plan_with("Сервер 203.0.113.7", Some(Visibility::Local));
+        assert_eq!(local.risk(), "confirm", "a repository only on this machine is not public");
+    }
+
+    #[test]
+    fn in_a_public_or_unknown_repository_findings_are_forbidden_by_default() {
+        for vis in [Some(Visibility::Public), Some(Visibility::Unknown), None] {
+            let p = plan_with("пишите ivan@corp-mail.example.org", vis);
+            assert_eq!(p.risk(), "block", "{vis:?}");
+            assert!(allowed(&p, &gate(&p.token(), true, false)).is_err(), "the ordinary «да» is not enough: {vis:?}");
+            assert!(allowed(&p, &gate(&p.token(), false, true)).is_ok(), "only the explicit word for a public repository");
+        }
+        // clean text is no business of the check
+        assert_eq!(plan_with("Решили.", Some(Visibility::Public)).risk(), "none");
+    }
+
+    #[test]
+    fn the_check_looks_at_title_description_and_body_and_names_the_file() {
+        let mut e = Entry { id: "t".into(), title: "Хост db01.office.local".into(), description: "см. /home/ivan/x".into(), body: "token=abc123XYZ789".into(), kind: "decision".into(), ..Entry::default() };
+        e.added = "2026-10-21".into();
+        let (f, r) = check_entries(&[change_of("t", "docs/memory/t.md".into(), None, Some(e))]);
+        let got: Vec<(&str, &str)> = f.iter().map(|x| (x.f.field.as_str(), x.f.kind)).collect();
+        assert_eq!(got, [("title", "host"), ("description", "path"), ("body", "secret")]);
+        assert!(f.iter().all(|x| x.file == "docs/memory/t.md"));
+        assert!(f[2].f.text.ends_with('…'), "a secret is not echoed");
+        assert!(!r[0].is_null());
     }
 }

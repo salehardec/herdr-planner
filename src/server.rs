@@ -67,6 +67,7 @@ pub fn router(app: Shared) -> Router {
         .route("/api/memory/save", post(crate::memory_api::memory_save))
         .route("/api/memory/delete", post(crate::memory_api::memory_delete))
         .route("/api/memory/commit", post(crate::memory_api::memory_commit))
+        .route("/api/memory/discard", post(crate::memory_api::memory_discard))
         .route("/api/memory/settings", post(crate::memory_api::memory_settings))
         .route("/api/memory/connect", post(crate::memory_api::memory_connect))
         .route("/api/memory/suggestion", post(crate::memory_api::memory_suggestion))

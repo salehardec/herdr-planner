@@ -16,6 +16,8 @@ export interface MemEntry {
   added: string;
   source: string;
   at: number;
+  /** A universe's draft (outside the checkout, not in git yet): `new`, `changed`, `deleted`; empty for a committed entry. */
+  draft?: string;
 }
 
 /** The memory block in the board's `coordinator.instructions`. */
@@ -50,7 +52,7 @@ export interface MemData {
   foreign?: { program: string; label: string; dir: string; entries: MemEntry[] }[];
   connect?: MemConnect;
   settings?: { suggest: boolean };
-  git?: { checkout: boolean; dirty: { state: string; file: string }[] };
+  git?: { checkout: boolean; dirty: { state: string; file: string }[]; drafts: number };
   suggestions?: MemSuggestion[];
   note?: string;
 }
@@ -96,19 +98,79 @@ export interface SaveBody {
   source?: string;
 }
 
-export const saveEntry = async (b: SaveBody): Promise<MemEntry> => {
-  const r = await post<{ entry: MemEntry }>('/api/memory/save', b);
+/** One file's change, as the human is shown it before anything is written. */
+export interface MemChange {
+  op: 'add' | 'change' | 'delete';
+  id: string;
+  /** A path for the Galaxy, `docs/memory/<id>.md` for a universe. */
+  file: string;
+  before: string | null;
+  after: string | null;
+}
+
+/** What the check for personal data and secrets found (a secret only by its first letters). */
+export interface MemFinding {
+  file: string;
+  kind: 'ip' | 'email' | 'host' | 'secret' | 'path' | 'person' | 'own';
+  text: string;
+  field: string;
+  line: number;
+}
+
+/** The answer to a change without `confirm`: «было → стало», where it goes, what was found. `risk`: `none`; `confirm` (a
+ *  «да» about the findings is needed); `block` (a public repository: forbidden unless said explicitly). */
+export interface MemPreview {
+  token: string;
+  level: 'galaxy' | 'universe';
+  galaxy: string;
+  repo: string;
+  /** The entries go to the universe's drafts (outside the checkout), not to files. */
+  draft: boolean;
+  /** This is a commit of the drafts, not a change of an entry. */
+  commit?: boolean;
+  changes: MemChange[];
+  findings: MemFinding[];
+  risk: 'none' | 'confirm' | 'block';
+  visibility: 'public' | 'private' | 'local' | 'unknown' | null;
+  /** The same entries without what was found: `{title, description, body}` per change, `null` where nothing was found. */
+  redacted: ({ title: string; description: string; body: string } | null)[];
+}
+
+/** What the human says when they confirm a change with findings. */
+export interface Accept {
+  accept_risk?: boolean;
+  accept_public?: boolean;
+}
+
+/** Without a token a call only previews; with it (and `confirm`) it writes. */
+const gate = (token: string, a: Accept): Record<string, unknown> => ({ confirm: true, token, ...a });
+
+export const previewSave = (b: SaveBody): Promise<MemPreview> => post<MemPreview>('/api/memory/save', b);
+
+export const saveEntry = async (b: SaveBody, token: string, a: Accept = {}): Promise<MemEntry> => {
+  const r = await post<{ entry: MemEntry }>('/api/memory/save', { ...b, ...gate(token, a) });
   void loadMemory(b.galaxy, b.repo);
   return r.entry;
 };
 
-export const deleteEntry = async (galaxy: string, repo: string, id: string): Promise<void> => {
-  await post('/api/memory/delete', { galaxy, repo, id, confirm: true });
+export const previewDelete = (galaxy: string, repo: string, id: string): Promise<MemPreview> =>
+  post<MemPreview>('/api/memory/delete', { galaxy, repo, id });
+
+export const deleteEntry = async (galaxy: string, repo: string, id: string, token: string, a: Accept = {}): Promise<void> => {
+  await post('/api/memory/delete', { galaxy, repo, id, ...gate(token, a) });
   void loadMemory(galaxy, repo);
 };
 
-export const commitMemory = async (repo: string): Promise<{ commit: string; message: string; files: number }> => {
-  const r = await post<{ commit: string; message: string; files: number }>('/api/memory/commit', { repo, confirm: true });
+/** Drops a universe's draft of an entry (what git has stays). */
+export const discardDraft = async (repo: string, id: string): Promise<void> => {
+  await post('/api/memory/discard', { repo, id });
+  void loadMemory('', repo);
+};
+
+export const previewCommit = (repo: string): Promise<MemPreview> => post<MemPreview>('/api/memory/commit', { repo });
+
+export const commitMemory = async (repo: string, token: string, a: Accept = {}): Promise<{ commit: string; message: string; files: number }> => {
+  const r = await post<{ commit: string; message: string; files: number }>('/api/memory/commit', { repo, ...gate(token, a) });
   void loadMemory('', repo);
   return r;
 };
@@ -124,9 +186,15 @@ export const setSuggest = async (suggest: boolean): Promise<void> => {
   void loadMemory('', '');
 };
 
-export const resolveSuggestion = async (
-  task: string, action: 'accept' | 'dismiss', lines: { kind: string; text: string }[] = [],
-): Promise<{ saved: MemEntry[] }> => post<{ saved: MemEntry[] }>('/api/memory/suggestion', action === 'accept' ? { task, action, lines } : { task, action });
+type Line = { kind: string; text: string };
+
+export const previewSuggestion = (task: string, lines: Line[]): Promise<MemPreview> =>
+  post<MemPreview>('/api/memory/suggestion', { task, action: 'accept', lines });
+
+export const keepSuggestion = (task: string, lines: Line[], token: string, a: Accept = {}): Promise<{ saved: MemEntry[] }> =>
+  post<{ saved: MemEntry[] }>('/api/memory/suggestion', { task, action: 'accept', lines, ...gate(token, a) });
+
+export const dismissSuggestion = (task: string): Promise<unknown> => post('/api/memory/suggestion', { task, action: 'dismiss' });
 
 /** An entry to show: the search found it. The panel opens it and scrolls to it. */
 export const memFocus = signal<{ galaxy: string; repo: string; id: string } | null>(null);

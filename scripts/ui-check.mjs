@@ -1918,6 +1918,13 @@ const coordFiles = join(fixture || '', 'board', 'coordinator', 'default', 'chat'
 const readFile = (p) => (existsSync(p) ? readFileSync(p, 'utf8') : '');
 const filesIn = (d) => (existsSync(d) ? readdirSync(d).filter((f) => f.endsWith('.md') && f !== 'MEMORY.md') : []);
 const BLOCK = '<!-- herdr-planner:memory -->';
+const alphaRoot = join(fixture || '', 'projects', 'AI', 'alpha');
+// The planner's drafts of a universe's memory (outside the checkout), and what git says of a checkout.
+const draftsOf = (repo) => join(fixture || '', 'state', 'herdr-planner', 'memory-drafts', repo, 'put');
+const gitStatus = (root) => execFileSync('git', ['-C', root, 'status', '--porcelain', '--untracked-files=all']).toString();
+// A memory change shows «было → стало» first: wait for the card; «да» is its confirm button.
+const waitCard = () => waitFor('!!document.querySelector("#mem-chg")', 10000);
+const sayYes = () => click('#mem-chg-confirm');
 const quasarOf = async (galaxy = '') => {
   await evalJs(`planner.navigateTo({kind:'quasar',galaxy:${JSON.stringify(galaxy)},id:'quasar'})`);
   await waitFor('world.debug().flight === "idle"', 15000);
@@ -1958,6 +1965,9 @@ section('memory galaxy', async () => {
   await typeIn('#mem-kind', 'pitfall');
   await typeIn('#mem-body', 'Локальный Postgres слушает 5433, а не 5432.');
   await click('#mem-save');
+  check('saving shows the change first: level, file, was → will be', await waitCard() && (await text('#mem-chg-where')).includes('Галактика') && (await text('#mem-chg .mm-chg-file')).endsWith('porty-postgres.md') && (await text('#mem-chg .mm-was')).includes('не было') && (await text('#mem-chg .mm-now')).includes('5433'), await text('#mem-chg'));
+  check('and writes nothing until the human confirms', !existsSync(join(memDir, 'porty-postgres.md')));
+  await sayYes();
   check('a new entry is a Markdown file with a header', await waitLog(() => { const t = readFile(join(memDir, 'porty-postgres.md')); return t.includes('title: Порты Postgres') && t.includes('type: pitfall') && t.includes('5433') && t.startsWith('---\n'); }, 8000), readFile(join(memDir, 'porty-postgres.md')));
   check('it is in the list and the index', await waitFor('!!document.querySelector(\'#mem-galaxy-list [data-mem="porty-postgres"]\')', 6000) && readFile(join(memDir, 'MEMORY.md')).includes('(porty-postgres.md)'));
   // edit: the id stays
@@ -1966,17 +1976,16 @@ section('memory galaxy', async () => {
   await waitFor('!!document.querySelector("#mem-form")', 3000);
   await typeIn('#mem-body', 'Локальный Postgres слушает 5434.');
   await click('#mem-save');
+  check('an edit shows was (5433) → will be (5434) and writes nothing yet', await waitCard() && (await text('#mem-chg .mm-was')).includes('5433') && (await text('#mem-chg .mm-now')).includes('5434') && readFile(join(memDir, 'porty-postgres.md')).includes('5433'), await text('#mem-chg'));
+  await sayYes();
   check('an edit rewrites the same file', await waitLog(() => readFile(join(memDir, 'porty-postgres.md')).includes('5434') && filesIn(memDir).filter((f) => f.startsWith('porty')).length === 1, 8000));
-  // delete: two presses
+  // delete: the card first (was → nothing), the file goes after the human's yes
   await waitFor('!!document.querySelector(\'[data-mem="porty-postgres"]\')', 4000);
   if (!(await exists('[data-mem="porty-postgres"] [data-act="mem-del"]'))) await click('[data-mem="porty-postgres"] .mm-line');
   await click('[data-mem="porty-postgres"] [data-act="mem-del"]');
-  await sleep(250);
-  check('delete asks again first', existsSync(join(memDir, 'porty-postgres.md')) && (await text('[data-mem="porty-postgres"] [data-act="mem-del"]')).includes('Точно'));
-  await sleep(500);
-  await click('[data-mem="porty-postgres"] [data-act="mem-del"]');
-  check('the second press removes the file and the index line', await waitLog(() => !existsSync(join(memDir, 'porty-postgres.md')) && !readFile(join(memDir, 'MEMORY.md')).includes('porty-postgres'), 8000));
-
+  check('delete shows the file that goes away, and keeps it until the yes', await waitCard() && (await text('#mem-chg .mm-was')).includes('5434') && (await text('#mem-chg .mm-now')).includes('удалена') && existsSync(join(memDir, 'porty-postgres.md')), await text('#mem-chg'));
+  await sayYes();
+  check('the yes removes the file and the index line', await waitLog(() => !existsSync(join(memDir, 'porty-postgres.md')) && !readFile(join(memDir, 'MEMORY.md')).includes('porty-postgres'), 8000));
   // an agent adds a file by hand (no planner): it appears, and the index follows
   writeFileSync(join(memDir, 'ruchnaya-zapis.md'), '---\nname: ruchnaya-zapis\ntitle: Ручная запись\ndescription: добавил агент\ntype: rule\n---\n\nФайл положен руками, без планировщика.\n');
   check('a file put there by hand shows up and gets into the index', await waitFor('!!document.querySelector(\'#mem-galaxy-list [data-mem="ruchnaya-zapis"]\')', 15000) && await waitLog(() => readFile(join(memDir, 'MEMORY.md')).includes('(ruchnaya-zapis.md)'), 15000));
@@ -1991,16 +2000,18 @@ section('memory galaxy', async () => {
   await waitFor('!!document.querySelector("#mem-form")', 3000);
   await typeIn('#mem-body', 'Правка: GitLab — без PR.');
   await click('#mem-save');
+  await waitCard();
+  await sayYes();
   check('one of them can be edited, and keeps its file name', await waitLog(() => readFile(join(memDir, 'GitLab.md')).includes('без PR') && filesIn(memDir).filter((f) => f.toLowerCase().startsWith('gitlab')).length === 2, 8000), filesIn(memDir).join(','));
   await waitFor('!!document.querySelector(\'[data-mem="Порты БД"]\')', 4000);
   if (!(await exists('[data-mem="Порты БД"] [data-act="mem-del"]'))) await click('[data-mem="Порты БД"] .mm-line');
   await click('[data-mem="Порты БД"] [data-act="mem-del"]');
-  await sleep(700);
-  await click('[data-mem="Порты БД"] [data-act="mem-del"]');
+  await waitCard();
+  await sayYes();
   check('and another deleted', await waitLog(() => !existsSync(join(memDir, 'Порты БД.md')), 8000));
   await click('[data-mem="GitLab"] [data-act="mem-del"]');
-  await sleep(700);
-  await click('[data-mem="GitLab"] [data-act="mem-del"]');
+  await waitCard();
+  await sayYes();
   check('the rest too', await waitLog(() => !existsSync(join(memDir, 'GitLab.md')), 8000));
   // connect: the board's setting coordinator.instructions, «было → стало», two presses, the board's own set
   const setsBefore = setCalls('coordinator.instructions').length;
@@ -2063,6 +2074,8 @@ section('memory galaxy', async () => {
   await waitFor('!!document.querySelector("#remember")', 3000);
   await typeIn('#rem-title', 'Ход работ по ALP-9');
   await click('#rem-go');
+  check('«Запомнить» shows was → will be first, with the level, and writes nothing', await waitCard() && (await text('#mem-chg-where')).includes('Галактика') && (await text('#mem-chg .mm-now')).includes('Ответ 9') && !filesIn(memDir).some((x) => readFile(join(memDir, x)).includes('Ответ 9')), await text('#mem-chg'));
+  await sayYes();
   check('«Запомнить» writes the file in the Galaxy folder, with where it came from', await waitLog(() => { const f = filesIn(memDir).find((x) => readFile(join(memDir, x)).includes('Ответ 9')); return !!f && readFile(join(memDir, f)).includes('source: chat') && readFile(join(memDir, f)).includes('title: Ход работ по ALP-9'); }, 8000), filesIn(memDir).join(','));
   check('and the dialog closes', await waitFor('!document.querySelector("#remember")', 3000));
   await press('Escape');
@@ -2074,8 +2087,12 @@ section('memory galaxy', async () => {
   await click('#closing [data-act="to-memory"]');
   await waitFor('!!document.querySelector("#remember")', 3000);
   check('from a closing note the dialog starts on the task\'s universe', (await evalJs('document.querySelector("#rem-universe").classList.contains("on")')) && (await evalJs('document.querySelector("#rem-repo").value')) === 'alpha' && (await evalJs('document.querySelector("#rem-text").value')).includes('export button'));
+  const alphaStatus = gitStatus(alphaRoot);
   await click('#rem-go');
-  check('it is written into the repository: docs/memory/ of alpha, with the task as its source', await waitLog(() => filesIn(alphaMem).some((f) => readFile(join(alphaMem, f)).includes('source: task alpha/15')), 8000), filesIn(alphaMem).join(','));
+  check('for a universe the card says the entry becomes a draft kept outside the checkout', await waitCard() && (await text('#mem-chg-where')).includes('вселенная alpha') && (await text('#mem-chg-dest')).includes('вне чекаута') && (await text('#mem-chg .mm-chg-file')).startsWith('docs/memory/'), await text('#mem-chg'));
+  await sayYes();
+  check('the draft is the planner\'s: the task as its source, in the planner\'s folder', await waitLog(() => filesIn(draftsOf('alpha')).some((f) => readFile(join(draftsOf('alpha'), f)).includes('source: task alpha/15')), 8000), filesIn(draftsOf('alpha')).join(','));
+  check('and the repository checkout is exactly as dirty as before: nothing was written into it', gitStatus(alphaRoot) === alphaStatus && !filesIn(alphaMem).some((f) => readFile(join(alphaMem, f)).includes('source: task alpha/15')), gitStatus(alphaRoot));
   await resetUi();
 });
 
@@ -2148,27 +2165,33 @@ section('memory universe', async () => {
   check('a universe has its own memory panel: the files of docs/memory/', await waitFor('!!document.querySelector(\'#mem-universe-list [data-mem="merge-squash"]\')', 10000) && (await text('#mem-universe .mm-dir')).includes('docs/memory'), await text('#mem-universe'));
   check('the panel says the files are not in git, and lists them', await waitFor('(document.querySelector("#mem-git")?.innerText || "").includes("не в git")', 6000) && (await text('#mem-git')).includes('merge-squash.md'), await text('#mem-git'));
   await shot('memory-universe.png');
-  // docs: a git folder with no memory yet. Add one, then commit just that.
+  // docs: a git folder with no memory yet. Add one: a draft outside the checkout, then commit just that.
   await universeOf('docs');
   check('a universe without memory says so', await waitFor('(document.querySelector("#mem-universe")?.innerText || "").includes("Пока пусто")', 8000), await text('#mem-universe'));
   check('and its git state is clean', (await text('#mem-git')).includes('закоммичено'), await text('#mem-git'));
+  check('the checkout is clean to begin with', gitStatus(docsRepo) === '', gitStatus(docsRepo));
   await click('#mem-add');
   await waitFor('!!document.querySelector("#mem-form")', 3000);
   await typeIn('#mem-title', 'Тесты без сети');
   await typeIn('#mem-body', 'Тесты docs не ходят в сеть: всё, что нужно, лежит в фикстуре.');
   await click('#mem-save');
-  check('the entry is written into the repository checkout', await waitLog(() => filesIn(join(docsRepo, 'docs', 'memory')).length === 1 && readFile(join(docsRepo, 'docs', 'memory', filesIn(join(docsRepo, 'docs', 'memory'))[0])).includes('type: decision'), 8000), filesIn(join(docsRepo, 'docs', 'memory')).join(','));
-  check('git sees it as new, and the page offers to commit', await waitFor('!!document.querySelector("#mem-commit")', 8000));
+  check('the card names the level and the file, and says the entry becomes a draft outside the checkout', await waitCard() && (await text('#mem-chg-where')).includes('вселенная docs') && (await text('#mem-chg .mm-chg-file')) === 'docs/memory/testy-bez-seti.md' && (await text('#mem-chg-dest')).includes('вне чекаута') && (await text('#mem-chg .mm-now')).includes('type: decision'), await text('#mem-chg'));
+  check('clean text: no findings, the ordinary confirm', !(await exists('#mem-chg-found')) && (await evalJs('document.querySelector("#mem-chg").dataset.risk')) === 'none');
+  check('nothing is written before the yes', filesIn(draftsOf('docs')).length === 0 && gitStatus(docsRepo) === '');
+  await sayYes();
+  check('the entry is a draft kept by the planner', await waitLog(() => filesIn(draftsOf('docs')).length === 1 && readFile(join(draftsOf('docs'), filesIn(draftsOf('docs'))[0])).includes('type: decision'), 8000), filesIn(draftsOf('docs')).join(','));
+  check('the checkout stays clean: `git status` is empty and docs/memory is not even there (the board can still merge into it)', gitStatus(docsRepo) === '' && !existsSync(join(docsRepo, 'docs')), gitStatus(docsRepo));
+  check('the list shows it as a draft, and the page says drafts wait for a commit', await waitFor('!!document.querySelector(\'#mem-universe-list [data-mem="testy-bez-seti"][data-draft="new"]\')', 8000) && await waitFor('(document.querySelector("#mem-drafts")?.innerText || "").includes("черновик")', 8000), await text('#mem-git'));
+  await shot('memory-draft.png');
   writeFileSync(join(docsRepo, 'OTHER.txt'), 'staged elsewhere\n');
   execFileSync('git', ['-C', docsRepo, 'add', 'OTHER.txt']);
   await click('#mem-commit');
-  await sleep(300);
-  check('committing asks twice', execFileSync('git', ['-C', docsRepo, 'rev-list', '--count', 'HEAD']).toString().trim() === '1' && (await text('#mem-commit')).includes('Точно'), await text('#mem-commit'));
-  await sleep(500);
-  await click('#mem-commit');
-  check('the second press makes a commit with only the memory files', await waitLog(() => execFileSync('git', ['-C', docsRepo, 'rev-list', '--count', 'HEAD']).toString().trim() === '2', 8000));
+  check('committing shows the files first (was → will be); nothing is committed yet', await waitCard() && (await text('#mem-chg-dest')).includes('закоммичены') && (await text('#mem-chg .mm-chg-file')) === 'docs/memory/testy-bez-seti.md' && execFileSync('git', ['-C', docsRepo, 'rev-list', '--count', 'HEAD']).toString().trim() === '1' && !existsSync(join(docsRepo, 'docs')), await text('#mem-chg'));
+  await sayYes();
+  check('the yes makes a commit with only the memory files', await waitLog(() => execFileSync('git', ['-C', docsRepo, 'rev-list', '--count', 'HEAD']).toString().trim() === '2', 8000));
   const files = execFileSync('git', ['-C', docsRepo, 'show', '--name-only', '--format=%s', 'HEAD']).toString().trim().split('\n').filter(Boolean);
   check('its message names the memory, and the other staged file was left out', files[0].startsWith('Память вселенной') && files.slice(1).every((f) => f.startsWith('docs/memory/')) && files.length === 3, files.join(' | '));
+  check('the checkout is clean again (only the other staged file stays), and the drafts are gone', gitStatus(docsRepo) === 'A  OTHER.txt\n' && filesIn(draftsOf('docs')).length === 0, gitStatus(docsRepo));
   check('the page then says everything is committed', await waitFor('(document.querySelector("#mem-git")?.innerText || "").includes("закоммичено")', 8000), await text('#mem-git'));
   // a folder that is not a git repository
   await universeOf('delta');
@@ -2222,14 +2245,19 @@ section('memory suggestions', async () => {
   check('the model is asked once, by the planner, for lines to keep', await waitLog(() => asked('ALP-4') === 1, 15000), JSON.stringify(calls('claude.jsonl').slice(-2)));
   check('the call has no tools (a fixed prompt, the text as data)', calls('claude.jsonl').filter((c) => !c.suggest && c.toolsEmpty).length >= 1);
   check('its suggestion waits in the snapshot for the human', await waitFor('fetch("/api/state").then((r) => r.json()).then((s) => s.memory_suggestions.some((m) => m.task === "alpha/4" && m.lines.length === 2))', 15000), JSON.stringify(await pending()));
-  check('and nothing is written without the human', filesIn(alphaMem).every((f) => !readFile(join(alphaMem, f)).includes('source: task alpha/4')));
+  check('and nothing is written without the human', filesIn(alphaMem).every((f) => !readFile(join(alphaMem, f)).includes('source: task alpha/4')) && filesIn(draftsOf('alpha')).every((f) => !readFile(join(draftsOf('alpha'), f)).includes('source: task alpha/4')));
   if (!doneAlready) check('the page tells about it', await waitFor('(document.querySelector("#toasts")?.innerText || "").includes("Есть что запомнить")', 8000), await text('#toasts'));
   await universeOf('alpha');
   check('the universe panel shows it with the lines editable', await waitFor('!!document.querySelector(\'#mem-universe .mm-sug[data-sug="alpha/4"]\')', 8000) && (await evalJs('document.querySelectorAll("#mem-universe .mm-sug textarea").length')) === 2);
   await shot('memory-suggestion.png');
   await typeIn('#mem-universe .mm-sug textarea', 'ALP-4: тема не хранится в базе — только localStorage и системная настройка.');
+  const alphaStatus = gitStatus(alphaRoot);
   await click('#mem-universe [data-act="mem-sug-accept"]');
-  check('keeping it writes the edited lines into docs/memory/ of the universe, with the task as the source', await waitLog(() => filesIn(alphaMem).some((f) => { const t = readFile(join(alphaMem, f)); return t.includes('source: task alpha/4') && t.includes('только localStorage'); }) && filesIn(alphaMem).filter((f) => readFile(join(alphaMem, f)).includes('source: task alpha/4')).length === 2, 10000), filesIn(alphaMem).join(','));
+  check('keeping shows was → will be for both lines (two files) first, and writes nothing', await waitCard() && (await evalJs('document.querySelectorAll("#mem-universe .mm-chg-one").length')) === 2 && (await text('#mem-chg')).includes('только localStorage') && filesIn(draftsOf('alpha')).every((f) => !readFile(join(draftsOf('alpha'), f)).includes('source: task alpha/4')), await text('#mem-chg'));
+  check('the suggestion still waits while the card is open', (await pending()).includes('alpha/4'));
+  await sayYes();
+  check('the edited lines become drafts with the task as the source', await waitLog(() => filesIn(draftsOf('alpha')).some((f) => { const t = readFile(join(draftsOf('alpha'), f)); return t.includes('source: task alpha/4') && t.includes('только localStorage'); }) && filesIn(draftsOf('alpha')).filter((f) => readFile(join(draftsOf('alpha'), f)).includes('source: task alpha/4')).length === 2, 10000), filesIn(draftsOf('alpha')).join(','));
+  check('and the checkout of the universe is as it was: nothing written into docs/memory', gitStatus(alphaRoot) === alphaStatus && !filesIn(alphaMem).some((f) => readFile(join(alphaMem, f)).includes('source: task alpha/4')), gitStatus(alphaRoot));
   check('and the suggestion is gone', await waitFor('fetch("/api/state").then((r) => r.json()).then((s) => !s.memory_suggestions.some((m) => m.task === "alpha/4"))', 8000) && await waitFor('!document.querySelector(".mm-sug")', 8000));
   await post('/api/refresh', {});
   await sleep(1500);
@@ -2242,6 +2270,10 @@ section('memory suggestions', async () => {
   const none = await post('/api/memory/suggestion', { task: 'delta/1', action: 'accept', lines: [{ kind: 'decision', text: '   ' }] });
   check('keeping zero lines is refused, not turned into the model\'s own', none?.[0] === 422 && !existsSync(join(fixture, 'projects', 'herdr', 'delta', 'docs', 'memory')), JSON.stringify(none));
   const mixed = await post('/api/memory/suggestion', { task: 'delta/1', action: 'accept', lines: [{ kind: 'decision', text: 'Хорошая строка для памяти.' }, { kind: 'pitfall', text: 'я'.repeat(9000) }] });
+  const leaky = await post('/api/memory/suggestion', { task: 'delta/1', action: 'accept', lines: [{ kind: 'pitfall', text: 'Стенд лежит на 203.0.113.7, зайти можно под ivan@corp-mail.example.org.' }] });
+  check('a suggested line with an address and an e-mail is checked like any other write: it is a preview that names both', leaky?.[0] === 200 && leaky[1].preview === true && leaky[1].risk === 'confirm' && ['ip', 'email'].every((k) => leaky[1].findings.some((f) => f.kind === k)), JSON.stringify(leaky).slice(0, 300));
+  const leakyYes = await post('/api/memory/suggestion', { task: 'delta/1', action: 'accept', lines: [{ kind: 'pitfall', text: 'Стенд лежит на 203.0.113.7, зайти можно под ivan@corp-mail.example.org.' }], confirm: true, token: leaky?.[1]?.token });
+  check('and without the «да» about them nothing is written', leakyYes?.[0] === 422 && !existsSync(join(fixture, 'projects', 'herdr', 'delta', 'docs', 'memory')), JSON.stringify(leakyYes).slice(0, 200));
   check('a line that cannot be saved stops the whole accept: nothing is written', mixed?.[0] === 422 && !existsSync(join(fixture, 'projects', 'herdr', 'delta', 'docs', 'memory')), JSON.stringify(mixed).slice(0, 200));
   check('and the suggestion still waits', await waitFor('fetch("/api/state").then((r) => r.json()).then((s) => s.memory_suggestions.some((m) => m.task === "delta/1"))', 4000));
   await go('delta/1');
@@ -2261,6 +2293,104 @@ section('memory suggestions', async () => {
   await sleep(2500);
   check('a task done while it is off is not sent to the model', asked() === a1 && !(await pending()).includes('sigma/2'), `${asked()} vs ${a1}`);
   await click('#mem-suggest-toggle');
+  await resetUi();
+});
+
+section('memory guard', async () => {
+  await resetUi();
+  const save = (repo, body, extra = {}) => post('/api/memory/save', { repo, title: 'Проба', kind: 'decision', body, ...extra });
+  const samples = {
+    ip: 'Стенд лежит на 203.0.113.7 за VPN.',
+    email: 'Писать на ivan@corp-mail.example.org.',
+    host: 'Репозиторий на gitlab.acme-corp.io/team/app.',
+    secret: 'Токен ghp_abcdefghijklmnopqrstuvwxyz0123456789 лежит в CI.',
+    path: 'Проект лежит в /home/ivan/work/app.',
+    person: 'Решение принял Иван Петров на встрече.',
+    own: 'Машина bob-the-builder-host падала.',
+  };
+  const docsCommits = () => execFileSync('git', ['-C', docsRepo, 'rev-list', '--count', 'HEAD']).toString().trim();
+  const commits0 = docsCommits();
+  // 1. every kind is found, before anything is written; the repository on this machine only is not «public»
+  for (const [kind, text] of Object.entries(samples)) {
+    const r = await save('docs', text);
+    check(`${kind}: found and shown to the human, nothing written`, r?.[0] === 200 && r[1].preview === true && r[1].findings.some((f) => f.kind === kind) && r[1].risk === 'confirm' && filesIn(draftsOf('docs')).length === 0 && gitStatus(docsRepo).replace('A  OTHER.txt\n', '') === '', JSON.stringify(r?.[1]?.findings));
+  }
+  const secret = await save('docs', samples.secret);
+  check('a secret is shown only by its beginning', secret[1].findings.every((f) => !f.text.includes('abcdefghijkl')) && secret[1].findings[0].text.endsWith('…'), JSON.stringify(secret[1].findings));
+  const clean = await save('docs', 'Решили сливать squash: ветки задач короткие.');
+  check('a clean text has no findings and risk none', clean[1].risk === 'none' && clean[1].findings.length === 0);
+  check('the Galaxy\'s own memory is local: it is not checked, and its card says so', (await post('/api/memory/save', { repo: '', title: 'Проба', body: samples.ip }))[1].risk === 'none');
+
+  // 2. the confirm is the human's: the token of what they saw, and a «да» about the findings
+  const prev = await save('docs', samples.ip);
+  const noToken = await save('docs', samples.ip, { confirm: true });
+  const stale = await save('docs', samples.ip, { confirm: true, token: 'stale', accept_risk: true });
+  const noYes = await save('docs', samples.ip, { confirm: true, token: prev[1].token });
+  check('no token, a stale token and no «да» about the findings are all refused', noToken?.[0] === 409 && stale?.[0] === 409 && noYes?.[0] === 422 && filesIn(draftsOf('docs')).length === 0, JSON.stringify([noToken?.[0], stale?.[0], noYes?.[0]]));
+  const edited = await save('docs', samples.ip + ' Ещё слово.', { confirm: true, token: prev[1].token, accept_risk: true });
+  check('a text edited after the preview is not written under the old token', edited?.[0] === 409 && filesIn(draftsOf('docs')).length === 0);
+  const galaxyNoToken = await post('/api/memory/save', { repo: '', title: 'Без токена', body: 'x', confirm: true });
+  check('the Galaxy too: a write without the preview\'s token is refused', galaxyNoToken?.[0] === 409 && !filesIn(memDir).some((f) => f.includes('bez-tokena')), JSON.stringify(galaxyNoToken));
+  const yes = await save('docs', samples.ip, { confirm: true, token: prev[1].token, accept_risk: true });
+  check('with the token and the «да» the draft is written (outside the checkout)', yes?.[0] === 200 && yes[1].draft === true && filesIn(draftsOf('docs')).length === 1 && gitStatus(docsRepo).replace('A  OTHER.txt\n', '') === '', JSON.stringify(yes));
+
+  // 3. the same check stands before «Закоммитить память»
+  const cprev = await post('/api/memory/commit', { repo: 'docs' });
+  check('the commit preview lists the file and the address in it', cprev?.[0] === 200 && cprev[1].preview && cprev[1].changes.length === 1 && cprev[1].findings.some((f) => f.kind === 'ip'), JSON.stringify(cprev?.[1]).slice(0, 300));
+  const cno = await post('/api/memory/commit', { repo: 'docs', confirm: true, token: cprev[1].token });
+  check('without the «да» about it nothing is committed', cno?.[0] === 422 && docsCommits() === commits0, JSON.stringify(cno));
+  const cyes = await post('/api/memory/commit', { repo: 'docs', confirm: true, token: cprev[1].token, accept_risk: true });
+  check('with it the commit is made, and the checkout is clean again', cyes?.[0] === 200 && String(docsCommits()) === String(Number(commits0) + 1) && gitStatus(docsRepo).replace('A  OTHER.txt\n', '') === '' && filesIn(draftsOf('docs')).length === 0, JSON.stringify(cyes));
+
+  // 4. a repository that is public — or whose visibility is unknown — forbids it by default
+  const apr = await save('alpha', samples.email);
+  check('alpha\'s origin cannot be asked: treated as public; findings are blocked by default', apr?.[0] === 200 && apr[1].risk === 'block' && apr[1].visibility === 'unknown', JSON.stringify([apr?.[1]?.risk, apr?.[1]?.visibility]));
+  const before = filesIn(draftsOf('alpha')).length;
+  const apRisk = await save('alpha', samples.email, { confirm: true, token: apr[1].token, accept_risk: true });
+  check('the ordinary «да» is not enough there', apRisk?.[0] === 403 && filesIn(draftsOf('alpha')).length === before, JSON.stringify(apRisk));
+  const apPublic = await save('alpha', samples.email, { confirm: true, token: apr[1].token, accept_public: true });
+  check('only the explicit public confirmation writes it', apPublic?.[0] === 200 && filesIn(draftsOf('alpha')).length === before + 1, JSON.stringify(apPublic));
+  const dropped = await post('/api/memory/discard', { repo: 'alpha', id: apPublic[1].entry.id });
+  check('a draft can be thrown away', dropped?.[0] === 200 && filesIn(draftsOf('alpha')).length === before, JSON.stringify(dropped));
+
+  // 5. on the page: the card for a public repository, anonymise, and «в память Галактики»
+  const alphaStatus = gitStatus(alphaRoot);
+  await universeOf('alpha');
+  await waitFor('!!document.querySelector("#mem-add")', 10000);
+  await click('#mem-add');
+  await waitFor('!!document.querySelector("#mem-form")', 3000);
+  await typeIn('#mem-title', 'Стенд');
+  await typeIn('#mem-body', 'Стенд лежит на 203.0.113.7, писать на ivan@corp-mail.example.org.');
+  await click('#mem-save');
+  check('the card is red for a public repository and names what was found', await waitCard() && (await evalJs('document.querySelector("#mem-chg").dataset.risk')) === 'block' && (await text('#mem-chg-found')).includes('203.0.113.7') && (await text('#mem-chg-found')).includes('ivan@corp-mail.example.org') && (await text('#mem-chg-found')).includes('публичный'), await text('#mem-chg'));
+  await shot('memory-public-block.png');
+  check('its confirm says it plainly, and the other ways out are offered', (await text('#mem-chg-confirm')).includes('публичный') && await exists('#mem-chg-redact') && await exists('#mem-chg-galaxy'));
+  await click('#mem-chg-confirm');
+  await sleep(300);
+  check('the public confirmation is two presses: the first only asks again', (await text('#mem-chg-confirm')).includes('Точно') && !filesIn(draftsOf('alpha')).some((f) => readFile(join(draftsOf('alpha'), f)).includes('203.0.113.7')), await text('#mem-chg-confirm'));
+  await click('#mem-chg-redact');
+  check('anonymise puts the text without the findings into the form and asks again: now clean', await waitFor('document.querySelector("#mem-chg")?.dataset.risk === "none" && !document.querySelector("#mem-chg-found")', 8000) && (await evalJs('document.querySelector("#mem-body").value')).includes('<ip>') && (await text('#mem-chg .mm-now')).includes('<email>') && !(await text('#mem-chg .mm-now')).includes('203.0.113.7'), await text('#mem-chg'));
+  await sayYes();
+  check('the anonymised draft is written, the original text is nowhere', await waitLog(() => filesIn(draftsOf('alpha')).some((f) => readFile(join(draftsOf('alpha'), f)).includes('<ip>')) && !filesIn(draftsOf('alpha')).some((f) => readFile(join(draftsOf('alpha'), f)).includes('203.0.113.7')), 8000));
+  await waitFor('!document.querySelector("#mem-form")', 5000);
+  await click('#mem-add');
+  await waitFor('!!document.querySelector("#mem-form")', 3000);
+  await typeIn('#mem-title', 'Стенд для себя');
+  await typeIn('#mem-body', 'Мой стенд лежит на 203.0.113.9.');
+  await click('#mem-save');
+  await waitCard();
+  await click('#mem-chg-galaxy');
+  check('«в память Галактики» asks again, for the Galaxy: local, not checked, no findings', await waitFor('(document.querySelector("#mem-chg-where")?.innerText || "").includes("Галактика") && document.querySelector("#mem-chg")?.dataset.risk === "none"', 8000) && (await text('#mem-chg-dest')).includes('в git он не попадает'), await text('#mem-chg'));
+  await sayYes();
+  check('the entry is a file of the Galaxy memory, and not a draft of the universe', await waitLog(() => filesIn(memDir).some((f) => readFile(join(memDir, f)).includes('203.0.113.9')) && !filesIn(draftsOf('alpha')).some((f) => readFile(join(draftsOf('alpha'), f)).includes('203.0.113.9')), 8000));
+  for (const f of filesIn(memDir).filter((f) => readFile(join(memDir, f)).includes('203.0.113.9'))) unlinkSync(join(memDir, f));
+  check('the repository checkout of alpha was not touched by any of it', gitStatus(alphaRoot) === alphaStatus, gitStatus(alphaRoot));
+
+  // 6. the Coordinator is told the same rules
+  const mem = await api('/api/memory');
+  const block = mem?.[1]?.connect?.block || '';
+  check('the block for the Coordinator says: show «было → стало», wait for «да»', block.includes('«было → стало»') && block.includes('«да»') && block.includes('ничего не пиши'), block.slice(0, 200));
+  check('and: no personal data or secrets in a universe, anonymise or write it to the Galaxy', block.includes('персональные данные') && block.includes('обезличить') && block.includes('в Галактику'));
   await resetUi();
 });
 
@@ -2286,13 +2416,15 @@ section('memory ssh', async () => {
   await typeIn('#mem-title', 'Ключ деплоя');
   await typeIn('#mem-body', 'Деплой на vm-a идёт под пользователем deploy.');
   await click('#mem-save');
+  check('a far galaxy\'s change shows the same card, and writes nothing there before the yes', await waitCard() && (await text('#mem-chg .mm-chg-file')).includes('.herdr-projects/memory/galaxy/') && !existsSync(join(vmMem, 'klyuch-deploya.md')), await text('#mem-chg'));
+  await sayYes();
   check('a new entry is written there: its file and the index', await waitLog(() => readFile(join(vmMem, 'klyuch-deploya.md')).includes('пользователем deploy') && readFile(join(vmMem, 'MEMORY.md')).includes('(vm-a-ports.md)') && readFile(join(vmMem, 'MEMORY.md')).includes('(klyuch-deploya.md)'), 20000), readFile(join(vmMem, 'MEMORY.md')));
   check('and it is not written on this machine', !filesIn(memDir).includes('klyuch-deploya.md'));
   check('the list shows both', await waitFor('document.querySelectorAll("#mem-galaxy-list [data-mem]").length === 2', 15000));
   await click('[data-mem="klyuch-deploya"] .mm-line');
   await click('[data-mem="klyuch-deploya"] [data-act="mem-del"]');
-  await sleep(700);
-  await click('[data-mem="klyuch-deploya"] [data-act="mem-del"]');
+  await waitCard();
+  await sayYes();
   check('delete goes there too', await waitLog(() => !existsSync(join(vmMem, 'klyuch-deploya.md')) && !readFile(join(vmMem, 'MEMORY.md')).includes('klyuch-deploya'), 20000));
   // the universe of the far galaxy: its memory is git's, read only here
   await universeOf('alpha', 'vm-a');

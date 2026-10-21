@@ -62,3 +62,21 @@
 .closing h3 .mm-tomem{margin-left:auto;display:inline-flex;gap:4px;align-items:center;text-transform:none;letter-spacing:0}
 @media (hover:none){.mm-tomem{opacity:1}}
 .mm-set{display:flex;flex-wrap:wrap;gap:6px 8px;align-items:center}
+/* the card of a memory change: was → now, what the check found, the human's yes */
+.mm-chg{display:grid;gap:6px;padding:9px 10px;border:1px solid var(--pl-accent);border-radius:7px;background:color-mix(in srgb,var(--pl-accent) 7%,var(--pl-tile));min-width:0}
+.mm-chg.risk-confirm{border-color:var(--c-yellow)}
+.mm-chg.risk-block{border-color:var(--pl-danger)}
+.mm-chg-one{display:grid;gap:3px;min-width:0}
+.mm-chg-file{color:var(--pl-dim);word-break:break-all;font-size:10.5px}
+.mm-op{font-size:10px;letter-spacing:.04em;text-transform:uppercase;border:1px solid var(--pl-line);border-radius:9px;padding:0 6px;margin-right:6px;color:var(--pl-dim)}
+.mm-op.op-add{color:var(--c-green);border-color:var(--c-green)}
+.mm-op.op-delete{color:var(--pl-danger);border-color:var(--pl-danger)}
+.mm-chg .mm-was{opacity:.8}
+.mm-found{display:grid;gap:4px;padding:6px 8px;border-radius:5px;border:1px solid var(--c-yellow);font-size:11.5px}
+.mm-found.block{border-color:var(--pl-danger)}
+.mm-found ul{margin:0;padding:0;list-style:none;display:grid;gap:2px}
+.mm-found code{word-break:break-all;color:var(--pl-title)}
+.mm-fk{font-size:10px;text-transform:uppercase;letter-spacing:.04em;color:var(--pl-dim);margin-right:4px}
+/* drafts in the list */
+.mm-draft{flex:none;font-size:10px;letter-spacing:.04em;text-transform:uppercase;border:1px dashed var(--c-yellow);color:var(--c-yellow);border-radius:9px;padding:0 6px;white-space:nowrap}
+.mm-row.d-deleted .mm-title,.mm-row.d-deleted .mm-desc{text-decoration:line-through;opacity:.6}
