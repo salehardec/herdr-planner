@@ -171,12 +171,19 @@ function TodoText(props: { id: string; text: string }): JSX.Element {
 function TodoEdit(props: { text: string; onCommit: (text: string) => Promise<void>; onCancel: () => void }): JSX.Element {
   const [draft, setDraft] = useState(props.text);
   const ref = useRef<HTMLTextAreaElement>(null);
-  const commit = (): void => { void props.onCommit(ref.current?.value ?? draft); };
+  const tried = useRef<string | null>(null);
+  // Enter and then leaving the field are one attempt: a refused text is not sent twice.
+  const commit = (): void => {
+    const text = ref.current?.value ?? draft;
+    if (tried.current === text) return;
+    tried.current = text;
+    void props.onCommit(text);
+  };
   return (
     <>
       <AutoTextarea
         class="field edit" elRef={ref} value={draft} autoFocus
-        onInput={(e) => { setDraft((e.target as HTMLTextAreaElement).value); }}
+        onInput={(e) => { tried.current = null; setDraft((e.target as HTMLTextAreaElement).value); }}
         onSend={commit}
         onKeyDown={(e) => { if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); props.onCancel(); } }}
         onBlur={commit}

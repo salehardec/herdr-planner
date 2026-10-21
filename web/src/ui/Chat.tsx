@@ -48,10 +48,13 @@ function caretLines(ta: HTMLTextAreaElement): { first: boolean; last: boolean } 
     'text-transform', 'word-spacing', 'tab-size', 'padding-top', 'padding-right', 'padding-bottom',
     'padding-left', 'white-space', 'overflow-wrap', 'word-break', 'direction',
   ]) mirror.style.setProperty(p, cs.getPropertyValue(p));
+  // The whole text, with the caret marked inside it: the text after the caret is what makes a line
+  // that is not the last one, so a mirror that stopped at the caret would always say «last».
   mirror.textContent = ta.value.slice(0, ta.selectionStart);
   const marker = document.createElement('span');
   marker.textContent = '\u200b';
   mirror.appendChild(marker);
+  mirror.appendChild(document.createTextNode(ta.value.slice(ta.selectionStart)));
   document.body.appendChild(mirror);
   const box = mirror.getBoundingClientRect();
   const at = marker.getBoundingClientRect();

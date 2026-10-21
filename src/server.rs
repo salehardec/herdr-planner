@@ -484,12 +484,12 @@ fn valid_repo(repo: &str) -> bool {
 
 /// A God's-list text with the lines a person wrote; the board's `add` takes it as a title.
 fn todo_text(text: &str) -> Result<String, String> {
-    // The line breaks a person wrote stay: a todo may be several lines. Blank lines at the ends go,
-    // and so does the indentation of each line, but what is inside is kept as it is.
+    // The line breaks and the indentation a person wrote stay (a nested list, code, a log): only
+    // trailing blanks and the blank lines at the ends go.
     let normalized = text.replace("\r\n", "\n").replace('\r', "\n");
-    let lines: Vec<&str> = normalized.lines().map(str::trim).collect();
-    let start = lines.iter().position(|l| !l.is_empty()).unwrap_or(lines.len());
-    let end = lines.iter().rposition(|l| !l.is_empty()).map_or(start, |i| i + 1);
+    let lines: Vec<&str> = normalized.lines().map(str::trim_end).collect();
+    let start = lines.iter().position(|l| !l.trim().is_empty()).unwrap_or(lines.len());
+    let end = lines.iter().rposition(|l| !l.trim().is_empty()).map_or(start, |i| i + 1);
     let t = lines[start..end].join("\n");
     if t.is_empty() {
         return Err("пустое дело".into());
@@ -497,10 +497,26 @@ fn todo_text(text: &str) -> Result<String, String> {
     if let Some(e) = text_limit_error(&t, "дело") {
         return Err(e);
     }
-    if t.starts_with('-') {
+    if t.trim_start().starts_with('-') {
         return Err("дело не может начинаться с «-»".into());
     }
     Ok(t)
+}
+
+/// A task's title from the first line of a todo: one line, and short enough (by bytes, which keeps
+/// it under the board's 60 columns even for wide letters) that herdr-projects never rewrites it and
+/// the full text stays in the description exactly as it was typed, line breaks included.
+fn task_title(text: &str) -> String {
+    let first = text.lines().find(|l| !l.trim().is_empty()).unwrap_or("").trim();
+    let mut out = String::new();
+    for ch in first.chars() {
+        if out.len() + ch.len_utf8() > 40 {
+            out.push('…');
+            break;
+        }
+        out.push(ch);
+    }
+    out
 }
 
 fn valid_key(k: &str) -> bool {
@@ -1156,12 +1172,22 @@ async fn api_action(
             if !known {
                 return error(StatusCode::BAD_REQUEST, format!("нет такой вселенной: {repo}"));
             }
-            let title = match todo_text(&item.text) {
+            let text = match todo_text(&item.text) {
                 Ok(t) => t,
                 Err(e) => return error(StatusCode::BAD_REQUEST, e),
             };
             let paths = held_paths(&app.cfg.attachments_dir(), &item.attachments).await;
-            let desc = attachments::message("", &paths);
+            // The board's `add` cleans the title (every line break becomes a space) and keeps it as
+            // the description only when it had to shorten it: a multi-line todo is sent as a short
+            // one-line title plus the whole text as `--desc`, which is kept as it is.
+            let (title, desc) = if text.contains('\n') {
+                (task_title(&text), attachments::message(&text, &paths))
+            } else {
+                (text, attachments::message("", &paths))
+            };
+            if let Some(e) = bytes_limit_error(&desc, "дело с вложениями") {
+                return error(StatusCode::BAD_REQUEST, e);
+            }
             let mut args: Vec<&str> = vec!["add", title.as_str(), "--repo", repo.as_str()];
             if !desc.is_empty() {
                 args.push("--desc");
@@ -1556,10 +1582,10 @@ mod tests {
     fn todo_text_keeps_lines_and_stays_safe() {
         assert_eq!(
             todo_text("  Починить   кэш \n отчётов ").unwrap(),
-            "Починить   кэш\nотчётов"
+            "  Починить   кэш\n отчётов"
         );
         assert_eq!(todo_text("first\r\nsecond\rthird").unwrap(), "first\nsecond\nthird");
-        assert_eq!(todo_text("\n  first\n\nsecond  \n\n").unwrap(), "first\n\nsecond");
+        assert_eq!(todo_text("\n  first\n\nsecond  \n\n").unwrap(), "  first\n\nsecond");
         assert!(todo_text("").is_err());
         assert!(todo_text("\n \n").is_err());
         assert!(todo_text("--all").is_err());
@@ -1582,6 +1608,10 @@ mod tests {
         assert!(bytes_limit_error(&"ж".repeat(MAX_ARG_BYTES / 2 + 1), "сообщение")
             .unwrap()
             .contains("130000"));
+        assert_eq!(task_title("  Первая строка дела\nвторая строка"), "Первая строка дела");
+        assert_eq!(task_title("коротко"), "коротко");
+        assert_eq!(task_title(&"ж".repeat(50)), format!("{}…", "ж".repeat(20)));
+        assert!(!task_title(&"x".repeat(50)).starts_with('\n'));
         assert!(valid_todo_id("t1792407710774-1"));
         assert!(!valid_todo_id("../../etc"));
         assert!(!valid_todo_id(""));

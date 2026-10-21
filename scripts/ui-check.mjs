@@ -547,6 +547,27 @@ section('chat', async () => {
   await press('ArrowUp');
   const afterUp = await evalJs('(() => { const ta = document.querySelector("#ask-in"); return { start: ta.selectionStart, top: document.querySelector("#clog").scrollTop }; })()');
   check('ArrowUp inside a wrapped paragraph moves the caret, not the history', afterUp.start < beforeUp.start && afterUp.top === beforeUp.top && wrapped.lines > 60, JSON.stringify({ wrapped, beforeUp, afterUp }));
+  // The other way: from the start of the paragraph the caret goes down a visual line, the history stays.
+  await evalJs('(() => { const t = document.querySelector("#ask-in"); t.focus(); t.setSelectionRange(0, 0); })()');
+  await frames(1);
+  const beforeDown = await evalJs('(() => { const ta = document.querySelector("#ask-in"); return { start: ta.selectionStart, top: document.querySelector("#clog").scrollTop }; })()');
+  await press('ArrowDown');
+  const afterDown = await evalJs('(() => { const ta = document.querySelector("#ask-in"); return { start: ta.selectionStart, top: document.querySelector("#clog").scrollTop }; })()');
+  check('ArrowDown inside a wrapped paragraph moves the caret down, not the history', afterDown.start > beforeDown.start && afterDown.top === beforeDown.top, JSON.stringify({ beforeDown, afterDown }));
+  // Three lines made with Shift+Enter: ArrowDown goes from the first to the second.
+  await evalJs(`(() => { const t = document.querySelector('#ask-in'); t.value = 'Первая\\nВторая\\nТретья'; t.dispatchEvent(new Event('input', { bubbles: true })); t.focus(); t.setSelectionRange(0, 0); })()`);
+  const linesBefore = await evalJs(`new Promise((done) => {
+    const l = document.querySelector('#clog'); const ta = document.querySelector('#ask-in');
+    let last = l.scrollTop; let still = 0;
+    const tick = () => {
+      if (l.scrollTop === last) still++; else { last = l.scrollTop; still = 0; }
+      if (still >= 3) done({ start: ta.selectionStart, top: l.scrollTop }); else requestAnimationFrame(tick);
+    };
+    requestAnimationFrame(tick);
+  })`);
+  await press('ArrowDown');
+  const linesAfter = await evalJs('(() => { const ta = document.querySelector("#ask-in"); return { start: ta.selectionStart, top: document.querySelector("#clog").scrollTop }; })()');
+  check('ArrowDown moves the caret to the next line of a multi-line message', linesAfter.start > 0 && linesAfter.top === linesBefore.top, JSON.stringify({ linesBefore, linesAfter }));
   await evalJs('(() => { const t = document.querySelector("#ask-in"); t.value = ""; t.dispatchEvent(new Event("input", { bubbles: true })); })()');
   // send: Shift+Enter keeps the line, Enter sends both lines
   await evalJs('(() => { const t = document.querySelector("#ask-in"); t.value = ""; t.dispatchEvent(new Event("input", { bubbles: true })); t.focus(); })()');
@@ -821,6 +842,12 @@ section('todo', async () => {
   await evalJs(`document.querySelector('[data-todo-text="${editId}"]').dispatchEvent(new MouseEvent('dblclick', { bubbles: true })); true`);
   await evalJs(`(() => { const i = document.querySelector('#todo-list .edit'); i.value = 'x'.repeat(100001); i.dispatchEvent(new Event('input', { bubbles: true })); i.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })); })()`);
   check('an over-long edit is refused and stays in the editor with its words', await waitFor('document.querySelector("#toasts")?.innerText.includes("дело длиннее 100000")', 5000) && await evalJs('document.querySelector("#todo-list .edit")?.value.length === 100001'), await text('#toasts'));
+  // Leaving the refused editor is not a second attempt: the same text is not sent again.
+  const editRequests = await evalJs('window.__net.log.filter((u) => u.includes("/api/action")).length');
+  await evalJs('document.querySelector("#todo-in").focus(); true');
+  await sleep(500);
+  check('leaving a refused editor does not send it again', (await evalJs('window.__net.log.filter((u) => u.includes("/api/action")).length')) === editRequests);
+  await evalJs('([...document.querySelectorAll("#todo-list .edit")][0])?.focus(); true');
   await evalJs('document.querySelector("#todo-list .edit")?.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })); true');
   check('Esc leaves the editor without changing the item', await waitFor('!document.querySelector("#todo-list .edit")', 3000) && (await evalJs(`fetch('/api/state').then(r=>r.json()).then(s => s.todo.find(x => x.id === ${JSON.stringify(editId)})?.text.length < 100)`)));
   await evalJs('(() => { const i = document.querySelector("#todo-in"); i.value = "Проверить деплой"; document.querySelector("#todo-new").requestSubmit(); })()');
@@ -895,6 +922,14 @@ section('todo', async () => {
   check('an item can be edited', await waitFor(`fetch('/api/state').then(r=>r.json()).then(s => s.todo.some(x => x.text === 'Правка дела'))`, 6000));
   await click(`[data-act="todo-del"][data-todo-id="${last}"]`);
   check('and removed', await waitFor(`fetch('/api/state').then(r=>r.json()).then(s => !s.todo.some(x => x.id === '${last}'))`, 6000));
+  // A multi-line todo becomes a task: a one-line title, and the whole text (with its breaks) as --desc.
+  const mlText = 'Первая строка дела\n  вторая строка\nлог: error 42';
+  const ml = await post('/api/action', { action: 'todo-add', text: mlText });
+  const mlId = (ml[1]?.todo || []).find((x) => x.text === mlText)?.id;
+  const made = mlId ? await post('/api/action', { action: 'todo-create', id: mlId, repo: 'alpha' }) : [0, { error: 'the todo was not added' }];
+  const addCall = calls().filter((c) => c.argv[0] === 'add').at(-1);
+  check('a multi-line todo becomes a task with a one-line title', made[0] === 200 && addCall?.argv[1] === 'Первая строка дела', JSON.stringify({ made, argv: addCall?.argv.slice(0, 4) }));
+  check('and its whole text, line breaks kept, is the description', addCall?.argv.includes('--desc') && addCall.argv[addCall.argv.indexOf('--desc') + 1] === mlText, JSON.stringify(addCall?.argv.slice(-2)));
   await shot('todo.png');
   await resetUi();
 });
