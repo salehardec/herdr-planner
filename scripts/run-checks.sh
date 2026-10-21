@@ -17,6 +17,7 @@ SHOTS="${1:-}"
 [ -z "$SHOTS" ] || mkdir -p "$SHOTS"
 if [ -z "${PAGE_ONLY:-}" ]; then
   sh scripts/web-build.sh --test
+  sh scripts/web-build.sh --check
   sh scripts/web-build.sh
   $CARGO test --quiet
   $CARGO build --quiet

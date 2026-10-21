@@ -82,12 +82,14 @@ jobs:
           cargo build --locked
           mkdir -p handover
           cp target/debug/herdr-planner handover/
+          # A debug build does not embed the page: it reads the folder build.rs found, at run time. It travels with the binary.
+          cp -r "$HOME/.cache/herdr-planner/web/dist" handover/dist
 
-      - name: Hand the binary on
+      - name: Hand the binary and the page on
         uses: actions/upload-artifact@v4
         with:
           name: herdr-planner-debug
-          path: handover/herdr-planner
+          path: handover
           if-no-files-found: error
           retention-days: 1
 
@@ -136,6 +138,8 @@ jobs:
       - name: Installer and launcher checks
         run: |
           chmod +x handover/herdr-planner
+          mkdir -p "$HOME/.cache/herdr-planner/web"
+          cp -r handover/dist "$HOME/.cache/herdr-planner/web/dist"
           sh scripts/check-install.sh "$PWD/handover/herdr-planner"
           sh scripts/check-open.sh
 
@@ -164,9 +168,11 @@ jobs:
 
       - name: The binary where scripts/run-checks.sh looks for it
         run: |
-          mkdir -p "$HOME/.cache/herdr-planner/target/debug"
+          mkdir -p "$HOME/.cache/herdr-planner/target/debug" "$HOME/.cache/herdr-planner/web"
           cp handover/herdr-planner "$HOME/.cache/herdr-planner/target/debug/"
           chmod +x "$HOME/.cache/herdr-planner/target/debug/herdr-planner"
+          # the page, where build.rs baked its path into the debug binary
+          cp -r handover/dist "$HOME/.cache/herdr-planner/web/dist"
 
       - name: Chromium for the page checks
         run: |

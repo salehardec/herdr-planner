@@ -1960,6 +1960,8 @@ for (const [name, fn, opts] of sections) {
       first = { name, first: failedNow.slice(), errors: errors.splice(0) };
       failed -= failedNow.length;
       console.log(`RETRY ${name}: ${first.first.length} check(s) failed (${first.first.join('; ').slice(0, 300)}); the section is run once more from a fresh page`);
+      // the console errors of the first go are not forgotten behind a green second one
+      if (first.errors.length) console.log(`RETRY ${name}: console errors of the first go: ${first.errors.slice(0, 3).join(' | ').slice(0, 600)}`);
       try { await resetPage(); } catch (e) { console.log('RETRY: the fresh page did not come: ' + e.message); }
       continue;
     }
@@ -1975,7 +1977,7 @@ for (const [name, fn, opts] of sections) {
 check('no console errors after the whole run', errors.length === 0, errors.slice(0, 3).join('; '));
 if (retried.length) {
   console.log('');
-  for (const r of retried) console.log(`RETRIED ${r.name}: ${r.passed ? 'passed on the second go' : 'failed again'}; the first go failed: ${r.first.join('; ').slice(0, 400)}`);
+  for (const r of retried) console.log(`RETRIED ${r.name}: ${r.passed ? 'passed on the second go' : 'failed again'}; the first go failed: ${r.first.join('; ').slice(0, 400)}${r.errors.length ? `; console errors of the first go: ${r.errors.slice(0, 2).join(' | ').slice(0, 300)}` : ''}`);
   console.log(`${retried.filter((r) => r.passed).length} of ${retried.length} retried section(s) passed only on a second go: the run is green, but these checks are not stable yet`);
 }
 ws.close();

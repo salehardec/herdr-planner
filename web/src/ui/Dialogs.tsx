@@ -6,7 +6,6 @@ import { currentView, galaxyId, snap, taskOf } from '../store';
 import { installYazi, todoAssign, todoSend, todoToTask, todoUpdate, yaziDlg } from '../actions';
 import { armed } from '../store';
 import { t } from '../i18n';
-import { toast } from '../toast';
 import { Gl } from './Gl';
 import { loadModels, modelList } from './Todo';
 import { AddGalaxy } from './AddGalaxy';
