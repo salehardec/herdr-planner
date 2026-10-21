@@ -1924,7 +1924,8 @@ const draftsOf = (repo) => join(fixture || '', 'state', 'herdr-planner', 'memory
 const gitStatus = (root) => execFileSync('git', ['-C', root, 'status', '--porcelain', '--untracked-files=all']).toString();
 // A memory change shows «было → стало» first: wait for the card; «да» is its confirm button.
 const waitCard = () => waitFor('!!document.querySelector("#mem-chg")', 10000);
-const sayYes = () => click('#mem-chg-confirm');
+// After the yes the card goes (the next change must not meet the old card still on the page).
+const sayYes = async () => { await click('#mem-chg-confirm'); await waitFor('!document.querySelector("#mem-chg")', 10000); };
 const quasarOf = async (galaxy = '') => {
   await evalJs(`planner.navigateTo({kind:'quasar',galaxy:${JSON.stringify(galaxy)},id:'quasar'})`);
   await waitFor('world.debug().flight === "idle"', 15000);
