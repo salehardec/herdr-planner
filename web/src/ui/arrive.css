@@ -1,0 +1,16 @@
+/* The arrival notice in a far galaxy, the flight line about its station, and the top bar's station chip. */
+.arrive{position:absolute;top:120px;left:50%;transform:translateX(-50%);width:min(460px,calc(100% - 32px));z-index:35;padding:0;pointer-events:auto}
+.arrive .bd{display:grid;gap:8px;padding:10px 12px 12px;font-size:12.5px;line-height:1.5}
+.arrive p{margin:0;color:var(--pl-text);text-wrap:pretty}
+.arrive>header b{display:inline-flex;gap:6px;align-items:center}
+.arrive>header .gl{width:12px;height:12px}
+.notice.link .st-line{flex:1 1 100%;color:var(--pl-dim);font-size:11.5px}
+.stchip{display:inline-flex;align-items:center;gap:6px;height:30px;max-width:100%;padding:0 4px 0 10px;border:1px solid var(--pl-line);border-radius:15px;background:var(--pl-panel-solid);color:var(--pl-dim);font-size:11.5px;white-space:nowrap;min-width:0}
+.stchip.far{border-color:color-mix(in srgb,var(--pl-accent) 55%,var(--pl-line));color:var(--pl-text)}
+.stchip .short{display:none;overflow:hidden;text-overflow:ellipsis;min-width:0}
+.stchip .long{overflow:hidden;text-overflow:ellipsis;min-width:0}
+.stchip .stgear{height:24px;width:24px;font-size:13px;color:var(--pl-title)}
+@media (max-width:900px){
+  .stchip .long{display:none}
+  .stchip .short{display:inline}
+}

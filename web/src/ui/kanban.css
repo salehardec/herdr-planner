@@ -1,0 +1,8 @@
+.kanban{left:50%;bottom:12px;transform:translateX(-50%);display:flex;padding:3px;gap:2px;border-radius:20px;z-index:13;max-width:calc(100vw - 24px);overflow-x:auto}
+.kanban button{position:relative;border:0;background:none;padding:6px 14px;border-radius:16px;display:flex;gap:8px;align-items:center;white-space:nowrap;overflow:hidden}
+.kanban button:hover{background:var(--pl-hover)}
+.kanban button.on{background:color-mix(in srgb,var(--pl-accent) 22%,transparent);color:var(--pl-title)}
+.kanban b{font-weight:600;color:var(--pl-title)}
+.kanban .w{color:var(--c-yellow);font-size:10.5px}
+.kanban .arr{color:var(--pl-faint);padding:0 1px;align-self:center}
+.kanban button i{position:absolute;left:14px;right:14px;bottom:2px;height:2px;border-radius:1px;background:linear-gradient(90deg,var(--pl-accent) var(--w),transparent var(--w));opacity:.65}

@@ -1,0 +1,147 @@
+/* ───────────────────────────────────────────────────────────────
+   Herdr Planner — Галактика.
+   Слой 1 · --c-*  : цвета текущей темы Omarchy (подставляются из /api/state).
+   Слой 2 · --pl-* : токены окна, выведенные из слоя 1.
+   Слой 3 · --m-*  : движение.
+   Сцена — WebGL; подписи, панели и чат — обычный DOM поверх.
+   ─────────────────────────────────────────────────────────────── */
+:root{
+  --c-bg:#1a120c; --c-bg-dark:#140e09; --c-bg-darker:#0d0906; --c-bg-light:#2a201a;
+  --c-fg:#ecded6; --c-fg-dim:#9c9089; --c-fg-bright:#fcf5f1; --c-muted:#806f64;
+  --c-accent:#dfa360; --c-sel:#513b24;
+  --c-red:#e48682; --c-yellow:#f6bb6f; --c-green:#98bf7a; --c-cyan:#5bcbcb; --c-blue:#77b0e9; --c-magenta:#da8fbf;
+  --c-border-a:#dfa360; --c-border-b:#7ea9d5;
+  --font:"JetBrainsMono Nerd Font","JetBrains Mono","JetBrainsMono NF",ui-monospace,"DejaVu Sans Mono",monospace;
+  --m-fast:.14s; --m-med:.26s; --m-slow:.7s; --m-ease:cubic-bezier(.2,.7,.2,1);
+  color-scheme:dark;
+}
+:root[data-mode="light"]{color-scheme:light}
+
+.win{
+  --pl-bg:var(--c-bg);
+  --pl-text:var(--c-fg);
+  --pl-title:var(--c-fg-bright);
+  --pl-dim:color-mix(in srgb,var(--c-fg) 90%,var(--c-bg));
+  --pl-faint:color-mix(in srgb,var(--c-fg) 76%,var(--c-bg));
+  --pl-tile:color-mix(in srgb,var(--c-fg) 5%,var(--c-bg));
+  --pl-raised:color-mix(in srgb,var(--c-fg) 9%,var(--c-bg));
+  --pl-line:color-mix(in srgb,var(--c-fg) 16%,var(--c-bg));
+  --pl-hover:color-mix(in srgb,var(--c-fg) 9%,transparent);
+  --pl-accent:var(--c-accent);
+  --pl-accent-ink:var(--c-accent);
+  --pl-danger:color-mix(in srgb,var(--c-red) 70%,var(--c-fg));
+  --pl-on-accent:var(--c-bg);
+  --pl-focus:color-mix(in srgb,var(--c-accent) 70%,var(--c-bg));
+  --pl-panel:color-mix(in srgb,var(--pl-bg) 92%,transparent);
+  --pl-panel-solid:color-mix(in srgb,var(--pl-bg) 97%,transparent);
+  --pl-r:7px;
+}
+:root[data-mode="light"] .win{
+  --pl-dim:color-mix(in srgb,var(--c-fg) 96%,var(--c-bg));
+  --pl-faint:color-mix(in srgb,var(--c-fg) 88%,var(--c-bg));
+  --pl-accent-ink:color-mix(in srgb,var(--c-accent) 55%,var(--c-fg));
+  --pl-danger:color-mix(in srgb,var(--c-red) 35%,var(--c-fg));
+  --pl-on-accent:color-mix(in srgb,var(--c-bg) 25%,#fff);
+  --pl-panel:color-mix(in srgb,var(--pl-bg) 90%,transparent);
+}
+.s-waiting{--s:var(--c-yellow)} .s-failed{--s:var(--c-red)} .s-ready{--s:var(--c-green)}
+.s-plan{--s:var(--c-cyan)} .s-review{--s:var(--c-magenta)} .s-working{--s:var(--c-blue)}
+.s-queued,.s-done{--s:var(--c-muted)}
+.s-running{--s:var(--c-green)} .s-quiet{--s:var(--c-muted)}
+[class*="s-"]{
+  --s-fill:color-mix(in srgb,var(--s) 15%,var(--pl-bg));
+  --s-line:color-mix(in srgb,var(--s) 38%,var(--pl-bg));
+  --s-ink:color-mix(in srgb,var(--s) 72%,var(--c-fg));
+}
+:root[data-mode="light"] [class*="s-"]{--s-ink:color-mix(in srgb,var(--s) 22%,var(--c-fg))}
+.s-queued,.s-done{--s-ink:var(--pl-dim)!important}
+
+*{box-sizing:border-box}
+html,body{margin:0;height:100%}
+body{margin:0;font:12.5px/1.45 var(--font);color:var(--c-fg);background:var(--c-bg-darker);overflow:hidden;-webkit-font-smoothing:antialiased}
+button,input,textarea,select{font:inherit;color:inherit}
+button{cursor:pointer}
+:focus-visible{outline:2px solid var(--pl-focus);outline-offset:1px}
+[hidden]{display:none!important}
+kbd{display:inline-block;min-width:1.7em;padding:0 .35em;border:1px solid var(--pl-line);border-bottom-width:2px;border-radius:4px;background:var(--pl-tile);text-align:center;font:inherit;font-size:.88em}
+mark{background:color-mix(in srgb,var(--pl-accent) 38%,transparent);color:inherit;border-radius:2px}
+
+.win{position:fixed;inset:0;width:100vw;height:100vh;overflow:hidden;color:var(--pl-text);background:var(--c-bg-darker)}
+#scene{position:absolute;inset:0;display:block;width:100%;height:100%;touch-action:none;cursor:grab}
+#scene:active{cursor:grabbing}
+#scene.link-mode{cursor:crosshair}
+#scene.drop-target{cursor:copy}
+.win.manual #scene{cursor:crosshair}
+.gl{width:13px;height:13px;flex:none;fill:none;stroke:currentColor;stroke-width:1.6;stroke-linecap:round;stroke-linejoin:round}
+.gl.spin{animation:spin 1.1s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+.lbl{font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:var(--pl-faint)}
+.sr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0)}
+.dim{color:var(--pl-dim)}
+.faint{color:var(--pl-faint)}
+.grow{flex:1;min-width:0}
+
+/* ── кнопки и мелочь ── */
+.btn{display:inline-flex;align-items:center;gap:5px;height:26px;padding:0 10px;border-radius:5px;border:1px solid var(--pl-line);background:var(--pl-raised);color:var(--pl-title);font-size:11.5px;font-weight:600;white-space:nowrap}
+.btn:hover{border-color:var(--pl-faint)}
+.btn.go{background:var(--s-ink,var(--pl-accent));border-color:var(--s-ink,var(--pl-accent));color:var(--pl-bg)}
+.btn.go.arm{background:var(--c-red);border-color:var(--c-red);color:var(--pl-bg)}
+.btn.primary{background:var(--pl-accent);border-color:var(--pl-accent);color:var(--pl-on-accent)}
+.btn.icon{width:26px;padding:0;justify-content:center;background:transparent;color:var(--pl-dim)}
+.btn.icon:hover{color:var(--pl-title)}
+.btn.sm{height:22px;padding:0 8px;font-size:11px}
+.btn .gl{width:12px;height:12px}
+.btn[aria-disabled="true"],.btn:disabled{opacity:.5;border-style:dashed;cursor:not-allowed}
+.btn.danger{color:var(--pl-danger)}
+.btn.danger.arm{background:color-mix(in srgb,var(--c-red) 18%,var(--pl-raised));border-color:var(--pl-danger);color:var(--pl-title)}
+.btn.on,.btn[aria-pressed="true"]{border-color:var(--pl-accent);color:var(--pl-accent-ink)}
+.chip{display:inline-block;padding:0 7px;border-radius:9px;border:1px solid var(--pl-line);font-size:11px;white-space:nowrap;line-height:18px}
+.chip.hot{border-color:color-mix(in srgb,var(--c-yellow) 55%,var(--pl-line));color:var(--c-yellow)}
+.badge{display:inline-flex;align-items:center;gap:5px;height:20px;padding:0 8px 0 6px;border-radius:10px;background:var(--s-fill);border:1px solid var(--s-line);color:var(--s-ink);font-size:11px;font-weight:700;white-space:nowrap;flex:none}
+.badge .gl{width:12px;height:12px}
+.dotc{display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--s,var(--c-muted));vertical-align:middle;flex:none}
+.row{display:flex;gap:6px;flex-wrap:wrap;align-items:center}
+.hint{color:var(--pl-faint);font-size:11px;text-wrap:pretty}
+.none{color:var(--pl-faint);padding:6px 2px}
+.k{font-weight:700;color:var(--pl-title);padding:0 4px;border-radius:3px;background:var(--pl-hover);border:0;font-size:inherit}
+.k:hover{background:var(--pl-raised);text-decoration:underline}
+input.field,textarea.field,select.field{width:100%;padding:5px 8px;border:1px solid var(--pl-line);background:var(--pl-tile);border-radius:5px;outline:none;min-height:28px}
+input.field:focus,textarea.field:focus,select.field:focus{border-color:var(--pl-focus)}
+
+/* ── панели ── */
+.panel{position:absolute;z-index:12;background:var(--pl-panel);border:1px solid var(--pl-line);border-radius:var(--pl-r);backdrop-filter:blur(7px);box-shadow:0 12px 34px rgba(0,0,0,.32)}
+.win.calm .panel,.win.calm .top-search input{backdrop-filter:none;background:var(--pl-panel-solid)}
+.panel>header{display:flex;justify-content:space-between;align-items:center;gap:8px;padding:8px 10px;border-bottom:1px solid var(--pl-line);font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--pl-faint)}
+.panel>header b{color:var(--pl-title);font-weight:600}
+
+/* ── метки над сценой ── */
+.labels{position:absolute;inset:0;overflow:hidden;pointer-events:none;z-index:2}
+.lb{position:absolute;left:0;top:0;pointer-events:auto;cursor:pointer;font-size:11.5px;line-height:1.25;color:var(--pl-title);white-space:nowrap;
+  background:color-mix(in srgb,var(--pl-bg) 78%,transparent);border:1px solid var(--pl-line);border-radius:6px;padding:2px 6px;
+  text-shadow:0 0 4px var(--c-bg);will-change:transform;max-width:240px;overflow:hidden;text-overflow:ellipsis}
+.lb .in{display:flex;gap:6px;align-items:center;min-width:0}
+.lb .k{background:none;padding:0}
+.lb .sub,.lb .bd{color:var(--pl-faint);font-size:10.5px}
+.lb .bd{color:var(--c-yellow);border:1px solid color-mix(in srgb,var(--c-yellow) 40%,transparent);border-radius:8px;padding:0 5px}
+.lb .ttl{display:block;color:var(--pl-dim);max-width:230px;overflow:hidden;text-overflow:ellipsis}
+.lb .line{display:block;color:var(--pl-faint);font-size:10.5px;max-width:230px;overflow:hidden;text-overflow:ellipsis}
+.lb.planet{border-color:var(--s-line)}
+.lb.planet .k{color:var(--s-ink)}
+.lb.quasar{border-color:color-mix(in srgb,var(--c-accent) 55%,var(--pl-line));background:var(--pl-panel-solid);font-weight:700;font-size:12.5px}
+.lb.universe{background:color-mix(in srgb,var(--pl-bg) 66%,transparent)}
+.lb.universe .k{color:var(--pl-title)}
+.lb.galaxy{font-size:13px;border-color:color-mix(in srgb,var(--c-accent) 40%,var(--pl-line))}
+.lb.galaxy.off{color:var(--c-red);opacity:.85;border-style:dashed}
+.lb.bridge{pointer-events:none;color:var(--c-yellow);border:0;background:none;font-size:10.5px;text-shadow:0 0 6px var(--c-bg)}
+.lb.moon{border-style:dashed;font-size:10.5px}
+.lb.full{white-space:normal;padding:4px 8px;border-radius:7px}
+.lb.sel,.lb.hover{border-color:var(--pl-accent);background:var(--pl-panel-solid);z-index:5}
+.lb.sel{box-shadow:0 0 0 1px var(--pl-accent),0 4px 18px rgba(0,0,0,.35)}
+.lb.dim{opacity:.3}
+.lb.drop{border-color:var(--c-green);box-shadow:0 0 0 2px color-mix(in srgb,var(--c-green) 55%,transparent),0 0 22px color-mix(in srgb,var(--c-green) 40%,transparent)}
+.warp{position:absolute;inset:0;pointer-events:none;z-index:3;opacity:0;background:radial-gradient(ellipse at center,transparent 35%,color-mix(in srgb,var(--c-bg-darker) 85%,transparent) 100%)}
+
+@media (prefers-reduced-motion:reduce){
+  .win *,.win *::before,.win *::after{animation:none!important;transition:none!important}
+}
+.win.calm *,.win.calm *::before,.win.calm *::after{animation:none!important;transition:none!important}

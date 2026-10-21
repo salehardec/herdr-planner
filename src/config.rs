@@ -8,6 +8,7 @@ use std::env;
 use std::fs;
 use std::net::IpAddr;
 use std::path::{Path, PathBuf};
+use std::sync::RwLock;
 
 pub const DEFAULT_PORT: u16 = 7117;
 pub const DEFAULT_USER: &str = "herdr";
@@ -35,6 +36,12 @@ pub struct AppConfig {
     pub password_hash: String,
     pub tls_cert: Option<PathBuf>,
     pub tls_key: Option<PathBuf>,
+    /// Who translates answers for the page: `claude/<model>` (default) or `omp/<model>`.
+    pub translator: String,
+    /// The ssh program used to reach other machines (`HERDR_PLANNER_SSH` overrides, for checks).
+    pub ssh_bin: String,
+    /// Where a repository added by address is cloned (`~/Projects`).
+    pub projects_dir: PathBuf,
 }
 
 pub fn home() -> PathBuf {
@@ -75,6 +82,9 @@ struct FileConfig {
     password_hash: Option<String>,
     tls_cert: Option<String>,
     tls_key: Option<String>,
+    translator: Option<String>,
+    ssh_bin: Option<String>,
+    projects_dir: Option<String>,
 }
 
 fn parse_file(text: &str) -> FileConfig {
@@ -153,6 +163,20 @@ impl AppConfig {
             password_hash: file.password_hash.unwrap_or_default(),
             tls_cert,
             tls_key,
+            translator: file
+                .translator
+                .filter(|v| !v.trim().is_empty())
+                .unwrap_or_else(|| "claude/claude-haiku-5-5".to_string()),
+            ssh_bin: env::var("HERDR_PLANNER_SSH")
+                .ok()
+                .filter(|v| !v.is_empty())
+                .or(file.ssh_bin.filter(|v| !v.trim().is_empty()))
+                .unwrap_or_else(|| "ssh".to_string()),
+            projects_dir: file
+                .projects_dir
+                .filter(|v| !v.trim().is_empty())
+                .map(|v| expand_home(&v))
+                .unwrap_or_else(|| home().join("Projects")),
         }
     }
 
@@ -183,6 +207,24 @@ impl AppConfig {
     /// the repository or the board's data folder.
     pub fn attachments_dir(&self) -> PathBuf {
         self.state_dir.join("attachments")
+    }
+
+    /// The folder new universes are cloned into now: the one the ship set last, else the configured one.
+    pub fn projects_dir_now(&self) -> PathBuf {
+        LIVE_PROJECTS_DIR
+            .read()
+            .ok()
+            .and_then(|g| g.clone())
+            .unwrap_or_else(|| self.projects_dir.clone())
+    }
+}
+
+/// The folder for new universes as changed on the ship, live (the config file has it too).
+static LIVE_PROJECTS_DIR: RwLock<Option<PathBuf>> = RwLock::new(None);
+
+pub fn set_live_projects_dir(dir: PathBuf) {
+    if let Ok(mut g) = LIVE_PROJECTS_DIR.write() {
+        *g = Some(dir);
     }
 }
 
@@ -264,6 +306,15 @@ fn edit_config(
     }
     fs::rename(&tmp, config_file).map_err(|e| e.to_string())?;
     Ok(())
+}
+
+/// Writes top-level keys of `config.toml` and keeps the rest of the file (mode 600, as `set_auth`).
+pub fn set_values(config_file: &Path, values: Vec<(&str, toml::Value)>) -> Result<(), String> {
+    edit_config(config_file, |doc| {
+        for (key, value) in values {
+            doc.insert(key.to_string(), value);
+        }
+    })
 }
 
 /// Argon2id PHC string for the password.

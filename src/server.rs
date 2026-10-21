@@ -1,11 +1,14 @@
 //! HTTP: the page, the JSON API, login and the board commands behind it.
 
-use crate::app::{self, details, refresh, run_board, save_todo, Shared, TodoItem};
+use crate::api;
+use crate::app::{self, details, refresh, run_board, Shared};
 use crate::attachments;
 use crate::auth::{self, cookie_value, peer_ip, LoginError, COOKIE};
 use crate::board::{self, Status};
 use crate::config::now_ms;
 use crate::history;
+use crate::ship;
+use crate::station;
 use crate::usage;
 use axum::extract::{ConnectInfo, DefaultBodyLimit, Multipart, Path, Query, State};
 use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
@@ -22,22 +25,10 @@ use std::time::{Duration, SystemTime};
 use tokio::process::Command;
 use tokio::time::timeout;
 
-const INDEX: &str = include_str!("../web/index.html");
-const APP_CSS: &str = include_str!("../web/app.css");
-const APP_JS: &str = include_str!("../web/app.js");
-const WORLD_JS: &str = include_str!("../web/world.js");
-const CAMERA_JS: &str = include_str!("../web/camera.js");
-const LAYOUT_JS: &str = include_str!("../web/layout.js");
-const REQUESTS_JS: &str = include_str!("../web/requests.js");
-/// three.js is vendored at a versioned path so the page may cache it for a year.
-const THREE_JS: &str = include_str!("../web/vendor/three.module.js");
-const THREE_CORE_JS: &str = include_str!("../web/vendor/three.core.js");
-const ORBIT_JS: &str = include_str!("../web/vendor/OrbitControls.js");
-const CSS2D_JS: &str = include_str!("../web/vendor/CSS2DRenderer.js");
-const LOGIN: &str = include_str!("../web/login.html");
-const LOGIN_CSS: &str = include_str!("../web/login.css");
-const LOGIN_JS: &str = include_str!("../web/login.js");
-const FAVICON: &str = include_str!("../web/favicon.svg");
+/// The built page (Vite): embedded into the binary; a debug build reads the folder.
+#[derive(rust_embed::RustEmbed)]
+#[folder = "$HERDR_PLANNER_DIST"]
+struct Dist;
 
 pub fn router(app: Shared) -> Router {
     let protected = Router::new()
@@ -54,6 +45,30 @@ pub fn router(app: Shared) -> Router {
         )
         .route("/api/attachments/{id}", get(api_attachment))
         .route("/api/refresh", post(api_refresh))
+        .route("/api/events", get(api::events))
+        .route("/api/search", get(api::search_api))
+        .route("/api/models", get(api::models_api))
+        .route("/api/translate", post(api::translate_api))
+        .route("/api/subagent", get(api::subagent_api))
+        .route("/api/task/closing", get(api::closing_api))
+        .route("/api/galaxy/ask", post(api::galaxy_ask))
+        .route("/api/galaxy/add", post(api::galaxy_add))
+        .route("/api/galaxy/probe", post(crate::galaxy_setup::probe))
+        .route("/api/galaxy/step", post(crate::galaxy_setup::step))
+        .route("/api/galaxy/projects", get(crate::galaxy_setup::projects))
+        .route("/api/fs/complete", get(api::fs_complete))
+        .route("/api/far/files", post(api::far_files))
+        .route("/api/universe/inspect", post(api::universe_inspect))
+        .route("/api/universe/add", post(api::universe_add))
+        .route("/api/universe/info", get(api::universe_info))
+        .route("/api/universe/fork", post(api::universe_fork))
+        .route("/api/station", get(station::station_get))
+        .route("/api/station/models", get(station::station_models))
+        .route("/api/station/preview", post(station::station_preview))
+        .route("/api/station/set", post(station::station_set))
+        .route("/api/station/light", post(station::station_light))
+        .route("/api/ship", get(ship::ship_get).post(ship::ship_post))
+        .route("/api/galaxy/remove", post(ship::galaxy_remove))
         .route("/api/logout", post(api_logout))
         .route_layer(middleware::from_fn_with_state(
             app.clone(),
@@ -67,58 +82,8 @@ pub fn router(app: Shared) -> Router {
         // The Omarchy bar widget is local and has no login cookie; only a
         // non-loopback caller must authenticate for this small summary.
         .route("/api/limits", get(api_limits))
-        .route(
-            "/app.css",
-            get(|| async { asset(APP_CSS, "text/css; charset=utf-8") }),
-        )
-        .route(
-            "/app.js",
-            get(|| async { asset(APP_JS, "text/javascript; charset=utf-8") }),
-        )
-        .route(
-            "/world.js",
-            get(|| async { asset(WORLD_JS, "text/javascript; charset=utf-8") }),
-        )
-        .route(
-            "/camera.js",
-            get(|| async { asset(CAMERA_JS, "text/javascript; charset=utf-8") }),
-        )
-        .route(
-            "/layout.js",
-            get(|| async { asset(LAYOUT_JS, "text/javascript; charset=utf-8") }),
-        )
-        .route(
-            "/requests.js",
-            get(|| async { asset(REQUESTS_JS, "text/javascript; charset=utf-8") }),
-        )
-        .route(
-            "/vendor/0.186.1/three.module.js",
-            get(|| async { asset_cached(THREE_JS, "text/javascript; charset=utf-8") }),
-        )
-        .route(
-            "/vendor/0.186.1/three.core.js",
-            get(|| async { asset_cached(THREE_CORE_JS, "text/javascript; charset=utf-8") }),
-        )
-        .route(
-            "/vendor/0.186.1/OrbitControls.js",
-            get(|| async { asset_cached(ORBIT_JS, "text/javascript; charset=utf-8") }),
-        )
-        .route(
-            "/vendor/0.186.1/CSS2DRenderer.js",
-            get(|| async { asset_cached(CSS2D_JS, "text/javascript; charset=utf-8") }),
-        )
-        .route(
-            "/login.css",
-            get(|| async { asset(LOGIN_CSS, "text/css; charset=utf-8") }),
-        )
-        .route(
-            "/login.js",
-            get(|| async { asset(LOGIN_JS, "text/javascript; charset=utf-8") }),
-        )
-        .route(
-            "/favicon.svg",
-            get(|| async { asset(FAVICON, "image/svg+xml") }),
-        )
+        .route("/assets/{*path}", get(dist_asset))
+        .route("/favicon.svg", get(dist_root_file))
         .route("/favicon.ico", get(|| async { StatusCode::NO_CONTENT }))
         .merge(protected)
         .layer(middleware::from_fn(headers_middleware))
@@ -154,29 +119,6 @@ async fn headers_middleware(req: axum::extract::Request, next: Next) -> Response
     res
 }
 
-fn asset(body: &'static str, mime: &'static str) -> Response {
-    (
-        [(header::CONTENT_TYPE, HeaderValue::from_static(mime))],
-        body,
-    )
-        .into_response()
-}
-
-/// A vendored file whose path carries its version: safe to keep for a year.
-fn asset_cached(body: &'static str, mime: &'static str) -> Response {
-    (
-        [
-            (header::CONTENT_TYPE, HeaderValue::from_static(mime)),
-            (
-                header::CACHE_CONTROL,
-                HeaderValue::from_static("public, max-age=31536000, immutable"),
-            ),
-        ],
-        body,
-    )
-        .into_response()
-}
-
 fn authed(app: &Shared, headers: &HeaderMap) -> bool {
     if !app.auth.required {
         return true;
@@ -190,7 +132,55 @@ async fn index(State(app): State<Shared>, headers: HeaderMap) -> Response {
     if !authed(&app, &headers) {
         return Redirect::to("/login").into_response();
     }
-    Html(INDEX).into_response()
+    match Dist::get("index.html") {
+        Some(f) => Html(String::from_utf8_lossy(&f.data).into_owned()).into_response(),
+        None => error(StatusCode::NOT_FOUND, "the page is not built"),
+    }
+}
+
+fn mime_of(path: &str) -> &'static str {
+    match path.rsplit('.').next().unwrap_or("") {
+        "js" | "mjs" => "text/javascript; charset=utf-8",
+        "css" => "text/css; charset=utf-8",
+        "svg" => "image/svg+xml",
+        "html" => "text/html; charset=utf-8",
+        "json" => "application/json",
+        "woff2" => "font/woff2",
+        "png" => "image/png",
+        "map" => "application/json",
+        _ => "application/octet-stream",
+    }
+}
+
+/// Hashed files under /assets: safe to keep for a year.
+async fn dist_asset(Path(path): Path<String>) -> Response {
+    let full = format!("assets/{path}");
+    match Dist::get(&full) {
+        Some(f) => (
+            [
+                (header::CONTENT_TYPE, HeaderValue::from_static(mime_of(&full))),
+                (
+                    header::CACHE_CONTROL,
+                    HeaderValue::from_static("public, max-age=31536000, immutable"),
+                ),
+            ],
+            f.data.into_owned(),
+        )
+            .into_response(),
+        None => StatusCode::NOT_FOUND.into_response(),
+    }
+}
+
+async fn dist_root_file(req: axum::extract::Request) -> Response {
+    let name = req.uri().path().trim_start_matches('/').to_string();
+    match Dist::get(&name) {
+        Some(f) => (
+            [(header::CONTENT_TYPE, HeaderValue::from_static(mime_of(&name)))],
+            f.data.into_owned(),
+        )
+            .into_response(),
+        None => StatusCode::NOT_FOUND.into_response(),
+    }
 }
 
 async fn login_page(State(app): State<Shared>, headers: HeaderMap) -> Response {
@@ -201,7 +191,13 @@ async fn login_page(State(app): State<Shared>, headers: HeaderMap) -> Response {
         let snap = app.snapshot.read().await;
         (theme_css(&snap.theme), snap.theme.mode.clone())
     };
-    let html = LOGIN.replace("__THEME__", &css).replace("__MODE__", &mode);
+    // The theme goes in as a <style> after the bundled stylesheet, so it wins.
+    let page = Dist::get("login.html")
+        .map(|f| String::from_utf8_lossy(&f.data).into_owned())
+        .unwrap_or_default();
+    let html = page
+        .replace("__MODE__", &mode)
+        .replace("</head>", &format!("<style>{css}</style></head>"));
     Html(html).into_response()
 }
 
@@ -237,7 +233,7 @@ fn client_ip(addr: SocketAddr, headers: &HeaderMap) -> IpAddr {
 /// A file action may open a terminal only for someone sitting at this machine.
 /// Behind a same-host TLS proxy the peer is loopback for everyone, so the
 /// forwarded address decides instead.
-fn client_is_local(addr: SocketAddr, headers: &HeaderMap) -> bool {
+pub(crate) fn client_is_local(addr: SocketAddr, headers: &HeaderMap) -> bool {
     let peer = peer_ip(addr);
     if !peer.is_loopback() {
         return false;
@@ -282,7 +278,7 @@ async fn api_login(
             tokio::time::sleep(Duration::from_millis(300)).await;
             (
                 StatusCode::UNAUTHORIZED,
-                Json(json!({"error": "Неверный пользователь или пароль"})),
+                Json(json!({"error": "Неверный пользователь или пароль", "code": "invalid"})),
             )
                 .into_response()
         }
@@ -292,6 +288,7 @@ async fn api_login(
                 StatusCode::TOO_MANY_REQUESTS,
                 Json(json!({
                     "error": format!("Слишком много неудачных попыток. Подождите {} с.", secs),
+                    "code": "too_many",
                     "retry_after": secs
                 })),
             )
@@ -531,12 +528,23 @@ struct HistoryQuery {
     /// Turns older than this one (`n` of the oldest the page has); the newest when absent.
     before: Option<usize>,
     limit: Option<usize>,
+    /// Words to look for in the whole conversation instead of paging.
+    q: Option<String>,
 }
 
 /// The Coordinator's past questions and answers, read from its transcript.
 async fn api_chat_history(State(app): State<Shared>, Query(q): Query<HistoryQuery>) -> Response {
     let cfg = app.cfg.clone();
     let limit = q.limit.unwrap_or(3);
+    if let Some(text) = q.q.as_deref().map(str::trim).filter(|t| !t.is_empty()) {
+        let db = app.db.clone();
+        let text = text.to_string();
+        let limit = limit.clamp(1, 50);
+        return match tokio::task::spawn_blocking(move || history::search(&db, &text, limit)).await {
+            Ok(hits) => Json(json!({"ok": true, "hits": hits})).into_response(),
+            Err(e) => error(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
+        };
+    }
     match tokio::task::spawn_blocking(move || history::page(&cfg, q.before, limit)).await {
         Ok(page) => Json(json!({
             "ok": true,
@@ -554,6 +562,9 @@ async fn api_chat_history(State(app): State<Shared>, Query(q): Query<HistoryQuer
 struct ChatBody {
     #[serde(default)]
     text: String,
+    /// The machine whose Coordinator is written to; absent or empty: this one.
+    #[serde(default)]
+    galaxy: Option<String>,
     #[serde(default)]
     attachments: Vec<AttachmentRef>,
 }
@@ -608,6 +619,24 @@ async fn api_chat(
     }
     if text.chars().count() > 4000 {
         return error(StatusCode::BAD_REQUEST, "message is too long");
+    }
+    if let Some(g) = body.galaxy.as_deref().filter(|g| !g.is_empty()) {
+        if !crate::machines::valid_label(g) {
+            return error(StatusCode::BAD_REQUEST, "bad machine label");
+        }
+        if !body.attachments.is_empty() {
+            return error(StatusCode::BAD_REQUEST, "картинки в далёкую галактику не передаются");
+        }
+        if text.is_empty() {
+            return error(StatusCode::BAD_REQUEST, "empty message");
+        }
+        return match crate::machines::remote_dispatch(&app.cfg, g, "", text, false, None).await {
+            Ok(out) => {
+                let _ = api::ask_galaxy(&app, g).await;
+                Json(json!({"ok": true, "out": clip(out)})).into_response()
+            }
+            Err(e) => error(StatusCode::BAD_GATEWAY, e),
+        };
     }
 
     let dir = app.cfg.attachments_dir();
@@ -672,7 +701,7 @@ async fn api_chat(
     }
     let chat = app.chat.lock().await.clone();
     // Persist right away; the next refresh also does it.
-    app::save_chat(&app.cfg, &chat);
+    app::save_chat(&app, &chat);
     let app2 = app.clone();
     tokio::spawn(async move {
         tokio::time::sleep(Duration::from_millis(900)).await;
@@ -795,6 +824,26 @@ struct ActionBody {
     target: Option<String>,
     /// `reviewer` asks for `<agent>-r`; the worker is the default.
     role: Option<String>,
+    /// The machine the action is for; empty or absent means this one.
+    galaxy: Option<String>,
+    /// The worker agent for a new task: `claude/claude-sonnet-5-5`.
+    agent: Option<String>,
+    /// The order of the God's list.
+    ids: Option<Vec<String>>,
+    /// To whom a list item is addressed: empty, `quasar` or a task id.
+    to: Option<String>,
+    /// A number the action carries (how far a clone is behind).
+    n: Option<u32>,
+}
+
+/// `claude/claude-sonnet-5-5`, `omp/deepseek/deepseek-v4-flash`: what `--worker.agent` takes.
+pub(crate) fn valid_agent(a: &str) -> bool {
+    !a.is_empty()
+        && a.len() <= 120
+        && a.split('/').count() >= 2
+        && a.chars().next().is_some_and(|c| c.is_ascii_lowercase())
+        && a.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | ':' | '/' | '-'))
+        && !a.contains("..")
 }
 
 async fn api_action(
@@ -814,6 +863,10 @@ async fn api_action(
         if let Err(e) = task_id(&body) {
             return error(StatusCode::BAD_REQUEST, e);
         }
+    }
+    if let Some(galaxy) = body.galaxy.as_deref().filter(|g| !g.is_empty()) {
+        let _guard = app.action_lock.lock().await;
+        return remote_action(&app, galaxy, &body).await;
     }
     let _guard = app.action_lock.lock().await;
     let result = match body.action.as_str() {
@@ -885,17 +938,14 @@ async fn api_action(
                 Ok(t) => t,
                 Err(e) => return error(StatusCode::BAD_REQUEST, e),
             };
-            let mut snap = app.snapshot.write().await;
-            let id = format!("t{}-{}", now_ms(), snap.todo.len() + 1);
-            snap.todo.push(TodoItem {
-                id,
-                text,
-                at: now_ms(),
-            });
-            let todo = snap.todo.clone();
-            drop(snap);
-            save_todo(&app.cfg, &todo);
-            return Json(json!({"ok": true, "todo": todo})).into_response();
+            let db = app.db.clone();
+            let item = tokio::task::spawn_blocking(move || db.todo_add(&text, now_ms()))
+                .await
+                .unwrap_or_default();
+            if item.id.is_empty() {
+                return error(StatusCode::INTERNAL_SERVER_ERROR, "the list could not be saved");
+            }
+            return todo_reply(&app).await;
         }
         "todo-update" => {
             let id = body.id.as_deref().unwrap_or("");
@@ -906,31 +956,68 @@ async fn api_action(
                 Ok(t) => t,
                 Err(e) => return error(StatusCode::BAD_REQUEST, e),
             };
-            let mut snap = app.snapshot.write().await;
-            let Some(item) = snap.todo.iter_mut().find(|x| x.id == id) else {
+            if !app.db.todo_update(id, &text) {
                 return error(StatusCode::NOT_FOUND, "no such todo item");
-            };
-            item.text = text;
-            let todo = snap.todo.clone();
-            drop(snap);
-            save_todo(&app.cfg, &todo);
-            return Json(json!({"ok": true, "todo": todo})).into_response();
+            }
+            return todo_reply(&app).await;
         }
         "todo-remove" => {
             let id = body.id.as_deref().unwrap_or("");
             if !valid_todo_id(id) {
                 return error(StatusCode::BAD_REQUEST, "bad todo id");
             }
-            let mut snap = app.snapshot.write().await;
-            let before = snap.todo.len();
-            snap.todo.retain(|x| x.id != id);
-            if snap.todo.len() == before {
+            if !app.db.todo_remove(id) {
                 return error(StatusCode::NOT_FOUND, "no such todo item");
             }
-            let todo = snap.todo.clone();
-            drop(snap);
-            save_todo(&app.cfg, &todo);
-            return Json(json!({"ok": true, "todo": todo})).into_response();
+            return todo_reply(&app).await;
+        }
+        "todo-reorder" => {
+            let ids = body.ids.clone().unwrap_or_default();
+            if ids.len() > 500 || ids.iter().any(|i| !valid_todo_id(i)) {
+                return error(StatusCode::BAD_REQUEST, "bad order");
+            }
+            app.db.todo_reorder(&ids);
+            return todo_reply(&app).await;
+        }
+        "todo-assign" => {
+            let id = body.id.as_deref().unwrap_or("");
+            let to = body.to.as_deref().unwrap_or("");
+            if !valid_todo_id(id) || !(to.is_empty() || to == "quasar" || (board::valid_id(to) && to.contains('/'))) {
+                return error(StatusCode::BAD_REQUEST, "bad addressee");
+            }
+            if !app.db.todo_assign(id, to) {
+                return error(StatusCode::NOT_FOUND, "no such todo item");
+            }
+            return todo_reply(&app).await;
+        }
+        "todo-send" => {
+            // The item goes to its addressee as a message and leaves the list.
+            let id = body.id.as_deref().unwrap_or("");
+            if !valid_todo_id(id) {
+                return error(StatusCode::BAD_REQUEST, "bad todo id");
+            }
+            let Some(item) = app.db.todo_list().into_iter().find(|x| x.id == id) else {
+                return error(StatusCode::NOT_FOUND, "no such todo item");
+            };
+            let text = match todo_text(&item.text) {
+                Ok(t) => t,
+                Err(e) => return error(StatusCode::BAD_REQUEST, e),
+            };
+            let sent = if item.to == "quasar" {
+                run_board(&app.cfg, &["coordinator", "tell", "--", &text], Duration::from_secs(30)).await
+            } else if board::valid_id(&item.to) && item.to.contains('/') {
+                run_board(&app.cfg, &["tell", &item.to, "--", &text], Duration::from_secs(60)).await
+            } else {
+                return error(StatusCode::BAD_REQUEST, "у дела нет адресата");
+            };
+            return match sent {
+                Ok(_) => {
+                    app.db.todo_remove(id);
+                    refresh(&app).await;
+                    todo_reply(&app).await
+                }
+                Err(e) => error(StatusCode::BAD_GATEWAY, e),
+            };
         }
         "todo-create" => {
             let id = body.id.as_deref().unwrap_or("");
@@ -941,47 +1028,66 @@ async fn api_action(
             if !valid_repo(&repo) {
                 return error(StatusCode::BAD_REQUEST, "bad universe name");
             }
-            let (item, known) = {
+            let agent = body.agent.as_deref().map(str::trim).filter(|a| !a.is_empty());
+            if let Some(a) = agent {
+                if !valid_agent(a) {
+                    return error(StatusCode::BAD_REQUEST, "bad agent/model");
+                }
+            }
+            let known = {
                 let snap = app.snapshot.read().await;
-                (
-                    snap.todo.iter().find(|x| x.id == id).cloned(),
-                    snap.projects.iter().any(|p| p.name == repo),
-                )
+                snap.projects.iter().any(|p| p.name == repo)
             };
-            let Some(item) = item else {
+            let Some(item) = app.db.todo_list().into_iter().find(|x| x.id == id) else {
                 return error(StatusCode::NOT_FOUND, "no such todo item");
             };
             if !known {
-                return error(
-                    StatusCode::BAD_REQUEST,
-                    format!("нет такой вселенной: {repo}"),
-                );
+                return error(StatusCode::BAD_REQUEST, format!("нет такой вселенной: {repo}"));
             }
             let title = match todo_text(&item.text) {
                 Ok(t) => t,
                 Err(e) => return error(StatusCode::BAD_REQUEST, e),
             };
-            match run_board(
-                &app.cfg,
-                &["add", title.as_str(), "--repo", repo.as_str()],
-                Duration::from_secs(60),
-            )
-            .await
-            {
-                Ok(out) => {
-                    let todo = {
-                        let mut snap = app.snapshot.write().await;
-                        snap.todo.retain(|x| x.id != id);
-                        let todo = snap.todo.clone();
-                        todo
-                    };
-                    save_todo(&app.cfg, &todo);
-                    refresh(&app).await;
-                    return Json(json!({"ok": true, "out": clip(out), "todo": todo, "repo": repo}))
-                        .into_response();
-                }
-                Err(e) => return error(StatusCode::BAD_GATEWAY, e),
+            let mut args: Vec<&str> = vec!["add", title.as_str(), "--repo", repo.as_str()];
+            if let Some(a) = agent {
+                args.push("--worker.agent");
+                args.push(a);
             }
+            return match run_board(&app.cfg, &args, Duration::from_secs(60)).await {
+                Ok(out) => {
+                    app.db.todo_remove(id);
+                    refresh(&app).await;
+                    let mut reply = todo_json(&app).await;
+                    reply["repo"] = json!(repo);
+                    reply["out"] = json!(clip(out));
+                    Json(reply).into_response()
+                }
+                Err(e) => error(StatusCode::BAD_GATEWAY, e),
+            };
+        }
+        "suggest-update" => {
+            let repo = body.repo.as_deref().unwrap_or("").trim().to_string();
+            if !valid_repo(&repo) {
+                return error(StatusCode::BAD_REQUEST, "bad universe name");
+            }
+            let behind = body.n.unwrap_or(0);
+            let title = format!("Обновить главную ветку из origin (git pull --ff-only), отстаёт на {behind}");
+            run_board(&app.cfg, &["add", title.as_str(), "--repo", repo.as_str()], Duration::from_secs(60)).await
+        }
+        "coordinator-compact" => {
+            if body.confirm != Some(true) {
+                return error(StatusCode::BAD_REQUEST, "compacting needs an explicit confirmation");
+            }
+            if !app.snapshot.read().await.coordinator.can_compact {
+                return error(StatusCode::CONFLICT, "Координатор сейчас отвечает или это не Claude: сжать нельзя");
+            }
+            run_board(&app.cfg, &["coordinator", "tell", "--", "/compact"], Duration::from_secs(30)).await
+        }
+        "coordinator-new" => {
+            if body.confirm != Some(true) {
+                return error(StatusCode::BAD_REQUEST, "a new Coordinator needs an explicit confirmation");
+            }
+            run_board(&app.cfg, &["coordinator", "new"], Duration::from_secs(60)).await
         }
         "keys" => {
             let target = body.target.as_deref().unwrap_or("coordinator");
@@ -1035,6 +1141,112 @@ async fn api_action(
     match result {
         Ok(out) => {
             refresh(&app).await;
+            Json(json!({"ok": true, "out": clip(out)})).into_response()
+        }
+        Err(e) => error(StatusCode::BAD_GATEWAY, e),
+    }
+}
+
+async fn todo_json(app: &Shared) -> serde_json::Value {
+    let todo = app.db.todo_list();
+    app.snapshot.write().await.todo = todo.clone();
+    json!({"ok": true, "todo": todo})
+}
+
+async fn todo_reply(app: &Shared) -> Response {
+    let reply = todo_json(app).await;
+    app::publish(app).await;
+    Json(reply).into_response()
+}
+
+/// An action on a task of another machine: the board's own `remote do` over SSH, and `after` in its shell.
+/// Everything that needs this machine's herdr (screens, keys, files) is refused honestly.
+async fn remote_action(app: &Shared, galaxy: &str, body: &ActionBody) -> Response {
+    use crate::machines;
+    if !machines::valid_label(galaxy) {
+        return error(StatusCode::BAD_REQUEST, "bad machine label");
+    }
+    match body.action.as_str() {
+        // The Coordinator of that machine is written to, as a person would: its words are the command.
+        "coordinator-compact" => {
+            if body.confirm != Some(true) {
+                return error(StatusCode::BAD_REQUEST, "compacting needs an explicit confirmation");
+            }
+            return match machines::remote_dispatch(&app.cfg, galaxy, "", "/compact", false, None).await {
+                Ok(out) => Json(json!({"ok": true, "out": clip(out)})).into_response(),
+                Err(e) => error(StatusCode::BAD_GATEWAY, e),
+            };
+        }
+        "suggest-update" => {
+            let repo = body.repo.as_deref().unwrap_or("").trim().to_string();
+            if !valid_repo(&repo) {
+                return error(StatusCode::BAD_REQUEST, "bad universe name");
+            }
+            let about = {
+                let list = app.galaxies.lock().await;
+                list.iter().find(|g| g.label == galaxy).and_then(|g| g.tasks.iter().find(|t| t.repo == repo).map(|t| t.id.clone()))
+            };
+            let folder = {
+                let list = app.galaxies.lock().await;
+                list.iter().find(|g| g.label == galaxy).and_then(|g| g.projects.iter().find(|p| p.name == repo).map(|p| p.folder.clone())).unwrap_or_default()
+            };
+            let behind = body.n.unwrap_or(0);
+            let text = format!("Обнови главную ветку в {folder} из origin (git pull --ff-only): отстаёт на {behind} коммитов");
+            return match machines::remote_dispatch(&app.cfg, galaxy, "", &text, false, about.as_deref()).await {
+                Ok(out) => Json(json!({"ok": true, "out": clip(out)})).into_response(),
+                Err(e) => error(StatusCode::BAD_GATEWAY, e),
+            };
+        }
+        _ => {}
+    }
+    let id = match task_id(body) {
+        Ok(id) => id.to_string(),
+        Err(e) => return error(StatusCode::BAD_REQUEST, e),
+    };
+    let result: Result<String, String> = match body.action.as_str() {
+        "approve" | "anyway" => {
+            if body.confirm != Some(true) {
+                return error(StatusCode::BAD_REQUEST, "approval needs an explicit confirmation");
+            }
+            machines::remote_do(&app.cfg, galaxy, &json!({"id": id, "action": "approve", "anyway": body.action == "anyway"})).await
+        }
+        "tell" => {
+            let text = body.text.as_deref().unwrap_or("").trim().to_string();
+            if text.is_empty() {
+                return error(StatusCode::BAD_REQUEST, "empty message");
+            }
+            machines::remote_do(&app.cfg, galaxy, &json!({"id": id, "action": "tell", "text": text})).await
+        }
+        "pick" => {
+            let letter = body.letter.as_deref().unwrap_or("");
+            if !board::valid_letter(letter) {
+                return error(StatusCode::BAD_REQUEST, "bad attempt letter");
+            }
+            machines::remote_do(&app.cfg, galaxy, &json!({"id": id, "action": "pick", "letter": letter})).await
+        }
+        "retry" | "review" | "stop" | "fix" | "finish" | "archive" | "restore" => {
+            machines::remote_do(&app.cfg, galaxy, &json!({"id": id, "action": body.action})).await
+        }
+        "delegate" => machines::remote_do(&app.cfg, galaxy, &json!({"id": id, "action": "delegate", "now": true})).await,
+        "after" => {
+            let Some(refs) = body.after.clone() else {
+                return error(StatusCode::BAD_REQUEST, "after needs the list of tasks; an empty list clears the wait");
+            };
+            if let Some(bad) = refs.iter().find(|r| !board::valid_ref(r)) {
+                return error(StatusCode::BAD_REQUEST, format!("bad task reference: {bad}"));
+            }
+            machines::remote_after(&app.cfg, galaxy, &id, &refs).await.map(|tags| tags.join(", "))
+        }
+        other => {
+            return error(
+                StatusCode::BAD_REQUEST,
+                format!("«{other}» в далёкой галактике недоступно: экран агента, клавиши и файлы живут на той машине"),
+            )
+        }
+    };
+    match result {
+        Ok(out) => {
+            let _ = api::ask_galaxy(app, galaxy).await;
             Json(json!({"ok": true, "out": clip(out)})).into_response()
         }
         Err(e) => error(StatusCode::BAD_GATEWAY, e),
@@ -1133,7 +1345,7 @@ async fn yazi(app: &Shared, body: &ActionBody, local: bool) -> Response {
 /// A cheap same-origin check for JSON POSTs: a browser's `Origin` must end in the
 /// `Host` it is talking to. Requests without `Origin` (curl, tests) are allowed;
 /// SameSite=Strict still keeps other sites from sending the session cookie.
-fn same_origin(headers: &HeaderMap) -> bool {
+pub(crate) fn same_origin(headers: &HeaderMap) -> bool {
     let Some(origin) = headers.get(header::ORIGIN).and_then(|v| v.to_str().ok()) else {
         return true;
     };
@@ -1143,11 +1355,11 @@ fn same_origin(headers: &HeaderMap) -> bool {
     origin.ends_with(&format!("://{host}")) || origin.ends_with(&format!("://{host}/"))
 }
 
-fn error(status: StatusCode, message: impl Into<String>) -> Response {
+pub(crate) fn error(status: StatusCode, message: impl Into<String>) -> Response {
     (status, Json(json!({"error": message.into()}))).into_response()
 }
 
-fn clip(s: String) -> String {
+pub(crate) fn clip(s: String) -> String {
     const MAX: usize = 4000;
     if s.chars().count() <= MAX {
         return s;

@@ -1,0 +1,65 @@
+/* «Добавить галактику» (the six-step wizard). Narrow screens: every row wraps, nothing has a fixed width. */
+/* One column that is never wider than the dialog: long words and paths wrap inside it (400 px screens). Every grid
+   of the wizard gets such a column, so an implicit auto track cannot grow to the widest word. */
+.wiz .bd,.wiz .wsteps,.wiz .wbody,.wiz .info,.wiz .wprog,.wiz .wsum,.wiz .wrepos,.wiz .wterm{grid-template-columns:minmax(0,1fr)}
+.wiz .bd{min-width:0}
+.wiz .bd>*,.wiz .wbody>*,.wiz .wstep,.wiz .wstep>*{min-width:0;max-width:100%}
+.wiz .steps li{grid-template-columns:18px minmax(0,1fr)}
+.wiz .steps li>div,.wiz .wbody p,.wiz .hint{overflow-wrap:anywhere}
+.wiz code{display:block;white-space:pre-wrap;word-break:break-all;margin-top:3px}
+.wiz .wdetail{font-size:11px;margin-top:2px;color:var(--pl-dim);word-break:break-word}
+.wiz .wfail{margin:4px 0 0}
+.wiz .wfail-box{border-color:var(--pl-danger)}
+.wiz .hint.ok{color:var(--c-green)}
+.wiz .hint.bad{color:var(--pl-danger)}
+
+.wiz .wsteps{list-style:none;margin:12px 0 0;padding:0;display:grid;gap:6px}
+.wiz .wstep{border:1px solid var(--pl-line);border-radius:6px;background:var(--pl-tile);min-width:0}
+.wiz .wstep.w-cur{border-color:var(--pl-accent)}
+.wiz .wstep .wh{all:unset;box-sizing:border-box;display:flex;align-items:center;gap:8px;width:100%;padding:7px 10px;cursor:pointer;font-size:12.5px;color:var(--pl-text)}
+.wiz .wstep .wh:focus-visible{outline:2px solid var(--pl-accent);outline-offset:-2px;border-radius:6px}
+.wiz .wstep .wn{flex:none;width:20px;height:20px;border-radius:50%;border:1px solid var(--pl-line);display:grid;place-items:center;font-size:11px;color:var(--pl-faint)}
+.wiz .wstep .wt{flex:1;min-width:0;overflow-wrap:anywhere}
+.wiz .wstep .wi{flex:none;font-size:12px;color:var(--pl-faint)}
+.wiz .wstep.w-ok .wn,.wiz .wstep.w-ok .wi{color:var(--c-green);border-color:var(--c-green)}
+.wiz .wstep.w-err .wn,.wiz .wstep.w-err .wi{color:var(--c-red);border-color:var(--c-red)}
+.wiz .wstep .wbody{padding:2px 10px 10px;display:grid;gap:4px;min-width:0}
+.wiz .wstep .wbody p{margin:6px 0 0}
+
+.wiz .wchecks{margin-top:0}
+.wiz .wchecks li{grid-template-columns:18px minmax(0,1fr)}
+.wiz .wchecks li.w-miss .i{color:var(--c-red)}
+.wiz .wchecks li.w-ok .i{color:var(--c-green)}
+.wiz .wchecks li.w-todo{opacity:.85}
+
+.wiz .wrows{margin-top:6px}
+
+.wiz .wcrew{margin-top:6px}
+.wiz .wcrew li{grid-template-columns:18px minmax(0,1fr);opacity:1}
+.wiz .wcrew li.w-todo{opacity:.7}
+.wiz .wprog{display:grid;gap:4px;min-width:0}
+.wiz .wprog .act{margin-top:2px;gap:4px}
+.wiz .wprog .hint.ok{font-size:11.5px}
+.wiz .wlogin code{user-select:all}
+
+.wiz .wrepos{display:grid;gap:4px;margin-top:6px}
+.wiz .wrepo{display:grid;grid-template-columns:auto minmax(0,1fr) auto;gap:2px 8px;align-items:center;padding:6px 8px;border:1px solid var(--pl-line);border-radius:6px;margin:0;text-transform:none;letter-spacing:0;font-size:12.5px;color:var(--pl-text);cursor:pointer}
+.wiz .wrepo.on{opacity:.6;cursor:default}
+.wiz .wrepo .wname{min-width:0;overflow-wrap:anywhere}
+.wiz .wrepo .m{grid-column:2 / 3;font-size:11px;color:var(--pl-dim);min-width:0;overflow-wrap:anywhere}
+.wiz .wrepo .wst{grid-column:3;font-size:12px}
+.wiz .wrepo .wst.ok{color:var(--c-green)}
+.wiz .wrepo .wst.err{color:var(--c-red)}
+.wiz .wrepo .wst em{display:block;font-style:normal;font-size:11px;color:var(--c-red);overflow-wrap:anywhere}
+
+.wiz .wsum{gap:4px}
+.wiz .wsum b{color:var(--pl-title)}
+
+.wiz .wterm{margin-top:14px;padding-top:10px;border-top:1px solid var(--pl-line);display:grid;gap:4px;justify-items:start}
+.wiz .wterm .hint{margin:0}
+.wiz .wterm code{display:inline}
+
+@media (max-width: 440px) {
+  .wiz .wrepo{grid-template-columns:auto minmax(0,1fr)}
+  .wiz .wrepo .wst{grid-column:2}
+}

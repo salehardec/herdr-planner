@@ -1,0 +1,8 @@
+.journal{left:354px;bottom:70px;width:min(560px,calc(100vw - 740px));max-height:44vh;display:flex;flex-direction:column;z-index:15;transform:translateY(20px);opacity:0;pointer-events:none;transition:transform var(--m-med) var(--m-ease),opacity var(--m-med);background:var(--pl-panel-solid)}
+.journal.open{transform:none;opacity:1;pointer-events:auto}
+.jlist{overflow:auto;padding:6px 10px;display:grid;gap:3px;align-content:start;scrollbar-width:thin}
+.logline{display:grid;grid-template-columns:30px 40px 66px minmax(0,1fr);gap:8px;color:var(--pl-dim);font-size:12px;white-space:nowrap;align-items:center}
+.logline .n{color:var(--pl-faint)}
+.logline .tx{overflow:hidden;text-overflow:ellipsis}
+.logline .kk{background:none;border:0;padding:0;text-align:left;color:var(--s-ink);font-weight:700}
+@media (max-width:1100px){.journal{left:12px;width:calc(100vw - 24px)}}

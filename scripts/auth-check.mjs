@@ -5,7 +5,7 @@
 //   AUTH_BASE=http://127.0.0.1:PORT node scripts/auth-check.mjs
 
 import { spawn } from 'node:child_process';
-import { existsSync, mkdtempSync, readFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -23,6 +23,14 @@ const json = async (r) => ({ status: r.status, body: await r.json().catch(() => 
 
 const noAuth = await get('/api/state');
 check('API without a session is 401', noAuth.status === 401, String(noAuth.status));
+for (const path of ['/api/events', '/api/search?q=alpha', '/api/models?program=claude', '/api/subagent?task=quasar&id=x', '/api/task/closing?id=alpha/1', '/api/fs/complete?path=/', '/api/universe/info?repo=alpha', '/api/chat/history?q=x']) {
+  const r = await get(path);
+  check(`${path.split('?')[0]} needs a session`, r.status === 401, String(r.status));
+}
+for (const [path, body] of [['/api/translate', { text: 'hello' }], ['/api/galaxy/ask', { label: 'vm-a' }], ['/api/galaxy/add', { target: 'a@b', confirm: true }], ['/api/universe/inspect', { input: '/tmp' }], ['/api/universe/add', { mode: 'folder', name: 'x', path: '/tmp', confirm: true }], ['/api/universe/fork', { repo: 'alpha', op: 'pull', confirm: true }]]) {
+  const r = await get(path, null, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+  check(`POST ${path} needs a session`, r.status === 401, String(r.status));
+}
 const localLimits = await get('/api/limits');
 check('the local bar can read limits without a session', localLimits.status === 200 && (await localLimits.json()).level === 'ok', String(localLimits.status));
 const remoteLimits = await get('/api/limits', null, { headers: { 'x-forwarded-for': '203.0.113.5' } });
@@ -39,19 +47,41 @@ const wrong = await json(await fetch(base + '/api/login', {
 check('a wrong password is refused', wrong.status === 401);
 
 // Browser login first, before the per-address limit is reached.
-const port = 9900 + Math.floor(Math.random() * 90);
 const profile = mkdtempSync(join(tmpdir(), 'herdr-auth-'));
+// The browser picks its own debugging port (several checks run side by side; a random port could be taken twice):
+// it writes the port into its profile folder.
+let port = 0;
+const readPort = () => { try { return Number(readFileSync(join(profile, 'DevToolsActivePort'), 'utf8').split('\n')[0]) || 0; } catch { return 0; } };
 const chrome = spawn(process.env.CHROMIUM || 'chromium', [
   '--headless=new', '--no-sandbox', '--disable-gpu', '--hide-scrollbars', `--user-data-dir=${profile}`,
-  `--remote-debugging-port=${port}`, '--window-size=1200,850',
+  '--remote-debugging-port=0', '--window-size=1200,850',
   '--host-resolver-rules=MAP remote.test 127.0.0.1', 'about:blank',
 ], { stdio: 'ignore' });
+// Whatever happens, the browser goes and its profile (hundreds of MB in /tmp) goes with it.
+process.on('exit', () => {
+  try { chrome.kill('SIGKILL'); } catch { /* gone already */ }
+  try { rmSync(profile, { recursive: true, force: true, maxRetries: 3 }); } catch { /* best effort */ }
+  // the killed browser may still write a last file into the folder: sweep once more a moment later, detached
+  try { spawn('sh', ['-c', `sleep 2; rm -rf '${profile}'`], { detached: true, stdio: 'ignore' }).unref(); } catch { /* best effort */ }
+});
 let ws;
 const pending = new Map(); let id = 0;
-const send = (method, params = {}) => new Promise((r) => { const i = ++id; pending.set(i, r); ws.send(JSON.stringify({ id: i, method, params })); });
+// A browser that stopped answering (a crashed renderer) would leave the check waiting for ever: when the latest call
+// has had no reply for 120 s, say so and stop. (A call somebody gave up on earlier does not count: later ones are answered.)
+let lastSentAt = 0; let lastRepliedAt = 0;
+setInterval(() => {
+  if (lastSentAt > lastRepliedAt && Date.now() - lastSentAt > 120000) { console.log('FAIL the browser stopped answering'); process.exit(1); }
+}, 5000).unref();
+const send = (method, params = {}) => new Promise((r) => {
+  const i = ++id;
+  lastSentAt = Date.now();
+  pending.set(i, (m) => { lastRepliedAt = Date.now(); r(m); });
+  ws.send(JSON.stringify({ id: i, method, params }));
+});
 const evaluate = async (expr) => (await send('Runtime.evaluate', { expression: expr, returnByValue: true, awaitPromise: true })).result?.result?.value;
 for (let i = 0; i < 60; i++) {
-  try { const r = await fetch(`http://127.0.0.1:${port}/json/version`); if (r.ok) break; } catch {}
+  port = port || readPort();
+  try { if (port) { const r = await fetch(`http://127.0.0.1:${port}/json/version`); if (r.ok) break; } } catch {}
   await sleep(200);
 }
 const tabs = await (await fetch(`http://127.0.0.1:${port}/json/list`)).json();
@@ -79,7 +109,7 @@ let loggedIn = false;
 // The 3D world compiles its shaders under SwiftShader; login plus the first
 // frame can take longer than the old flat page.
 for (let i = 0; i < 150; i++) {
-  if (await evaluate('location.pathname === "/" && !!document.querySelector("#hud") && !!window.world && world.debug().planets > 0')) { loggedIn = true; break; }
+  if (await evaluate('location.pathname === "/" && !!document.querySelector("#top") && !!window.world && world.debug().planets > 0')) { loggedIn = true; break; }
   await sleep(200);
 }
 check('the browser logs in and sees the dashboard', loggedIn);
@@ -96,6 +126,14 @@ for (const attr of ['HttpOnly', 'Secure', 'SameSite=Strict', 'Path=/']) check(`t
 const cookie = setCookie.split(';')[0];
 const authed = await get('/api/state', cookie);
 check('the session opens the API', authed.status === 200, String(authed.status));
+const stream = await fetch(base + '/api/events', { headers: { cookie } });
+check('the event stream opens with a session and starts with the state', stream.status === 200 && (stream.headers.get('content-type') || '').includes('text/event-stream'), `${stream.status} ${stream.headers.get('content-type')}`);
+const reader = stream.body.getReader();
+const firstChunk = await reader.read();
+check('its first event is the whole snapshot', new TextDecoder().decode(firstChunk.value).startsWith('event: state'), new TextDecoder().decode(firstChunk.value).slice(0, 40));
+await reader.cancel();
+const assetsAnon = await get('/assets/nothing.js');
+check('the built assets are not behind a secret (public, hashed files)', assetsAnon.status === 404 || assetsAnon.status === 200, String(assetsAnon.status));
 const remoteAuthed = await get('/api/limits', cookie, { headers: { 'x-forwarded-for': '203.0.113.5' } });
 check('a logged-in remote caller reads limits', remoteAuthed.status === 200, String(remoteAuthed.status));
 
@@ -107,10 +145,25 @@ const form = (bytes, name, type) => {
   fd.append('file', new Blob([bytes], { type }), name);
   return fd;
 };
-const upload = (body, withCookie = true) => fetch(base + '/api/chat/attach', {
-  method: 'POST', headers: withCookie ? { cookie } : {}, body,
-});
-const anonymous = await upload(form(png, 'shot.png', 'image/png'), false);
+// A server that refuses a request (401, 413…) at once, without reading the body, closes the connection; a client still
+// writing then sees a reset (EPIPE / ECONNRESET) instead of the status. The form is sent as one buffer with its length
+// (written in one go), a reset is tried again, and for a request that is *meant* to be refused a reset that stays counts as
+// the refusal (`ifReset` is the status it stands for).
+const reset = (e) => ['EPIPE', 'ECONNRESET', 'UND_ERR_SOCKET'].includes(e?.cause?.code);
+const upload = async (body, withCookie = true, ifReset = null) => {
+  const packed = new Response(body);
+  const bytes = Buffer.from(await packed.arrayBuffer());
+  const headers = { 'content-type': packed.headers.get('content-type') || '', ...(withCookie ? { cookie } : {}) };
+  for (let i = 0; ; i++) {
+    try {
+      return await fetch(base + '/api/chat/attach', { method: 'POST', headers, body: bytes });
+    } catch (e) {
+      if (!reset(e)) throw e;
+      if (i >= 2) { if (ifReset) return { status: ifReset }; throw e; }
+    }
+  }
+};
+const anonymous = await upload(form(png, 'shot.png', 'image/png'), false, 401);
 check('an upload without a session is 401', anonymous.status === 401, String(anonymous.status));
 const uploaded = await upload(form(png, 'shot.png', 'image/png'));
 const uploadedBody = await uploaded.json().catch(() => ({}));
@@ -127,9 +180,9 @@ check('a file that is not really an image is refused', html.status === 415, Stri
 const empty = await upload(new FormData());
 check('an upload without a file is refused', empty.status === 400, String(empty.status));
 const huge = Buffer.alloc(10 * 1024 * 1024 + 1, 0);
-const oversized = await upload(form(huge, 'big.png', 'image/png'));
+const oversized = await upload(form(huge, 'big.png', 'image/png'), true, 413);
 check('an image over 10 MB is refused', oversized.status === 413, String(oversized.status));
-const overBody = await upload(form(Buffer.alloc(11 * 1024 * 1024 + 1, 0), 'huge.png', 'image/png'));
+const overBody = await upload(form(Buffer.alloc(11 * 1024 * 1024 + 1, 0), 'huge.png', 'image/png'), true, 413);
 check('a body over the request limit is 413 too', overBody.status === 413, String(overBody.status));
 
 const chat = await fetch(base + '/api/chat', {

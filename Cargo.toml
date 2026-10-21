@@ -25,7 +25,20 @@ toml = "0.8"
 argon2 = { version = "0.5", features = ["std"] }
 bcrypt = "0.17"
 rand = "0.8"
+rusqlite = { version = "0.40.2", features = ["bundled"] }
+rust-embed = { version = "8.13.0", features = ["interpolate-folder-path"] }
+notify = "8.2.0"
+notify-debouncer-mini = "0.7.0"
+moka = { version = "0.12.16", features = ["sync"] }
+sha2 = "0.11.1"
+base64 = "0.23.1"
+tokio-stream = { version = "0.1.19", features = ["sync"] }
+futures-util = "0.3.34"
+async-stream = "0.3.6"
 
 [profile.release]
 strip = true
 lto = "thin"
+
+[dev-dependencies]
+tempfile = "3.27.0"

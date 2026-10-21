@@ -1,0 +1,49 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  checks:
+    runs-on: ubuntu-24.04
+    # a hung check must end as a failure, not hold the run for hours
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Frontend build
+        run: sh scripts/web-build.sh
+
+      - name: Frontend unit tests (vitest)
+        run: |
+          cd web
+          npm ci
+          npm test
+
+      - name: Rust tests
+        run: cargo test --locked
+
+      - name: Chromium for the page checks
+        id: chromium
+        run: |
+          npx --yes @puppeteer/browsers install chrome@stable > "$RUNNER_TEMP/chromium.txt"
+          path=$(tail -n 1 "$RUNNER_TEMP/chromium.txt" | awk '{print $2}')
+          test -x "$path"
+          echo "CHROMIUM=$path" >> "$GITHUB_ENV"
+
+      - name: Checks (installer, launcher, page in headless Chromium)
+        run: sh scripts/run-checks.sh

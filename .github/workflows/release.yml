@@ -1,0 +1,123 @@
+name: Release
+
+# Pushing a tag v<version> builds the archives and publishes them as a GitHub release.
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Cargo.toml version equals the tag
+        run: |
+          ver=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n 1)
+          if [ "v$ver" != "$GITHUB_REF_NAME" ]; then
+            echo "Cargo.toml says $ver, the tag is $GITHUB_REF_NAME" >&2
+            exit 1
+          fi
+
+  build:
+    needs: verify
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            asset: linux-x86_64
+          - os: ubuntu-24.04-arm
+            asset: linux-aarch64
+          - os: macos-14
+            asset: macos-aarch64
+          - os: macos-13
+            asset: macos-x86_64
+            experimental: true
+    runs-on: ${{ matrix.os }}
+    continue-on-error: ${{ matrix.experimental == true }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Frontend build
+        run: sh scripts/web-build.sh
+
+      - name: Release build
+        run: cargo build --release --locked
+
+      - name: Package the archive and its checksum
+        shell: bash
+        run: |
+          set -euo pipefail
+          asset="herdr-planner-${{ matrix.asset }}"
+          stage=$(mktemp -d)
+          cp target/release/herdr-planner "$stage/"
+          mkdir -p "$stage/scripts" "$stage/packaging/omarchy-plugin"
+          cp scripts/install.sh scripts/open.sh "$stage/scripts/"
+          cp packaging/herdr-planner.service packaging/herdr-planner.desktop packaging/herdr-planner.svg \
+             packaging/dev.herdr.planner.plist "$stage/packaging/"
+          cp packaging/omarchy-plugin/manifest.json packaging/omarchy-plugin/Widget.qml "$stage/packaging/omarchy-plugin/"
+          cp README.md "$stage/"
+          sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n 1 > "$stage/VERSION"
+          mkdir -p dist
+          COPYFILE_DISABLE=1 tar -C "$stage" -czf "dist/$asset.tar.gz" .
+          cd dist
+          if command -v sha256sum >/dev/null 2>&1; then
+            sha256sum "$asset.tar.gz" > "$asset.tar.gz.sha256"
+          else
+            shasum -a 256 "$asset.tar.gz" > "$asset.tar.gz.sha256"
+          fi
+          cat "$asset.tar.gz.sha256"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: herdr-planner-${{ matrix.asset }}
+          path: dist/*
+          if-no-files-found: error
+
+  publish:
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: herdr-planner-*
+          path: dist
+          merge-multiple: true
+
+      - name: Root install.sh and SHA256SUMS
+        working-directory: dist
+        run: |
+          set -euo pipefail
+          cp "$GITHUB_WORKSPACE/scripts/install.sh" install.sh
+          sha256sum herdr-planner-*.tar.gz install.sh > SHA256SUMS
+          cat SHA256SUMS
+          ls -l
+
+      - name: Publish the GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        working-directory: dist
+        run: |
+          set -euo pipefail
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" --clobber ./*
+          else
+            gh release create "$GITHUB_REF_NAME" --verify-tag --title "$GITHUB_REF_NAME" --generate-notes ./*
+          fi

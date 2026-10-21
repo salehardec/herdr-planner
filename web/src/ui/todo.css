@@ -1,0 +1,16 @@
+.todo{top:60px;right:12px;width:340px;bottom:70px;display:flex;flex-direction:column;transform:translateX(115%);transition:transform .26s var(--m-ease),opacity .26s;z-index:15;opacity:0;pointer-events:none}
+.todo.open{transform:none;opacity:1;pointer-events:auto}
+.tlist{list-style:none;margin:0;padding:6px;overflow:auto;flex:1;scrollbar-width:thin}
+.titem{display:grid;grid-template-columns:14px 1fr;gap:8px;align-items:start;padding:7px 8px;margin-bottom:5px;border:1px solid var(--pl-line);border-radius:6px;background:var(--pl-tile);cursor:grab}
+.titem:hover{border-color:var(--pl-faint)}
+.titem.drag{opacity:.4;border-style:dashed}
+.titem.over{border-top:2px solid var(--pl-accent)}
+.titem.hl{animation:hit 1.8s}
+.titem .h{color:var(--pl-faint);letter-spacing:-2px;line-height:1.2}
+.titem .txt{display:block;word-break:break-word}
+.titem .to{margin-top:5px;display:flex;gap:6px;align-items:center;flex-wrap:wrap}
+.titem .to select.field{width:auto;min-height:24px;padding:1px 4px;font-size:11px;max-width:120px}
+.titem .edit{height:26px}
+.tnote{padding:6px 10px;color:var(--pl-faint);font-size:11px;border-top:1px solid var(--pl-line)}
+.tadd{display:flex;gap:6px;padding:8px;border-top:1px solid var(--pl-line)}
+@media (max-width:900px){.todo{left:8px;right:8px;width:auto;top:auto;bottom:8px;max-height:60vh;z-index:40}}

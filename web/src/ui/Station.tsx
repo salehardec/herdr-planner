@@ -1,0 +1,568 @@
+/* The Station of a galaxy («Станция»): its crew (who runs the Coordinator, the planner, the reviewer, the workers,
+   the light tasks and the spares) and the settings of its own board. Every change goes the same way: a preview
+   («было → стало», the tasks it touches), then two presses (confirmStep), then the board's own command.
+   The first-run wizard («Экипаж корабля») is this same screen in wizard mode, for the home station. */
+import { signal } from '@preact/signals';
+import type { JSX } from 'preact';
+import { useEffect, useState } from 'preact/hooks';
+import { armed, galaxyId, snap } from '../store';
+import { confirmStep } from '../actions';
+import { t, tn } from '../i18n';
+import { toast } from '../toast';
+import { dialogOpen } from '../dialogs';
+import { Gl } from './Gl';
+import { coachShown, firstRunShown } from './FirstRun';
+import {
+  callError, CallError, closeStation, crewSeen, fromLabel, isBool, openStation, PROGRAM_ORDER, programOf,
+  Preview, ROLE_SETTINGS, stationDlg, stationGet, stationLight, stationModels, stationPreview, stationSet, StationData,
+  StationProgram, StationSetting,
+} from './station-api';
+import './station.css';
+
+export { lightPreset } from './station-api';
+
+/* ───────── the change in progress (one at a time, shared by every row) ───────── */
+
+interface Edit {
+  galaxy: string;
+  /** The setting's name, or `light` for the «Лёгкие задачи» preset (kept by the planner, not the board). */
+  name: string;
+  repo: string;
+  /** `null` unsets the setting. */
+  value: string | null;
+  light?: boolean;
+}
+
+const edit = signal<Edit | null>(null);
+const prev = signal<Preview | null>(null);
+const prevErr = signal<CallError | null>(null);
+const setErr = signal<CallError | null>(null);
+const saving = signal(false);
+
+const resetEdit = (): void => {
+  edit.value = null;
+  prev.value = null;
+  prevErr.value = null;
+  setErr.value = null;
+};
+
+const editKey = (e: Edit): string => `st:${e.galaxy}|${e.repo}|${e.name}|${e.value ?? '-'}`;
+const sameEdit = (e: Edit | null, galaxy: string, name: string, repo: string, light: boolean): boolean =>
+  !!e && e.galaxy === galaxy && e.name === name && e.repo === repo && !!e.light === light;
+
+/** A preview of the change: the board's answer, or the planner's own for the light preset. */
+async function startEdit(e: Edit, lightWas = ''): Promise<void> {
+  edit.value = e;
+  prev.value = null;
+  prevErr.value = null;
+  setErr.value = null;
+  if (e.light) {
+    prev.value = { ok: true, name: 'light', repo: '', was: lightWas, was_from: '', now: e.value, valid: true, error: '', affects: [], note: '' };
+    return;
+  }
+  try {
+    const p = await stationPreview({
+      galaxy: e.galaxy, name: e.name, repo: e.repo || undefined, ...(e.value === null ? { unset: true } : { value: e.value }),
+    });
+    if (edit.value === e) prev.value = p;
+  } catch (err) {
+    if (edit.value === e) prevErr.value = callError(err);
+  }
+}
+
+/** The second press of the two-step confirm sends the change; the board's refusal stays on the card. */
+function confirmEdit(reload: () => void): void {
+  const e = edit.value;
+  const p = prev.value;
+  if (!e || !p || !p.valid || saving.value) return;
+  confirmStep(editKey(e), async () => {
+    saving.value = true;
+    setErr.value = null;
+    try {
+      if (e.light) await stationLight(e.galaxy, e.value ?? '');
+      else await stationSet({ galaxy: e.galaxy, name: e.name, repo: e.repo || undefined, ...(e.value === null ? { unset: true } : { value: e.value }) });
+      toast(t('st.saved'));
+      resetEdit();
+      reload();
+    } catch (err) {
+      if (edit.value === e) setErr.value = callError(err);
+    } finally {
+      saving.value = false;
+    }
+  });
+}
+
+const shown = (v: string | null | undefined): string => (v ? v : t('st.empty'));
+
+function WhyList({ err }: { err: CallError }): JSX.Element | null {
+  if (!err.why) return null;
+  return <ul class="why">{err.why.detail.map((d, i) => <li key={i}>{d}</li>)}</ul>;
+}
+
+/** The card of the change in progress: was → now, the tasks it touches, the two presses. */
+function ChangeCard(props: { reload: () => void }): JSX.Element | null {
+  const e = edit.value;
+  if (!e) return null;
+  const p = prev.value;
+  const pe = prevErr.value;
+  const se = setErr.value;
+  const on = armed.value?.key === editKey(e);
+  return (
+    <div class={`chg ${(p && !p.valid) || pe || se ? 'bad' : ''}`} id="st-change" data-edit={e.light ? 'light' : e.name}>
+      <div class="chg-h">{t('st.changeOf')} <code>{e.light ? t('st.lightName') : e.name}</code>{e.repo && <span class="m"> · {e.repo}</span>}</div>
+      {pe && (
+        <>
+          <div class="hint bad" id="st-prev-err">{pe.message}</div>
+          <WhyList err={pe} />
+          <div class="act"><button class="btn sm" type="button" id="st-retry-prev" onClick={() => void startEdit(e)}>{t('st.retry')}</button><button class="btn sm" type="button" onClick={resetEdit}>{t('cancel')}</button></div>
+        </>
+      )}
+      {!pe && !p && <div class="hint">{t('st.checking')}</div>}
+      {p && (
+        <>
+          <div class="ba">
+            <span class="kl">{t('st.was')}</span> <code class="was">{shown(p.was)}</code>
+            <span class="arr" aria-hidden="true">→</span>
+            <span class="kl">{t('st.now')}</span> <code class="now" id="st-now">{p.now === null ? t('st.unsetNow') : shown(p.now)}</code>
+          </div>
+          {p.was_from && !e.light && <div class="hint">{t('st.wasFrom', { from: fromLabel(p.was_from) })}</div>}
+          {!p.valid && <div class="hint bad" id="st-invalid">{p.error}</div>}
+          {e.light
+            ? <div class="hint" id="st-affects">{t('st.lightAffects')}</div>
+            : <div class="hint" id="st-affects">{p.affects.length ? tn('st.affects', p.affects.length) : t('st.affectsNone')}</div>}
+          {p.affects.length > 0 && (
+            <ul class="aff">
+              {p.affects.slice(0, 8).map((a) => <li key={a.id}><span class="tg">{a.id}</span> {a.title} <span class="m">{a.status}</span></li>)}
+              {p.affects.length > 8 && <li class="m">{t('st.andMore', { n: p.affects.length - 8 })}</li>}
+            </ul>
+          )}
+          {p.note && <div class="hint">{p.note}</div>}
+          <div class="hint">{e.light ? t('st.lightWhere') : t('st.byBoard')}</div>
+          {se && (
+            <>
+              <div class="hint bad" id="st-set-err">{se.message}</div>
+              <WhyList err={se} />
+            </>
+          )}
+          <div class="act">
+            <button class={`btn primary ${on ? 'arm' : ''}`} type="button" id="st-confirm" disabled={!p.valid || saving.value} onClick={() => confirmEdit(props.reload)}>
+              {on ? t('st.confirm') : t('st.apply')}
+            </button>
+            <button class="btn" type="button" id="st-cancel" onClick={resetEdit}>{t('cancel')}</button>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+/* ───────── the forms that start a change ───────── */
+
+/** A program and a model («codex/gpt-5-codex»): the programs installed there, and the names its models answer with. */
+function AgentForm(props: {
+  galaxy: string; programs: StationProgram[]; current: string; clear?: { label: string; value: string };
+  dlid: string; onPick: (value: string) => void; onCancel: () => void;
+}): JSX.Element {
+  const installed = props.programs.filter((p) => p.installed);
+  const cur = programOf(props.current);
+  const [prog, setProg] = useState(cur || installed[0]?.name || '');
+  const [agent, setAgent] = useState(props.current);
+  const [names, setNames] = useState<string[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [mErr, setMErr] = useState('');
+  useEffect(() => {
+    let alive = true;
+    setLoading(true);
+    setMErr('');
+    if (!prog) { setLoading(false); return () => { alive = false; }; }
+    stationModels(props.galaxy, prog)
+      .then((m) => {
+        if (!alive) return;
+        setNames(m.names);
+        setLoading(false);
+        if (!m.names.length) setMErr(t('st.noModels', { p: prog }));
+        setAgent((a) => (a.startsWith(`${prog}/`) ? a : m.names[0] ?? ''));
+      })
+      .catch((e) => {
+        if (!alive) return;
+        setNames([]);
+        setLoading(false);
+        setMErr(callError(e).message);
+      });
+    return () => { alive = false; };
+  }, [props.galaxy, prog]);
+  const programsToShow = [...installed.map((p) => p.name), ...(cur && !installed.some((p) => p.name === cur) ? [cur] : [])];
+  const valid = agent.includes('/');
+  return (
+    <div class="fform">
+      <div class="prog" role="group" aria-label={t('st.program')}>
+        {programsToShow.map((name) => {
+          const p = props.programs.find((x) => x.name === name);
+          const mark = !p?.installed ? t('st.notInstalledMark') : p.signed_in === false ? t('st.notSignedMark') : '';
+          return (
+            <button type="button" key={name} class={`btn sm ${prog === name ? 'on' : ''}`} data-prog={name} aria-pressed={prog === name}
+              title={mark || t('st.signedMark')} onClick={() => { setProg(name); setAgent(''); }}>
+              {name}{mark && <span class="m"> {mark}</span>}
+            </button>
+          );
+        })}
+      </div>
+      <label class="fl2">{t('st.model')}
+        <input class="field" id={`st-model-${props.dlid}`} list={`st-models-${props.dlid}`} value={agent} placeholder={prog ? `${prog}/…` : ''}
+          onInput={(e) => setAgent((e.target as HTMLInputElement).value.trim())} />
+        <datalist id={`st-models-${props.dlid}`}>{names.map((n) => <option key={n} value={n} />)}</datalist>
+      </label>
+      <div class="hint">{loading ? t('st.modelsLoading') : mErr || (names.length ? t('st.modelsCount', { n: names.length }) : '')}</div>
+      <div class="act">
+        <button class="btn primary sm" type="button" id={`st-next-${props.dlid}`} disabled={!valid || agent === props.current} onClick={() => props.onPick(agent)}>{t('st.next')}</button>
+        {props.clear && <button class="btn sm" type="button" onClick={() => props.onPick(props.clear?.value ?? '')}>{props.clear.label}</button>}
+        <button class="btn sm" type="button" onClick={props.onCancel}>{t('cancel')}</button>
+      </div>
+    </div>
+  );
+}
+
+/** The reasoning effort a role's program takes (its models answer lists the levels). */
+function EffortForm(props: { galaxy: string; agent: string; current: string; dlid: string; onPick: (value: string) => void; onCancel: () => void }): JSX.Element {
+  const [levels, setLevels] = useState<string[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [pick, setPick] = useState(props.current);
+  const prog = programOf(props.agent);
+  useEffect(() => {
+    let alive = true;
+    setLoading(true);
+    if (!prog) { setLoading(false); return () => { alive = false; }; }
+    stationModels(props.galaxy, prog)
+      .then((m) => { if (alive) { setLevels(m.effort); setLoading(false); } })
+      .catch(() => { if (alive) { setLevels([]); setLoading(false); } });
+    return () => { alive = false; };
+  }, [props.galaxy, prog]);
+  const all = levels.includes(props.current) || !props.current ? levels : [props.current, ...levels];
+  return (
+    <div class="fform">
+      <label class="fl2">{t('st.effortLevel', { p: prog })}
+        <select class="field" id={`st-effort-${props.dlid}`} value={pick} onChange={(e) => setPick((e.target as HTMLSelectElement).value)}>
+          {all.map((l) => <option key={l} value={l}>{l}</option>)}
+        </select>
+      </label>
+      <div class="hint">{loading ? t('st.modelsLoading') : levels.length ? '' : t('st.noEffort', { p: prog })}</div>
+      <div class="act">
+        <button class="btn primary sm" type="button" id={`st-next-${props.dlid}`} disabled={!pick || pick === props.current} onClick={() => props.onPick(pick)}>{t('st.next')}</button>
+        <button class="btn sm" type="button" onClick={props.onCancel}>{t('cancel')}</button>
+      </div>
+    </div>
+  );
+}
+
+/** One value of a role: the current one, where it comes from, and the change. */
+function Field(props: {
+  galaxy: string; repo: string; kind: 'agent' | 'effort' | 'fallback' | 'light'; name: string; label: string; value: string; from: string;
+  programs: StationProgram[]; agent: string; reload: () => void; suggest?: string;
+}): JSX.Element {
+  const [open, setOpen] = useState(false);
+  const light = props.kind === 'light';
+  const e = edit.value;
+  const mine = sameEdit(e, props.galaxy, props.name, props.repo, light);
+  const start = (value: string): void => {
+    setOpen(false);
+    void startEdit({ galaxy: props.galaxy, name: props.name, repo: props.repo, value, light }, props.value);
+  };
+  return (
+    <div class="fld" data-field={props.kind}>
+      <div class="fl">
+        <span class="kl">{props.label}</span>
+        <b class="v" data-value={props.name}>{shown(props.value)}</b>
+        {props.from && !light && <span class="src">{fromLabel(props.from)}</span>}
+        <button class="btn sm" type="button" data-act={`st-edit-${props.name}`} aria-expanded={open} onClick={() => setOpen(!open)}>{t('st.change')}</button>
+      </div>
+      {props.suggest && props.suggest !== props.value && (
+        <div class="sugline">{t('st.suggest')} <code>{props.suggest}</code>
+          <button class="btn sm primary" type="button" data-suggest={props.name} onClick={() => void startEdit({ galaxy: props.galaxy, name: props.name, repo: props.repo, value: props.suggest ?? '', light }, props.value)}>{t('st.choose')}</button>
+        </div>
+      )}
+      {open && props.kind === 'effort' && (
+        <EffortForm galaxy={props.galaxy} agent={props.agent} current={props.value} dlid={props.name} onPick={start} onCancel={() => setOpen(false)} />
+      )}
+      {open && props.kind !== 'effort' && (
+        <AgentForm
+          galaxy={props.galaxy} programs={props.programs} current={props.value} dlid={props.name}
+          clear={props.kind === 'fallback' ? { label: t('st.noFallback'), value: 'none' } : light ? { label: t('st.clearLight'), value: '' } : undefined}
+          onPick={start} onCancel={() => setOpen(false)}
+        />
+      )}
+      {mine && <ChangeCard reload={props.reload} />}
+    </div>
+  );
+}
+
+/* ───────── the sections ───────── */
+
+const ROLES: { id: string; title: string; hint: string; agent?: string; effort?: string; fallback?: string; light?: boolean }[] = [
+  { id: 'coordinator', title: 'st.r.coordinator', hint: 'st.r.coordinatorHint', agent: 'coordinator.agent', effort: 'coordinator.effort' },
+  { id: 'plan', title: 'st.r.plan', hint: 'st.r.planHint', agent: 'plan.agent' },
+  { id: 'reviewer', title: 'st.r.reviewer', hint: 'st.r.reviewerHint', agent: 'reviewer.agent', effort: 'reviewer.effort', fallback: 'reviewer.fallback' },
+  { id: 'worker', title: 'st.r.worker', hint: 'st.r.workerHint', agent: 'worker.agent', effort: 'worker.effort', fallback: 'worker.fallback' },
+  { id: 'light', title: 'st.r.light', hint: 'st.r.lightHint', light: true },
+];
+
+/** The first program of the order that is installed and signed in (or needs no sign-in), and a model of it for each role. */
+async function suggestCrew(galaxy: string, data: StationData): Promise<Record<string, string>> {
+  const prog = PROGRAM_ORDER.find((p) => data.programs.some((x) => x.name === p && x.installed && x.signed_in !== false));
+  if (!prog) return {};
+  const m = await stationModels(galaxy, prog);
+  if (!m.names.length) return {};
+  /* The first model of the preferred words, in their order; the program's first model when none of them is there. */
+  const pick = (prefer: string[]): string => {
+    for (const w of prefer) {
+      const hit = m.names.find((n) => n.includes(w));
+      if (hit) return hit;
+    }
+    return m.names[0];
+  };
+  const big = pick(['opus', 'pro', 'gpt-5', 'sonnet']);
+  const work = pick(['sonnet', 'gpt-5', 'pro', 'opus']);
+  const light = pick(['haiku', 'mini', 'flash', 'lite']);
+  return { 'coordinator.agent': big, 'plan.agent': big, 'reviewer.agent': big, 'worker.agent': work, light };
+}
+
+function Crew(props: { galaxy: string; repo: string; data: StationData; reload: () => void; wizard: boolean; suggest: Record<string, string> }): JSX.Element {
+  const { data } = props;
+  const val = (name: string): StationSetting | undefined => data.settings.find((s) => s.name === name);
+  return (
+    <section class="st-sec" id="st-crew">
+      <h3>{t('st.crew')}</h3>
+      <p class="hint">{props.wizard ? t('st.crewWizHint') : t('st.crewHint')}</p>
+      {ROLES.map((r) => {
+        const agent = r.agent ? val(r.agent) : undefined;
+        const agentValue = r.light ? data.light : agent?.value ?? '';
+        const common = { galaxy: props.galaxy, repo: props.repo, programs: data.programs, agent: agentValue, reload: props.reload };
+        return (
+          <div class="role" data-role={r.id} key={r.id}>
+            <div class="rh"><b>{t(r.title)}</b><span class="hint">{t(r.hint)}</span></div>
+            {r.agent && (
+              <Field {...common} kind="agent" name={r.agent} label={t('st.f.agent')} value={agentValue} from={agent?.from ?? ''}
+                suggest={props.suggest[r.agent]} />
+            )}
+            {r.effort && (
+              <Field {...common} kind="effort" name={r.effort} label={t('st.f.effort')} value={val(r.effort)?.value ?? ''} from={val(r.effort)?.from ?? ''} />
+            )}
+            {r.fallback && (
+              <Field {...common} kind="fallback" name={r.fallback} label={t('st.f.fallback')} value={val(r.fallback)?.value ?? ''} from={val(r.fallback)?.from ?? ''} />
+            )}
+            {r.light && (
+              <Field {...common} kind="light" name="light" label={t('st.f.light')} value={data.light} from="" suggest={props.suggest.light} />
+            )}
+          </div>
+        );
+      })}
+    </section>
+  );
+}
+
+/** A value of the board that is not a crew setting: a toggle for the booleans, an input for the rest. */
+function SettingRow(props: { galaxy: string; repo: string; s: StationSetting; reload: () => void }): JSX.Element {
+  const { s } = props;
+  const [open, setOpen] = useState(false);
+  const [val, setVal] = useState(s.value);
+  const bool = isBool(s.value);
+  const mine = sameEdit(edit.value, props.galaxy, s.name, props.repo, false);
+  const go = (value: string | null): void => {
+    setOpen(false);
+    void startEdit({ galaxy: props.galaxy, name: s.name, repo: props.repo, value });
+  };
+  return (
+    <div class="srow" data-setting={s.name}>
+      <div class="sl">
+        <code>{s.name}</code>
+        <span class="src">{fromLabel(s.from)}</span>
+        {s.own && <span class="own" title={t('st.ownTip')}>{t('st.own')}</span>}
+      </div>
+      <div class="sv">
+        {bool ? (
+          <button type="button" class={`tog ${s.value === 'true' ? 'on' : ''}`} aria-pressed={s.value === 'true'} data-toggle={s.name}
+            onClick={() => go(s.value === 'true' ? 'false' : 'true')}>
+            {s.value === 'true' ? t('st.on') : t('st.off')}
+          </button>
+        ) : <b class="v" data-value={s.name}>{s.value}</b>}
+        {!bool && <button class="btn sm" type="button" data-act={`st-edit-${s.name}`} aria-expanded={open} onClick={() => { setVal(s.value); setOpen(!open); }}>{t('st.change')}</button>}
+        {s.own && <button class="btn sm danger" type="button" data-unset={s.name} onClick={() => go(null)}>{t('st.reset')}</button>}
+      </div>
+      {s.note && <div class="hint">{s.note}</div>}
+      {open && !bool && (
+        <form class="sedit" onSubmit={(ev) => { ev.preventDefault(); if (val.trim()) go(val.trim()); }}>
+          <input class="field" value={val} aria-label={s.name} onInput={(e) => setVal((e.target as HTMLInputElement).value)} />
+          <button class="btn primary sm" type="submit" disabled={!val.trim()}>{t('st.next')}</button>
+          <button class="btn sm" type="button" onClick={() => setOpen(false)}>{t('cancel')}</button>
+        </form>
+      )}
+      {mine && <ChangeCard reload={props.reload} />}
+    </div>
+  );
+}
+
+function Board(props: { galaxy: string; repo: string; data: StationData; reload: () => void }): JSX.Element {
+  const rows = props.data.settings.filter((s) => !ROLE_SETTINGS.includes(s.name));
+  const groups: { prefix: string; rows: StationSetting[] }[] = [];
+  for (const s of rows) {
+    const prefix = s.name.includes('.') ? s.name.slice(0, s.name.indexOf('.')) : s.name;
+    let g = groups.find((x) => x.prefix === prefix);
+    if (!g) { g = { prefix, rows: [] }; groups.push(g); }
+    g.rows.push(s);
+  }
+  return (
+    <section class="st-sec" id="st-board">
+      <h3>{t('st.board')}</h3>
+      <p class="hint">{t('st.boardHint')}</p>
+      {groups.map((g) => (
+        <div class="grp" key={g.prefix} data-group={g.prefix}>
+          <h4>{t(`st.grp.${g.prefix}`) === `st.grp.${g.prefix}` ? g.prefix : t(`st.grp.${g.prefix}`)}</h4>
+          {g.rows.map((s) => <SettingRow key={s.name} galaxy={props.galaxy} repo={props.repo} s={s} reload={props.reload} />)}
+        </div>
+      ))}
+    </section>
+  );
+}
+
+function Programs({ programs }: { programs: StationProgram[] }): JSX.Element {
+  const inst = programs.filter((p) => p.installed);
+  const missing = programs.filter((p) => !p.installed).map((p) => p.name);
+  return (
+    <section class="st-sec" id="st-programs">
+      <h3>{t('st.programs')}</h3>
+      {inst.length === 0 ? <div class="hint">{t('st.noPrograms')}</div> : (
+        <ul class="progs">
+          {inst.map((p) => (
+            <li key={p.name} class={p.signed_in === false ? 'no' : p.signed_in === true ? 'ok' : ''} data-program={p.name}>
+              <b>{p.name}</b> <span class="m">{p.version}</span>
+              <span class="sig">{p.signed_in === true ? t('st.signedIn') : p.signed_in === false ? t('st.notSignedIn') : t('st.noSignIn')}</span>
+              {p.signed_in === false && p.line && <span class="hint">{p.line}</span>}
+            </li>
+          ))}
+        </ul>
+      )}
+      {missing.length > 0 && <div class="hint">{t('st.notInstalled', { list: missing.join(', ') })}</div>}
+    </section>
+  );
+}
+
+function ErrorBlock({ err, onRetry }: { err: CallError; onRetry: () => void }): JSX.Element {
+  return (
+    <div class="chg bad" id="st-error">
+      <div class="hint bad">{err.message}</div>
+      <WhyList err={err} />
+      <div class="act"><button class="btn sm" type="button" id="st-retry" onClick={onRetry}>{t('st.retry')}</button></div>
+    </div>
+  );
+}
+
+function StationBody(props: { galaxy: string; wizard: boolean }): JSX.Element {
+  const { galaxy, wizard } = props;
+  const [data, setData] = useState<StationData | null>(null);
+  const [err, setErrState] = useState<CallError | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [level, setLevel] = useState<'you' | 'repo'>('you');
+  const [repo, setRepo] = useState('');
+  const [tick, setTick] = useState(0);
+  const [suggest, setSuggest] = useState<Record<string, string>>({});
+  const [sugDone, setSugDone] = useState(false);
+  const reload = (): void => setTick((n) => n + 1);
+
+  useEffect(() => () => resetEdit(), []);
+  useEffect(() => {
+    let alive = true;
+    setLoading(true);
+    setErrState(null);
+    stationGet(galaxy, level === 'repo' ? repo : '')
+      .then((d) => { if (alive) { setData(d); setLoading(false); } })
+      .catch((e) => { if (alive) { setErrState(callError(e)); setLoading(false); } });
+    return () => { alive = false; };
+  }, [galaxy, level, repo, tick]);
+  useEffect(() => {
+    if (!wizard || !data) return;
+    let alive = true;
+    suggestCrew(galaxy, data)
+      .then((m) => { if (alive) { setSuggest(m); setSugDone(true); } })
+      .catch(() => { if (alive) setSugDone(true); });
+    return () => { alive = false; };
+  }, [wizard, galaxy, data]);
+
+  const chooseLevel = (l: 'you' | 'repo'): void => {
+    setLevel(l);
+    if (l === 'you') setRepo('');
+    else if (!repo) setRepo(data?.repos[0] ?? '');
+  };
+
+  return (
+    <div class="bd st-bd">
+      {wizard && <p class="hint" id="st-intro">{t('st.wizIntro')}</p>}
+      {!wizard && (
+        <div class="lvl" role="group" aria-label={t('st.levelAria')}>
+          <span class="kl">{t('st.level')}</span>
+          <button type="button" class={`btn sm ${level === 'you' ? 'on' : ''}`} id="st-level-you" aria-pressed={level === 'you'} onClick={() => chooseLevel('you')}>{t('st.levelYou')}</button>
+          <button type="button" class={`btn sm ${level === 'repo' ? 'on' : ''}`} id="st-level-repo" aria-pressed={level === 'repo'} onClick={() => chooseLevel('repo')}>{t('st.levelRepo')}</button>
+          {level === 'repo' && (
+            <select class="field sm" id="st-repo" value={repo} aria-label={t('st.levelRepo')} onChange={(e) => setRepo((e.target as HTMLSelectElement).value)}>
+              {(data?.repos ?? (repo ? [repo] : [])).map((r) => <option key={r} value={r}>{r}</option>)}
+            </select>
+          )}
+          <span class="hint">{level === 'repo' ? t('st.levelRepoHint', { repo: repo || '—' }) : t('st.levelYouHint')}</span>
+        </div>
+      )}
+      {loading && !data && <div class="hint" id="st-loading">{t('st.loading')}</div>}
+      {err && <ErrorBlock err={err} onRetry={reload} />}
+      {data && (
+        <>
+          <Programs programs={data.programs} />
+          <Crew galaxy={galaxy} repo={level === 'repo' ? repo : ''} data={data} reload={reload} wizard={wizard} suggest={suggest} />
+          {wizard && sugDone && Object.keys(suggest).length === 0 && <div class="hint bad">{t('st.wizNone')}</div>}
+          {wizard && (
+            <div class="act">
+              <button class="btn primary" type="button" id="st-done" onClick={closeStation}>{t('st.done')}</button>
+              <button class="btn" type="button" id="st-skip" onClick={closeStation}>{t('st.skip')}</button>
+              <button class="btn" type="button" id="st-all" onClick={() => openStation(galaxy, false)}>{t('st.allSettings')}</button>
+            </div>
+          )}
+          {!wizard && <Board galaxy={galaxy} repo={level === 'repo' ? repo : ''} data={data} reload={reload} />}
+        </>
+      )}
+    </div>
+  );
+}
+
+/** The Station screen. Opened by `openStation(galaxy, wizard?)`; `galaxy` is `''` for this machine. */
+export function Station(): JSX.Element | null {
+  const d = stationDlg.value;
+  if (!d) return null;
+  const host = snap.value?.host ?? '';
+  const title = d.wizard
+    ? t('st.wizTitle')
+    : d.galaxy === '' ? t('st.titleHome', { host }) : t('st.titleFar', { g: d.galaxy });
+  return (
+    <div class="scrim" onMouseDown={(e) => { if (e.target === e.currentTarget) closeStation(); }}>
+      <section class={`panel dlg wide station ${d.wizard ? 'wizard' : ''}`} id="station" role="dialog" aria-label={title} data-galaxy={d.galaxy}>
+        <header><b>{title}</b><button class="btn icon sm" type="button" aria-label={t('close')} onClick={closeStation}><Gl n="close" /></button></header>
+        <StationBody key={`${d.galaxy}|${d.wizard ? 'w' : 'n'}`} galaxy={d.galaxy} wizard={!!d.wizard} />
+      </section>
+    </div>
+  );
+}
+
+/**
+ * The first-run wizard opens by itself once, on the home station: after the coach tour and the empty galaxy's card
+ * (FirstRun, Coach) are gone, and only with no other dialog open, not with ?nocoach or ?calm. Seen = closed.
+ */
+export function StationAuto(): null {
+  const s = snap.value;
+  const g = galaxyId.value;
+  const dlg = stationDlg.value;
+  const coach = coachShown(s);
+  const first = firstRunShown(s, g);
+  useEffect(() => {
+    if (!s || crewSeen() || g !== '' || dlg || coach || first || dialogOpen()) return;
+    const q = new URLSearchParams(location.search);
+    if (q.has('nocoach') || q.has('calm')) return;
+    openStation('', true);
+  }, [s, g, dlg, coach, first]);
+  return null;
+}
+

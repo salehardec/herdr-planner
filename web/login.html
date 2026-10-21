@@ -6,26 +6,24 @@
 <meta name="color-scheme" content="dark light">
 <title>Herdr Planner · вход</title>
 <link rel="icon" href="/favicon.svg" type="image/svg+xml">
-<link rel="stylesheet" href="/login.css">
-<style>__THEME__</style>
 </head>
 <body>
 <main class="login">
-  <div class="lbl">HERDR-PROJECTS · ДОСКА</div>
+  <div class="lbl" data-i18n="login.kicker">HERDR-PROJECTS · ДОСКА</div>
   <h1>Herdr Planner</h1>
-  <p class="sub">Дашборд доски проектов. Вход нужен, чтобы открыть его с другой машины.</p>
+  <p class="sub" data-i18n="login.sub">Дашборд доски проектов. Вход нужен, чтобы открыть его с другой машины.</p>
   <form id="login" autocomplete="on">
-    <label>Пользователь
+    <label><span data-i18n="login.user">Пользователь</span>
       <input id="user" name="user" autocomplete="username" required autofocus spellcheck="false">
     </label>
-    <label>Пароль
+    <label><span data-i18n="login.pass">Пароль</span>
       <input id="pass" name="password" type="password" autocomplete="current-password" required>
     </label>
-    <button id="go" type="submit">Войти</button>
+    <button id="go" type="submit" data-i18n="login.go">Войти</button>
     <p class="err" id="err" role="alert"></p>
   </form>
-  <p class="hint">На машине с доской откройте <code>http://127.0.0.1:7117</code> — там вход не нужен, если пароль не задан.</p>
+  <p class="hint" id="hint" data-i18n="login.hint" data-url="http://127.0.0.1:7117">На машине с доской откройте <code>http://127.0.0.1:7117</code> — там вход не нужен, если пароль не задан.</p>
 </main>
-<script src="/login.js"></script>
+<script type="module" src="/src/login/login.ts"></script>
 </body>
 </html>

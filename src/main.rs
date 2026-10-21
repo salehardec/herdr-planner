@@ -3,15 +3,33 @@
 //! One binary: the HTTP(S) server, the board poller and the embedded page.
 //! It does not need herdr or herdr-gpui to run.
 
+mod api;
 mod app;
 mod attachments;
 mod auth;
 mod board;
 mod config;
 mod coordinator;
+mod db;
+mod events;
+mod farfiles;
+mod galaxy_setup;
+mod gitlag;
 mod history;
+mod machines;
+mod models;
+mod search;
 mod server;
+mod ship;
+mod station;
+mod subagents;
+mod taskmeta;
+mod translate;
+mod watch;
+#[cfg(test)]
+mod testutil;
 mod theme;
+mod universe;
 mod usage;
 
 use app::{refresh, Shared};
@@ -182,13 +200,8 @@ async fn main() {
     let app = app::App::new(cfg.clone());
     // The first read happens before the socket opens: the page never starts empty.
     refresh(&app).await;
-    let loop_app: Shared = app.clone();
-    tokio::spawn(async move {
-        loop {
-            tokio::time::sleep(Duration::from_secs(4)).await;
-            refresh(&loop_app).await;
-        }
-    });
+    let _watch = watch::start(app.clone());
+    spawn_loops(app.clone());
 
     let scheme = if cfg.tls().is_some() { "https" } else { "http" };
     let shown = if cfg.listen.contains(':') {
@@ -239,6 +252,73 @@ async fn main() {
             std::process::exit(1);
         }
     }
+}
+
+/// The background work: the board re-read when files change (and once a minute as a safety net), the
+/// other machines, the clones' lag, the search index and the model lists.
+fn spawn_loops(app: Shared) {
+    let a = app.clone();
+    tokio::spawn(async move {
+        loop {
+            tokio::select! {
+                _ = a.poke.notified() => {}
+                _ = tokio::time::sleep(Duration::from_secs(60)) => {}
+            }
+            refresh(&a).await;
+            app::index_snapshot(&a).await;
+            // Bursts of changes (a working agent rewrites its record all the time) merge into one read.
+            tokio::time::sleep(Duration::from_millis(3500)).await;
+        }
+    });
+    let a = app.clone();
+    tokio::spawn(async move {
+        app::index_chat(&a).await;
+        app::index_snapshot(&a).await;
+    });
+    let a = app.clone();
+    tokio::spawn(async move {
+        loop {
+            let prev = a.galaxies.lock().await.clone();
+            let next = machines::poll(&a.cfg, &prev, false).await;
+            for g in &next {
+                if let Ok(json) = serde_json::to_string(g) {
+                    a.db.galaxy_put(&g.label, &json, g.ok, g.why.as_ref().map(|w| w.line.as_str()).unwrap_or(""));
+                }
+            }
+            *a.galaxies.lock().await = next;
+            app::rebuild_extras(&a).await;
+            app::publish(&a).await;
+            app::index_snapshot(&a).await;
+            tokio::time::sleep(Duration::from_secs(30)).await;
+        }
+    });
+    let a = app.clone();
+    tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_secs(2)).await;
+        loop {
+            app::update_lag(&a).await;
+            tokio::time::sleep(Duration::from_secs(300)).await;
+        }
+    });
+    let a = app;
+    tokio::spawn(async move {
+        loop {
+            let programs: Vec<String> = {
+                let snap = a.snapshot.read().await;
+                let mut set: std::collections::BTreeSet<String> = ["claude", "omp", "pi", "codex"].iter().map(|s| s.to_string()).collect();
+                for t in &snap.tasks {
+                    for p in [t.app.as_str(), t.worker_agent.split('/').next().unwrap_or("")] {
+                        if models::valid_program(p) {
+                            set.insert(p.to_string());
+                        }
+                    }
+                }
+                set.into_iter().collect()
+            };
+            models::warm(&a.cfg, &programs).await;
+            tokio::time::sleep(Duration::from_secs(600)).await;
+        }
+    });
 }
 
 async fn shutdown_signal() {

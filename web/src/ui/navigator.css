@@ -1,0 +1,33 @@
+.nav{top:60px;left:12px;width:340px;bottom:70px;display:flex;flex-direction:column;transition:transform var(--m-med) var(--m-ease),opacity var(--m-med)}
+.nav.off{transform:translateX(-110%);opacity:0;pointer-events:none}
+.tree{overflow:auto;padding:6px 4px;flex:1;scrollbar-width:thin}
+.ti{display:flex;align-items:center;gap:6px;padding:3px 6px;border-radius:5px;cursor:pointer;white-space:nowrap;overflow:hidden;min-height:26px;color:var(--pl-dim)}
+.ti:hover{background:var(--pl-hover)}
+.ti:focus-visible{outline-offset:-2px}
+.ti.sel{background:color-mix(in srgb,var(--pl-accent) 20%,transparent);color:var(--pl-title)}
+.ti .tw{width:12px;color:var(--pl-faint);flex:none;display:inline-flex}
+.ti .tw .gl{width:11px;height:11px}
+.ti .lab{min-width:0;overflow:hidden;text-overflow:ellipsis;flex:1}
+.ti .lab em{font-style:normal;color:var(--pl-faint);margin-left:7px;font-size:10.5px}
+.ti .meta{color:var(--pl-faint);font-size:10.5px;max-width:42%;overflow:hidden;text-overflow:ellipsis}
+.ti .cnt{color:var(--pl-faint);font-size:10.5px;border:1px solid var(--pl-line);border-radius:8px;padding:0 5px;flex:none}
+.ti .cnt.hot,.ti.attn>.cnt{color:var(--c-yellow);border-color:color-mix(in srgb,var(--c-yellow) 40%,var(--pl-line))}
+.ti .lag{color:var(--c-yellow);font-size:10.5px;border:1px solid color-mix(in srgb,var(--c-yellow) 40%,transparent);border-radius:8px;padding:0 5px;flex:none}
+.ti .gl{color:var(--s-ink,var(--pl-dim))}
+.ti.galaxy{color:var(--pl-title);font-weight:600;margin-top:4px}
+.ti.galaxy.here{color:var(--pl-accent-ink)}
+.ti.galaxy.off{color:var(--c-red)}
+.ti.galaxy.off .meta{color:var(--c-red)}
+.ti.quasar{color:var(--pl-title)}
+.ti.universe{color:var(--pl-title);font-weight:600}
+.ti.group{color:var(--pl-faint);font-size:11px;min-height:22px}
+.ti.quiet{color:var(--pl-faint);font-size:11px}
+.ti.dim{opacity:.55}
+.ti.moon{font-size:11px}
+.ti.moon .meta{max-width:55%}
+.ti.addUniverse,.ti.addGalaxy{color:var(--pl-accent-ink);font-size:11.5px}
+.ti.addUniverse .gl,.ti.addGalaxy .gl{color:var(--pl-accent-ink)}
+.win.calm .ti{min-height:32px;font-size:13px}
+.win.calm .nav{width:380px}
+@media (max-width:1100px){.nav{width:290px}}
+@media (max-width:900px){.nav{left:8px;right:8px;width:auto;top:auto;bottom:8px;max-height:62vh;z-index:40}.nav.off{transform:translateY(110%)}}

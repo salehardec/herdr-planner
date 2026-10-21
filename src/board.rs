@@ -115,6 +115,21 @@ pub struct Task {
     pub archived: bool,
     /// The board commands the page may offer.
     pub actions: Vec<&'static str>,
+    /// From the task's own record (`taskmeta`): when it was made (ms), its text,
+    /// the agent and model, the session, the checkout and when the agent left.
+    pub created: u64,
+    pub description: String,
+    pub worker_agent: String,
+    pub model: String,
+    pub session: String,
+    pub worktree: String,
+    pub exited_at: u64,
+    /// The project's key (`PLN`).
+    pub key: String,
+    /// Sub-agents of the task's agent, newest first.
+    pub subagents: Vec<crate::subagents::Subagent>,
+    /// Why there is no sub-agent data, when that is the honest answer.
+    pub subagents_note: String,
 }
 
 impl Default for Status {
@@ -589,6 +604,29 @@ pub fn links_from(after: &BTreeMap<String, Vec<String>>, tasks: &[Task]) -> Vec<
     out
 }
 
+/// How far a clone's main branch is from its origin, and from the same project on other machines.
+#[derive(Debug, Clone, Default, PartialEq, Serialize)]
+pub struct ProjectLag {
+    pub origin: String,
+    pub main: String,
+    pub behind: u32,
+    pub ahead: u32,
+    pub known: bool,
+    pub as_of_ms: u64,
+    pub note: String,
+    /// The same project's clones on other machines, compared with this one.
+    pub vs: Vec<LagVs>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize)]
+pub struct LagVs {
+    pub galaxy: String,
+    pub behind: u32,
+    pub ahead: u32,
+    /// `same`, `behind`, `ahead`, `diverged` or `unknown`.
+    pub state: String,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Serialize)]
 pub struct Project {
     pub name: String,
@@ -599,6 +637,13 @@ pub struct Project {
     pub statuses: BTreeMap<String, u32>,
     /// No task is being worked on: the board is quiet here.
     pub quiet: bool,
+    /// The repository's folder, and the folder it is in (the arm of the Galaxy).
+    pub root: String,
+    pub folder: String,
+    pub origin: String,
+    pub lag: Option<ProjectLag>,
+    /// A project of the board with no task at all (new, or every task archived).
+    pub empty: bool,
 }
 
 /// Projects of the visible tasks, with a quiet project for a repo whose every task is done.

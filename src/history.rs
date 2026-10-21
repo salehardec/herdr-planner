@@ -10,6 +10,7 @@
 //! and the page keeps showing the tail of the Coordinator's window.
 
 use crate::config::{home, AppConfig};
+use crate::db::{chat_row_hash, ChatHit, ChatTurnRow, Db};
 use serde::Serialize;
 use serde_json::Value;
 use std::collections::HashMap;
@@ -276,6 +277,74 @@ fn turns_of(path: &Path) -> Vec<Turn> {
     turns
 }
 
+/// How full the Coordinator's context is: the tokens of its last turn.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct ContextUse {
+    pub used: u64,
+    pub model: String,
+}
+
+/// The Coordinator's program (`claude`, `omp`, …) from its state; `""` when unknown.
+pub fn coordinator_program(cfg: &AppConfig) -> String {
+    std::fs::read_to_string(cfg.data_dir.join("coordinator/default/state.json"))
+        .ok()
+        .and_then(|s| serde_json::from_str::<Value>(&s).ok())
+        .and_then(|v| v.pointer("/run/kind").and_then(Value::as_str).map(String::from))
+        .unwrap_or_default()
+}
+
+/// The folder with the Coordinator's transcripts (for the file watcher).
+pub fn transcript_dir(cfg: &AppConfig) -> PathBuf {
+    let cwd = cfg.data_dir.join("coordinator/default/chat");
+    let cwd = std::fs::canonicalize(&cwd).unwrap_or(cwd);
+    claude_home().join("projects").join(project_folder(&cwd))
+}
+
+/// The last assistant turn's token count and model, read from the tail of the
+/// newest transcript. `None` when there is no Claude transcript or no usage in it.
+pub fn coordinator_context(cfg: &AppConfig) -> Option<ContextUse> {
+    use std::io::{Read, Seek, SeekFrom};
+    let path = transcripts(cfg).pop()?;
+    let mut f = std::fs::File::open(path).ok()?;
+    let len = f.metadata().ok()?.len();
+    let take = len.min(512 * 1024);
+    f.seek(SeekFrom::Start(len - take)).ok()?;
+    let mut buf = Vec::with_capacity(take as usize);
+    f.take(take).read_to_end(&mut buf).ok()?;
+    let text = String::from_utf8_lossy(&buf);
+    for line in text.lines().rev() {
+        if !line.contains("\"usage\"") {
+            continue;
+        }
+        let Ok(v) = serde_json::from_str::<Value>(line) else {
+            continue;
+        };
+        if v.get("type").and_then(Value::as_str) != Some("assistant") {
+            continue;
+        }
+        let Some(msg) = v.get("message") else { continue };
+        let Some(u) = msg.get("usage") else { continue };
+        let n = |k: &str| u.get(k).and_then(Value::as_u64).unwrap_or(0);
+        let used = n("input_tokens") + n("cache_read_input_tokens") + n("cache_creation_input_tokens");
+        if used == 0 {
+            continue;
+        }
+        let model = msg.get("model").and_then(Value::as_str).unwrap_or("").to_string();
+        return Some(ContextUse { used, model });
+    }
+    None
+}
+
+/// The model's context window: 1M when the turn already used more than 200k or the
+/// name says `1m`, otherwise 200k. The transcript does not carry the window itself.
+pub fn context_window(used: u64, model: &str) -> u64 {
+    if used > 200_000 || model.to_lowercase().contains("1m") {
+        1_000_000
+    } else {
+        200_000
+    }
+}
+
 /// A page of the conversation: the `limit` turns before turn `before` (the end
 /// when `None`), oldest first.
 pub fn page(cfg: &AppConfig, before: Option<usize>, limit: usize) -> Page {
@@ -292,6 +361,59 @@ pub fn page(cfg: &AppConfig, before: Option<usize>, limit: usize) -> Page {
         turns: all[start..end].to_vec(),
         more: start > 0,
         total,
+    }
+}
+
+/// Brings the index of the Coordinator's turns (in the database) up to date with the
+/// transcripts. Turn `n` of the index is turn `n` of [`page`]. Turns are compared with
+/// the stored ones from the start; the first that differs and all after it are
+/// rewritten, so a new session, a changed last answer or a shifted numbering all
+/// come out right. Returns the number of turns now indexed.
+pub fn sync_index(db: &Db, cfg: &AppConfig) -> usize {
+    let files = transcripts(cfg);
+    let all: Vec<Turn> = files.iter().flat_map(|p| turns_of(p)).collect();
+    let stored = db.chat_turn_hashes();
+    let mut first = 0;
+    while let Some(t) = all.get(first) {
+        match stored.get(first) {
+            Some((n, h)) if *n == first && *h == chat_row_hash(t.at, t.from, &t.q, &t.a) => {
+                first += 1
+            }
+            _ => break,
+        }
+    }
+    if first < all.len() || stored.len() != all.len() {
+        let tail: Vec<ChatTurnRow> = all[first..]
+            .iter()
+            .enumerate()
+            .map(|(i, t)| ChatTurnRow {
+                n: first + i,
+                at: t.at,
+                from: t.from.to_string(),
+                q: t.q.clone(),
+                a: t.a.clone(),
+            })
+            .collect();
+        db.chat_turns_replace_from(first, &tail);
+    }
+    all.len()
+}
+
+/// The Coordinator's turns matching `q`, best first, from the index. Call
+/// [`sync_index`] first for the index to show the latest turns.
+pub fn search(db: &Db, q: &str, limit: usize) -> Vec<ChatHit> {
+    db.chat_search(q, limit)
+}
+
+#[cfg(test)]
+mod context_tests {
+    use super::*;
+
+    #[test]
+    fn the_window_follows_the_use() {
+        assert_eq!(context_window(50_000, "claude-opus-5-5"), 200_000);
+        assert_eq!(context_window(260_000, "claude-opus-5-5"), 1_000_000);
+        assert_eq!(context_window(10, "claude-opus-5-5[1m]"), 1_000_000);
     }
 }
 
@@ -383,5 +505,70 @@ mod tests {
             )),
             "-home-me--herdr-projects-data-coordinator-default-chat"
         );
+    }
+
+    fn line(kind: &str, at: &str, body: &str) -> String {
+        format!(r#"{{"type":"{kind}","timestamp":"{at}",{body}}}"#)
+    }
+
+    #[test]
+    fn the_index_follows_the_transcript_numbering() {
+        let dir = tempfile::tempdir().unwrap();
+        let claude = dir.path().join("claude");
+        // Only this test reads CLAUDE_CONFIG_DIR.
+        std::env::set_var("CLAUDE_CONFIG_DIR", &claude);
+        let mut cfg = AppConfig::load(&[]);
+        cfg.data_dir = dir.path().join("data");
+        let chat = cfg.data_dir.join("coordinator").join("default").join("chat");
+        std::fs::create_dir_all(&chat).unwrap();
+        let chat = std::fs::canonicalize(&chat).unwrap();
+        let folder = claude.join("projects").join(project_folder(&chat));
+        std::fs::create_dir_all(&folder).unwrap();
+        let file = folder.join("s1.jsonl");
+        let q1 = line("user", "2026-10-19T05:56:05.000Z", r#""message":{"content":"первый вопрос"}"#);
+        let a1 = line(
+            "assistant",
+            "2026-10-19T05:56:09.000Z",
+            r#""message":{"stop_reason":"end_turn","content":[{"type":"text","text":"ответ про пиццу"}]}"#,
+        );
+        std::fs::write(&file, format!("{q1}\n{a1}\n")).unwrap();
+
+        let db = Db::memory().unwrap();
+        assert_eq!(sync_index(&db, &cfg), 1);
+        assert_eq!(search(&db, "пиццу", 10).len(), 1);
+        assert_eq!(search(&db, "пиццу", 10)[0].n, 0);
+
+        // A new question and its answer: appended, nothing before them is rewritten.
+        let q2 = line("user", "2026-10-19T06:00:00.000Z", r#""message":{"content":"второй вопрос"}"#);
+        std::fs::write(&file, format!("{q1}\n{a1}\n{q2}\n")).unwrap();
+        assert_eq!(sync_index(&db, &cfg), 2);
+        assert_eq!(search(&db, "второй", 10)[0].n, 1);
+
+        // The last answer changes while the Coordinator works.
+        let a2 = line(
+            "assistant",
+            "2026-10-19T06:00:30.000Z",
+            r#""message":{"stop_reason":"end_turn","content":[{"type":"text","text":"ответ про бюджет"}]}"#,
+        );
+        std::fs::write(&file, format!("{q1}\n{a1}\n{q2}\n{a2}\n")).unwrap();
+        assert_eq!(sync_index(&db, &cfg), 2);
+        assert!(search(&db, "пиццу", 10).len() == 1, "the first turn is kept");
+        assert_eq!(search(&db, "бюджет", 10)[0].n, 1);
+
+        // A new session file is older than the current one: the numbering shifts.
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        let older = folder.join("s0.jsonl");
+        std::fs::write(&older, format!("{}\n", line("user", "2026-10-18T10:00:00.000Z", r#""message":{"content":"старый"}"#))).unwrap();
+        let t = std::time::SystemTime::now() - std::time::Duration::from_secs(3600);
+        std::fs::File::options().write(true).open(&older).unwrap().set_modified(t).unwrap();
+        assert_eq!(sync_index(&db, &cfg), 3);
+        assert_eq!(search(&db, "старый", 10)[0].n, 0, "the older session comes first");
+        assert_eq!(search(&db, "пиццу", 10)[0].n, 1, "numbers follow the page()");
+        assert_eq!(page(&cfg, None, 50).total, 3);
+
+        // The transcripts go away: the index is emptied too.
+        std::fs::remove_dir_all(&folder).unwrap();
+        assert_eq!(sync_index(&db, &cfg), 0);
+        assert!(search(&db, "пиццу", 10).is_empty());
     }
 }
