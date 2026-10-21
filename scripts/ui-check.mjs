@@ -1892,6 +1892,8 @@ section('ship', async () => {
   // the folder: live, after «было → стало» and two presses
   const dir = join(fixture, 'projects-new');
   await typeIn('#ship-dir', dir);
+  // The page enables «Далее» when its state has the typed folder: a click before that hits a disabled button.
+  await waitFor('!document.querySelector("#ship-dir-save").disabled', 3000);
   await click('#ship-dir-save');
   check('the folder change shows was → now before anything is saved', await waitFor('!!document.querySelector("#ship-change")', 4000) && await hasText('#ship-change', dir), await text('#ship-change'));
   await twoPresses('#ship-confirm');
