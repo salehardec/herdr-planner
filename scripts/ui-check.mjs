@@ -2030,11 +2030,16 @@ const layoutRun = async (w, h, dsf, scale = 'auto') => {
     const parts = await evalJs('window.__nameParts("#st-board .setrow .nm")');
     const brokenNames = (parts || []).filter((x) => x.broken > 0 || x.width < x.widest - 1);
     check(`${at}: setting names stay whole: no name is broken inside a word, none is narrower than its widest word (${(parts || []).length} names)`, (parts || []).length > 5 && brokenNames.length === 0, JSON.stringify(brokenNames.slice(0, 3)));
-    const grid = await evalJs(`(() => { const r = document.querySelector('#st-board .setrow'); const nm = r.querySelector('.nm').getBoundingClientRect(); const sv = r.querySelector('.sv').getBoundingClientRect(); return { sameLine: nm.top < sv.bottom && sv.top < nm.bottom, stacked: sv.top >= nm.bottom - 1, nmW: nm.width, svL: sv.left, nmR: nm.right }; })()`);
+    const grid = await evalJs(`(() => { const r = document.querySelector('#st-board .setrow'); const nm = r.querySelector('.nm').getBoundingClientRect(); const sv = r.querySelector('.setval').getBoundingClientRect(); return { sameLine: nm.top < sv.bottom && sv.top < nm.bottom, stacked: sv.top >= nm.bottom - 1, nmW: nm.width, svL: sv.left, nmR: nm.right }; })()`);
     check(`${at}: a setting row is one row or a column, its parts never squeezed side by side`, grid && (grid.stacked || (grid.sameLine && grid.svL >= grid.nmR - 1)), JSON.stringify(grid));
   });
   await station('the crew wizard', '#station.wizard');
-  await station('the ship\'s computer', '#ship');
+  await station('the ship\'s computer', '#ship', async () => {
+    // the list of machines comes from the server a moment later: judged once it is there
+    await waitFor('document.querySelectorAll("#ship-galaxies li").length > 0', 15000);
+    const late = await layoutProblems('#ship');
+    check(`${at}: the ship's computer with its list of machines: nothing wider than its box`, late.length === 0, late.join('; '));
+  });
   await panel('the dialog «Добавить вселенную»', '#addu', async () => { await menuPick('Добавить вселенную'); });
   await panel('the dialog «Добавить галактику»', '#addg', async () => { await menuPick('Добавить галактику'); });
   await resetUi();

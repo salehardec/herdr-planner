@@ -384,7 +384,7 @@ function SettingRow(props: { galaxy: string; repo: string; s: StationSetting; re
           {s.own && <span class="own" title={t('st.ownTip')}>{t('st.own')}</span>}
         </span>
       </div>
-      <div class="sv">
+      <div class="setval">
         {bool ? (
           <button type="button" class={`tog ${s.value === 'true' ? 'on' : ''}`} aria-pressed={s.value === 'true'} data-toggle={s.name}
             onClick={() => go(s.value === 'true' ? 'false' : 'true')}>
