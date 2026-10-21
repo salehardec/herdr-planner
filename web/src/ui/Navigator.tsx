@@ -84,7 +84,7 @@ export function Navigator(): JSX.Element {
               key={n.key} role="treeitem" tabIndex={focusKey.value === n.key || (!focusKey.value && sel) ? 0 : -1}
               data-nav={n.key} data-kind={n.kind} aria-selected={sel} aria-expanded={n.expandable ? n.open : undefined}
               class={`ti ${n.kind} ${n.status ? `s-${n.status}` : ''} ${sel ? 'sel' : ''} ${here ? 'here' : ''} ${n.dim ? 'dim' : ''} ${n.off ? 'off' : ''} ${n.attention ? 'attn' : ''}`}
-              style={`padding-left:${6 + n.depth * 14}px`}
+              style={`padding-left:${(6 + n.depth * 14) / 16}rem`}
               onFocus={() => { focusKey.value = n.key; }}
               onClick={() => activate(n)}
             >

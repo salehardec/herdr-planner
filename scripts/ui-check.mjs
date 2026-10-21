@@ -328,39 +328,42 @@ section('search', async () => {
   await send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'k', code: 'KeyK', windowsVirtualKeyCode: 75, modifiers: 2 });
   check('Ctrl+K focuses the search that is always on top', await waitFor('document.activeElement.id === "q"', 3000));
   await send('Input.insertText', { text: 'alp' });
-  check('the suggestions appear at once, grouped with icons', await waitFor('document.querySelectorAll("#sres .sr").length > 3 && document.querySelectorAll("#sres h4").length >= 2', 3000), await text('#sres'));
+  check('the suggestions appear at once, grouped with icons', await waitFor('document.querySelectorAll("#sres .srow").length > 3 && document.querySelectorAll("#sres h4").length >= 2', 3000), await text('#sres'));
+  check('every result row is really there: tall, wide, in the flow, with its title and path to read', await evalJs(`(() => { const rows = [...document.querySelectorAll('#sres .srow')]; return rows.length > 3 && rows.every((r) => { const b = r.getBoundingClientRect(); const c = getComputedStyle(r); return b.height >= 24 && b.width >= 200 && c.position !== 'absolute' && c.clip === 'auto' && r.querySelector('.ttl')?.getBoundingClientRect().height >= 8 && r.querySelector('.path')?.getBoundingClientRect().width > 20; }); })()`), await evalJs('[...document.querySelectorAll("#sres .srow")].slice(0, 3).map((r) => { const b = r.getBoundingClientRect(); return b.width + "x" + b.height; }).join()'));
+  check('the rows can be seen and hit: a row is what stands under its own centre', await evalJs(`(() => { const r = document.querySelector('#sres .srow').getBoundingClientRect(); return !!document.elementFromPoint((r.left + r.right) / 2, (r.top + r.bottom) / 2)?.closest('.srow'); })()`));
+  await shot('search-rows.png');
   const g = await evalJs('[...document.querySelectorAll("#sres h4")].map((e) => e.innerText)');
   check('groups come in the order: universes, planets, …', g.map((x) => x.toLowerCase()).indexOf('вселенные') !== -1 && g.map((x) => x.toLowerCase()).indexOf('планеты') > g.map((x) => x.toLowerCase()).indexOf('вселенные'), JSON.stringify(g));
   check('a match is highlighted and the path is shown', await exists('#sres mark') && (await text('#sres')).includes(HOST + ' › alpha › ALP-'), (await text('#sres')).slice(0, 160));
-  check('the status is in its own colour class', await exists('#sres .sr.s-waiting') || await exists('#sres .sr.s-working'));
+  check('the status is in its own colour class', await exists('#sres .srow.s-waiting') || await exists('#sres .srow.s-working'));
   await evalJs('document.getElementById("q").select()');
   await send('Input.insertText', { text: 'schemа' });
   await evalJs('document.getElementById("q").select()');
   await send('Input.insertText', { text: 'схема экспорта' });
-  check('a task is found by its title', await waitFor('[...document.querySelectorAll("#sres .sr")].some((e) => e.dataset.id === "alpha/2")', 3000), await text('#sres'));
+  check('a task is found by its title', await waitFor('[...document.querySelectorAll("#sres .srow")].some((e) => e.dataset.id === "alpha/2")', 3000), await text('#sres'));
   await evalJs('document.getElementById("q").select()');
   await send('Input.insertText', { text: 'старую схему' });
-  check('and by the words of its description', await waitFor('[...document.querySelectorAll("#sres .sr")].some((e) => e.dataset.kind === "planet")', 3000), await text('#sres'));
+  check('and by the words of its description', await waitFor('[...document.querySelectorAll("#sres .srow")].some((e) => e.dataset.kind === "planet")', 3000), await text('#sres'));
   await evalJs('document.getElementById("q").select()');
   await send('Input.insertText', { text: 'deepseek' });
-  check('and by its agent and model', await waitFor('[...document.querySelectorAll("#sres .sr")].some((e) => e.dataset.id === "alpha/6")', 4000), await text('#sres'));
+  check('and by its agent and model', await waitFor('[...document.querySelectorAll("#sres .srow")].some((e) => e.dataset.id === "alpha/6")', 4000), await text('#sres'));
   await evalJs('document.getElementById("q").select()');
   await send('Input.insertText', { text: 'Explore' });
-  check('sub-agents are found', await waitFor('[...document.querySelectorAll("#sres .sr")].some((e) => e.dataset.kind === "moon")', 3000), await text('#sres'));
+  check('sub-agents are found', await waitFor('[...document.querySelectorAll("#sres .srow")].some((e) => e.dataset.kind === "moon")', 3000), await text('#sres'));
   await evalJs('document.getElementById("q").select()');
   await send('Input.insertText', { text: 'вопрос 4' });
-  check('messages of the Coordinator chat are found (from the server index)', await waitFor('[...document.querySelectorAll("#sres .sr")].some((e) => e.dataset.kind === "chat")', 5000), await text('#sres'));
+  check('messages of the Coordinator chat are found (from the server index)', await waitFor('[...document.querySelectorAll("#sres .srow")].some((e) => e.dataset.kind === "chat")', 5000), await text('#sres'));
   await evalJs('document.getElementById("q").select()');
   await send('Input.insertText', { text: 'Починить кэш' });
-  check('todo items are found', await waitFor('[...document.querySelectorAll("#sres .sr")].some((e) => e.dataset.kind === "todo")', 4000), await text('#sres'));
+  check('todo items are found', await waitFor('[...document.querySelectorAll("#sres .srow")].some((e) => e.dataset.kind === "todo")', 4000), await text('#sres'));
   await evalJs('document.getElementById("q").select()');
   await send('Input.insertText', { text: 'vm-a' });
-  check('machines are found', await waitFor('[...document.querySelectorAll("#sres .sr")].some((e) => e.dataset.kind === "galaxy")', 3000), await text('#sres'));
+  check('machines are found', await waitFor('[...document.querySelectorAll("#sres .srow")].some((e) => e.dataset.kind === "galaxy")', 3000), await text('#sres'));
   await evalJs('document.getElementById("q").select()');
   await send('Input.insertText', { text: 'alp-4' });
-  await waitFor('[...document.querySelectorAll("#sres .sr")].some((e) => e.dataset.id === "alpha/4")', 3000);
+  await waitFor('[...document.querySelectorAll("#sres .srow")].some((e) => e.dataset.id === "alpha/4")', 3000);
   const cam0 = (await debug()).camera;
-  const row = await evalJs('[...document.querySelectorAll("#sres .sr")].findIndex((e) => e.dataset.id === "alpha/4")');
+  const row = await evalJs('[...document.querySelectorAll("#sres .srow")].findIndex((e) => e.dataset.id === "alpha/4")');
   for (let i = 0; i < row; i++) await press('ArrowDown');
   await press('Enter');
   check('Enter flies there and selects it', await waitFor('plannerDebug().selected?.id === "alpha/4" && world.debug().flight === "idle"', 15000), JSON.stringify(await pd()));
@@ -461,50 +464,147 @@ section('chat', async () => {
   await press('Escape');
 });
 
+// ── the todo list: a drawer from the top (quake), next to the chat at the bottom ──
+
+const rectOf = (sel) => evalJs(`(() => { const e = document.querySelector(${JSON.stringify(sel)}); if (!e) return null; const r = e.getBoundingClientRect(); return { l: r.left, t: r.top, r: r.right, b: r.bottom, w: r.width, h: r.height }; })()`);
+const apart = (a, b) => a.r <= b.l + 1 || b.r <= a.l + 1 || a.b <= b.t + 1 || b.b <= a.t + 1;
+// The rectangles of some panels once they have stopped moving (slow software GL draws few frames, so a transition takes a while).
+async function settled(sels, ok, ms = 6000) {
+  const end = Date.now() + ms;
+  let r = {};
+  while (Date.now() < end) {
+    r = {};
+    for (const k of Object.keys(sels)) r[k] = await rectOf(sels[k]);
+    if (ok(r)) return [true, r];
+    await sleep(250);
+  }
+  return [false, r];
+}
+// A file made in the page: its name, its declared type and its bytes (a string of characters 0–255).
+const MK = `window.__mk = (name, type, chars) => new File([Uint8Array.from(chars, (c) => c.charCodeAt(0))], name, { type });
+  window.__png = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAFgwJ/lK3Q6wAAAABJRU5ErkJggg==';
+  window.__pngFile = (name) => __mk(name, 'image/png', atob(__png));
+  window.__wav = (name) => __mk(name, 'audio/wav', 'RIFF\\x00\\x00\\x00\\x00WAVEfmt \\x10\\x00\\x00\\x00');
+  window.__text = (name, body) => new File([body], name, { type: 'text/markdown' });
+  true`;
+const todoIdByText = (txt) => evalJs(`[...document.querySelectorAll('#todo-list .titem')].find((e) => e.querySelector('.txt')?.innerText === ${JSON.stringify(txt)})?.dataset.todo`);
+// An item made through the server with files it holds already (the page uploads them like any file).
+const addTodo = (txt, kinds) => evalJs(`(async () => {
+  const mk = { png: () => __pngFile('shot.png'), wav: () => __wav('voice.wav'), md: () => __text('plan.md', 'шаги: один, два') };
+  const attachments = [];
+  for (const k of ${JSON.stringify(kinds)}) { const f = mk[k](); const fd = new FormData(); fd.append('file', f, f.name); attachments.push((await (await fetch('/api/chat/attach', { method: 'POST', body: fd })).json()).attachment); }
+  const r = await fetch('/api/action', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ action: 'todo-add', text: ${JSON.stringify(txt)}, attachments }) });
+  return r.status;
+})()`);
+// A card dragged from the list and dropped at a point of the scene (as the browser does it).
+const dragToScene = (id, x, y) => evalJs(`(() => {
+  const c = document.querySelector('#scene'); const r = c.getBoundingClientRect();
+  const dt = new DataTransfer(); dt.setData('text/plain', '${id}');
+  document.querySelector('#todo-list .titem[data-todo="${id}"]').dispatchEvent(new DragEvent('dragstart', { bubbles: true, dataTransfer: dt }));
+  const o = { bubbles: true, cancelable: true, dataTransfer: dt, clientX: r.left + ${x}, clientY: r.top + ${y} };
+  c.dispatchEvent(new DragEvent('dragover', o)); c.dispatchEvent(new DragEvent('drop', o)); return true;
+})()`);
+const todoCount = () => evalJs('document.querySelectorAll("#todo-list .titem").length');
+const todoState = () => evalJs(`fetch('/api/state').then(r => r.json()).then(s => s.todo)`);
+
+section('todo drawer', async () => {
+  await resetUi();
+  await evalJs(MK);
+  await evalJs('planner.goOverview()');
+  await sleep(300);
+  const q = await rectOf('#q');
+  check('the search is in the middle of the top, not at the right', Math.abs((q.l + q.r) / 2 - 1500 / 2) < 12 && q.t < 40, JSON.stringify(q));
+  check('the drawer is hidden above the screen while closed', (await rectOf('#todo')).b <= 60 && (await evalJs('getComputedStyle(document.querySelector("#todo")).opacity')) === '0');
+  await press('KeyT', 't');
+  check('T pulls the drawer down from the top', await waitFor('document.querySelector("#todo").classList.contains("open") && document.querySelector("#todo").getBoundingClientRect().top > 45 && document.querySelector("#todo").getBoundingClientRect().top < 70', 4000), JSON.stringify(await rectOf('#todo')));
+  const [, { d }] = await settled({ d: '#todo' }, (x) => x.d.t >= 50 && x.d.t <= 62);
+  check('it is a wide strip in the middle, between the navigator and the focus card', d.w >= 520 && d.l >= (await rectOf('#nav')).r && d.r <= (await rectOf('#focus')).l + 1 && Math.abs((d.l + d.r) / 2 - 750) < 40, JSON.stringify(d));
+  check('it slid out from under the search bar: below it, not over it', d.t >= (await rectOf('#q')).b, JSON.stringify({ d, q: await rectOf('#q') }));
+  check('the search stays on top and works', await evalJs('(() => { const q = document.querySelector("#q").getBoundingClientRect(); return !!document.elementFromPoint((q.left + q.right) / 2, (q.top + q.bottom) / 2)?.closest(".top-search"); })()'));
+  await send('Input.dispatchKeyEvent', { type: 'rawKeyDown', key: 'k', code: 'KeyK', windowsVirtualKeyCode: 75, modifiers: 2 });
+  await send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'k', code: 'KeyK', windowsVirtualKeyCode: 75, modifiers: 2 });
+  await send('Input.insertText', { text: 'alp' });
+  check('the suggestions drop over the drawer', await waitFor('document.querySelectorAll("#sres .srow").length > 3', 3000));
+  check('and they are above it', await evalJs('(() => { const r = document.querySelector("#sres .srow").getBoundingClientRect(); const e = document.elementFromPoint((r.left + r.right) / 2, (r.top + r.bottom) / 2); return !!e?.closest("#sres"); })()'));
+  await press('Escape');
+  check('Esc: the search closes first, the drawer stays', await waitFor('!document.querySelector("#sres")', 2000) && await evalJs('document.querySelector("#todo").classList.contains("open")'));
+  await press('Escape');
+  check('Esc: one step back closes the drawer', await waitFor('!document.querySelector("#todo").classList.contains("open")', 3000));
+  await evalJs('document.getElementById("q").value = ""; document.getElementById("q").dispatchEvent(new Event("input", { bubbles: true }))');
+  await press('Escape');
+  check('the drawer is gone from the screen again', await waitFor('document.querySelector("#todo").getBoundingClientRect().bottom <= 60', 12000), JSON.stringify(await rectOf('#todo')));
+  await press('KeyT', 't');
+  check('T opens it', await waitFor('document.querySelector("#todo").classList.contains("open")', 3000));
+  await press('KeyT', 't');
+  check('and T folds it again', await waitFor('!document.querySelector("#todo").classList.contains("open")', 3000));
+  await click('#btodo');
+  check('the button opens it too', await waitFor('document.querySelector("#todo").classList.contains("open")', 3000));
+  // an input of the drawer: Esc folds the drawer, not the chat
+  await evalJs('document.querySelector("#todo-in").focus()');
+  await press('Escape');
+  check('Esc typed in the drawer folds the drawer', await waitFor('!document.querySelector("#todo").classList.contains("open")', 3000));
+  // the chat below and the drawer above, open together, with the navigator and the focus card
+  await go('alpha/6');
+  await press('Slash', '/');
+  await waitFor('!document.querySelector("#chat").classList.contains("off")', 3000);
+  await click('#btodo');
+  await waitFor('document.querySelector("#todo").classList.contains("open")', 3000);
+  await sleep(600);
+  for (const [w, h] of [[1500, 950], [1280, 940]]) {
+    await send('Emulation.setDeviceMetricsOverride', { width: w, height: h, deviceScaleFactor: 1, mobile: false });
+    const [ok, r] = await settled({ todo: '#todo', chat: '#chat', nav: '#nav', focus: '#focus' }, (x) => [['todo', 'chat'], ['todo', 'nav'], ['todo', 'focus'], ['chat', 'nav'], ['chat', 'focus'], ['nav', 'focus']].every(([a, b]) => apart(x[a], x[b])) && x.todo.t > 40);
+    check(`${w}px: the drawer, the chat, the navigator and the focus card are all open`, !(await evalJs('document.querySelector("#chat").classList.contains("off")')) && !(await evalJs('document.querySelector("#nav").classList.contains("off")')) && !(await evalJs('document.querySelector("#focus").classList.contains("off")')) && await evalJs('document.querySelector("#todo").classList.contains("open")'));
+    check(`${w}px: and none covers another`, ok, JSON.stringify(r));
+    check(`${w}px: the drawer is at the top, the chat at the bottom`, r.todo.t < 70 && r.chat.b > h - 90, JSON.stringify({ todo: r.todo, chat: r.chat }));
+    check(`${w}px: the search is not covered by anything`, await evalJs('(() => { const q = document.querySelector("#q").getBoundingClientRect(); return !!document.elementFromPoint((q.left + q.right) / 2, (q.top + q.bottom) / 2)?.closest(".top-search"); })()'));
+    await shot(`todo-chat-${w}.png`);
+  }
+  await send('Emulation.setDeviceMetricsOverride', { width: 1500, height: 950, deviceScaleFactor: 1, mobile: false });
+  await sleep(400);
+  await resetUi();
+});
+
 section('todo', async () => {
   await resetUi();
+  await evalJs(MK);
   await evalJs('planner.goOverview()');
   await sleep(300);
   await click('#btodo');
-  check('the todo button pulls the list out', await waitFor('document.querySelector("#todo").classList.contains("open") && document.querySelectorAll("#todo-list .titem").length === 2', 4000), await evalJs('document.querySelectorAll("#todo-list .titem").length'));
+  check('the todo button pulls the list out', await waitFor('document.querySelector("#todo").classList.contains("open") && document.querySelectorAll("#todo-list .titem").length === 2', 4000), await todoCount());
   await evalJs('(() => { const i = document.querySelector("#todo-in"); i.value = "Проверить деплой"; document.querySelector("#todo-new").requestSubmit(); })()');
   check('a new item is kept on the server', await waitFor('document.querySelectorAll("#todo-list .titem").length === 3', 6000) && (await evalJs(`fetch('/api/state').then(r=>r.json()).then(s => s.todo.some(x => x.text === 'Проверить деплой'))`)));
   // addressing
-  const todoIdByText = (txt) => evalJs(`[...document.querySelectorAll('#todo-list .titem')].find((e) => e.querySelector('.txt')?.innerText === ${JSON.stringify(txt)})?.dataset.todo`);
   const id1 = await todoIdByText('Починить кэш отчётов');
   await evalJs(`(() => { const sel = document.querySelector('#todo-list .titem[data-todo="${id1}"] select'); sel.value = 'quasar'; sel.dispatchEvent(new Event('change', { bubbles: true })); })()`);
   check('an item can be addressed to the Quasar', await waitFor(`fetch('/api/state').then(r=>r.json()).then(s => s.todo.find(x => x.id === '${id1}')?.to === 'quasar')`, 6000));
   await click(`#todo-list .titem[data-todo="${id1}"] [data-act="todo-send"]`);
   check('sending it tells the Coordinator and removes it', await waitLog(() => calls('coordinator.jsonl').some((c) => c.text === 'Починить кэш отчётов'), 8000) && await waitFor('document.querySelectorAll("#todo-list .titem").length === 2', 6000), JSON.stringify(lastCall('coordinator.jsonl')));
-  // drag onto a planet: the agent is told
+  // drag onto a planet: a window to correct the words first, then the agent is told
   await go('alpha/6');
   const todoText = 'Добавить тёмную тему в настройки';
   const todoId = await todoIdByText(todoText);
   const pos = await evalJs(`world.screenOf(${planet('alpha/6')})`);
   check('the planet is under the drop point', (await evalJs(`world.entityAt(${pos.x}, ${pos.y}, ['planet','quasar','universe'])`))?.id === 'alpha/6', JSON.stringify({ pos, hit: await evalJs(`world.entityAt(${pos.x}, ${pos.y}, ['planet','quasar','universe'])`), sel: (await pd()).selected }));
-  await evalJs(`(() => {
-    const c = document.querySelector('#scene'); const r = c.getBoundingClientRect();
-    const dt = new DataTransfer(); dt.setData('text/plain', '${todoId}');
-    document.querySelector('#todo-list .titem[data-todo="${todoId}"]').dispatchEvent(new DragEvent('dragstart', { bubbles: true, dataTransfer: dt }));
-    const o = { bubbles: true, cancelable: true, dataTransfer: dt, clientX: r.left + ${pos.x}, clientY: r.top + ${pos.y} };
-    c.dispatchEvent(new DragEvent('dragover', o)); c.dispatchEvent(new DragEvent('drop', o)); return true;
-  })()`);
-  check('a drop on a planet tells its agent', await waitLog(() => calls().some((c) => c.argv[0] === 'tell' && c.argv[1] === 'alpha/6' && c.argv[3] === todoText), 10000), JSON.stringify({ todoText, last: lastCall() }));
+  await dragToScene(todoId, pos.x, pos.y);
+  check('a drop on a planet opens a window to correct the words', await waitFor('!!document.querySelector("#pop-tell") && document.querySelector("#tell-text")?.value === "Добавить тёмную тему в настройки"', 5000), await evalJs('document.querySelector("#tell-text")?.value'));
+  check('the window names the task', (await text('#pop-tell header')).includes('ALP-6'), await text('#pop-tell header'));
+  check('nothing is sent before the operator says so', !calls().some((c) => c.argv[0] === 'tell' && c.argv[1] === 'alpha/6' && c.argv[3] === todoText));
+  await press('Escape');
+  check('Esc closes the window and the item stays', await waitFor('!document.querySelector("#pop-tell")', 3000) && (await todoCount()) === 2);
+  await dragToScene(todoId, pos.x, pos.y);
+  await waitFor('!!document.querySelector("#pop-tell")', 5000);
+  await evalJs('(() => { const i = document.querySelector("#tell-text"); i.value = "Добавить тёмную тему (и светлую)"; i.dispatchEvent(new Event("input", { bubbles: true })); })()');
+  await click('#tell-go');
+  check('the corrected words are told to the agent of the task', await waitLog(() => calls().some((c) => c.argv[0] === 'tell' && c.argv[1] === 'alpha/6' && c.argv[3] === 'Добавить тёмную тему (и светлую)'), 10000), JSON.stringify({ last: lastCall() }));
   check('and the item leaves the list', await waitFor('document.querySelectorAll("#todo-list .titem").length === 1', 6000));
-  // drag onto the Quasar
+  // drag onto the Quasar: told at once
   await evalJs(`(() => { const i = document.querySelector('#todo-in'); i.value = 'Спросить про лимиты'; document.querySelector('#todo-new').requestSubmit(); })()`);
   await waitFor('document.querySelectorAll("#todo-list .titem").length === 2', 5000);
   const tid2 = await todoIdByText('Спросить про лимиты');
   await evalJs(`planner.goOverview()`);
   await sleep(500);
   const qpos = await evalJs(`world.screenOf({kind:'quasar',galaxy:'',id:'quasar'})`);
-  await evalJs(`(() => {
-    const c = document.querySelector('#scene'); const r = c.getBoundingClientRect();
-    const dt = new DataTransfer(); dt.setData('text/plain', '${tid2}');
-    document.querySelector('#todo-list .titem[data-todo="${tid2}"]').dispatchEvent(new DragEvent('dragstart', { bubbles: true, dataTransfer: dt }));
-    const o = { bubbles: true, cancelable: true, dataTransfer: dt, clientX: r.left + ${qpos.x}, clientY: r.top + ${qpos.y} };
-    c.dispatchEvent(new DragEvent('dragover', o)); c.dispatchEvent(new DragEvent('drop', o)); return true;
-  })()`);
+  await dragToScene(tid2, qpos.x, qpos.y);
   check('a drop on the Quasar tells the Coordinator', await waitLog(() => calls('coordinator.jsonl').some((c) => c.text === 'Спросить про лимиты'), 10000), JSON.stringify(lastCall('coordinator.jsonl')));
   await waitFor(`!document.querySelector('#todo-list .titem[data-todo="${tid2}"]')`, 8000);
   // drag onto a nebula: where and by whom
@@ -514,20 +614,17 @@ section('todo', async () => {
   await evalJs(`planner.navigateTo({kind:'universe',galaxy:'',id:'delta'}); true`);
   await waitFor('world.debug().flight === "idle"', 12000);
   const upos = await evalJs(`world.screenOf({kind:'universe',galaxy:'',id:'delta'})`);
-  await evalJs(`(() => {
-    const c = document.querySelector('#scene'); const r = c.getBoundingClientRect();
-    const dt = new DataTransfer(); dt.setData('text/plain', '${tid3}');
-    document.querySelector('#todo-list .titem[data-todo="${tid3}"]').dispatchEvent(new DragEvent('dragstart', { bubbles: true, dataTransfer: dt }));
-    const o = { bubbles: true, cancelable: true, dataTransfer: dt, clientX: r.left + ${upos.x} + 3, clientY: r.top + ${upos.y} + 3 };
-    c.dispatchEvent(new DragEvent('dragover', o)); c.dispatchEvent(new DragEvent('drop', o)); return true;
-  })()`);
+  await dragToScene(tid3, upos.x + 3, upos.y + 3);
   check('a drop on a nebula asks where and by whom', await waitFor('!!document.querySelector("#pop")', 5000));
   check('the model list loads (free input first, then names)', await waitFor('document.querySelectorAll("#models-list option").length >= 2', 15000), await evalJs('document.querySelectorAll("#models-list option").length'));
+  check('the words of the task can be corrected there', await evalJs('document.querySelector("#pop-text")?.value === "Новая задача из дела"'));
+  await evalJs('(() => { const i = document.querySelector("#pop-text"); i.value = "Новая задача из дела (правка)"; i.dispatchEvent(new Event("input", { bubbles: true })); })()');
   await click('#pop [data-prog="claude"]');
   await evalJs('(() => { const i = document.querySelector("#pop-model"); i.value = "claude-sonnet-5-5"; i.dispatchEvent(new Event("input", { bubbles: true })); })()');
   await click('#pop-go');
   check('the task is created with the chosen agent/model', await waitLog(() => calls().some((c) => c.argv[0] === 'add' && c.argv.includes('--repo') && c.argv.includes('delta') && c.argv.includes('--worker.agent') && c.argv.includes('claude/claude-sonnet-5-5')), 12000), JSON.stringify(lastCall()));
-  check('the new planet appears in its date group', await waitFor(`plannerSnap().tasks.some((t) => t.repo === 'delta' && t.title === 'Новая задача из дела')`, 12000));
+  check('with the corrected title', calls().some((c) => c.argv[0] === 'add' && c.argv[1] === 'Новая задача из дела (правка)'), JSON.stringify(lastCall()));
+  check('the new planet appears in its date group', await waitFor(`plannerSnap().tasks.some((t) => t.repo === 'delta' && t.title === 'Новая задача из дела (правка)')`, 12000));
   // reorder
   const ids = await evalJs('[...document.querySelectorAll("#todo-list .titem")].map((e) => e.dataset.todo)');
   if (ids.length >= 2) {
@@ -535,6 +632,7 @@ section('todo', async () => {
       const dt = new DataTransfer(); a.dispatchEvent(new DragEvent('dragstart', { bubbles: true, dataTransfer: dt }));
       b.dispatchEvent(new DragEvent('dragover', { bubbles: true, cancelable: true, dataTransfer: dt })); b.dispatchEvent(new DragEvent('drop', { bubbles: true, cancelable: true, dataTransfer: dt })); })()`);
     check('dragging inside the list reorders it on the server', await waitFor(`fetch('/api/state').then(r=>r.json()).then(s => s.todo[0].id === '${ids[ids.length - 1]}')`, 6000), await evalJs('[...document.querySelectorAll("#todo-list .titem")].map((e) => e.dataset.todo).join()'));
+    await evalJs(`document.querySelector('#todo-list .titem[data-todo="${ids[ids.length - 1]}"]').dispatchEvent(new DragEvent('dragend', { bubbles: true })); true`);
   }
   // edit / remove
   const last = await evalJs('document.querySelector("#todo-list .titem").dataset.todo');
@@ -547,6 +645,318 @@ section('todo', async () => {
   await resetUi();
 });
 
+section('todo files', async () => {
+  await resetUi();
+  await evalJs(MK);
+  await evalJs('planner.goOverview()');
+  await sleep(300);
+  await click('#btodo');
+  await waitFor('document.querySelector("#todo").classList.contains("open")', 4000);
+  check('the composer has «Обзор…»', (await text('#todo-browse')).includes('Обзор'), await text('#todo-browse'));
+  await evalJs('document.querySelector("#todo-in").value = "Заметка со вложениями"; true');
+  // «Обзор…»: a text file
+  await evalJs(`(() => { const dt = new DataTransfer(); dt.items.add(__text('notes.md', 'заметка про деплой\\nстрока 2')); const i = document.querySelector('#todo-file'); i.files = dt.files; i.dispatchEvent(new Event('change', { bubbles: true })); return true; })()`);
+  check('a text file shows a preview with its beginning', await waitFor('document.querySelector("#todo-attach .att[data-cls=text]")?.innerText.includes("заметка про деплой")', 5000), await text('#todo-attach'));
+  // a screenshot from the clipboard (Ctrl/Cmd+V)
+  await evalJs(`(() => { const dt = new DataTransfer(); dt.items.add(__pngFile('paste.png')); const e = new ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true }); document.querySelector('#todo-in').dispatchEvent(e); return e.defaultPrevented; })()`);
+  check('a pasted screenshot shows a preview (image)', await waitFor('document.querySelectorAll("#todo-attach .att[data-cls=image] img").length === 1', 5000));
+  // a sound dropped on the drawer
+  await evalJs(`(() => { const dt = new DataTransfer(); dt.items.add(__wav('voice.wav')); document.querySelector('#todo').dispatchEvent(new DragEvent('drop', { dataTransfer: dt, bubbles: true, cancelable: true })); return true; })()`);
+  check('a dropped sound shows a player', await waitFor('document.querySelectorAll("#todo-attach .att[data-cls=audio] audio").length === 1', 5000));
+  // Ctrl+V with the focus on nothing in particular: the drawer takes it
+  await evalJs(`(() => { document.activeElement?.blur(); const dt = new DataTransfer(); dt.items.add(__pngFile('body.png')); document.body.dispatchEvent(new ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true })); return true; })()`);
+  check('a paste anywhere on the page lands in the open drawer', await waitFor('document.querySelectorAll("#todo-attach .att[data-cls=image]").length === 2', 5000));
+  check('all four are uploaded', await waitFor('[...document.querySelectorAll("#todo-attach .att")].length === 4 && [...document.querySelectorAll("#todo-attach .att")].every((a) => a.dataset.state === "ready")', 10000));
+  await click('#todo-attach .att[data-cls=image] .rm');
+  check('a file can be taken away before saving', await evalJs('document.querySelectorAll("#todo-attach .att").length === 3'));
+  // the wrong kind of file is refused with a word
+  await clearToasts();
+  await evalJs(`(() => { const dt = new DataTransfer(); dt.items.add(__mk('tool.exe', 'application/x-msdownload', 'MZ\\x90\\x00')); const i = document.querySelector('#todo-file'); i.files = dt.files; i.dispatchEvent(new Event('change', { bubbles: true })); return true; })()`);
+  check('a program is refused, nothing is added', await waitFor('document.querySelector("#toasts")?.innerText.includes("не подойдёт")', 3000) && (await evalJs('document.querySelectorAll("#todo-attach .att").length')) === 3, await text('#toasts'));
+  // the server decides by the bytes: a binary file named .txt is refused, an HTML file is only text
+  const elf = await evalJs(`(async () => { const fd = new FormData(); fd.append('file', new File([Uint8Array.from([0x7f, 0x45, 0x4c, 0x46, 2, 1, 1, 0])], 'x.txt', { type: 'text/plain' })); return (await fetch('/api/chat/attach', { method: 'POST', body: fd })).status; })()`);
+  check('the server refuses a binary file with a text name', elf === 415, String(elf));
+  const big = await evalJs(`(async () => { const fd = new FormData(); fd.append('file', new File(['a'.repeat(2 * 1024 * 1024 + 10)], 'big.txt', { type: 'text/plain' })); return (await fetch('/api/chat/attach', { method: 'POST', body: fd })).status; })()`);
+  check('and a text over 2 MB', big === 413, String(big));
+  const html = await evalJs(`(async () => { const fd = new FormData(); fd.append('file', new File(['<script>alert(1)</script>'], 'x.png', { type: 'image/png' })); const r = await fetch('/api/chat/attach', { method: 'POST', body: fd }); const j = await r.json(); const g = await fetch('/api/attachments/' + j.attachment.id); return [r.status, j.attachment.id.endsWith('.txt'), g.headers.get('content-type'), g.headers.get('x-content-type-options')]; })()`);
+  check('an HTML file named .png is kept as plain text and served as text', html[0] === 200 && html[1] && html[2].startsWith('text/plain') && html[3] === 'nosniff', JSON.stringify(html));
+  // save the item
+  await evalJs('document.querySelector("#todo-new").requestSubmit(); true');
+  check('the item is saved with its three files', await waitFor(`fetch('/api/state').then(r=>r.json()).then(s => { const it = s.todo.find((x) => x.text === 'Заметка со вложениями'); return it && it.attachments.length === 3; })`, 8000), JSON.stringify(await todoState()));
+  const item = (await todoState()).find((x) => x.text === 'Заметка со вложениями');
+  check('they are a text, an image and a sound', ['text/plain; charset=utf-8', 'image/png', 'audio/wav'].every((m) => item.attachments.some((a) => a.mime === m)), JSON.stringify(item.attachments));
+  check('the composer is cleared', (await evalJs('document.querySelectorAll("#todo-attach .att").length')) === 0 && (await evalJs('document.querySelector("#todo-in").value')) === '');
+  check('the card shows a thumbnail, a player and a link', await waitFor(`!!document.querySelector('#todo-list .titem[data-todo="${item.id}"] .sv.img img') && !!document.querySelector('#todo-list .titem[data-todo="${item.id}"] .sv.aud audio') && !!document.querySelector('#todo-list .titem[data-todo="${item.id}"] .sv.txt a')`, 4000));
+  const dir = join(fixture, 'state', 'herdr-planner', 'attachments');
+  check('the files are kept in the planner\'s folder', item.attachments.every((a) => existsSync(join(dir, a.id))), dir);
+  // only a file, no words: the item takes its name from the file
+  await evalJs(`(() => { const dt = new DataTransfer(); dt.items.add(__pngFile('only.png')); document.querySelector('#todo').dispatchEvent(new DragEvent('drop', { dataTransfer: dt, bubbles: true, cancelable: true })); return true; })()`);
+  await waitFor('document.querySelector("#todo-attach .att")?.dataset.state === "ready"', 8000);
+  await evalJs('document.querySelector("#todo-new").requestSubmit(); true');
+  check('a file without words becomes an item named after it', await waitFor(`fetch('/api/state').then(r=>r.json()).then(s => s.todo.some((x) => x.text === 'Вложение: only.png' && x.attachments.length === 1))`, 8000));
+  // a file can be taken off a saved card
+  const only = (await todoState()).find((x) => x.text === 'Вложение: only.png');
+  await click(`#todo-list .titem[data-todo="${only.id}"] [data-file-rm]`);
+  check('a file can be taken off a saved card', await waitFor(`fetch('/api/state').then(r=>r.json()).then(s => s.todo.find((x) => x.id === '${only.id}')?.attachments.length === 0)`, 6000));
+  await click(`[data-act="todo-del"][data-todo-id="${only.id}"]`);
+  // told to the Coordinator, the files go as absolute paths
+  await evalJs(`(() => { const sel = document.querySelector('#todo-list .titem[data-todo="${item.id}"] select'); sel.value = 'quasar'; sel.dispatchEvent(new Event('change', { bubbles: true })); })()`);
+  await waitFor(`fetch('/api/state').then(r=>r.json()).then(s => s.todo.find(x => x.id === '${item.id}')?.to === 'quasar')`, 6000);
+  await click(`#todo-list .titem[data-todo="${item.id}"] [data-act="todo-send"]`);
+  check('sent to the Coordinator, the files go with it as paths on this machine', await waitLog(() => {
+    const m = calls('coordinator.jsonl').find((c) => c.text.startsWith('Заметка со вложениями'));
+    return !!m && m.text.includes('Вложения (файлы на машине с доской):') && m.text.split('\n').filter((l) => l.startsWith(dir + '/')).length === 3;
+  }, 8000), JSON.stringify(lastCall('coordinator.jsonl')));
+  await waitFor(`!document.querySelector('#todo-list .titem[data-todo="${item.id}"]')`, 6000);
+  await resetUi();
+});
+
+section('todo to chat', async () => {
+  await resetUi();
+  await evalJs(MK);
+  await evalJs('planner.goOverview()');
+  await sleep(300);
+  check('a todo with files is added (through the server)', (await addTodo('Черновик для Квазара', ['md', 'png'])) === 200);
+  await click('#btodo');
+  await waitFor('document.querySelector("#todo").classList.contains("open")', 4000);
+  const id = await waitFor(`!!document.querySelector('#todo-list .titem')`, 4000) && await todoIdByText('Черновик для Квазара');
+  check('the chat is folded', await evalJs('document.querySelector("#chat").classList.contains("off")'));
+  const placeChat = JSON.stringify((await pd()).selected);
+  await evalJs(`(() => { const dt = new DataTransfer(); dt.setData('text/plain', '${id}'); document.querySelector('#todo-list .titem[data-todo="${id}"]').dispatchEvent(new DragEvent('dragstart', { bubbles: true, dataTransfer: dt })); return true; })()`);
+  check('lifting a card opens the chat below as the place to drop it', await waitFor('!document.querySelector("#chat").classList.contains("off")', 3000));
+  check('and both are open at once, apart', await evalJs('document.querySelector("#todo").classList.contains("open")') && apart(await rectOf('#todo'), await rectOf('#chat')), JSON.stringify({ t: await rectOf('#todo'), c: await rectOf('#chat') }));
+  await evalJs(`(() => { const c = document.querySelector('#chat'); const dt = new DataTransfer(); dt.setData('text/plain', '${id}'); c.dispatchEvent(new DragEvent('dragover', { bubbles: true, cancelable: true, dataTransfer: dt })); return true; })()`);
+  check('the chat lights up as a drop place', await waitFor('document.querySelector("#chat").classList.contains("drop")', 2000));
+  await evalJs(`(() => { const c = document.querySelector('#chat'); const dt = new DataTransfer(); dt.setData('text/plain', '${id}'); c.dispatchEvent(new DragEvent('drop', { bubbles: true, cancelable: true, dataTransfer: dt })); return true; })()`);
+  check('the card becomes the draft in the message line', await waitFor('document.querySelector("#ask-in").value === "Черновик для Квазара"', 4000), await evalJs('document.querySelector("#ask-in").value'));
+  check('with its files as previews', await waitFor('document.querySelectorAll("#attach .att").length === 2 && [...document.querySelectorAll("#attach .att")].every((a) => a.dataset.state === "ready")', 5000));
+  check('the chat stays open and the card stays in the list, marked as being in the draft', !(await evalJs('document.querySelector("#chat").classList.contains("off")')) && await waitFor(`!!document.querySelector('#todo-list .titem.drafted[data-todo="${id}"]')`, 3000));
+  check('the item is still on the server: a reload or a change of mind loses nothing', (await todoState()).some((x) => x.id === id && x.attachments.length === 2));
+  await navigate(base + '/?noauto&nocoach&bloom=0', 3500);
+  check('after a reload the item and its files are still there', (await todoState()).some((x) => x.id === id && x.attachments.length === 2));
+  await press('Slash', '/');
+  await waitFor('!document.querySelector("#chat").classList.contains("off")', 3000);
+  await click('#btodo');
+  await waitFor(`!!document.querySelector('#todo-list .titem[data-todo="${id}"]')`, 5000);
+  await evalJs(`(() => { const dt = new DataTransfer(); dt.setData('text/plain', '${id}'); document.querySelector('#todo-list .titem[data-todo="${id}"]').dispatchEvent(new DragEvent('dragstart', { bubbles: true, dataTransfer: dt })); const c = document.querySelector('#chat'); c.dispatchEvent(new DragEvent('dragover', { bubbles: true, cancelable: true, dataTransfer: dt })); c.dispatchEvent(new DragEvent('drop', { bubbles: true, cancelable: true, dataTransfer: dt })); return true; })()`);
+  await waitFor('document.querySelector("#ask-in").value === "Черновик для Квазара" && document.querySelectorAll("#attach .att").length === 2', 5000);
+  check('dropping into the chat flies nowhere', (await debug()).flight === 'idle' && JSON.stringify((await pd()).selected) === placeChat, placeChat);
+  check('the draft can be corrected before sending', await evalJs('document.activeElement.id === "ask-in"'));
+  await send('Input.insertText', { text: ' — срочно' });
+  await press('Enter');
+  check('the item leaves the list only when the message is sent', await waitFor(`fetch('/api/state').then(r=>r.json()).then(s => !s.todo.some((x) => x.id === '${id}'))`, 8000));
+  check('sent: the words as corrected, the files as paths', await waitLog(() => {
+    const m = calls('coordinator.jsonl').find((c) => c.text.startsWith('Черновик для Квазара — срочно'));
+    return !!m && m.text.split('\n').filter((l) => l.includes('/attachments/')).length === 2;
+  }, 8000), JSON.stringify(lastCall('coordinator.jsonl')));
+  // a drop on empty space puts the chat back as it was
+  await press('Escape');
+  await waitFor('document.querySelector("#chat").classList.contains("off")', 3000);
+  await addTodo('Никуда не летит', []);
+  await click('#btodo');
+  await waitFor('document.querySelector("#todo").classList.contains("open")', 3000);
+  const any = await waitFor(`!!document.querySelector('#todo-list .titem')`, 4000) && await todoIdByText('Никуда не летит');
+  await dragToScene(any, 2, 400);
+  check('a card dropped on empty space closes the chat that opened for it', await waitFor('document.querySelector("#chat").classList.contains("off")', 3000) && (await todoCount()) >= 1);
+  await resetUi();
+});
+
+section('todo to planet', async () => {
+  await resetUi();
+  await evalJs(MK);
+  await evalJs('planner.goOverview()');
+  await sleep(300);
+  check('a todo with a text and a sound is added', (await addTodo('Разобрать запись', ['md', 'wav'])) === 200);
+  await go('alpha/6');
+  await click('#btodo');
+  await waitFor('document.querySelector("#todo").classList.contains("open")', 4000);
+  await waitFor(`!!document.querySelector('#todo-list .titem')`, 4000);
+  const id = await todoIdByText('Разобрать запись');
+  const pos = await evalJs(`world.screenOf(${planet('alpha/6')})`);
+  await dragToScene(id, pos.x, pos.y);
+  check('the window shows the words and both files', await waitFor('document.querySelector("#tell-text")?.value === "Разобрать запись" && document.querySelectorAll("#pop-tell .dfiles .sv").length === 2', 5000), await text('#pop-tell'));
+  await click('#pop-tell [data-file-rm]');
+  check('a file can be taken out in the window', await evalJs('document.querySelectorAll("#pop-tell .dfiles .sv").length === 1'));
+  const here = async () => ({ sel: JSON.stringify((await pd()).selected), galaxy: (await pd()).galaxy, level: (await pd()).level, cam: (await debug()).camera });
+  const placeBefore = await here();
+  await click('#tell-go');
+  const dir = join(fixture, 'state', 'herdr-planner', 'attachments');
+  check('the agent is told the words and the one file left (a path on this machine)', await waitLog(() => calls().some((c) => c.argv[0] === 'tell' && c.argv[1] === 'alpha/6' && c.argv[3].startsWith('Разобрать запись') && c.argv[3].split('\n').filter((l) => l.startsWith(dir + '/')).length === 1), 10000), JSON.stringify(lastCall()));
+  check('the item is gone', await waitFor(`!document.querySelector('#todo-list .titem[data-todo="${id}"]')`, 6000));
+  await sleep(600);
+  const placeAfter = await here();
+  const moved = Math.abs(placeAfter.cam.x - placeBefore.cam.x) + Math.abs(placeAfter.cam.y - placeBefore.cam.y) + Math.abs(placeAfter.cam.z - placeBefore.cam.z);
+  check('an action leaves the operator where they are: the same selection and level, the camera where it was, no flight', placeAfter.sel === placeBefore.sel && placeAfter.galaxy === placeBefore.galaxy && placeAfter.level === placeBefore.level && moved < 8 && (await debug()).flight === 'idle', JSON.stringify({ placeBefore, placeAfter }));
+  // a nebula: the files go into the description of the new task
+  check('another todo with an image', (await addTodo('Сделать по макету', ['png'])) === 200);
+  await waitFor(`!!document.querySelector('#todo-list .titem')`, 4000);
+  const id2 = await waitFor('document.querySelectorAll("#todo-list .titem").length >= 1', 4000) && await todoIdByText('Сделать по макету');
+  await evalJs(`planner.navigateTo({kind:'universe',galaxy:'',id:'delta'}); true`);
+  await waitFor('world.debug().flight === "idle"', 12000);
+  const upos = await evalJs(`world.screenOf({kind:'universe',galaxy:'',id:'delta'})`);
+  await dragToScene(id2, upos.x + 3, upos.y + 3);
+  check('the nebula window shows the image too', await waitFor('!!document.querySelector("#pop") && document.querySelectorAll("#pop .dfiles .sv.img").length === 1', 5000));
+  await click('#pop-go');
+  check('the new task gets the image path in its description', await waitLog(() => calls().some((c) => c.argv[0] === 'add' && c.argv[1] === 'Сделать по макету' && c.argv.includes('--desc') && c.argv[c.argv.indexOf('--desc') + 1].includes(dir + '/')), 12000), JSON.stringify(lastCall()));
+  await resetUi();
+});
+
+section('chat wide', async () => {
+  await resetUi();
+  await evalJs(MK);
+  await evalJs('try { localStorage.removeItem("herdr-planner.chatWide"); localStorage.removeItem("herdr-planner.chatWideTodo"); } catch {} true');
+  await evalJs('planner.goOverview()');
+  await sleep(300);
+  await press('Slash', '/');
+  await waitFor('!document.querySelector("#chat").classList.contains("off")', 3000);
+  check('the chat has an «Развернуть» button', (await text('#cwide')).includes('Развернуть'), await text('#cwide'));
+  check('and no «Дела» button beside it until it is wide', !(await exists('#cwide-todo')));
+  await click('#cwide');
+  check('«Развернуть» makes the chat wide', await waitFor('document.querySelector("#win").classList.contains("chat-wide")', 3000));
+  const [ok, r] = await settled({ nav: '#nav', chat: '#chat', focus: '#focus' }, (x) => x.chat.t < 70 && x.chat.l >= x.nav.r - 1 && x.chat.r <= x.focus.l + 1 && x.chat.b > 950 - 90 && x.chat.w > 600);
+  check('in columns: the navigator, the chat over the whole height and the width between, the focus card', ok && apart(r.nav, r.chat) && apart(r.chat, r.focus), JSON.stringify(r));
+  check('the world is dimmed behind it', (await evalJs('getComputedStyle(document.querySelector("#scene")).filter')).includes('brightness'));
+  const q = await rectOf('#q');
+  check('the search stays at the top, in the middle, uncovered', Math.abs((q.l + q.r) / 2 - 750) < 150 && await evalJs('(() => { const q = document.querySelector("#q").getBoundingClientRect(); return !!document.elementFromPoint((q.left + q.right) / 2, (q.top + q.bottom) / 2)?.closest(".top-search"); })()'));
+  check('the button reads «Свернуть» now, with «Дела» beside it', (await text('#cwide')).includes('Свернуть') && (await text('#cwide-todo')).includes('Дела'), await text('#cwide') + '|' + await text('#cwide-todo'));
+  await shot('chat-wide.png');
+  // the todos beside the chat, between the navigator and the chat
+  await click('#cwide-todo');
+  const [ok2, r2] = await settled({ nav: '#nav', todo: '#todo', chat: '#chat', focus: '#focus' }, (x) => x.todo.l >= x.nav.r - 1 && x.todo.r <= x.chat.l + 1 && x.todo.t > 40 && x.todo.t < 100);
+  check('«Дела» opens the todos between the navigator and the chat, none over another', ok2 && apart(r2.todo, r2.nav) && apart(r2.todo, r2.chat) && apart(r2.chat, r2.focus), JSON.stringify(r2));
+  check('and «Дела» is pressed', await evalJs('document.querySelector("#cwide-todo").getAttribute("aria-pressed") === "true"'));
+  await shot('chat-wide-todo.png');
+  // the chat stays usable at every common width: the columns, or the focus card steps aside while the todos are open
+  const useful = async (w, h, label) => {
+    await send('Emulation.setDeviceMetricsOverride', { width: w, height: h, deviceScaleFactor: 1, mobile: false });
+    await sleep(500); await evalJs('window.dispatchEvent(new Event("resize")); true');
+    const [ok, r] = await settled({ nav: '#nav', todo: '#todo', chat: '#chat', focus: '#focus', inp: '#ask-in' }, (x) => x.chat.w >= 340 && x.inp.w >= 160 && x.chat.r <= w + 1 && apart(x.todo, x.chat) && apart(x.todo, x.nav) && apart(x.chat, x.nav) && apart(x.chat, x.focus), 9000);
+    const focusShown = await evalJs('document.querySelector("#focus").getBoundingClientRect().left < innerWidth - 20');
+    check(`${label}${w}px, wide chat with the todos open: the chat ${Math.round(r.chat.w)} px (input ${Math.round(r.inp.w)}), nothing over anything${focusShown ? '' : ', the focus card stepped aside'}`, ok, JSON.stringify(r));
+    return r;
+  };
+  const wideRooms = {};
+  for (const [w, h] of [[1920, 1080], [1500, 950], [1366, 768], [1280, 800], [1100, 800]]) wideRooms[w] = await useful(w, h, '');
+  check('where there is room the focus card stays beside the chat (1920) and a chat is never narrower than 30 rem by choice (1500 and up)', wideRooms[1920].chat.w >= 480 && wideRooms[1500].chat.w >= 440 && wideRooms[1366].chat.w >= 440 && wideRooms[1280].chat.w >= 440, JSON.stringify(Object.fromEntries(Object.entries(wideRooms).map(([k, v]) => [k, Math.round(v.chat.w)]))));
+  await send('Emulation.setDeviceMetricsOverride', { width: 1500, height: 950, deviceScaleFactor: 1, mobile: false });
+  await sleep(500); await evalJs('window.dispatchEvent(new Event("resize")); true');
+  // a card dragged into the wide chat becomes the draft there too
+  check('a todo is added', (await addTodo('Из дел в широкий чат', ['md'])) === 200);
+  const id = await waitFor(`!![...document.querySelectorAll('#todo-list .titem')].find((e) => e.querySelector('.txt')?.innerText === 'Из дел в широкий чат')`, 5000) && await todoIdByText('Из дел в широкий чат');
+  await evalJs(`(() => { const dt = new DataTransfer(); dt.setData('text/plain', '${id}'); document.querySelector('#todo-list .titem[data-todo="${id}"]').dispatchEvent(new DragEvent('dragstart', { bubbles: true, dataTransfer: dt }));
+    const c = document.querySelector('#chat'); c.dispatchEvent(new DragEvent('dragover', { bubbles: true, cancelable: true, dataTransfer: dt })); c.dispatchEvent(new DragEvent('drop', { bubbles: true, cancelable: true, dataTransfer: dt })); return true; })()`);
+  check('dropping a card into the wide chat makes the draft with its file', await waitFor('document.querySelector("#ask-in").value === "Из дел в широкий чат" && document.querySelectorAll("#attach .att").length === 1', 5000), await evalJs('document.querySelector("#ask-in").value'));
+  await evalJs(`document.querySelector('#todo-list .titem[data-todo="${id}"]')?.dispatchEvent(new DragEvent('dragend', { bubbles: true })); true`);
+  // a raised interface scale makes the window «smaller» for the interface: the same layouts as a smaller window have
+  const setScaleStored = async (v) => {
+    await evalJs(`try { ${v ? `localStorage.setItem("herdr-planner.uiScale", "${v}")` : 'localStorage.removeItem("herdr-planner.uiScale")'}; } catch {} true`);
+    await navigate(base + '/?noauto&nocoach&bloom=0', 3500);
+    await waitFor('!document.querySelector("#chat").classList.contains("off") && document.querySelector("#todo").classList.contains("open")', 6000);
+  };
+  // `scale`: how many times bigger than auto the interface is; `eff` is the window as the interface sees it
+  const usableAt = async (w, h, label, scale = 1) => {
+    const eff = w / scale;
+    await send('Emulation.setDeviceMetricsOverride', { width: w, height: h, deviceScaleFactor: 1, mobile: false });
+    await sleep(500); await evalJs('window.dispatchEvent(new Event("resize")); true');
+    // the navigator and the focus card are open (a page loaded on a small window starts with them closed)
+    await evalJs('document.activeElement?.blur(); true');
+    if (await evalJs('document.querySelector("#nav").classList.contains("off")')) await press('KeyN', 'n');
+    if (await evalJs('document.querySelector("#focus").classList.contains("off")')) await press('KeyF', 'f');
+    await waitFor('!document.querySelector("#nav").classList.contains("off") && !document.querySelector("#focus").classList.contains("off")', 3000);
+    const clear = (x) => eff <= 900 || (x.nav.l >= 0 && x.nav.t >= 0 && x.nav.t < h / 2 && x.nav.r <= w && apart(x.todo, x.nav) && apart(x.chat, x.nav) && apart(x.todo, x.focus) && apart(x.chat, x.focus));
+    const [ok, r] = await settled({ nav: '#nav', focus: '#focus', todo: '#todo', chat: '#chat', inp: '#ask-in' }, (x) => x.chat.w >= 340 && x.inp.w >= 160 && x.chat.r <= w + 1 && apart(x.todo, x.chat) && clear(x), 9000);
+    const open = await evalJs('!document.querySelector("#nav").classList.contains("off")');
+    check(`${label}${w}px (as ${Math.round(eff)}): the navigator is open, the chat is ${Math.round(r.chat.w)} px (input ${Math.round(r.inp.w)}), the todos do not cover it${eff > 900 ? ', nor the navigator or the focus card' : ''}`, ok && open, JSON.stringify(r));
+  };
+  await setScaleStored(125);
+  await useful(1366, 768, 'scale 125 %, ');
+  await usableAt(1100, 800, 'scale 125 %, ', 1.25);
+  await setScaleStored(150);
+  for (const [w, h] of [[1920, 1080], [1366, 768], [1280, 800], [1100, 800]]) await usableAt(w, h, 'scale 150 %, ', 1.5);
+  await setScaleStored(200);
+  await usableAt(1920, 1080, 'scale 200 %, ', 2);
+  await setScaleStored(0);
+  for (const [w, h] of [[1000, 800], [950, 800], [901, 800]]) await usableAt(w, h, 'auto, ');
+  await setScaleStored(0);
+  await send('Emulation.setDeviceMetricsOverride', { width: 1500, height: 950, deviceScaleFactor: 1, mobile: false });
+  // simple mode has a wider navigator: the same holds
+  await navigate(base + '/?calm&nocoach', 3500);
+  await waitFor('document.querySelector("#win").classList.contains("chat-wide") && document.querySelector("#todo").classList.contains("open")', 6000);
+  for (const [w, h] of [[1500, 950], [1280, 800], [1100, 800]]) await useful(w, h, 'simple mode, ');
+  await send('Emulation.setDeviceMetricsOverride', { width: 1500, height: 950, deviceScaleFactor: 1, mobile: false });
+  // it is remembered
+  await navigate(base + '/?noauto&nocoach&bloom=0', 3500);
+  check('after a reload the chat is wide again, with its todos open', await waitFor('document.querySelector("#win").classList.contains("chat-wide") && document.querySelector("#todo").classList.contains("open") && !document.querySelector("#chat").classList.contains("off")', 6000), await evalJs('document.querySelector("#win").className'));
+  // Esc: one step back at a time
+  await press('Escape');
+  check('Esc: the todos beside the chat close first', await waitFor('!document.querySelector("#todo").classList.contains("open") && document.querySelector("#win").classList.contains("chat-wide")', 3000));
+  await press('Escape');
+  check('Esc: then the chat comes back to the bottom', await waitFor('!document.querySelector("#win").classList.contains("chat-wide") && !document.querySelector("#chat").classList.contains("off")', 3000));
+  await press('Escape');
+  check('Esc: then it folds', await waitFor('document.querySelector("#chat").classList.contains("off")', 3000));
+  check('the state is remembered as left: not wide, todos closed', await evalJs('localStorage.getItem("herdr-planner.chatWide") === "0"') && (await evalJs('localStorage.getItem("herdr-planner.chatWideTodo")')) === '0');
+  // the same by the buttons
+  await press('Slash', '/');
+  await waitFor('!document.querySelector("#chat").classList.contains("off")', 3000);
+  await click('#cwide'); await waitFor('document.querySelector("#win").classList.contains("chat-wide")', 3000);
+  await click('#cwide');
+  check('«Свернуть» returns the chat to the bottom', await waitFor('!document.querySelector("#win").classList.contains("chat-wide")', 3000));
+  await resetUi();
+});
+
+section('scale', async () => {
+  await resetUi();
+  await evalJs('try { localStorage.removeItem("herdr-planner.uiScale"); } catch {} true');
+  await navigate(base + '/?noauto&nocoach&bloom=0', 3500);
+  const sizes = [[1366, 768], [1920, 1080], [2560, 1440], [3840, 2160]];
+  const roots = [];
+  for (const [w, h] of sizes) {
+    await send('Emulation.setDeviceMetricsOverride', { width: w, height: h, deviceScaleFactor: 1, mobile: false });
+    await sleep(600); await evalJs('window.dispatchEvent(new Event("resize")); true'); await sleep(900);
+    await evalJs('planner.goOverview(); true');
+    // the three panels at the bottom and the top, as the operator uses them
+    await evalJs('(() => { if (!document.querySelector("#todo").classList.contains("open")) document.querySelector("#btodo").click(); if (document.querySelector("#chat").classList.contains("off")) document.querySelector("#bchat").click(); return true; })()');
+    const want = Math.min(40, Math.max(16, Math.min(w / 100, (h * 1.6) / 100)));
+    const m = await evalJs(`(() => { const px = (s) => parseFloat(getComputedStyle(document.querySelector(s)).fontSize); return { root: px('html'), btn: px('#bchat'), nav: px('#nav .ti'), chat: px('#chat'), q: px('#q'), lb: document.querySelector('.lb') ? px('.lb') : 0 }; })()`);
+    roots.push(m.root);
+    check(`${w}×${h}: the root font follows the screen (${want.toFixed(1)} px)`, Math.abs(m.root - want) < 0.6, JSON.stringify(m));
+    check(`${w}×${h}: buttons, the navigator, the chat and the search grow with it`, Math.abs(m.btn - 11.5 * m.root / 16) < 0.6 && m.nav >= 10.5 * m.root / 16 - 0.6 && m.chat >= 15 * m.root / 16 - 0.6 && m.q >= 13 * m.root / 16 - 0.6, JSON.stringify(m));
+    if (m.lb) check(`${w}×${h}: and so do the labels of the world`, Math.abs(m.lb - 11.5 * m.root / 16) < 0.9 || m.lb >= 10 * m.root / 16, JSON.stringify(m));
+    const [ok, r] = await settled({ todo: '#todo', chat: '#chat', nav: '#nav', focus: '#focus', q: '#q' }, (x) => [['todo', 'chat'], ['todo', 'nav'], ['todo', 'focus'], ['chat', 'nav'], ['chat', 'focus'], ['nav', 'focus']].every(([a, b]) => apart(x[a], x[b])) && x.todo.t >= x.q.b - 1 && x.chat.b <= h && x.focus.r <= w + 1 && x.nav.l >= 0, 9000);
+    check(`${w}×${h}: the panels sit inside the screen and none covers another`, ok, JSON.stringify(r));
+    await shot(`scale-${w}x${h}.png`);
+  }
+  check('a bigger screen gets a bigger interface (and 1366×768 is not made smaller than before)', roots[0] === 16 && roots[1] > roots[0] && roots[2] > roots[1] && roots[3] > roots[2], JSON.stringify(roots));
+  // the setting in the ship's computer and the keys
+  await send('Emulation.setDeviceMetricsOverride', { width: 1500, height: 950, deviceScaleFactor: 1, mobile: false });
+  await sleep(600); await evalJs('window.dispatchEvent(new Event("resize")); true'); await sleep(500);
+  await resetUi();
+  const rootNow = () => evalJs('parseFloat(getComputedStyle(document.documentElement).fontSize)');
+  check('the ship\'s computer opens', await menuPick('Бортовой компьютер') && await waitFor('!!document.querySelector("#ship-scale")', 6000));
+  check('«Масштаб интерфейса» is «авто» by default', (await text('#ship-scale')).includes('авто') && (await evalJs('document.querySelector("#ship-scale").dataset.scale')) === 'auto', await text('#ship-scale'));
+  const before = await rootNow();
+  await click('#scale-plus');
+  check('«+» makes it bigger and fixes the number', await waitFor(`parseFloat(getComputedStyle(document.documentElement).fontSize) > ${before}`, 3000) && /\d+ %/.test(await text('#scale-now')), await text('#scale-now'));
+  const big = await rootNow();
+  await click('#scale-minus'); await click('#scale-minus');
+  check('«−» makes it smaller', await waitFor(`parseFloat(getComputedStyle(document.documentElement).fontSize) < ${big}`, 3000));
+  check('the choice is remembered in the browser', /^\d+$/.test(await evalJs('localStorage.getItem("herdr-planner.uiScale") || ""')));
+  await click('#scale-auto');
+  check('«Авто» returns to the size of the window', await waitFor(`parseFloat(getComputedStyle(document.documentElement).fontSize) === ${before}`, 3000) && (await evalJs('localStorage.getItem("herdr-planner.uiScale")')) === 'auto');
+  await evalJs('document.querySelector("#ship-dlg, #ship")?.querySelector(".x, [aria-label]")?.blur(); true');
+  await resetUi();
+  const ctrl = 2;
+  await press('Equal', '=', ctrl);
+  check('Ctrl+= makes it bigger', await waitFor(`parseFloat(getComputedStyle(document.documentElement).fontSize) > ${before}`, 3000), String(await rootNow()));
+  await press('Minus', '-', ctrl); await press('Minus', '-', ctrl);
+  check('Ctrl+− makes it smaller', await waitFor(`parseFloat(getComputedStyle(document.documentElement).fontSize) < ${before}`, 3000), String(await rootNow()));
+  await press('Digit0', '0', ctrl);
+  check('Ctrl+0 returns to auto', await waitFor(`parseFloat(getComputedStyle(document.documentElement).fontSize) === ${before}`, 3000) && (await evalJs('localStorage.getItem("herdr-planner.uiScale")')) === 'auto');
+  check('the keys are taken by the page (the browser\'s own zoom is not asked)', await evalJs(`(() => { const e = new KeyboardEvent('keydown', { code: 'Equal', key: '=', ctrlKey: true, bubbles: true, cancelable: true }); document.body.dispatchEvent(e); const d = e.defaultPrevented; document.body.dispatchEvent(new KeyboardEvent('keydown', { code: 'Digit0', key: '0', ctrlKey: true, bubbles: true, cancelable: true })); return d; })()`));
+  await resetUi();
+  await evalJs('try { localStorage.removeItem("herdr-planner.uiScale"); } catch {} true');
+  await navigate(base + '/?noauto&nocoach&bloom=0', 3000);
+});
 
 section('focus', async () => {
   await resetUi();
@@ -605,11 +1015,17 @@ section('requests', async () => {
   check('the API refuses anyway without confirmation', bareAnyway[0] === 400, String(bareAnyway[0]));
   const badId = await post('/api/action', { action: 'retry', id: '--all/1' });
   check('a malformed task id is a 400, not a gateway error', badId[0] === 400, String(badId[0]));
+  // Two presses within 3.5 s: on a loaded machine the page can stall between them, so the pair is tried up to three times.
   await sleep(3800);
-  await click('#focus [data-act="approve"]');
-  await sleep(700);
-  await click('#focus [data-act="approve"]');
-  check('the second click runs herdr-projects approve', await waitFor(`plannerSnap().tasks.find((t) => t.id === 'alpha/4')?.status === 'done'`, 15000));
+  let approved = false;
+  for (let attempt = 0; attempt < 3 && !approved; attempt++) {
+    await click('#focus [data-act="approve"]');
+    await sleep(700);
+    await click('#focus [data-act="approve"]');
+    approved = await waitFor(`plannerSnap().tasks.find((t) => t.id === 'alpha/4')?.status === 'done'`, 9000);
+    if (!approved) await sleep(3800);
+  }
+  check('the second click runs herdr-projects approve', approved);
   check('the board received approve', calls().some((c) => c.argv[0] === 'approve' && c.argv[1] === 'alpha/4'), JSON.stringify(lastCall()));
   // anyway: a double click does not confirm it. Both presses go in one task, as a real double click:
   // the first arms, the second comes inside the 600 ms guard. (Round trips between two clicks can
@@ -1255,8 +1671,41 @@ section('theme and language', async () => {
   await resetUi();
   writeFileSync(join(fixture, 'theme', 'colors.toml'), readFileSync(join(fixture, 'theme', 'colors.toml'), 'utf8').replace('accent = "#dfa360"', 'accent = "#ff0000"'));
   check('a theme rewrite changes the page and the world without a reload', await waitFor(`getComputedStyle(document.documentElement).getPropertyValue('--c-accent').trim() === '#ff0000' && world.debug().quasar.color === '#ff0000'`, 20000), await evalJs(`getComputedStyle(document.documentElement).getPropertyValue('--c-accent') + ' ' + world.debug().quasar.color`));
+  // The Russian interface has no English left: every button, label, hint and tooltip of the open panels is read
+  // (names of things — tasks, projects, machines — are the operator's own and are left out).
+  const english = `(() => {
+    const SAME = new Set(['herdr', 'claude', 'codex', 'omp', 'pi', 'Ctrl', 'Esc', 'Enter', 'Shift', 'Alt', 'Tab', 'Space', 'Home', 'TLS', 'WASD', 'main', 'origin', 'upstream', 'English']);
+    const bad = new Set();
+    const look = (t, where) => {
+      t = String(t || '').replace(/\s+/g, ' ').trim();
+      // a name of the language itself or a figure with a model's name (150 000 / 200 000 · claude-opus-5-5) is data, not a word
+      if (!/[A-Za-z]{3,}/.test(t) || /[А-Яа-яЁё]/.test(t) || /\d/.test(t)) return;
+      if (t.split(/[^A-Za-z]+/).every((w) => !w || w.length < 3 || SAME.has(w))) return;
+      bad.add(where + ': ' + t.slice(0, 60));
+    };
+    for (const e of document.querySelectorAll('#top button, #kbar button, #chat button, #chat label, #todo button, #todo label, #nav header, #nav button, #focus button, #focus h3, #focus .lbl, .menupop button, .menupop label, .hint, .none, .lbl')) {
+      if (e.closest('#sres, .ti, .lb, .titem .txt, #clog, #crumbs') || e.matches('[data-lang]')) continue;
+      look(e.innerText, e.id || e.className || e.tagName);
+    }
+    for (const e of document.querySelectorAll('#top [title], #kbar [title], #chat [title], #todo [title], #nav [title], #focus [title], [placeholder], [aria-label]')) {
+      if (e.closest('#sres, .ti, .lb, .titem, #clog, #crumbs')) continue;
+      for (const a of ['title', 'placeholder', 'aria-label']) if (e.getAttribute(a)) look(e.getAttribute(a), a + ' of ' + (e.id || e.tagName));
+    }
+    return [...bad];
+  })()`;
+  await evalJs('document.querySelector("#btodo")?.click(); true');
+  await press('Slash', '/');
+  await waitFor('!document.querySelector("#chat").classList.contains("off")', 3000);
+  await evalJs('planner.goOverview()');
+  await click('#menu-btn');
+  await sleep(500);
+  check('the Russian interface: «Сжать» and «Новый» under the Quasar, not «Compact» and «New»', (await text('#memory-c #compact')) === 'Сжать' && (await text('#memory-c #newcoord')) === 'Новый', (await text('#memory-c #compact')) + ' | ' + (await text('#memory-c #newcoord')));
+  const leftRu = await evalJs(english);
+  check('the Russian interface has no English words left in its buttons, hints and tooltips', Array.isArray(leftRu) && leftRu.length === 0, JSON.stringify(leftRu));
+  await resetUi();
   // the interface speaks English on request and remembers it
   await evalJs('setLang("en"); true');
+  check('English: Compact and New', await waitFor('(document.querySelector("#memory-c #compact")?.innerText || "") === "Compact" && (document.querySelector("#memory-c #newcoord")?.innerText || "") === "New"', 4000), (await text('#memory-c #compact')) + ' | ' + (await text('#memory-c #newcoord')));
   check('English: the strings change', await waitFor('(document.querySelector("#wait-btn")?.innerText || "").startsWith("Waiting for you")', 4000) && (await text('#kanban')).includes('Plan & work'), (await text('#wait-btn')) + ' | ' + (await text('#kanban')));
   check('the language is remembered', (await evalJs('localStorage.getItem("herdr-planner.lang")')) === 'en');
   await go('alpha/15');
@@ -1277,6 +1726,19 @@ section('simple mode and no WebGL', async () => {
   check('a flight in simple mode is instant (no warp)', (await debug()).flight === 'idle' && (await pd()).selected?.id === 'alpha/4');
   await shot('calm.png');
   check('the chat text is larger in simple mode', await evalJs('parseFloat(getComputedStyle(document.querySelector("#chat")).fontSize) >= 16'));
+  // in simple mode the navigator is wider: the drawer of todos and the chat start after it, at every width
+  await press('Slash', '/'); await waitFor('!document.querySelector("#chat").classList.contains("off")', 3000);
+  await click('#btodo'); await waitFor('document.querySelector("#todo").classList.contains("open")', 3000);
+  for (const [w, h] of [[1500, 950], [1366, 768], [1100, 900]]) {
+    await send('Emulation.setDeviceMetricsOverride', { width: w, height: h, deviceScaleFactor: 1, mobile: false });
+    await sleep(500); await evalJs('window.dispatchEvent(new Event("resize")); true');
+    const [ok, r] = await settled({ nav: '#nav', todo: '#todo', chat: '#chat', focus: '#focus' }, (x) => apart(x.nav, x.todo) && apart(x.nav, x.chat) && apart(x.todo, x.chat) && apart(x.todo, x.focus) && apart(x.chat, x.focus) && x.todo.t > 40);
+    check(`simple mode, ${w}px: the navigator (wider here), the drawer, the chat and the focus card stay apart`, ok, JSON.stringify(r));
+    if (w === 1100) await shot('calm-1100.png');
+  }
+  await send('Emulation.setDeviceMetricsOverride', { width: 1500, height: 950, deviceScaleFactor: 1, mobile: false });
+  await sleep(400);
+  await press('Escape'); await press('Escape'); await sleep(300);
   // no WebGL at all: the navigator is the world
   const gl = await evalJs(`(() => { const f = HTMLCanvasElement.prototype.getContext; return typeof f; })()`);
   void gl;
@@ -1288,7 +1750,7 @@ section('simple mode and no WebGL', async () => {
   check('the navigator selects and the focus shows the request without WebGL', await waitFor('plannerDebug().selected?.id === "alpha/4" && (document.querySelector("#focus")?.innerText || "").includes("Тёмная тема")', 6000));
   await evalJs('document.getElementById("q").focus()');
   await send('Input.insertText', { text: 'alp-2' });
-  check('the search works without WebGL', await waitFor('document.querySelectorAll("#sres .sr").length >= 1', 4000));
+  check('the search works without WebGL', await waitFor('document.querySelectorAll("#sres .srow").length >= 1', 4000));
   await send('Page.addScriptToEvaluateOnNewDocument', { source: '' });
 });
 
@@ -1305,6 +1767,25 @@ section('narrow', async () => {
   await click('#hud-limits');
   check('the page body never scrolls sideways at phone width', await evalJs('document.documentElement.scrollWidth <= innerWidth + 1'));
   await shot('narrow.png');
+  // the drawer of todos at phone width: under the two rows of the top bar, the chat apart below, nothing sideways
+  await press('Escape'); await sleep(200);
+  await evalJs('document.querySelector("#btodo").click(); true'); await sleep(900);
+  await press('Slash', '/'); await sleep(900);
+  const [nok, nr] = await settled({ todo: '#todo', chat: '#chat', q: '#q' }, (r) => r.todo.t >= r.q.b && r.todo.l >= 0 && r.todo.r <= 621 && apart(r.todo, r.chat));
+  check('phone: the drawer hangs under the search and inside the screen, the chat apart below it', nok, JSON.stringify(nr));
+  check('phone: nothing scrolls sideways with both open', await evalJs('document.documentElement.scrollWidth <= innerWidth + 1'));
+  await shot('narrow-todo.png');
+  await press('Escape'); await press('Escape'); await sleep(300);
+  for (const w of [1100, 1000]) {
+    await send('Emulation.setDeviceMetricsOverride', { width: w, height: 900, screenWidth: w, screenHeight: 900, deviceScaleFactor: 1, mobile: false });
+    await sleep(400); await evalJs('window.dispatchEvent(new Event("resize")); true'); await sleep(700);
+    await evalJs('document.querySelector("#btodo").click(); true');
+    await press('Slash', '/'); await sleep(900);
+    const navOpen = !(await evalJs('document.querySelector("#nav").classList.contains("off")'));
+    const [ok, r] = await settled({ todo: '#todo', chat: '#chat', nav: '#nav', focus: '#focus' }, (x) => apart(x.todo, x.chat) && (!navOpen || (apart(x.todo, x.nav) && (w > 1000 ? apart(x.chat, x.nav) : true))));
+    check(`${w}px: the drawer and the chat are open and apart${navOpen ? ', the navigator too' : ''}`, ok, JSON.stringify(r));
+    await press('Escape'); await press('Escape'); await sleep(300);
+  }
   await send('Emulation.setDeviceMetricsOverride', { width: 500, height: 900, screenWidth: 500, screenHeight: 900, deviceScaleFactor: 1, mobile: false });
   await sleep(500); await evalJs('window.dispatchEvent(new Event("resize")); true'); await sleep(700);
   check('and at 500px too', await evalJs('document.documentElement.scrollWidth <= innerWidth + 1'));

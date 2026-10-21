@@ -11,6 +11,8 @@ import type { Entity } from './types';
 import { toast } from './toast';
 import { t } from './i18n';
 import { addDialogs, closeDialogs, dialogOpen } from './dialogs';
+import { resetScale, stepScale } from './scale';
+import { chatBack } from './chat-wide';
 
 export function setMode(m: 'auto' | 'manual', lock = false): void {
   const w = getWorld();
@@ -73,14 +75,16 @@ function nextUniverse(delta: number): void {
 }
 
 /** Esc: the topmost overlay, then panels, then one step back along the way. */
-export async function escape(): Promise<void> {
+export async function escape(fromTodo = false): Promise<void> {
   if (searchState.value.open) { searchState.value = { ...searchState.value, open: false }; (document.getElementById('q') as HTMLInputElement | null)?.blur(); return; }
   if (dialogOpen()) { closeDialogs(); return; }
   for (const k of ['help', 'limits', 'settings', 'herdr', 'quiet'] as const) {
     if (panels[k].value) { panels[k].value = false; return; }
   }
   if (armed.value) { armed.value = null; return; }
-  if (panels.chat.value) { panels.chat.value = false; (document.activeElement as HTMLElement | null)?.blur(); return; }
+  // Esc typed in the drawer of todos folds the drawer; elsewhere the chat (the latest opened thing at the bottom) goes first.
+  if (fromTodo && panels.todo.value) { panels.todo.value = false; return; }
+  if (panels.chat.value) { chatBack(); if (!panels.chat.value) (document.activeElement as HTMLElement | null)?.blur(); return; }
   if (linkMode.value) { setLinkMode(false); return; }
   if (panels.todo.value) { panels.todo.value = false; return; }
   if (panels.log.value) { panels.log.value = false; return; }
@@ -109,11 +113,18 @@ export function installKeys(): void {
     const code = e.code;
     // Search: from anywhere, the same key in every layout.
     if ((e.ctrlKey || e.metaKey) && code === 'KeyK') { e.preventDefault(); focusSearch(); return; }
+    // The size of the interface (the browser's own page zoom is left alone: its menu and the wheel still work).
+    if ((e.ctrlKey || e.metaKey) && !e.altKey) {
+      if (code === 'Equal' || code === 'NumpadAdd') { e.preventDefault(); stepScale(1); return; }
+      if (code === 'Minus' || code === 'NumpadSubtract') { e.preventDefault(); stepScale(-1); return; }
+      if (code === 'Digit0' || code === 'Numpad0') { e.preventDefault(); resetScale(); return; }
+    }
     if (e.key === 'Escape') {
+      const inTodo = !!(target as HTMLElement | null)?.closest?.('#todo');
       if (typing(target) && (target as HTMLElement).id !== 'q' && (target as HTMLElement).id !== 'ask-in') (target as HTMLElement).blur();
       if (locked.value) return;
       e.preventDefault();
-      void escape();
+      void escape(inTodo);
       return;
     }
     if (typing(target) || e.ctrlKey || e.metaKey || e.altKey) return;

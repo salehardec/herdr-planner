@@ -4,6 +4,7 @@
 import { signal } from '@preact/signals';
 import type { JSX } from 'preact';
 import { useEffect, useState } from 'preact/hooks';
+import { scalePercent, scaleTick, setScale, stepScale, uiScale } from '../scale';
 import { armed, invertY, notifyOn, NOTIFY_KEY, INVERT_KEY, persist, QUERY, sensitivity, SENS_KEY, simple, SIMPLE_KEY, snap, galaxyId } from '../store';
 import { addDialogs } from '../dialogs';
 import { confirmStep } from '../actions';
@@ -110,6 +111,16 @@ function Device(): JSX.Element {
           {invertY.value ? t('st.on') : t('st.off')}
         </button>
       </div>
+      <div class="sh-row">
+        <span class="kl">{t('ship.scale')}</span>
+        <div class="row" id="ship-scale" data-scale={String(uiScale.value)}>
+          <button type="button" class="btn sm" id="scale-minus" aria-label={t('ship.scaleLess')} title="Ctrl −" onClick={() => stepScale(-1)}>−</button>
+          <b class="v" id="scale-now" data-tick={scaleTick.value}>{uiScale.value === 'auto' ? t('ship.scaleAuto', { n: scalePercent() }) : `${uiScale.value} %`}</b>
+          <button type="button" class="btn sm" id="scale-plus" aria-label={t('ship.scaleMore')} title="Ctrl =" onClick={() => stepScale(1)}>+</button>
+          <button type="button" class={`btn sm ${uiScale.value === 'auto' ? 'on' : ''}`} id="scale-auto" aria-pressed={uiScale.value === 'auto'} title="Ctrl 0" onClick={() => setScale('auto')}>{t('ship.auto')}</button>
+        </div>
+      </div>
+      <p class="hint">{t('ship.scaleHint')}</p>
       <div class="sh-row">
         <span class="kl">{t('menu.simple')}</span>
         <button type="button" class={`tog ${simple.value ? 'on' : ''}`} id="ship-simple" aria-pressed={simple.value} disabled={calm}

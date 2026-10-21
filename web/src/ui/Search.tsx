@@ -95,7 +95,7 @@ export function Search(): JSX.Element {
   const st = searchState.value;
   const list = st.open && st.q.trim() ? rows(st.q) : [];
   const resRef = useRef<HTMLDivElement>(null);
-  useEffect(() => { if (st.open && st.q.trim()) animRows(resRef.current, '.sr'); }, [st.open, list.length > 0]);
+  useEffect(() => { if (st.open && st.q.trim()) animRows(resRef.current, '.srow'); }, [st.open, list.length > 0]);
   const groups = GROUPS.filter((g) => list.some((r) => r.kind === g));
   const onKey = (e: KeyboardEvent): void => {
     if (e.key === 'ArrowDown') { e.preventDefault(); searchState.value = { ...st, cur: Math.min(list.length - 1, st.cur + 1) }; }
@@ -126,7 +126,7 @@ export function Search(): JSX.Element {
                 return (
                   <div
                     key={`${r.kind}|${r.galaxy}|${r.id}`} role="option" aria-selected={flat === st.cur}
-                    class={`sr s-${r.status || 'none'} ${flat === st.cur ? 'cur' : ''}`}
+                    class={`srow s-${r.status || 'none'} ${flat === st.cur ? 'cur' : ''}`}
                     data-kind={r.kind} data-id={r.id}
                     onMouseEnter={() => { searchState.value = { ...searchState.value, cur: list.indexOf(r) }; }}
                     onClick={() => choose(r)}

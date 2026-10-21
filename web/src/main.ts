@@ -15,6 +15,8 @@ import { setLang, lang, t } from './i18n';
 import { createWorld } from './world';
 import { clearStack, getWorld, goHome, goOverview, navigateTo, openRequest, setWorld, enterGalaxy, back } from './nav';
 import { escape, installKeys, setMode } from './keys';
+import { effectiveWidth, installScale } from './scale';
+import { chatWide, installChatWide, installWideRoom } from './chat-wide';
 import { connectTasks } from './actions';
 import { installTodoDnD } from './ui/Todo';
 import { toast } from './toast';
@@ -28,6 +30,8 @@ const $ = (id: string): HTMLElement => document.getElementById(id) as HTMLElemen
 document.documentElement.lang = lang.value;
 document.body.insertAdjacentHTML('afterbegin', SPRITE);
 
+installScale();
+narrow.value = effectiveWidth() < 900;
 const world = createWorld({
   canvas: $('scene') as HTMLCanvasElement,
   labelsEl: $('labels'),
@@ -106,7 +110,11 @@ effect(() => { world.setSensitivity(sensitivity.value, invertY.value); });
 effect(() => {
   const w = document.getElementById('win');
   w?.classList.toggle('manual', mode.value === 'manual');
-  w?.classList.toggle('todo-open', panels.todo.value && !narrow.value && false);
+  w?.classList.toggle('todo-open', panels.todo.value);
+  w?.classList.toggle('chat-open', panels.chat.value);
+  w?.classList.toggle('chat-wide', panels.chat.value && chatWide.value);
+  w?.classList.toggle('nav-off', !panels.nav.value);
+  w?.classList.toggle('focus-off', !panels.focus.value);
 });
 effect(() => { world.setSelection(selected.value); });
 
@@ -172,9 +180,11 @@ onState((s: Snapshot) => {
 
 /* ───────── start ───────── */
 
+installChatWide();
+installWideRoom();
 installKeys();
 installTodoDnD($('scene'));
-const onResize = (): void => { narrow.value = innerWidth < 900; };
+const onResize = (): void => { narrow.value = effectiveWidth() < 900; };
 window.addEventListener('resize', onResize);
 onResize();
 if (narrow.value) { panels.nav.value = false; panels.focus.value = false; }

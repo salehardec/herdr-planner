@@ -24,6 +24,7 @@ import { DEFAULT_COLORS, makePalette, type Palette } from './palette';
 import { Quasar } from './quasar';
 import { Ship, WarpTunnel } from './ship';
 import { t } from '../i18n';
+import { scaleK } from '../scale';
 import { clamp, firstSentence } from '../util/format';
 
 export interface WorldHooks {
@@ -772,7 +773,7 @@ export function createWorld(opts: WorldOptions): World {
         case 'galaxy': reach = Math.max(24, p.rpx); bias = 3; break;
         default: reach = Math.max(16, p.rpx); bias = 4; break;
       }
-      if (d > reach) continue;
+      if (d > reach * scaleK()) continue;
       // Universe: only when nothing smaller is under the pointer; deep inside a nebula prefer its planets.
       const score = bias * 1000 + d;
       if (score < bestScore) { bestScore = score; best = p.item; }

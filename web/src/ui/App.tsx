@@ -21,6 +21,7 @@ import { Gl } from './Gl';
 import { t } from '../i18n';
 import { unreadCount } from './unread';
 import './help.css';
+import './chatwide.css';
 
 function Dock(): JSX.Element {
   return (

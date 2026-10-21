@@ -143,7 +143,7 @@ export function RequestBlock(props: { task: Task }): JSX.Element | null {
               </div>
               <button class="btn" type="button" data-act="pick" data-id={task.id} data-letter={a.letter} aria-disabled={dis} onClick={() => void pickAttempt(task, a.letter)}>{t('req.pick', { l: a.letter })}</button>
               <div class="links">
-                {a.diff && <a href={a.diff} target="_blank" rel="noopener">diff</a>}
+                {a.diff && <a href={a.diff} target="_blank" rel="noopener">{t('universe.diff')}</a>}
                 {a.report && <a href={a.report} target="_blank" rel="noopener">{t('req.report')}</a>}
               </div>
             </div>

@@ -135,7 +135,7 @@ export function HerdrPop(): JSX.Element | null {
   if (!panels.herdr.value) return null;
   const s = snap.value;
   return (
-    <div class="panel pop" style="top:56px;right:14px;width:360px;padding:12px;z-index:60" role="dialog">
+    <div class="panel pop" style="top:3.5rem;right:0.875rem;width:22.5rem;padding:0.75rem;z-index:60" role="dialog">
       <b>{t('herdr.title')}</b>
       <p class="hint">{t('herdr.text', { state: s?.herdr.running ? t('herdr.running') : t('herdr.notRunning') })}</p>
       <button class="btn sm" type="button" onClick={() => { panels.herdr.value = false; }}>{t('close')}</button>

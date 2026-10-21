@@ -5,36 +5,33 @@ import {
   chat, galaxies, galaxyId, panels, snap, screens,
 } from '../store';
 import {
-  addFiles, hasOlder, loadLatest, loadOlder, notePending, openChatAt, optimistic, pendingImages, pendingMessage, reconcile, removeImage, scrollTo,
+  addFiles, draftRequest, draftTodos, hasOlder, loadLatest, loadOlder, notePending, openChatAt, optimistic, pendingFiles, pendingMessage, reconcile, removeFile, scrollTo,
   searchChat, send, sending,
 } from '../chat';
+import { hasFiles, pastedFiles } from '../attach';
+import { rootPx } from '../scale';
 import { parseOptions } from '../requests';
-import { post, imgUrl, refreshNow, onChatEvent } from '../api';
-import { fetchScreen, sendKey } from '../actions';
+import { post, refreshNow, onChatEvent } from '../api';
+import { fetchScreen, sendKey, todoToDraft } from '../actions';
 import { t } from '../i18n';
 import { dayTimeOf, timeOf } from '../util/dates';
 import { Gl } from './Gl';
 import { RichText } from './RichText';
 import { Memory } from './FocusOther';
+import { PendingFiles, SavedFiles } from './Attached';
+import { chatBack, chatWide, setChatWide } from '../chat-wide';
+import { dragTodo } from '../todo-drag';
 import type { TurnData } from '../types';
 import './chat.css';
 
 const wide = signal<Set<number>>(new Set());
 const stuck = signal(true);
 
-function Shots(props: { list: { id: string; name: string }[] }): JSX.Element | null {
-  const items = props.list.filter((a) => a && a.id);
-  if (!items.length) return null;
-  return (
-    <div class="shots">
-      {items.map((a) => (
-        <a class="shot" href={imgUrl(a)} target="_blank" rel="noopener" key={a.id}>
-          <img src={imgUrl(a)} alt={a.name || t('chat.image')} title={a.name} loading="lazy" />
-        </a>
-      ))}
-    </div>
-  );
+function Shots(props: { list: { id: string; name: string; mime?: string }[] }): JSX.Element | null {
+  return <SavedFiles list={props.list} class="shots" />;
 }
+
+const todoOver = signal(false);
 
 function Turn(props: { turn: TurnData; hit: boolean; onReuse: (q: string) => void }): JSX.Element {
   const tn = props.turn;
@@ -134,13 +131,13 @@ export function Chat(): JSX.Element {
     stuck.value = true;
     const text = ta.value;
     const ok = await send(text);
-    if (ok) { ta.value = ''; ta.style.height = '36px'; }
+    if (ok) { ta.value = ''; ta.style.height = ''; }
   };
 
   const onKey = (e: KeyboardEvent): void => {
     const ta = e.target as HTMLTextAreaElement;
     if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); void submit(e); return; }
-    if (e.key === 'Escape') { ta.value = ''; ta.blur(); panels.chat.value = false; e.stopPropagation(); return; }
+    if (e.key === 'Escape') { ta.value = ''; draftTodos.value = []; ta.blur(); chatBack(); e.stopPropagation(); return; }
     const log = logRef.current;
     if (!log || !showTurns) return;
     const caret = ta.selectionStart;
@@ -159,22 +156,19 @@ export function Chat(): JSX.Element {
 
   const grow = (e: Event): void => {
     const ta = e.target as HTMLTextAreaElement;
-    ta.style.height = '36px';
-    ta.style.height = Math.min(ta.scrollHeight, 120) + 'px';
+    ta.style.height = '';
+    ta.style.height = Math.min(ta.scrollHeight, 7.5 * rootPx()) + 'px';
   };
 
   const onPaste = (e: ClipboardEvent): void => {
-    const files = [...(e.clipboardData?.items ?? [])]
-      .filter((i) => i.kind === 'file' && i.type.startsWith('image/'))
-      .map((i) => i.getAsFile())
-      .filter((f): f is File => !!f);
+    const files = pastedFiles(e);
     if (!files.length) return;
     e.preventDefault();
     addFiles(files);
   };
 
   const status = err ? t('chat.state.error') : dialog ? t('chat.state.dialog') : busy ? t('chat.state.busy') : (coord?.status || t('chat.state.ready'));
-  const typed = (taRef.current?.value ?? '').trim().length > 0 || pendingImages.value.length > 0;
+  const typed = (taRef.current?.value ?? '').trim().length > 0 || pendingFiles.value.length > 0;
   const hits = c.hits;
 
   const variantSend = (value: string): void => {
@@ -185,13 +179,33 @@ export function Chat(): JSX.Element {
     setTimeout(() => { void refreshNow(); void loadLatest(); }, 900);
   };
 
+  // Files from the desktop are attached; a todo card dropped here becomes the draft of the message.
   const dropProps = {
-    onDragOver: (e: DragEvent) => { if (e.dataTransfer?.types.includes('Files')) { e.preventDefault(); e.dataTransfer.dropEffect = 'copy'; } },
-    onDrop: (e: DragEvent) => { if (e.dataTransfer?.files?.length) { e.preventDefault(); addFiles(e.dataTransfer.files); } },
+    onDragOver: (e: DragEvent) => {
+      if (hasFiles(e.dataTransfer)) { e.preventDefault(); if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy'; }
+      else if (dragTodo.value) { e.preventDefault(); todoOver.value = true; if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy'; }
+    },
+    onDragLeave: (e: DragEvent) => { if (!(e.currentTarget as HTMLElement).contains(e.relatedTarget as Node | null)) todoOver.value = false; },
+    onDrop: (e: DragEvent) => {
+      todoOver.value = false;
+      const id = dragTodo.value;
+      if (id && !e.dataTransfer?.files?.length) { e.preventDefault(); e.stopPropagation(); dragTodo.value = null; void todoToDraft(id); return; }
+      if (e.dataTransfer?.files?.length) { e.preventDefault(); addFiles(e.dataTransfer.files); }
+    },
   };
+  const draft = draftRequest.value;
+  useEffect(() => {
+    const ta = taRef.current;
+    if (!draft || !ta) return;
+    draftRequest.value = null;
+    ta.value = ta.value.trim() ? `${ta.value.replace(/\s+$/, '')}\n${draft.text}` : draft.text;
+    grow({ target: ta } as unknown as Event);
+    ta.focus();
+    ta.setSelectionRange(ta.value.length, ta.value.length);
+  }, [draft]);
 
   return (
-    <section class={`panel chat ${open ? '' : 'off'}`} id="chat" aria-label={t('chat.aria')} aria-hidden={!open} {...dropProps}>
+    <section class={`panel chat ${chatWide.value ? 'wide' : ''} ${open ? '' : 'off'} ${todoOver.value ? 'drop' : ''}`} id="chat" aria-label={t('chat.aria')} aria-hidden={!open} {...dropProps}>
       <header>
         <b>{far ? `${galaxyId.value} · ${t('chat.coordinator')}` : t('quasar.label')}</b>
         <span class={`st ${err ? 'bad' : busy ? 'busy' : ''}`} id="cstate">● {status}</span>
@@ -200,6 +214,14 @@ export function Chat(): JSX.Element {
           onInput={(e) => searchChat((e.target as HTMLInputElement).value)}
           onKeyDown={(e) => { if (e.key === 'Escape') { searchChat(''); (e.target as HTMLInputElement).blur(); e.stopPropagation(); } }}
         />
+        {chatWide.value && (
+          <button class={`btn sm ${panels.todo.value ? 'on' : ''}`} id="cwide-todo" type="button" aria-pressed={panels.todo.value} title="T" onClick={() => { panels.todo.value = !panels.todo.value; }}>
+            <Gl n="list" />{t('todo.title')}
+          </button>
+        )}
+        <button class="btn sm" id="cwide" type="button" aria-pressed={chatWide.value} title={chatWide.value ? t('chat.collapse') : t('chat.expand')} onClick={() => setChatWide(!chatWide.value)}>
+          <Gl n={chatWide.value ? 'shrink' : 'expand'} />{chatWide.value ? t('chat.collapse') : t('chat.expand')}
+        </button>
         <button class="btn sm" id="chide" type="button" title="/" onClick={() => { panels.chat.value = false; }}>{t('chat.hide')}</button>
       </header>
       {!far && <div class="cmem"><Memory compact /></div>}
@@ -277,17 +299,7 @@ export function Chat(): JSX.Element {
           ))}
         </div>
       )}
-      {pendingImages.value.length > 0 && (
-        <div class="attach" id="attach">
-          {pendingImages.value.map((p) => (
-            <div class="att" data-state={p.state} key={p.key} title={p.error ? `${p.name} — ${p.error}` : p.name}>
-              <img src={p.local} alt={p.name} />
-              {p.state === 'uploading' && <span class="wait">{t('chat.uploading')}</span>}
-              <button class="rm" type="button" data-att-rm={p.key} aria-label={`${t('chat.remove')} ${p.name}`} onClick={() => removeImage(p.key)}>×</button>
-            </div>
-          ))}
-        </div>
-      )}
+      <PendingFiles files={pendingFiles.value} onRemove={removeFile} id="attach" />
       <form class="compose" id="ask" autocomplete="off" onSubmit={(e) => void submit(e)}>
         <textarea
           id="ask-in" ref={taRef} rows={1} placeholder={t('chat.placeholder')} aria-label={t('chat.aria')}
@@ -295,7 +307,7 @@ export function Chat(): JSX.Element {
         />
         <label class="attachbtn" title={t('chat.attachTitle')}>
           <Gl n="attach" />
-          <input type="file" id="file-in" accept="image/png,image/jpeg,image/webp,image/gif" multiple hidden onChange={(e) => { addFiles((e.target as HTMLInputElement).files); (e.target as HTMLInputElement).value = ''; }} />
+          <input type="file" id="file-in" accept="image/png,image/jpeg,image/webp,image/gif,audio/*,text/*,.md,.log,.json,.yaml,.yml,.toml,.csv" multiple hidden onChange={(e) => { addFiles((e.target as HTMLInputElement).files); (e.target as HTMLInputElement).value = ''; }} />
         </label>
         <button class={`btn primary send`} type="submit" id="send" data-ready={String(typed)} disabled={sending.value} aria-label={t('chat.send')}>{t('chat.send')}</button>
       </form>

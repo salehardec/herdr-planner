@@ -137,8 +137,8 @@ check('the built assets are not behind a secret (public, hashed files)', assetsA
 const remoteAuthed = await get('/api/limits', cookie, { headers: { 'x-forwarded-for': '203.0.113.5' } });
 check('a logged-in remote caller reads limits', remoteAuthed.status === 200, String(remoteAuthed.status));
 
-// Images for the Coordinator: behind the login, type by bytes, size limit,
-// and the full path (not the browser's path) in the message.
+// Files for the Coordinator and the todo list (images, sound, text): behind the login, kind by bytes, size limit per
+// kind, and the full path (not the browser's path) in the message.
 const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAFgwJ/lK3Q6wAAAABJRU5ErkJggg==', 'base64');
 const form = (bytes, name, type) => {
   const fd = new FormData();
@@ -175,14 +175,33 @@ check('the image file is behind the login too', imageAnon.status === 401, String
 const image = await fetch(base + `/api/attachments/${imageId}`, { headers: { cookie } });
 check('the uploaded image loads with its type', image.status === 200 && image.headers.get('content-type') === 'image/png', `${image.status} ${image.headers.get('content-type')}`);
 check('the served image is the uploaded one', Buffer.from(await image.arrayBuffer()).equals(png));
-const html = await upload(form(Buffer.from('<html>not an image</html>'), 'fake.png', 'image/png'));
-check('a file that is not really an image is refused', html.status === 415, String(html.status));
+const elf = await upload(form(Buffer.from([0x7f, 0x45, 0x4c, 0x46, 2, 1, 1, 0, 0, 0]), 'fake.png', 'image/png'));
+check('a file that is not really an image, sound or text is refused', elf.status === 415, String(elf.status));
+const html = await upload(form(Buffer.from('<html><script>alert(1)</script></html>'), 'fake.png', 'image/png'));
+const htmlBody = await html.json().catch(() => ({}));
+check('an HTML file named .png is only text: stored as .txt', html.status === 200 && /^[0-9a-f]{32}\.txt$/.test(htmlBody.attachment?.id || ''), `${html.status} ${JSON.stringify(htmlBody)}`);
+const htmlGet = await fetch(base + `/api/attachments/${htmlBody.attachment?.id}`, { headers: { cookie } });
+check('and served as plain text, not as a page', (htmlGet.headers.get('content-type') || '').startsWith('text/plain') && htmlGet.headers.get('x-content-type-options') === 'nosniff', `${htmlGet.headers.get('content-type')} ${htmlGet.headers.get('x-content-type-options')}`);
+const wav = Buffer.concat([Buffer.from('RIFF\0\0\0\0WAVEfmt '), Buffer.alloc(16)]);
+const sound = await upload(form(wav, 'voice.wav', 'audio/wav'));
+const soundBody = await sound.json().catch(() => ({}));
+check('a sound file is accepted with its type', sound.status === 200 && soundBody.attachment?.mime === 'audio/wav' && /\.wav$/.test(soundBody.attachment?.id), `${sound.status} ${JSON.stringify(soundBody)}`);
+const soundGet = await fetch(base + `/api/attachments/${soundBody.attachment?.id}`, { headers: { cookie } });
+check('the sound loads with its type, behind the login', soundGet.status === 200 && soundGet.headers.get('content-type') === 'audio/wav' && (await fetch(base + `/api/attachments/${soundBody.attachment?.id}`)).status === 401);
+const notes = await upload(form(Buffer.from('# заметка\nстрока два\n'), 'notes.md', 'text/markdown'));
+const notesBody = await notes.json().catch(() => ({}));
+check('a text file is accepted as plain text', notes.status === 200 && notesBody.attachment?.name === 'notes.md' && notesBody.attachment?.mime === 'text/plain; charset=utf-8', `${notes.status} ${JSON.stringify(notesBody)}`);
+const longText = await upload(form(Buffer.alloc(2 * 1024 * 1024 + 1, 0x61), 'long.txt', 'text/plain'), true, 413);
+check('a text over 2 MB is refused', longText.status === 413, String(longText.status));
 const empty = await upload(new FormData());
 check('an upload without a file is refused', empty.status === 400, String(empty.status));
-const huge = Buffer.alloc(10 * 1024 * 1024 + 1, 0);
+const huge = Buffer.concat([png, Buffer.alloc(10 * 1024 * 1024, 0)]);
 const oversized = await upload(form(huge, 'big.png', 'image/png'), true, 413);
 check('an image over 10 MB is refused', oversized.status === 413, String(oversized.status));
-const overBody = await upload(form(Buffer.alloc(11 * 1024 * 1024 + 1, 0), 'huge.png', 'image/png'), true, 413);
+const hugeSound = Buffer.concat([wav, Buffer.alloc(25 * 1024 * 1024, 0)]);
+const oversizedSound = await upload(form(hugeSound, 'long.wav', 'audio/wav'), true, 413);
+check('a sound over 25 MB is refused', oversizedSound.status === 413, String(oversizedSound.status));
+const overBody = await upload(form(Buffer.alloc(27 * 1024 * 1024, 0), 'huge.png', 'image/png'), true, 413);
 check('a body over the request limit is 413 too', overBody.status === 413, String(overBody.status));
 
 const chat = await fetch(base + '/api/chat', {
@@ -191,6 +210,18 @@ const chat = await fetch(base + '/api/chat', {
   body: JSON.stringify({ text: 'посмотри картинку', attachments: [imageId] }),
 });
 check('a message with an image reaches the Coordinator', chat.status === 200, String(chat.status));
+const action = (body) => fetch(base + '/api/action', { method: 'POST', headers: { 'content-type': 'application/json', cookie }, body: JSON.stringify(body) });
+const todoAdd = await action({ action: 'todo-add', text: 'дело с файлом', attachments: [{ id: imageId, name: 'shot.png' }, { id: soundBody.attachment?.id, name: 'voice.wav' }] });
+const todoReply = await todoAdd.json().catch(() => ({}));
+const todoItem = todoReply.todo?.find((x) => x.text === 'дело с файлом');
+check('a todo item keeps the uploaded files', todoAdd.status === 200 && todoItem?.attachments?.length === 2 && todoItem.attachments[1].mime === 'audio/wav', `${todoAdd.status} ${JSON.stringify(todoItem)}`);
+const todoBad = await action({ action: 'todo-add', text: 'не тот файл', attachments: [{ id: '../../etc/passwd', name: 'x' }] });
+check('a todo item refuses a file that is not an upload', todoBad.status === 400, String(todoBad.status));
+const todoMany = await action({ action: 'todo-add', text: 'слишком много', attachments: Array.from({ length: 9 }, () => ({ id: imageId, name: 'a.png' })) });
+check('and more than eight files', todoMany.status === 400, String(todoMany.status));
+const todoCut = await action({ action: 'todo-update', id: todoItem?.id, attachments: [{ id: imageId, name: 'shot.png' }] });
+const todoCutBody = await todoCut.json().catch(() => ({}));
+check('the files of an item can be cut down', todoCut.status === 200 && todoCutBody.todo?.find((x) => x.id === todoItem?.id)?.attachments?.length === 1, JSON.stringify(todoCutBody).slice(0, 200));
 const fixture = process.env.FIXTURE;
 if (fixture) {
   let history = null;

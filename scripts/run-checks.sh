@@ -66,7 +66,7 @@ limited() {
   if command -v timeout >/dev/null 2>&1; then timeout -k 10 720 "$@"; else "$@"; fi
 }
 
-NEXT_PORT=7600
+NEXT_PORT="${NEXT_PORT:-7600}"   # NEXT_PORT=8800 keeps two runs on one machine apart
 JOBS=
 OUT="$FX-out"
 mkdir -p "$OUT"
@@ -86,7 +86,7 @@ job_release() { printf 'x\n' >&9; }
 n=0
 for only in "boot,live,navigator,autopilot,manual,stack,queue,search" \
             "chat,todo,focus,requests,links,archive,limits" \
-            "far,lag,galaxies,remote" \
+            "far,lag,galaxies,remote,scale" \
             "station,crew,arrival,ship,theme,simple,narrow"; do
   n=$((n + 1))
   start_server "ui$n"

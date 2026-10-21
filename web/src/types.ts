@@ -216,6 +216,8 @@ export interface TodoItem {
   text: string;
   at: number;
   to: string;
+  /** Files kept with the item (they travel with it when it becomes a task or a message). */
+  attachments: ChatAttachment[];
 }
 
 export interface JournalEntry {

@@ -1,7 +1,10 @@
 /* What the operator can do to tasks, links and the Coordinator. Every action asks twice
    when it cannot be undone, goes to the machine the task lives on, and leaves the
    operator where they are. */
-import { armed, details, galaxyId, screens, snap, tellDraft, currentView, taskOf } from './store';
+import { armed, details, galaxyId, panels, screens, snap, tellDraft, currentView, taskOf } from './store';
+import { draftMessage, draftSent } from './chat';
+import { endDrag } from './todo-drag';
+import type { SavedFile } from './attach';
 import { ApiError, api, post, refreshNow } from './api';
 import { toast } from './toast';
 import { t } from './i18n';
@@ -285,8 +288,9 @@ async function todoCall(action: string, extra: Record<string, unknown>): Promise
   }
 }
 
-export const todoAdd = (text: string): Promise<any> => todoCall('todo-add', { text });
-export const todoUpdate = (id: string, text: string): Promise<any> => todoCall('todo-update', { id, text });
+export const todoAdd = (text: string, attachments: SavedFile[] = []): Promise<any> => todoCall('todo-add', { text, attachments });
+/** Changes the text and/or the files (the whole set) of an item. */
+export const todoUpdate = (id: string, patch: { text?: string; attachments?: SavedFile[] }): Promise<any> => todoCall('todo-update', { id, ...patch });
 export const todoRemove = (id: string): Promise<any> => todoCall('todo-remove', { id });
 export const todoReorder = (ids: string[]): Promise<any> => todoCall('todo-reorder', { ids });
 export const todoAssign = (id: string, to: string): Promise<any> => todoCall('todo-assign', { id, to });
@@ -302,13 +306,10 @@ export async function todoToTask(id: string, repo: string, agent: string): Promi
   return !!r;
 }
 
-/** Dropping an item on a thing: a planet gets a message for its agent, the Quasar for the Coordinator. */
-export async function todoDropOn(id: string, target: Entity): Promise<'sent' | 'asked' | 'none'> {
-  if (target.kind === 'planet') {
-    await todoAssign(id, target.id);
-    await todoSend(id);
-    return 'sent';
-  }
+/** Dropping an item on a thing: a planet asks what to tell its agent (a window to correct it first), the Quasar
+    gets the message at once, a nebula asks where and by whom the new task is made. */
+export async function todoDropOn(id: string, target: Entity): Promise<'sent' | 'asked' | 'tell' | 'none'> {
+  if (target.kind === 'planet') return 'tell';
   if (target.kind === 'quasar') {
     await todoAssign(id, 'quasar');
     await todoSend(id);
@@ -318,3 +319,19 @@ export async function todoDropOn(id: string, target: Entity): Promise<'sent' | '
   return 'none';
 }
 
+/** The item becomes a draft of the message to the Coordinator, with its files, in the line. It stays in the list
+    (marked) until the message is sent: a reload or a change of mind loses nothing. */
+export async function todoToDraft(id: string): Promise<void> {
+  const it = snap.value?.todo.find((x) => x.id === id);
+  panels.chat.value = true;
+  endDrag(true);
+  if (!it) return;
+  if (!draftMessage(id, it.text, it.attachments ?? [])) { toast(t('todo.alreadyDraft')); return; }
+  toast(t('todo.draftNote'));
+}
+
+// A message sent from the line takes its todo items with it.
+draftSent.fn = (ids) => {
+  const have = new Set((snap.value?.todo ?? []).map((x) => x.id));
+  ids.filter((id) => have.has(id)).forEach((id) => { void todoRemove(id); });
+};

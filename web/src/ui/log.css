@@ -1,8 +1,8 @@
-.journal{left:354px;bottom:70px;width:min(560px,calc(100vw - 740px));max-height:44vh;display:flex;flex-direction:column;z-index:15;transform:translateY(20px);opacity:0;pointer-events:none;transition:transform var(--m-med) var(--m-ease),opacity var(--m-med);background:var(--pl-panel-solid)}
+.journal{left:22.125rem;bottom:4.375rem;width:min(35rem,calc(100vw - 46.25rem));max-height:44vh;display:flex;flex-direction:column;z-index:15;transform:translateY(1.25rem);opacity:0;pointer-events:none;transition:transform var(--m-med) var(--m-ease),opacity var(--m-med);background:var(--pl-panel-solid)}
 .journal.open{transform:none;opacity:1;pointer-events:auto}
-.jlist{overflow:auto;padding:6px 10px;display:grid;gap:3px;align-content:start;scrollbar-width:thin}
-.logline{display:grid;grid-template-columns:30px 40px 66px minmax(0,1fr);gap:8px;color:var(--pl-dim);font-size:12px;white-space:nowrap;align-items:center}
+.jlist{overflow:auto;padding:0.375rem 0.625rem;display:grid;gap:0.1875rem;align-content:start;scrollbar-width:thin}
+.logline{display:grid;grid-template-columns:1.875rem 2.5rem 4.125rem minmax(0,1fr);gap:0.5rem;color:var(--pl-dim);font-size:0.75rem;white-space:nowrap;align-items:center}
 .logline .n{color:var(--pl-faint)}
 .logline .tx{overflow:hidden;text-overflow:ellipsis}
 .logline .kk{background:none;border:0;padding:0;text-align:left;color:var(--s-ink);font-weight:700}
-@media (max-width:1100px){.journal{left:12px;width:calc(100vw - 24px)}}
+:root.bp1100 .journal{left:0.75rem;width:calc(100vw - 1.5rem)}

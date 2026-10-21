@@ -114,7 +114,7 @@ function TaskFocus(props: { task: Task }): JSX.Element {
       <RequestBlock task={task} />
       <div class="kv">
         {d?.branch && <><span>{t('focus.branch')}</span><b>{d.branch}</b></>}
-        <span>worktree</span><b>{worktree || '—'}</b>
+        <span>{t('focus.worktree')}</span><b>{worktree || '—'}</b>
         {(d?.agent_model || task.worker_agent) && <><span>{t('focus.model')}</span><b>{d?.agent_model || task.worker_agent}</b></>}
         <span>{t('focus.stage')}</span><b>{task.stage || task.state || '—'}</b>
         {task.created > 0 && <><span>{t('focus.created')}</span><b>{dayTimeOf(task.created)}</b></>}
@@ -133,7 +133,7 @@ function TaskFocus(props: { task: Task }): JSX.Element {
         })}
         {home && task.status !== 'queued' && (
           <>
-            <button class="btn" type="button" data-act="files" data-id={task.id} onClick={() => void openFiles(task, 'worktree')}><Gl n="folder" />Worktree</button>
+            <button class="btn" type="button" data-act="files" data-id={task.id} onClick={() => void openFiles(task, 'worktree')}><Gl n="folder" />{t('focus.worktreeBtn')}</button>
             <button class="btn" type="button" data-act="reports" data-id={task.id} onClick={() => void openFiles(task, 'reports')}><Gl n="folder" />{t('focus.reports')}</button>
             <button class="btn" type="button" data-act="screen" data-target={task.id} onClick={() => void fetchScreen(task.id)}><Gl n="screen" />{t('focus.agentScreen')}</button>
           </>

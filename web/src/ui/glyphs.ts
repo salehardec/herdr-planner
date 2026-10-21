@@ -38,4 +38,8 @@ export const SPRITE = `
 <symbol id="g-down" viewBox="0 0 16 16"><path d="m4 6 4 4 4-4"/></symbol>
 <symbol id="g-home" viewBox="0 0 16 16"><path d="M2.4 8 8 2.8 13.6 8M4 7v6h3V9.6h2V13h3V7"/></symbol>
 <symbol id="g-globe" viewBox="0 0 16 16"><circle cx="8" cy="8" r="5.8"/><path d="M2.4 8h11.2M8 2.2c2 2 2 9.6 0 11.6M8 2.2c-2 2-2 9.6 0 11.6"/></symbol>
+<symbol id="g-expand" viewBox="0 0 16 16"><path d="M9.5 2.5h4v4M13.5 2.5 9 7M6.5 13.5h-4v-4M2.5 13.5 7 9"/></symbol>
+<symbol id="g-shrink" viewBox="0 0 16 16"><path d="M13.5 6.5h-4v-4M9.5 6.5l4-4M2.5 9.5h4v4M6.5 9.5l-4 4"/></symbol>
+<symbol id="g-file" viewBox="0 0 16 16"><path d="M4 1.8h5.4L12.6 5v9.2H4z"/><path d="M9.2 1.8V5h3.4M6 8.2h4.4M6 10.6h4.4"/></symbol>
+<symbol id="g-sound" viewBox="0 0 16 16"><path d="M2.6 6.4h2.4L8 3.6v8.8L5 9.6H2.6z"/><path d="M10.4 6a3 3 0 0 1 0 4M12 4.2a5.4 5.4 0 0 1 0 7.6"/></symbol>
 </defs></svg>`;

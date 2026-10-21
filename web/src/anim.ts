@@ -4,12 +4,12 @@ import { simple } from './store';
 
 const d = (s: number): number => (simple.value ? 0 : s);
 
-/** The todo drawer: the items fly in one after another with a little overshoot. */
+/** The todo drawer: the cards drop in one after another from the top with a little overshoot. */
 export function drawerItems(root: Element | null): void {
   if (!root) return;
   const items = root.querySelectorAll('.titem');
   gsap.killTweensOf(items);
-  gsap.fromTo(items, { x: 36, opacity: 0, scale: 0.97 }, { x: 0, opacity: 1, scale: 1, duration: d(0.38), ease: 'back.out(1.5)', stagger: d(0.05), clearProps: 'transform,opacity' });
+  gsap.fromTo(items, { y: -18, opacity: 0, scale: 0.97 }, { y: 0, opacity: 1, scale: 1, duration: d(0.38), ease: 'back.out(1.5)', stagger: d(0.05), clearProps: 'transform,opacity' });
 }
 
 /** Rows of a result list appear softly. */

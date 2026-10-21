@@ -7,20 +7,26 @@ import { api } from '../api';
 import { t } from '../i18n';
 import { Gl } from './Gl';
 import { todoHighlight } from './Search';
-import { addDialogs } from '../dialogs';
+import { openNewTask, openTell } from '../dialogs';
 import { getWorld } from '../nav';
 import type { TodoItem } from '../types';
 import { drawerItems } from '../anim';
+import { hasFiles, makeShelf, pastedFiles } from '../attach';
+import { dragTodo, endDrag, overId, startDrag } from '../todo-drag';
+import { draftTodos } from '../chat';
+import { PendingFiles, SavedFiles } from './Attached';
 import './todo.css';
 
-/** The id of the item being dragged (from the list into the world, or inside the list). */
-export const dragTodo = signal<string | null>(null);
-const overId = signal<string | null>(null);
+export { dragTodo };
 const editing = signal<string | null>(null);
+const fileOver = signal(false);
+/** The files of the item being written. */
+const shelf = makeShelf();
 
 export function Todo(): JSX.Element {
   const items = snap.value?.todo ?? [];
   const open = panels.todo.value;
+  const asideRef = useRef<HTMLElement>(null);
   const listRef = useRef<HTMLUListElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const tasks = currentView.value.tasks.filter((x) => x.status !== 'done');
@@ -30,6 +36,34 @@ export function Todo(): JSX.Element {
     const hl = todoHighlight.value;
     if (hl) listRef.current?.querySelector(`[data-todo="${CSS.escape(hl)}"]`)?.scrollIntoView({ block: 'center' });
   }, [todoHighlight.value]);
+
+  // The room the drawer takes at the top: on narrow windows the navigator and the focus card move below it.
+  useEffect(() => {
+    const el = asideRef.current;
+    const win = document.getElementById('win');
+    if (!el || !win || typeof ResizeObserver === 'undefined') return;
+    const set = (): void => { win.style.setProperty('--todo-h', open ? `${Math.round(el.getBoundingClientRect().height)}px` : '0px'); };
+    set();
+    const ro = new ResizeObserver(set);
+    ro.observe(el);
+    return () => { ro.disconnect(); win.style.setProperty('--todo-h', '0px'); };
+  }, [open]);
+
+  // A screenshot pasted while the drawer is open lands in the item being written (not when a field elsewhere took it).
+  useEffect(() => {
+    if (!open) return;
+    const onPaste = (e: ClipboardEvent): void => {
+      if (e.defaultPrevented) return;
+      const files = pastedFiles(e);
+      if (!files.length) return;
+      const target = e.target as HTMLElement | null;
+      if (target?.closest?.('#chat, .dlg') || (target?.matches?.('textarea,input') && !target.closest('#todo'))) return;
+      e.preventDefault();
+      shelf.add(files);
+    };
+    document.addEventListener('paste', onPaste);
+    return () => document.removeEventListener('paste', onPaste);
+  }, [open]);
 
   const reorder = (from: string, before: string | null): void => {
     const ids = items.map((i) => i.id).filter((id) => id !== from);
@@ -51,14 +85,39 @@ export function Todo(): JSX.Element {
   const submit = async (e: Event): Promise<void> => {
     e.preventDefault();
     const el = inputRef.current;
-    if (!el || !el.value.trim()) return;
-    const r = await todoAdd(el.value.trim());
-    if (r) el.value = '';
+    if (!el) return;
+    let text = el.value.trim();
+    if (!text && !shelf.files.value.length) return;
+    const got = await shelf.settled();
+    if (!got.ok) { return; }
+    // Only a file: the item is named after it.
+    if (!text) text = t('todo.fileOnly', { name: got.saved[0].name });
+    const r = await todoAdd(text, got.saved);
+    if (r) { el.value = ''; shelf.clear(); }
   };
 
   return (
-    <aside class={`panel todo ${open ? 'open' : ''}`} id="todo" aria-label={t('todo.aria')} aria-hidden={!open}>
+    <aside
+      ref={asideRef}
+      class={`panel todo ${open ? 'open' : ''} ${fileOver.value ? 'filedrop' : ''}`} id="todo" aria-label={t('todo.aria')} aria-hidden={!open}
+      onDragOver={(e) => { if (hasFiles(e.dataTransfer)) { e.preventDefault(); if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy'; fileOver.value = true; } }}
+      onDragLeave={(e) => { if (!(e.currentTarget as HTMLElement).contains(e.relatedTarget as Node | null)) fileOver.value = false; }}
+      onDrop={(e) => { fileOver.value = false; if (e.dataTransfer?.files?.length) { e.preventDefault(); shelf.add(e.dataTransfer.files); } }}
+    >
       <header><span>{t('todo.title')} <kbd>T</kbd></span><button class="btn icon sm" type="button" aria-label={t('close')} onClick={() => { panels.todo.value = false; }}><Gl n="close" /></button></header>
+      <form class="tadd" id="todo-new" autocomplete="off" onSubmit={(e) => void submit(e)}>
+        <input id="todo-in" ref={inputRef} class="field" maxLength={400} placeholder={t('todo.new')} aria-label={t('todo.new')} />
+        <label class="btn browse" id="todo-browse" title={t('todo.browseTip')}>
+          <Gl n="attach" />{t('todo.browse')}
+          <input
+            type="file" id="todo-file" multiple hidden
+            accept="image/png,image/jpeg,image/webp,image/gif,audio/*,text/*,.md,.log,.json,.yaml,.yml,.toml,.csv"
+            onChange={(e) => { shelf.add((e.target as HTMLInputElement).files); (e.target as HTMLInputElement).value = ''; }}
+          />
+        </label>
+        <button class="btn" type="submit" aria-label={t('todo.add')} title={t('todo.add')}>+</button>
+      </form>
+      <PendingFiles files={shelf.files.value} onRemove={shelf.remove} id="todo-attach" />
       <ul class="tlist" id="todo-list" ref={listRef}>
         {items.length === 0 && <li class="none">{t('todo.empty')}</li>}
         {items.map((it) => (
@@ -69,10 +128,6 @@ export function Todo(): JSX.Element {
         ))}
       </ul>
       <div class="tnote">{t('todo.note')}</div>
-      <form class="tadd" id="todo-new" autocomplete="off" onSubmit={(e) => void submit(e)}>
-        <input id="todo-in" ref={inputRef} class="field" maxLength={400} placeholder={t('todo.new')} aria-label={t('todo.new')} />
-        <button class="btn" type="submit">+</button>
-      </form>
     </aside>
   );
 }
@@ -82,15 +137,16 @@ function TodoRow(props: {
 }): JSX.Element {
   const { it } = props;
   const isEditing = editing.value === it.id;
+  const files = it.attachments ?? [];
   return (
     <li
-      class={`titem ${dragTodo.value === it.id ? 'drag' : ''} ${overId.value === it.id ? 'over' : ''} ${props.hl ? 'hl' : ''}`}
+      class={`titem ${draftTodos.value.includes(it.id) ? 'drafted' : ''} ${dragTodo.value === it.id ? 'drag' : ''} ${overId.value === it.id ? 'over' : ''} ${props.hl ? 'hl' : ''}`}
       data-todo={it.id} draggable={!isEditing} tabIndex={0}
       onDragStart={(e) => {
-        dragTodo.value = it.id;
+        startDrag(it.id);
         if (e.dataTransfer) { e.dataTransfer.effectAllowed = 'copyMove'; e.dataTransfer.setData('text/plain', it.id); }
       }}
-      onDragEnd={() => { dragTodo.value = null; overId.value = null; getWorld()?.setDropTarget(null); }}
+      onDragEnd={() => { endDrag(); getWorld()?.setDropTarget(null); }}
       onDragOver={(e) => { if (dragTodo.value && dragTodo.value !== it.id) { e.preventDefault(); overId.value = it.id; } }}
       onDragLeave={() => { if (overId.value === it.id) overId.value = null; }}
       onDrop={(e) => {
@@ -110,14 +166,16 @@ function TodoRow(props: {
           <input
             class="field edit" value={it.text} autoFocus
             onKeyDown={(e) => {
-              if (e.key === 'Enter') { e.preventDefault(); const v = (e.target as HTMLInputElement).value.trim(); editing.value = null; if (v && v !== it.text) void todoUpdate(it.id, v); }
+              if (e.key === 'Enter') { e.preventDefault(); const v = (e.target as HTMLInputElement).value.trim(); editing.value = null; if (v && v !== it.text) void todoUpdate(it.id, { text: v }); }
               else if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); editing.value = null; }
             }}
-            onBlur={(e) => { const v = (e.target as HTMLInputElement).value.trim(); if (editing.value === it.id) { editing.value = null; if (v && v !== it.text) void todoUpdate(it.id, v); } }}
+            onBlur={(e) => { const v = (e.target as HTMLInputElement).value.trim(); if (editing.value === it.id) { editing.value = null; if (v && v !== it.text) void todoUpdate(it.id, { text: v }); } }}
           />
         ) : (
           <span class="txt" data-todo-text={it.id} title={t('todo.edit')} onDblClick={() => { editing.value = it.id; }}>{it.text}</span>
         )}
+        {draftTodos.value.includes(it.id) && <span class="dnote">{t('todo.inDraft')}</span>}
+        <SavedFiles list={files} class="tfiles" onRemove={(id) => void todoUpdate(it.id, { attachments: files.filter((a) => a.id !== id) })} />
         <div class="to">
           <select
             class="field sm" aria-label={t('todo.to')} value={it.to}
@@ -154,7 +212,7 @@ export async function loadModels(program: string): Promise<void> {
   await poll(36);
 }
 
-/** Where a dragged item lands: planet → its agent, Quasar → the Coordinator, universe → a new task. */
+/** Where a dragged item lands: planet → its agent (after a window to correct it), Quasar → the Coordinator, universe → a new task. */
 export function installTodoDnD(canvas: HTMLElement): void {
   const idOf = (e: DragEvent): string => dragTodo.value ?? e.dataTransfer?.getData('text/plain') ?? '';
   canvas.addEventListener('dragover', (e) => {
@@ -175,10 +233,11 @@ export function installTodoDnD(canvas: HTMLElement): void {
     const rect = canvas.getBoundingClientRect();
     const target = w.entityAt(e.clientX - rect.left, e.clientY - rect.top, ['planet', 'quasar', 'universe']);
     w.setDropTarget(null);
-    dragTodo.value = null;
+    endDrag();
     if (!target) return;
     void todoDropOn(id, target).then((r) => {
-      if (r === 'asked') { addDialogs.popover.value = { id, repo: target.id, galaxy: target.galaxy }; void loadModels('claude'); }
+      if (r === 'asked') { openNewTask(id, target.id, target.galaxy); void loadModels('claude'); }
+      else if (r === 'tell') openTell(id, target.id, target.galaxy);
     });
   });
 }

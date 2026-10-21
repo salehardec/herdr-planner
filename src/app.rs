@@ -118,6 +118,9 @@ pub struct TodoItem {
     /// Whom the item is addressed to: empty, `quasar` or a task id.
     #[serde(default)]
     pub to: String,
+    /// Files attached to the item (they live in the attachments folder and travel with it).
+    #[serde(default)]
+    pub attachments: Vec<crate::attachments::Attachment>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -296,7 +299,8 @@ impl App {
                 projects_dir: cfg.projects_dir_now().display().to_string(),
             },
         };
-        crate::attachments::cleanup(&cfg.attachments_dir(), std::time::SystemTime::now());
+        let held = held_files(&db.todo_list());
+        crate::attachments::cleanup(&cfg.attachments_dir(), std::time::SystemTime::now(), &held);
         let mut chat = db.chat_load();
         if prune_missing_attachments(&cfg.attachments_dir(), &mut chat) {
             db.chat_save(&chat);
@@ -346,6 +350,13 @@ pub fn save_chat(app: &App, chat: &ChatState) {
 
 /// Drops history images whose files are gone: cleanup by age (or a manual
 /// removal) must not leave broken thumbnails in the chat.
+/// The ids of the files todo items still hold: the cleanup leaves them alone.
+pub fn held_files(todo: &[TodoItem]) -> std::collections::HashSet<String> {
+    todo.iter()
+        .flat_map(|t| t.attachments.iter().map(|a| a.id.clone()))
+        .collect()
+}
+
 fn prune_missing_attachments(dir: &std::path::Path, chat: &mut ChatState) -> bool {
     let mut changed = false;
     for message in &mut chat.history {

@@ -4,6 +4,7 @@
 
 import type { Status } from '../types';
 import { esc } from '../util/format';
+import { scaleK } from '../scale';
 
 export interface LabelCandidate {
   key: string;
@@ -56,7 +57,14 @@ export class Labels {
     });
   }
 
+  /** The size a label takes on the screen: its text grows with the interface. */
   private sizeOf(c: LabelCandidate): { w: number; h: number } {
+    const { w, h } = this.baseSize(c);
+    const k = scaleK();
+    return { w: w * k, h: h * k };
+  }
+
+  private baseSize(c: LabelCandidate): { w: number; h: number } {
     if (c.full) {
       const w = Math.min(260, Math.max(120, Math.max((c.text.length + 8) * CHAR_W, (c.sub?.length ?? 0) * 6.2, (c.line?.length ?? 0) * 6)));
       return { w, h: 44 + (c.line ? 14 : 0) };
@@ -78,7 +86,7 @@ export class Labels {
     for (const c of cands) {
       if (c.x < -40 || c.x > width + 40 || c.y < -20 || c.y > height + 40) continue;
       const { w, h } = this.sizeOf(c);
-      let box: Box = { l: c.x - w / 2, r: c.x + w / 2, b: c.y - c.lift, t: c.y - c.lift - h };
+      let box: Box = { l: c.x - w / 2, r: c.x + w / 2, b: c.y - c.lift * scaleK(), t: c.y - c.lift * scaleK() - h };
       if (c.force) {
         for (const dy of [0, -(h + 3), h + 3, -2 * (h + 3), 2 * (h + 3), -3 * (h + 3)]) {
           const shifted = { ...box, t: box.t + dy, b: box.b + dy };

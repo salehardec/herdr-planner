@@ -1,20 +1,20 @@
 .top-search{position:relative;width:100%;min-width:0}
-.top-search .ic{position:absolute;left:12px;top:10px;color:var(--pl-dim);width:14px;height:14px;pointer-events:none}
-.top-search .kk{position:absolute;right:10px;top:7px;color:var(--pl-dim);font-size:11px;pointer-events:none}
-.top-search input.q{width:100%;height:34px;padding:0 74px 0 34px;border-radius:17px;border:1px solid var(--pl-line);background:var(--pl-panel-solid);outline:none;transition:box-shadow var(--m-med),border-color var(--m-med);font-size:13px;appearance:none}
+.top-search>.ic{position:absolute;left:0.75rem;top:0.625rem;color:var(--pl-dim);width:0.875rem;height:0.875rem;pointer-events:none}
+.top-search .kk{position:absolute;right:0.625rem;top:0.4375rem;color:var(--pl-dim);font-size:0.6875rem;pointer-events:none}
+.top-search input.q{width:100%;height:2.125rem;padding:0 4.625rem 0 2.125rem;border-radius:1.0625rem;border:1px solid var(--pl-line);background:var(--pl-panel-solid);outline:none;transition:box-shadow var(--m-med),border-color var(--m-med);font-size:0.8125rem;appearance:none}
 .top-search input.q::-webkit-search-cancel-button{display:none}
-.top-search input.q:focus{border-color:var(--pl-accent);box-shadow:0 0 0 4px color-mix(in srgb,var(--pl-accent) 16%,transparent),0 0 30px color-mix(in srgb,var(--pl-accent) 24%,transparent)}
-.sres{position:absolute;top:40px;left:0;right:0;max-height:64vh;overflow:auto;padding:6px;background:var(--c-bg);border:1px solid var(--pl-line);border-radius:10px;box-shadow:0 16px 40px #0008;animation:rise var(--m-med) var(--m-ease);scrollbar-width:thin}
-@keyframes rise{from{opacity:0;transform:translateY(-6px)}}
-.sres h4{display:flex;gap:6px;align-items:center;margin:8px 8px 2px;font-size:10px;letter-spacing:.08em;text-transform:uppercase;color:var(--pl-dim);font-weight:500}
-.sres h4 .gl{width:11px;height:11px}
-.sres .empty{padding:12px;color:var(--pl-dim)}
-.sr{display:grid;grid-template-columns:22px 1fr auto;gap:8px;align-items:center;padding:6px 8px;border-radius:6px;cursor:pointer}
-.sr .ic{text-align:center;color:var(--s-ink,var(--pl-dim))}
-.sr .ic .gl{width:14px;height:14px}
-.sr .body{display:grid;min-width:0}
-.sr .ttl{color:var(--pl-title);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.sr .snip{font-size:11px;color:var(--pl-dim);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.sr .path{font-size:10.5px;color:var(--pl-faint);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.sr .st{font-size:11px;color:var(--s-ink)}
-.sr.cur,.sr:hover{background:var(--pl-hover)}
+.top-search input.q:focus{border-color:var(--pl-accent);box-shadow:0 0 0 0.25rem color-mix(in srgb,var(--pl-accent) 16%,transparent),0 0 1.875rem color-mix(in srgb,var(--pl-accent) 24%,transparent)}
+.sres{position:absolute;top:2.5rem;left:0;right:0;max-height:64vh;overflow:auto;padding:0.375rem;background:var(--c-bg);border:1px solid var(--pl-line);border-radius:0.625rem;box-shadow:0 1rem 2.5rem #0008;animation:rise var(--m-med) var(--m-ease);scrollbar-width:thin}
+@keyframes rise{from{opacity:0;transform:translateY(-0.375rem)}}
+.sres h4{display:flex;gap:0.375rem;align-items:center;margin:0.5rem 0.5rem 2px;font-size:0.625rem;letter-spacing:.08em;text-transform:uppercase;color:var(--pl-dim);font-weight:500}
+.sres h4 .gl{width:0.6875rem;height:0.6875rem}
+.sres .empty{padding:0.75rem;color:var(--pl-dim)}
+.srow{display:grid;grid-template-columns:1.375rem 1fr auto;gap:0.5rem;align-items:center;padding:0.375rem 0.5rem;border-radius:0.375rem;cursor:pointer}
+.srow .ic{text-align:center;color:var(--s-ink,var(--pl-dim))}
+.srow .ic .gl{width:0.875rem;height:0.875rem}
+.srow .body{display:grid;min-width:0}
+.srow .ttl{color:var(--pl-title);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.srow .snip{font-size:0.6875rem;color:var(--pl-dim);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.srow .path{font-size:0.6562rem;color:var(--pl-faint);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.srow .st{font-size:0.6875rem;color:var(--s-ink)}
+.srow.cur,.srow:hover{background:var(--pl-hover)}

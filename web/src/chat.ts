@@ -1,33 +1,23 @@
 /* The Coordinator's chat: the last turns of its transcript, older ones on demand, search,
-   and sending (text and pasted images). */
+   and sending (text and files: pasted screenshots, images, sound, text). */
 import { signal } from '@preact/signals';
 import { api, post, refreshNow } from './api';
 import { chat, galaxyId, snap } from './store';
 import type { TurnData } from './types';
-import { toast } from './toast';
 import { t } from './i18n';
+import { makeShelf, type SavedFile } from './attach';
 
-export const IMG_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp', 'image/gif']);
-export const IMG_MAX = 10 * 1024 * 1024;
-export const IMG_MAX_COUNT = 8;
-
-export interface PendingImage {
-  key: number;
-  name: string;
-  size: number;
-  state: 'uploading' | 'ready' | 'error';
-  local: string;
-  id: string;
-  error: string;
-  task: Promise<void> | null;
-}
-
-export const pendingImages = signal<PendingImage[]>([]);
+/** The files waiting in the message line. */
+const shelf = makeShelf();
+export const pendingFiles = shelf.files;
+export const addFiles = shelf.add;
+export const removeFile = shelf.remove;
 export const sending = signal(false);
 export const optimistic = signal<{ text: string; at: number; attachments: { id: string; name: string }[] } | null>(null);
 /** Set when a search hit or a key asks the log to show a given turn. */
 export const scrollTo = signal<{ n: number; at: number } | null>(null);
-let imgSeq = 0;
+/** A draft for the message line (a todo item dropped on the chat): the line takes the text once. */
+export const draftRequest = signal<{ text: string; at: number } | null>(null);
 
 const update = (patch: Partial<ReturnType<typeof chat.peek>>): void => { chat.value = { ...chat.value, ...patch }; };
 
@@ -116,71 +106,43 @@ export function pendingMessage(): ReturnType<typeof chat.peek>['pending'] {
   return p;
 }
 
-/* ───────── images ───────── */
+/* ───────── files ───────── */
 
-async function upload(item: PendingImage, file: File): Promise<void> {
-  const form = new FormData();
-  form.append('file', file, item.name);
-  try {
-    const r = await fetch('/api/chat/attach', { method: 'POST', credentials: 'same-origin', body: form });
-    if (r.status === 401) { location.href = '/login?next=' + encodeURIComponent(location.pathname + location.search); throw new Error('unauthorized'); }
-    const data = await r.json().catch(() => ({}));
-    if (!r.ok) throw new Error(data.error || `HTTP ${r.status}`);
-    item.id = data.attachment?.id || '';
-    item.name = data.attachment?.name || item.name;
-    if (!item.id) throw new Error(t('chat.noFile'));
-    item.state = 'ready';
-  } catch (e) {
-    item.state = 'error';
-    item.error = (e as Error).message;
-    toast(t('chat.imgFailed', { why: item.error }));
-  }
-  pendingImages.value = [...pendingImages.value];
+/** The todo items whose words and files are in the message line now. They stay in the list until the message is sent. */
+export const draftTodos = signal<string[]>([]);
+/** What happens to those items once the message has gone (set by the todo actions: they leave the list). */
+export const draftSent: { fn: (ids: string[]) => void } = { fn: () => {} };
+
+/** A todo item becomes the draft of a message to the Coordinator, to be corrected and sent from the line. */
+export function draftMessage(id: string, text: string, files: SavedFile[]): boolean {
+  if (draftTodos.value.includes(id)) return false;
+  shelf.adopt(files);
+  draftTodos.value = [...draftTodos.value, id];
+  draftRequest.value = { text, at: Date.now() };
+  return true;
 }
 
-export function addFiles(files: FileList | File[] | null | undefined): void {
-  for (const file of [...(files ?? [])]) {
-    if (pendingImages.value.length >= IMG_MAX_COUNT) { toast(t('chat.imgMax', { n: IMG_MAX_COUNT })); break; }
-    const type = String(file.type || '').toLowerCase();
-    if (type && !IMG_TYPES.has(type)) { toast(t('chat.imgType')); continue; }
-    if (!file.size) { toast(t('chat.imgEmpty')); continue; }
-    if (file.size > IMG_MAX) { toast(t('chat.imgBig')); continue; }
-    const item: PendingImage = {
-      key: ++imgSeq, name: file.name || t('chat.image'), size: file.size, state: 'uploading', local: URL.createObjectURL(file), id: '', error: '', task: null,
-    };
-    pendingImages.value = [...pendingImages.value, item];
-    item.task = upload(item, file);
-  }
-}
-
-export function removeImage(key: number): void {
-  const i = pendingImages.value.findIndex((p) => p.key === key);
-  if (i < 0) return;
-  const [p] = pendingImages.value.splice(i, 1);
-  if (p.local) URL.revokeObjectURL(p.local);
-  pendingImages.value = [...pendingImages.value];
-}
-
-/** Sends text (and the ready images) to the Coordinator of the galaxy the operator is in. */
+/** Sends text (and the ready files) to the Coordinator of the galaxy the operator is in. */
 export async function send(text: string): Promise<boolean> {
   if (sending.value) return false;
   const body = text.trim();
-  const imgs = [...pendingImages.value];
-  if (!body && !imgs.length) return false;
+  const files = [...pendingFiles.value];
+  if (!body && !files.length) return false;
   sending.value = true;
   try {
-    await Promise.all(imgs.map((p) => p.task).filter(Boolean));
-    const failed = imgs.find((p) => p.state !== 'ready');
-    if (failed) { update({ error: t('chat.imgFailed', { why: failed.error || t('chat.tryAgain') }) }); return false; }
-    const attachments = imgs.map((p) => ({ id: p.id, name: p.name }));
+    const got = await shelf.settled();
+    if (!got.ok) { update({ error: t('chat.imgFailed', { why: got.why }) }); return false; }
+    const attachments = got.saved;
     update({ error: '' });
     optimistic.value = { text: body, at: Date.now(), attachments };
     notePending(body, attachments);
     try {
       await post('/api/chat', { text: body, attachments, galaxy: galaxyId.value || undefined });
-      for (const p of imgs) if (p.local) URL.revokeObjectURL(p.local);
-      const keys = new Set(imgs.map((p) => p.key));
-      pendingImages.value = pendingImages.value.filter((p) => !keys.has(p.key));
+      const keys = new Set(files.map((p) => p.key));
+      for (const k of keys) shelf.remove(k);
+      const sentTodos = draftTodos.value;
+      draftTodos.value = [];
+      if (sentTodos.length) draftSent.fn(sentTodos);
       setTimeout(() => { void refreshNow(); void loadLatest(); }, 800);
       setTimeout(() => { void refreshNow(); void loadLatest(); }, 2400);
       return true;

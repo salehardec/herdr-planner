@@ -20,6 +20,7 @@ use serde::Deserialize;
 use serde_json::json;
 use std::collections::HashSet;
 use std::net::{IpAddr, SocketAddr};
+use std::path::PathBuf;
 use std::process::Stdio;
 use std::time::{Duration, SystemTime};
 use tokio::process::Command;
@@ -97,7 +98,7 @@ async fn headers_middleware(req: axum::extract::Request, next: Next) -> Response
         header::CONTENT_SECURITY_POLICY,
         HeaderValue::from_static(
             "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; \
-             img-src 'self' data: blob:; connect-src 'self'; form-action 'self'; \
+             img-src 'self' data: blob:; media-src 'self' blob:; connect-src 'self'; form-action 'self'; \
              frame-ancestors 'none'; base-uri 'self'",
         ),
     );
@@ -599,6 +600,57 @@ impl AttachmentRef {
     }
 }
 
+/// Files the page names by id (it uploaded them first): their records and their
+/// absolute paths. The Coordinator and the agents open these paths themselves:
+/// they are paths on the machine with the board, never paths from the browser's
+/// machine.
+async fn resolve_attachments(
+    dir: &std::path::Path,
+    refs: &[AttachmentRef],
+) -> Result<(Vec<attachments::Attachment>, Vec<PathBuf>), Response> {
+    let mut files = Vec::new();
+    let mut stored = Vec::new();
+    let mut seen = HashSet::new();
+    for reference in refs {
+        let id = reference.id();
+        let Some(kind) = attachments::parse_id(id) else {
+            return Err(error(StatusCode::BAD_REQUEST, "unknown attachment"));
+        };
+        if !seen.insert(id.to_string()) {
+            continue;
+        }
+        let Some(path) = attachments::path(dir, id) else {
+            return Err(error(StatusCode::BAD_REQUEST, "unknown attachment"));
+        };
+        let meta = match tokio::fs::metadata(&path).await {
+            Ok(meta) if meta.is_file() => meta,
+            _ => return Err(error(StatusCode::BAD_REQUEST, "attachment is gone")),
+        };
+        let absolute = tokio::fs::canonicalize(&path).await.unwrap_or(path);
+        files.push(absolute);
+        stored.push(attachments::Attachment {
+            id: id.to_string(),
+            name: attachments::clean_name(reference.name(), kind),
+            mime: kind.mime.to_string(),
+            size: meta.len(),
+        });
+    }
+    Ok((stored, files))
+}
+
+/// The absolute paths of a todo item's files that are still there.
+async fn held_paths(dir: &std::path::Path, files: &[attachments::Attachment]) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    for a in files {
+        if let Some(path) = attachments::path(dir, &a.id) {
+            if tokio::fs::metadata(&path).await.is_ok_and(|m| m.is_file()) {
+                out.push(tokio::fs::canonicalize(&path).await.unwrap_or(path));
+            }
+        }
+    }
+    out
+}
+
 async fn api_chat(
     State(app): State<Shared>,
     headers: HeaderMap,
@@ -625,7 +677,7 @@ async fn api_chat(
             return error(StatusCode::BAD_REQUEST, "bad machine label");
         }
         if !body.attachments.is_empty() {
-            return error(StatusCode::BAD_REQUEST, "картинки в далёкую галактику не передаются");
+            return error(StatusCode::BAD_REQUEST, "вложения в далёкую галактику не передаются");
         }
         if text.is_empty() {
             return error(StatusCode::BAD_REQUEST, "empty message");
@@ -640,35 +692,10 @@ async fn api_chat(
     }
 
     let dir = app.cfg.attachments_dir();
-    let mut files = Vec::new();
-    let mut stored = Vec::new();
-    let mut seen = HashSet::new();
-    for reference in &body.attachments {
-        let id = reference.id();
-        let Some(kind) = attachments::parse_id(id) else {
-            return error(StatusCode::BAD_REQUEST, "unknown attachment");
-        };
-        if !seen.insert(id.to_string()) {
-            continue;
-        }
-        let Some(path) = attachments::path(&dir, id) else {
-            return error(StatusCode::BAD_REQUEST, "unknown attachment");
-        };
-        let meta = match tokio::fs::metadata(&path).await {
-            Ok(meta) if meta.is_file() => meta,
-            _ => return error(StatusCode::BAD_REQUEST, "attachment is gone"),
-        };
-        // The Coordinator opens these paths itself: they are absolute paths on
-        // the machine with the board, never paths from the browser's machine.
-        let absolute = tokio::fs::canonicalize(&path).await.unwrap_or(path);
-        files.push(absolute);
-        stored.push(attachments::Attachment {
-            id: id.to_string(),
-            name: attachments::clean_name(reference.name(), kind),
-            mime: kind.mime.to_string(),
-            size: meta.len(),
-        });
-    }
+    let (stored, files) = match resolve_attachments(&dir, &body.attachments).await {
+        Ok(r) => r,
+        Err(e) => return e,
+    };
     if text.is_empty() && files.is_empty() {
         return error(StatusCode::BAD_REQUEST, "empty message");
     }
@@ -710,7 +737,7 @@ async fn api_chat(
     Json(json!({"ok": true})).into_response()
 }
 
-/// One image per request (`file` field). The browser, local or remote, sends
+/// One file per request (`file` field). The browser, local or remote, sends
 /// the bytes over HTTP(S); nothing is read from the browser's filesystem.
 async fn api_attach(
     State(app): State<Shared>,
@@ -745,19 +772,28 @@ async fn api_attach(
     let Some((name, bytes)) = upload else {
         return error(StatusCode::BAD_REQUEST, "no file in the upload");
     };
-    if bytes.len() > attachments::MAX_IMAGE_BYTES {
+    if bytes.len() > attachments::MAX_AUDIO_BYTES {
         return error(
             StatusCode::PAYLOAD_TOO_LARGE,
             format!(
-                "image is larger than {} MB",
-                attachments::MAX_IMAGE_BYTES / (1024 * 1024)
+                "file is larger than {} MB",
+                attachments::MAX_AUDIO_BYTES / (1024 * 1024)
             ),
         );
     }
-    if attachments::sniff(&bytes).is_none() {
+    let Some(kind) = attachments::sniff(&bytes) else {
         return error(
             StatusCode::UNSUPPORTED_MEDIA_TYPE,
-            "only PNG, JPEG, WebP and GIF are accepted",
+            "only images (PNG, JPEG, WebP, GIF), sound (MP3, WAV, OGG, FLAC, M4A, AAC) and UTF-8 text are accepted",
+        );
+    };
+    if bytes.len() > kind.limit() {
+        return error(
+            StatusCode::PAYLOAD_TOO_LARGE,
+            format!(
+                "this kind of file is larger than {} MB",
+                kind.limit() / (1024 * 1024)
+            ),
         );
     }
 
@@ -767,12 +803,13 @@ async fn api_attach(
         Err(e) => return error(StatusCode::INTERNAL_SERVER_ERROR, e),
     };
     // Keep the folder bounded; the old files are no longer needed by any chat
-    // entry the page shows (history is at most 20 messages old).
+    // entry the page shows (history is at most 20 messages old) nor by a todo item.
     let cleanup_dir = dir.clone();
     let app2 = app.clone();
     tokio::spawn(async move {
+        let held = app::held_files(&app2.db.todo_list());
         let _ = tokio::task::spawn_blocking(move || {
-            attachments::cleanup(&cleanup_dir, SystemTime::now())
+            attachments::cleanup(&cleanup_dir, SystemTime::now(), &held)
         })
         .await;
         app::prune_chat_attachments(&app2).await;
@@ -780,7 +817,7 @@ async fn api_attach(
     Json(json!({"ok": true, "attachment": attachment})).into_response()
 }
 
-/// A thumbnail or a full image for the chat history. Behind the login, with an
+/// A thumbnail, a full image, a sound or a text for the chat history and the todo list. Behind the login, with an
 /// id that can only be one of the files `save` created.
 async fn api_attachment(State(app): State<Shared>, Path(id): Path<String>) -> Response {
     let Some(path) = attachments::path(&app.cfg.attachments_dir(), &id) else {
@@ -797,6 +834,7 @@ async fn api_attachment(State(app): State<Shared>, Path(id): Path<String>) -> Re
                     header::CACHE_CONTROL,
                     HeaderValue::from_static("private, max-age=3600"),
                 ),
+                // (every response carries `nosniff`: text is served as text, whatever it looks like)
             ],
             bytes,
         )
@@ -828,6 +866,8 @@ struct ActionBody {
     galaxy: Option<String>,
     /// The worker agent for a new task: `claude/claude-sonnet-5-5`.
     agent: Option<String>,
+    /// Uploaded files a todo item holds (todo-add; todo-update replaces the set).
+    attachments: Option<Vec<AttachmentRef>>,
     /// The order of the God's list.
     ids: Option<Vec<String>>,
     /// To whom a list item is addressed: empty, `quasar` or a task id.
@@ -938,10 +978,20 @@ async fn api_action(
                 Ok(t) => t,
                 Err(e) => return error(StatusCode::BAD_REQUEST, e),
             };
+            let files = match todo_files(&app, body.attachments.as_deref().unwrap_or(&[])).await {
+                Ok(f) => f,
+                Err(e) => return e,
+            };
             let db = app.db.clone();
-            let item = tokio::task::spawn_blocking(move || db.todo_add(&text, now_ms()))
-                .await
-                .unwrap_or_default();
+            let item = tokio::task::spawn_blocking(move || {
+                let item = db.todo_add(&text, now_ms());
+                if !files.is_empty() && !item.id.is_empty() {
+                    db.todo_files(&item.id, &files);
+                }
+                item
+            })
+            .await
+            .unwrap_or_default();
             if item.id.is_empty() {
                 return error(StatusCode::INTERNAL_SERVER_ERROR, "the list could not be saved");
             }
@@ -952,12 +1002,29 @@ async fn api_action(
             if !valid_todo_id(id) {
                 return error(StatusCode::BAD_REQUEST, "bad todo id");
             }
-            let text = match todo_text(body.text.as_deref().unwrap_or("")) {
+            if body.text.is_none() && body.attachments.is_none() {
+                return error(StatusCode::BAD_REQUEST, "nothing to change");
+            }
+            let text = match body.text.as_deref().map(todo_text).transpose() {
                 Ok(t) => t,
                 Err(e) => return error(StatusCode::BAD_REQUEST, e),
             };
-            if !app.db.todo_update(id, &text) {
-                return error(StatusCode::NOT_FOUND, "no such todo item");
+            let files = match body.attachments.as_deref() {
+                Some(refs) => match todo_files(&app, refs).await {
+                    Ok(f) => Some(f),
+                    Err(e) => return e,
+                },
+                None => None,
+            };
+            if let Some(text) = &text {
+                if !app.db.todo_update(id, text) {
+                    return error(StatusCode::NOT_FOUND, "no such todo item");
+                }
+            }
+            if let Some(files) = &files {
+                if !app.db.todo_files(id, files) {
+                    return error(StatusCode::NOT_FOUND, "no such todo item");
+                }
             }
             return todo_reply(&app).await;
         }
@@ -1003,6 +1070,9 @@ async fn api_action(
                 Ok(t) => t,
                 Err(e) => return error(StatusCode::BAD_REQUEST, e),
             };
+            // The files go along as absolute paths on this machine.
+            let paths = held_paths(&app.cfg.attachments_dir(), &item.attachments).await;
+            let text = attachments::message(&text, &paths);
             let sent = if item.to == "quasar" {
                 run_board(&app.cfg, &["coordinator", "tell", "--", &text], Duration::from_secs(30)).await
             } else if board::valid_id(&item.to) && item.to.contains('/') {
@@ -1048,7 +1118,13 @@ async fn api_action(
                 Ok(t) => t,
                 Err(e) => return error(StatusCode::BAD_REQUEST, e),
             };
+            let paths = held_paths(&app.cfg.attachments_dir(), &item.attachments).await;
+            let desc = attachments::message("", &paths);
             let mut args: Vec<&str> = vec!["add", title.as_str(), "--repo", repo.as_str()];
+            if !desc.is_empty() {
+                args.push("--desc");
+                args.push(desc.as_str());
+            }
             if let Some(a) = agent {
                 args.push("--worker.agent");
                 args.push(a);
@@ -1145,6 +1221,22 @@ async fn api_action(
         }
         Err(e) => error(StatusCode::BAD_GATEWAY, e),
     }
+}
+
+/// The files named for a todo item: at most `MAX_PER_MESSAGE`, each one uploaded before.
+async fn todo_files(
+    app: &Shared,
+    refs: &[AttachmentRef],
+) -> Result<Vec<attachments::Attachment>, Response> {
+    if refs.len() > attachments::MAX_PER_MESSAGE {
+        return Err(error(
+            StatusCode::BAD_REQUEST,
+            format!("at most {} files per item", attachments::MAX_PER_MESSAGE),
+        ));
+    }
+    resolve_attachments(&app.cfg.attachments_dir(), refs)
+        .await
+        .map(|(stored, _)| stored)
 }
 
 async fn todo_json(app: &Shared) -> serde_json::Value {

@@ -90,6 +90,4 @@ export function dropDetails(id: string): void {
   }
 }
 
-export const imgUrl = (a: string | { id: string }): string => '/api/attachments/' + encodeURIComponent(typeof a === 'string' ? a : a.id);
-
 void chat;

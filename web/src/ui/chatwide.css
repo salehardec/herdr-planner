@@ -1,0 +1,31 @@
+/* Чат на всё окно: слева навигатор, дела (если открыты), чат, справа «Фокус». Мир за ними приглушён.
+   Узкие окна (до 1000 px) остаются с обычным чатом внизу. */
+.win{--todo-col:20rem}
+
+  :root:not(.bp1000) #scene,:root:not(.bp1000) .labels{transition:filter .4s,opacity .4s}
+  :root:not(.bp1000) .win.chat-wide #scene{filter:brightness(.28) saturate(.6)}
+  :root:not(.bp1000) .win.chat-wide .labels{opacity:.18;pointer-events:none}
+  :root:not(.bp1000) .win.chat-wide .chat>header{flex-wrap:wrap;row-gap:0.375rem}
+  :root:not(.bp1000) .win.chat-wide .chat{top:3.75rem;bottom:4.375rem;left:var(--mid-l);right:var(--mid-r);max-width:none;max-height:none;margin:0;font-size:1rem;transition:left .3s var(--m-ease),transform var(--m-med) var(--m-ease),opacity var(--m-med)}
+  :root:not(.bp1000) .win.chat-wide.todo-open .chat{left:calc(var(--mid-l) + var(--todo-col) + 0.75rem)}
+  :root:not(.bp1000) .win.chat-wide .chat .log{padding-inline:max(1rem,calc((100% - 62rem) / 2))}
+  :root:not(.bp1000) .win.chat-wide .chat .compose{padding-inline:max(0.625rem,calc((100% - 62rem) / 2))}
+  /* the todos stand beside the chat as a column and come from the left with the same slide */
+  :root:not(.bp1000) .win.chat-wide .todo{top:3.75rem;bottom:4.375rem;left:var(--mid-l);right:auto;width:var(--todo-col);max-width:none;max-height:none;margin:0;z-index:15;
+    transform:translateX(calc(-100% - 2rem))}
+  :root:not(.bp1000) .win.chat-wide .todo.open{transform:none}
+  :root:not(.bp1000) .win.chat-wide .tlist{grid-template-columns:1fr}
+
+
+  /* not enough room for the todos and a chat: the focus card steps aside while the todos are open */
+  :root:not(.bp1000) .win.chat-wide.todo-open.wide-tight{--mid-r:0.75rem}
+  :root:not(.bp1000) .win.chat-wide.todo-open.wide-tight .focus{transform:translateX(110%);opacity:0;pointer-events:none}
+
+:root.bp1000 #cwide{display:none}
+/* the keys card has nothing to say behind an open chat */
+.win.chat-open .hintcard{display:none}
+/* 901–1000 (as the interface sees the window: a 950 px window, 1366 px at 150 %, 1920 px at 200 %): no columns, but nothing
+   covers anything. The chat and the todos stay between the navigator and the edge; the focus card steps aside while
+   either is open. */
+:root.bp1000:not(.bp900) .win.chat-open,:root.bp1000:not(.bp900) .win.todo-open{--mid-r:0.75rem}
+:root.bp1000:not(.bp900) .win.chat-open .focus,:root.bp1000:not(.bp900) .win.todo-open .focus{transform:translateX(110%);opacity:0;pointer-events:none}

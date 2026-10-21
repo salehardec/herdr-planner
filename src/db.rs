@@ -11,6 +11,7 @@
 //! cannot be looked up in a trigram index, so they fall back to `LIKE`.
 
 use crate::app::{ChatMessage, ChatState, JournalEntry, TodoItem};
+use crate::attachments::Attachment;
 use crate::search::highlight;
 use rusqlite::types::Value;
 use rusqlite::{params, params_from_iter, Connection, OptionalExtension, Row};
@@ -22,7 +23,10 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 /// Schema migrations in order; `PRAGMA user_version` counts how many have run.
-const MIGRATIONS: &[&str] = &[include_str!("db/migrations/001_init.sql")];
+const MIGRATIONS: &[&str] = &[
+    include_str!("db/migrations/001_init.sql"),
+    include_str!("db/migrations/002_todo_files.sql"),
+];
 
 /// Entries the journal hands out; older ones stay in the table up to [`JOURNAL_KEEP`].
 const JOURNAL_LIVE: usize = 80;
@@ -150,13 +154,15 @@ impl Db {
 
     pub fn todo_list(&self) -> Vec<TodoItem> {
         self.with("todo_list", |c| {
-            let mut st = c.prepare("SELECT id, text, at, to_ FROM todo ORDER BY ord, rowid")?;
+            let mut st =
+                c.prepare("SELECT id, text, at, to_, files FROM todo ORDER BY ord, rowid")?;
             let rows = st.query_map([], |r| {
                 Ok(TodoItem {
                     id: r.get(0)?,
                     text: r.get(1)?,
                     at: r.get::<_, i64>(2)? as u64,
                     to: r.get(3)?,
+                    attachments: serde_json::from_str(&r.get::<_, String>(4)?).unwrap_or_default(),
                 })
             })?;
             rows.collect()
@@ -195,7 +201,17 @@ impl Db {
                 text: text.to_string(),
                 at,
                 to: String::new(),
+                attachments: Vec::new(),
             })
+        })
+    }
+
+    /// Replaces the files of the item; `false` when there is no such item.
+    pub fn todo_files(&self, id: &str, files: &[Attachment]) -> bool {
+        let json = serde_json::to_string(files).unwrap_or_else(|_| "[]".into());
+        self.with("todo_files", |c| {
+            let n = c.execute("UPDATE todo SET files = ?2 WHERE id = ?1", params![id, json])?;
+            Ok(n > 0)
         })
     }
 
@@ -1218,6 +1234,24 @@ mod tests {
             "LIKE wildcards are escaped"
         );
         assert!(db.chat_search("  ", 10).is_empty());
+    }
+
+    #[test]
+    fn a_todo_item_keeps_its_files() {
+        let db = Db::memory().unwrap();
+        let a = db.todo_add("со скриншотом", 1);
+        assert!(db.todo_list()[0].attachments.is_empty());
+        let file = Attachment {
+            id: "0123456789abcdef0123456789abcdef.png".into(),
+            name: "shot.png".into(),
+            mime: "image/png".into(),
+            size: 8,
+        };
+        assert!(db.todo_files(&a.id, std::slice::from_ref(&file)));
+        assert_eq!(db.todo_list()[0].attachments, vec![file]);
+        assert!(!db.todo_files("missing", &[]));
+        assert!(db.todo_files(&a.id, &[]));
+        assert!(db.todo_list()[0].attachments.is_empty());
     }
 
     #[test]

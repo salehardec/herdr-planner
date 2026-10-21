@@ -73,7 +73,7 @@ export function Menu(): JSX.Element {
           {item('screen', s?.herdr.running ? t('menu.herdrOn') : t('menu.herdrOff'), () => { panels.herdr.value = !panels.herdr.value; })}
           {s?.auth.required && (
             <>
-              <span class="faint" style="padding:4px 8px">{s.auth.user}</span>
+              <span class="faint" style="padding:0.25rem 0.5rem">{s.auth.user}</span>
               {item('logout', t('menu.logout'), () => { void post('/api/logout').catch(() => {}).then(() => { location.href = '/login'; }); })}
             </>
           )}

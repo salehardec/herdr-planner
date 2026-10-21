@@ -191,7 +191,7 @@ export function UniverseFocus(props: { entity: Entity }): JSX.Element {
       } catch { /* shown */ }
     });
   };
-  const cmd = lag ? `git -C ${p.root || '<папка>'} pull --ff-only` : '';
+  const cmd = lag ? `git -C ${p.root || t('universe.folderPh')} pull --ff-only` : '';
   return (
     <div class="fbody" data-focus="universe">
       <div class="fhd">
