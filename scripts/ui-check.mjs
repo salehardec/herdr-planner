@@ -1995,7 +1995,7 @@ const layoutRun = async (w, h, dsf, scale = 'auto') => {
       const metas = [...nav.querySelectorAll('.ti.planet .meta.st')].map((e) => e.getBoundingClientRect().width / px);
       return { navRem: nav.getBoundingClientRect().width / px, minTitle: Math.min(...titles), rows: titles.length, maxStatus: Math.max(0, ...metas), tip: nav.querySelector('.ti.planet')?.title || '', pxNav: nav.getBoundingClientRect().width };
     })()`);
-    check(`${at}: the navigator is wide (${m.navRem?.toFixed(1)} rem, ${Math.round(m.pxNav)} px)`, (eff <= 900 || (m.navRem >= (eff > 1400 ? 26 : eff > 1100 ? 22 : 20) - 0.1 && m.pxNav >= 300)), JSON.stringify(m));
+    check(`${at}: the navigator is wide (${m.navRem?.toFixed(1)} rem, ${Math.round(m.pxNav)} px)`, (eff <= 900 || (m.navRem >= (eff > 1400 ? 26 : eff > 1100 ? 22 : 21) - 0.1 && m.pxNav >= 300)), JSON.stringify(m));
     check(`${at}: a task's name has room: ${m.minTitle?.toFixed(1)} rem at least (${NAV_TITLE_MIN_REM} wanted), the status takes ${m.maxStatus?.toFixed(1)} rem`, m.rows > 3 && m.minTitle >= NAV_TITLE_MIN_REM && m.maxStatus <= 6, JSON.stringify(m));
     check(`${at}: the whole name and status are in the row's tooltip`, /ALP-\d+ .+\n.+/.test(m.tip) || m.tip.includes('ALP-'), m.tip);
   });

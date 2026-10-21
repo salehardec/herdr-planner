@@ -50,7 +50,7 @@
   --pl-panel:color-mix(in srgb,var(--pl-bg) 90%,transparent);
 }
 :root.bp1400 .win{--nav-w:min(var(--nav-user,22rem),55vw)}
-:root.bp1100 .win{--nav-w:min(var(--nav-user,20rem),55vw);--focus-w:20.625rem}
+:root.bp1100 .win{--nav-w:min(var(--nav-user,21rem),55vw);--focus-w:20.625rem}
 /* a closed navigator or focus card gives its column back */
 .win.nav-off{--mid-l:0.75rem}
 .win.focus-off{--mid-r:0.75rem}

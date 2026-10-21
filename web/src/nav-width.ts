@@ -24,7 +24,7 @@ export const navWidth = signal<number | null>(read());
 /* The chat needs this much between the navigator and the focus card (the same figure the wide chat uses), and the focus card and the gaps
    are what base.css gives them: the navigator may take the rest, never less than what the narrow windows get by default. */
 const CHAT_MIN_REM = 30;
-const NAV_FLOOR = 20;
+const NAV_FLOOR = 21;
 const aside = (): number => (effectiveWidth() <= 1100 ? 20.625 : 24.375) + 3;
 
 /** The most the panel may take, in rem, at the size of the window now (the interface's own size included).
