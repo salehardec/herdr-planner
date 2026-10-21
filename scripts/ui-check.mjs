@@ -1568,6 +1568,7 @@ section('station', async () => {
   await click('[id="st-next-plan.agent"]');
   check('an invalid model is refused before confirming, in the board\'s words', await waitFor('!!document.querySelector("#st-invalid")', 6000) && await hasText('#st-invalid', 'такой модели нет') && (await evalJs('document.querySelector("#st-confirm").disabled')), await text('#st-change'));
   await click('#st-cancel');
+  await waitFor('!document.querySelector("#st-change")', 5000);   // the card is gone before the next one is looked for
 
   // reset: unset, with what the value becomes
   await waitFor('!!document.querySelector(\'[data-unset="watcher.agent"]\')', 6000);
@@ -1575,8 +1576,10 @@ section('station', async () => {
   await waitFor('(document.querySelector("#st-now")?.innerText || "").includes("сбросить")', 8000);
   check('reset shows what the value becomes', await hasText('#st-now', 'сбросить'), await text('#st-change'));
   await click('#st-cancel');
+  await waitFor('!document.querySelector("#st-change")', 5000);   // the card is gone before the next one is looked for
   await waitFor('!!document.querySelector(\'[data-unset="watcher.agent"]\')', 6000);
   await click('[data-unset="watcher.agent"]');
+  await waitFor('(document.querySelector("#st-now")?.innerText || "").includes("сбросить")', 8000);
   await readyCard();
   await twoPresses('#st-confirm');
   check('reset is the board\'s unset command', await waitLog(() => calls().some((c) => c.argv?.[0] === 'unset' && c.argv.includes('watcher.agent')), 8000));
