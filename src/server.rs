@@ -30,6 +30,32 @@ use tokio::time::timeout;
 /// far past the old one-line limits. Longer texts are refused with a message, never cut by the page.
 const MAX_TEXT_CHARS: usize = 100_000;
 
+/// The same text, in bytes: it goes to `herdr-projects` as one argument, and Linux refuses an
+/// argument longer than 128 KiB (`MAX_ARG_STRLEN`). Room is kept for the attachment paths that
+/// travel in the same argument. A Cyrillic letter is two bytes, so this is about 65 000 of them:
+/// counting only characters would accept a text the process cannot even start with.
+const MAX_ARG_BYTES: usize = 130_000;
+
+/// Why a text cannot be sent to the board, if it cannot: too many characters, or more UTF-8 bytes
+/// than one command-line argument may hold (the message names the real limit, never a cryptic E2BIG).
+fn text_limit_error(text: &str, what: &str) -> Option<String> {
+    if text.chars().count() > MAX_TEXT_CHARS {
+        return Some(format!("{what} длиннее {MAX_TEXT_CHARS} символов"));
+    }
+    bytes_limit_error(text, what)
+}
+
+fn bytes_limit_error(text: &str, what: &str) -> Option<String> {
+    if text.len() <= MAX_ARG_BYTES {
+        return None;
+    }
+    Some(format!(
+        "{what} не помещается в доску: {} байт в UTF-8, а предел — {MAX_ARG_BYTES} байт \
+         (около 65000 русских букв); разбейте текст на части",
+        text.len()
+    ))
+}
+
 /// The built page (Vite): embedded into the binary; a debug build reads the folder.
 #[derive(rust_embed::RustEmbed)]
 #[folder = "$HERDR_PLANNER_DIST"]
@@ -468,8 +494,8 @@ fn todo_text(text: &str) -> Result<String, String> {
     if t.is_empty() {
         return Err("пустое дело".into());
     }
-    if t.chars().count() > MAX_TEXT_CHARS {
-        return Err(format!("дело длиннее {MAX_TEXT_CHARS} символов"));
+    if let Some(e) = text_limit_error(&t, "дело") {
+        return Err(e);
     }
     if t.starts_with('-') {
         return Err("дело не может начинаться с «-»".into());
@@ -679,11 +705,8 @@ async fn api_chat(
             ),
         );
     }
-    if text.chars().count() > MAX_TEXT_CHARS {
-        return error(
-            StatusCode::BAD_REQUEST,
-            format!("сообщение длиннее {MAX_TEXT_CHARS} символов"),
-        );
+    if let Some(e) = text_limit_error(text, "сообщение") {
+        return error(StatusCode::BAD_REQUEST, e);
     }
     if let Some(g) = body.galaxy.as_deref().filter(|g| !g.is_empty()) {
         if !crate::machines::valid_label(g) {
@@ -714,6 +737,9 @@ async fn api_chat(
     }
 
     let message = attachments::message(text, &files);
+    if let Some(e) = bytes_limit_error(&message, "сообщение с вложениями") {
+        return error(StatusCode::BAD_REQUEST, e);
+    }
     if let Err(e) = run_board(
         &app.cfg,
         &["coordinator", "tell", "--", &message],
@@ -1086,6 +1112,9 @@ async fn api_action(
             // The files go along as absolute paths on this machine.
             let paths = held_paths(&app.cfg.attachments_dir(), &item.attachments).await;
             let text = attachments::message(&text, &paths);
+            if let Some(e) = bytes_limit_error(&text, "дело с вложениями") {
+                return error(StatusCode::BAD_REQUEST, e);
+            }
             let sent = if item.to == "quasar" {
                 run_board(&app.cfg, &["coordinator", "tell", "--", &text], Duration::from_secs(30)).await
             } else if board::valid_id(&item.to) && item.to.contains('/') {
@@ -1220,6 +1249,9 @@ async fn api_action(
             let text = body.text.as_deref().unwrap_or("").trim();
             if text.is_empty() {
                 return error(StatusCode::BAD_REQUEST, "empty message");
+            }
+            if let Some(e) = text_limit_error(text, "сообщение") {
+                return error(StatusCode::BAD_REQUEST, e);
             }
             run_board(&app.cfg, &["tell", id, "--", text], Duration::from_secs(60)).await
         }
@@ -1534,6 +1566,22 @@ mod tests {
         assert!(todo_text(&"x".repeat(401)).is_ok());
         assert!(todo_text(&"x".repeat(MAX_TEXT_CHARS)).is_ok());
         assert!(todo_text(&"x".repeat(MAX_TEXT_CHARS + 1)).is_err());
+        // A Cyrillic letter is two bytes: the real bound is the command-line argument, not the count.
+        assert!(todo_text(&"ж".repeat(60_000)).is_ok());
+        assert!(text_limit_error(&"ж".repeat(MAX_ARG_BYTES / 2), "дело").is_none());
+        let too_many_bytes = todo_text(&"ж".repeat(MAX_ARG_BYTES / 2 + 1)).unwrap_err();
+        assert!(too_many_bytes.contains("130000"), "{too_many_bytes}");
+        assert!(!too_many_bytes.contains("Argument list"), "{too_many_bytes}");
+        assert_eq!(
+            text_limit_error(&"ж".repeat(60_000), "дело"),
+            None
+        );
+        assert!(text_limit_error(&"x".repeat(MAX_TEXT_CHARS + 1), "сообщение")
+            .unwrap()
+            .contains("100000"));
+        assert!(bytes_limit_error(&"ж".repeat(MAX_ARG_BYTES / 2 + 1), "сообщение")
+            .unwrap()
+            .contains("130000"));
         assert!(valid_todo_id("t1792407710774-1"));
         assert!(!valid_todo_id("../../etc"));
         assert!(!valid_todo_id(""));

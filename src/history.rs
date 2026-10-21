@@ -18,7 +18,9 @@ use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 use std::time::SystemTime;
 
-const MAX_QUESTION: usize = 4000;
+/// A human message may be 100 000 characters (a spec, a log): the history keeps all of it, so the
+/// chat shows and reuses the words as they were sent. Answers are still bounded by `MAX_ANSWER`.
+const MAX_QUESTION: usize = 100_000;
 const MAX_ANSWER: usize = 8000;
 /// Board notices the Coordinator is told by itself, not typed by the human.
 const BOARD_PREFIX: &str = "[Уведомление доски]";
@@ -488,6 +490,17 @@ mod tests {
         assert_eq!(t.len(), 1);
         assert_eq!(t[0].q, "давай 1\nещё и таймаут 600");
         assert_eq!(t[0].a, "Готово обе.", "the final answer, not the line between the calls");
+    }
+
+    #[test]
+    fn a_long_question_keeps_its_words() {
+        let q = "ж".repeat(30_000);
+        let text = format!(
+            r#"{{"type":"user","timestamp":"2026-10-19T05:56:05.000Z","message":{{"content":"{q}"}}}}"#
+        );
+        let t = parse(&text);
+        assert_eq!(t.len(), 1);
+        assert_eq!(t[0].q, q, "a message the board accepts is not cut in the history");
     }
 
     #[test]

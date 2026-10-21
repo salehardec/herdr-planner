@@ -530,11 +530,14 @@ section('chat', async () => {
     const ta = document.querySelector('#ask-in'); const log = document.querySelector('#clog');
     ta.value = 'Слово '.repeat(88); ta.dispatchEvent(new Event('input', { bubbles: true })); ta.focus();
     ta.setSelectionRange(ta.value.length, ta.value.length);
-    return { start: ta.selectionStart, top: log.scrollTop, lines: ta.getBoundingClientRect().height };
+    return { lines: ta.getBoundingClientRect().height };
   })()`);
+  // A taller field shortens the log beside it: take the log's place once that has settled, then press.
+  await frames(2);
+  const beforeUp = await evalJs('(() => { const ta = document.querySelector("#ask-in"); return { start: ta.selectionStart, top: document.querySelector("#clog").scrollTop }; })()');
   await press('ArrowUp');
   const afterUp = await evalJs('(() => { const ta = document.querySelector("#ask-in"); return { start: ta.selectionStart, top: document.querySelector("#clog").scrollTop }; })()');
-  check('ArrowUp inside a wrapped paragraph moves the caret, not the history', afterUp.start < wrapped.start && afterUp.top === wrapped.top && wrapped.lines > 60, JSON.stringify({ wrapped, afterUp }));
+  check('ArrowUp inside a wrapped paragraph moves the caret, not the history', afterUp.start < beforeUp.start && afterUp.top === beforeUp.top && wrapped.lines > 60, JSON.stringify({ wrapped, beforeUp, afterUp }));
   await evalJs('(() => { const t = document.querySelector("#ask-in"); t.value = ""; t.dispatchEvent(new Event("input", { bubbles: true })); })()');
   // send: Shift+Enter keeps the line, Enter sends both lines
   await evalJs('(() => { const t = document.querySelector("#ask-in"); t.value = ""; t.dispatchEvent(new Event("input", { bubbles: true })); t.focus(); })()');
@@ -618,6 +621,11 @@ section('chat', async () => {
   check('the line is clear after the long message', await waitFor('document.querySelector("#ask-in").value === "" && !document.querySelector("#send").disabled', 10000));
   const tooLong = await evalJs(`fetch('/api/chat', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ text: 'z'.repeat(100001) }) }).then(async (r) => [r.status, (await r.json()).error])`);
   check('a chat message over 100 000 is refused with a clear message, not cut', tooLong[0] === 400 && tooLong[1].includes('100000'), JSON.stringify(tooLong));
+  // A Cyrillic letter is two bytes: 60 000 of them fit one argument, 70 000 do not. The limit must say so, not fail with E2BIG.
+  const cyrOk = await evalJs(`fetch('/api/chat', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ text: 'ж'.repeat(60000) }) }).then(async (r) => [r.status, (await r.json()).error])`);
+  check('a 60 000-letter Cyrillic message (120 000 bytes) is sent, not refused', cyrOk[0] === 200 && !String(cyrOk[1] || '').includes('Argument list'), JSON.stringify(cyrOk));
+  const cyrTooLong = await evalJs(`fetch('/api/chat', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ text: 'ж'.repeat(70000) }) }).then(async (r) => [r.status, (await r.json()).error])`);
+  check('a Cyrillic message over the byte limit is refused clearly, not a 502', cyrTooLong[0] === 400 && cyrTooLong[1].includes('130000') && !cyrTooLong[1].includes('Argument list'), JSON.stringify(cyrTooLong));
   await press('Escape');
 });
 
@@ -775,6 +783,19 @@ section('todo', async () => {
   check('and the board keeps the whole long todo', await waitFor(`fetch('/api/state').then(r=>r.json()).then(s => s.todo.some(x => x.text === ${JSON.stringify(bigText)}))`, 8000), JSON.stringify(await todoState()));
   const tooLongTodo = await evalJs(`fetch('/api/action', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ action: 'todo-add', text: 'x'.repeat(100001) }) }).then(async (r) => [r.status, (await r.json()).error])`);
   check('a todo over 100 000 is refused with a clear message, not cut', tooLongTodo[0] === 400 && tooLongTodo[1].includes('100000'), JSON.stringify(tooLongTodo));
+  // Cyrillic takes two bytes: a 60 000-letter todo fits the one argument herdr-projects gets; 70 000 is refused in words.
+  const cyrTodo = await post('/api/action', { action: 'todo-add', text: 'ж'.repeat(60000) });
+  check('a 60 000-letter Cyrillic todo (120 000 bytes) is kept', cyrTodo[0] === 200 && (cyrTodo[1].todo || []).some((x) => x.text === 'ж'.repeat(60000)), JSON.stringify(cyrTodo[1]?.error));
+  const cyrTodoId = (cyrTodo[1].todo || []).find((x) => x.text === 'ж'.repeat(60000))?.id;
+  if (cyrTodoId) {
+    await post('/api/action', { action: 'todo-assign', id: cyrTodoId, to: 'quasar' });
+    const cyrSent = await post('/api/action', { action: 'todo-send', id: cyrTodoId });
+    check('and it is sent to the Coordinator, not refused as too long', cyrSent[0] === 200 && calls('coordinator.jsonl').some((c) => c.text === 'ж'.repeat(60000)), JSON.stringify(cyrSent[1]?.error));
+  } else {
+    check('and it is sent to the Coordinator, not refused as too long', false, 'the todo was not added');
+  }
+  const cyrTooLongTodo = await post('/api/action', { action: 'todo-add', text: 'ж'.repeat(70000) });
+  check('a Cyrillic todo over the byte limit is refused clearly, not a 502', cyrTooLongTodo[0] === 400 && String(cyrTooLongTodo[1]?.error).includes('130000'), JSON.stringify(cyrTooLongTodo));
   const clamp = await evalJs(`(() => { const e = document.querySelector('#todo-list .titem[data-todo="${longId}"] .txt'); return { h: e.clientHeight, full: e.scrollHeight, more: document.querySelector('#todo-list .titem[data-todo="${longId}"] .more')?.innerText || '' }; })()`);
   check('a long todo is three lines with «ещё», not one clipped line', clamp.h < clamp.full && clamp.h > 30 && clamp.more === 'ещё', JSON.stringify(clamp));
   await click(`#todo-list .titem[data-todo="${longId}"] .more`);
@@ -1266,6 +1287,10 @@ section('requests', async () => {
   check('a permission button prepares an editable answer', await waitFor('document.querySelector("#tell")?.value === "Да, разрешаю."', 4000));
   const dash = await post('/api/action', { action: 'tell', id: 'alpha/2', text: '-- hi' });
   check('a message starting with -- is passed as text, not an option', dash[0] === 200 && calls().some((c) => c.argv[0] === 'tell' && c.argv[3] === '-- hi'), JSON.stringify(lastCall()));
+  const tellTooLong = await post('/api/action', { action: 'tell', id: 'alpha/2', text: 'z'.repeat(100001) });
+  check('a reply over 100 000 characters is refused with a clear message', tellTooLong[0] === 400 && String(tellTooLong[1]?.error).includes('100000'), JSON.stringify(tellTooLong));
+  const tellCyrTooLong = await post('/api/action', { action: 'tell', id: 'alpha/2', text: 'ж'.repeat(70000) });
+  check('a reply over the byte limit is refused clearly, not a 502', tellCyrTooLong[0] === 400 && String(tellCyrTooLong[1]?.error).includes('130000'), JSON.stringify(tellCyrTooLong));
   await go('delta/3');
   check('a pick request lists the attempts', await waitFor('document.querySelectorAll("#focus .pick").length === 3', 8000));
   await click('#focus [data-act="pick"][data-letter="B"]');
