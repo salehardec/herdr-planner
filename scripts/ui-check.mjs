@@ -532,9 +532,18 @@ section('chat', async () => {
     ta.setSelectionRange(ta.value.length, ta.value.length);
     return { lines: ta.getBoundingClientRect().height };
   })()`);
-  // A taller field shortens the log beside it: take the log's place once that has settled, then press.
-  await frames(2);
-  const beforeUp = await evalJs('(() => { const ta = document.querySelector("#ask-in"); return { start: ta.selectionStart, top: document.querySelector("#clog").scrollTop }; })()');
+  // A taller field shortens the log beside it, and the search's smooth scroll may still be running:
+  // put the log at its end at once and take its place only after a few frames without movement.
+  const beforeUp = await evalJs(`new Promise((done) => {
+    const l = document.querySelector('#clog'); const ta = document.querySelector('#ask-in');
+    l.scrollTop = l.scrollHeight;
+    let last = l.scrollTop; let still = 0;
+    const tick = () => {
+      if (l.scrollTop === last) still++; else { last = l.scrollTop; still = 0; }
+      if (still >= 3) done({ start: ta.selectionStart, top: l.scrollTop }); else requestAnimationFrame(tick);
+    };
+    requestAnimationFrame(tick);
+  })`);
   await press('ArrowUp');
   const afterUp = await evalJs('(() => { const ta = document.querySelector("#ask-in"); return { start: ta.selectionStart, top: document.querySelector("#clog").scrollTop }; })()');
   check('ArrowUp inside a wrapped paragraph moves the caret, not the history', afterUp.start < beforeUp.start && afterUp.top === beforeUp.top && wrapped.lines > 60, JSON.stringify({ wrapped, beforeUp, afterUp }));
