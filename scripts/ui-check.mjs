@@ -293,6 +293,7 @@ section('navigator', async () => {
   const w0 = await navW();
   const grip = await rectOf('#nav .nav-grip');
   check('the navigator has an edge to drag, on its right', !!grip && Math.abs(grip.r - (await rectOf('#nav')).r) < 2, JSON.stringify(grip));
+  check('the edge does not cover the tree\'s scrollbar: the tree\'s right edge is not the edge handle', await evalJs(`(() => { const t = document.querySelector('#nav .tree').getBoundingClientRect(); const e = document.elementFromPoint(t.right - 3, (t.top + t.bottom) / 2); return !!e && !e.classList.contains('nav-grip') && !!e.closest('.tree'); })()`));
   const gx = (grip.l + grip.r) / 2; const gy = (grip.t + grip.b) / 2;
   await send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: gx, y: gy });
   await send('Input.dispatchMouseEvent', { type: 'mousePressed', x: gx, y: gy, button: 'left', buttons: 1, clickCount: 1 });
@@ -1935,6 +1936,22 @@ const layoutProblems = (sel) => evalJs(`window.__audit(${JSON.stringify(sel)})`)
 // the shortest a task's name may show in the navigator, in rem (about 20 characters)
 const NAV_TITLE_MIN_REM = 10;
 
+// The settings of the board in the station dialog: the names whole, a row either one row or a column. `stacked`: the dialog is narrow, so
+// the rows must be columns (the container query of station.css); undefined: either is right.
+const boardChecks = async (at, stacked) => {
+  await waitFor('document.querySelectorAll("#st-board [data-setting]").length > 5', 40000);
+  const bad = await layoutProblems('#station');
+  check(`${at}: the station, after its answer came: nothing wider than its box`, bad.length === 0, bad.join('; '));
+  // scrolled inside the dialog only (scrollIntoView would move the page itself, which has overflow:hidden)
+  await evalJs('(() => { const d = document.querySelector("#station"); const b = document.querySelector("#st-board"); if (d && b) d.scrollTop = b.getBoundingClientRect().top - d.getBoundingClientRect().top + d.scrollTop; return true; })()');
+  const parts = await evalJs('window.__nameParts("#st-board .setrow .nm")');
+  const brokenNames = (parts || []).filter((x) => x.broken > 0 || x.width < x.widest - 1);
+  check(`${at}: setting names stay whole: no name is broken inside a word, none is narrower than its widest word (${(parts || []).length} names)`, (parts || []).length > 5 && brokenNames.length === 0, JSON.stringify(brokenNames.slice(0, 3)));
+  const grid = await evalJs(`(() => { const r = document.querySelector('#st-board .setrow'); const nm = r.querySelector('.nm').getBoundingClientRect(); const sv = r.querySelector('.setval').getBoundingClientRect(); return { sameLine: nm.top < sv.bottom && sv.top < nm.bottom, stacked: sv.top >= nm.bottom - 1, nmW: nm.width, svL: sv.left, nmR: nm.right }; })()`);
+  check(`${at}: a setting row is one row or a column, its parts never squeezed side by side`, grid && (grid.stacked || (grid.sameLine && grid.svL >= grid.nmR - 1)), JSON.stringify(grid));
+  if (stacked !== undefined) check(`${at}: the dialog is ${stacked ? 'narrow: the rows are columns' : 'wide: the rows are rows'}`, grid && grid.stacked === stacked, JSON.stringify(grid));
+};
+
 // The pixel ratio changes what the browser draws, not what the page lays out in CSS pixels: the full round is made at 1, and the
 // panels that carry the layout rules (navigator, chat, settings) again at every other ratio.
 const CORE_PANELS = ['the navigator', 'the chat', 'the wide chat with the todos', 'the station'];
@@ -2011,28 +2028,54 @@ const layoutRun = async (w, h, dsf, scale = 'auto') => {
   }, async () => {
     const [ok, r] = await settled({ chat: '#chat', todo: '#todo', nav: '#nav', focus: '#focus' }, (x) => x.chat.l >= x.todo.r - 1 && x.todo.l >= x.nav.r - 1 && x.chat.r <= w + 1);
     check(`${at}: the wide chat stands right of the todos and inside the window`, ok, JSON.stringify(r));
-    // the column of messages has a sensible width and is not pushed to the side: the same room on both sides
-    const col = await evalJs(`(() => { const c = document.querySelector('#chat').getBoundingClientRect(); const px = parseFloat(getComputedStyle(document.documentElement).fontSize); return { w: c.width / px, l: c.left, r: c.right }; })()`);
+    // the chat is bounded and stands next to the column on its left (not in the middle of a wide empty space): its messages are
+    // where the eye is, however large the window is
+    const col = await evalJs(`(() => { const c = document.querySelector('#chat').getBoundingClientRect(); const px = parseFloat(getComputedStyle(document.documentElement).fontSize); const t = document.querySelector('#clog .turn .txt, #clog .turn .q'); const tr = t ? t.getBoundingClientRect() : null; return { w: c.width / px, l: c.left, r: c.right, textL: tr ? tr.left : null, px }; })()`);
     check(`${at}: the wide chat is no wider than 64 rem (${col?.w?.toFixed(1)})`, col && col.w <= 64.1, JSON.stringify(col));
-    const l = await rectOf('#chat'); const f = (await rectOf('#focus')); const nv = await rectOf('#nav'); const td = await rectOf('#todo');
-    const free = [(td ? td.r : nv.r), Math.min(w, f && f.l > l.r - 1 ? f.l : w)];
-    const gapL = l.l - free[0]; const gapR = free[1] - l.r;
-    check(`${at}: and it is in the middle of the room it has (${Math.round(gapL)} px left, ${Math.round(gapR)} px right)`, Math.abs(gapL - gapR) < 40 || l.r + 14 >= free[1] - 1 && l.l - 14 <= free[0] + 1, JSON.stringify({ l, free }));
+    const l = await rectOf('#chat'); const nv = await rectOf('#nav'); const td = await rectOf('#todo');
+    const left = td && td.r > nv.r ? td : nv;
+    check(`${at}: and it stands next to the column on its left (${Math.round(l.l - left.r)} px), its text starts ${Math.round((col.textL ?? l.l) - l.l)} px into it`, l.l - left.r <= 2 * col.px && (col.textL === null || col.textL - l.l <= 12 * col.px), JSON.stringify({ l, left: left.r, textL: col.textL }));
   });
+  // the navigator dragged as far as it goes, and a width kept from a bigger window: the chat still has room (words whole, buttons clear of the focus card)
+  if (full && eff > 1000) {
+    const roomOk = async (what) => {
+      await evalJs(AUDIT);
+      const [ok, r] = await settled({ chat: '#chat', nav: '#nav', focus: '#focus' }, (x) => x.chat && x.nav && x.chat.w >= 28 * root - 1 && x.chat.l >= x.nav.r - 1 && x.chat.r <= w + 1 && (!x.focus || x.focus.l >= w - 1 || x.chat.r <= x.focus.l + 1), 5000);
+      check(`${at}: ${what}: the chat keeps ${Math.round(28 * root)} px at least (${Math.round(r.chat?.w)}) and clear of the focus card`, ok, JSON.stringify(r));
+      const bad = await layoutProblems('#chat');
+      check(`${at}: ${what}: nothing breaks in the chat`, bad.length === 0, bad.join('; '));
+    };
+    await resetUi();
+    await click('#bchat'); await waitFor('!document.querySelector("#chat").classList.contains("off")', 4000);
+    if (await exists('#cwide') && !(await exists('#win.chat-wide'))) await click('#cwide');
+    await waitFor('!!document.querySelector("#win.chat-wide")', 3000);
+    const grip = await rectOf('#nav .nav-grip');
+    if (grip) {
+      const gx = (grip.l + grip.r) / 2; const gy = (grip.t + grip.b) / 2;
+      await send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: gx, y: gy });
+      await send('Input.dispatchMouseEvent', { type: 'mousePressed', x: gx, y: gy, button: 'left', buttons: 1, clickCount: 1 });
+      for (const x of [gx + 100, w * 0.6, w - 40]) await send('Input.dispatchMouseEvent', { type: 'mouseMoved', x, y: gy, button: 'left', buttons: 1 });
+      await send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: w - 40, y: gy, button: 'left', buttons: 0, clickCount: 1 });
+      await roomOk('the navigator dragged to the far right');
+      const max = await evalJs('Number(document.querySelector("#nav .nav-grip").getAttribute("aria-valuemax"))');
+      check(`${at}: the edge's own upper limit (${max} rem) is below what the window leaves (${(eff / 16).toFixed(0)} rem wide, ${max} + 27 + 30 rem wanted at most)`, max > 0 && max <= eff / 16 - 27 - 29.9, String(max));
+    }
+    // a width kept from a big screen: the window here is cut to what fits
+    await evalJs('try { localStorage.setItem("herdr-planner.navW", "48"); } catch {} true');
+    await navigate(base + '/?noauto&nocoach&bloom=0');
+    await resized();
+    await click('#bchat'); await waitFor('!document.querySelector("#chat").classList.contains("off")', 4000);
+    if (await exists('#cwide') && !(await exists('#win.chat-wide'))) await click('#cwide');
+    await roomOk('a width of 48 rem kept from a bigger window');
+    await evalJs('try { localStorage.removeItem("herdr-planner.navW"); } catch {} true');
+    await navigate(base + '/?noauto&nocoach&bloom=0');
+    await resized();
+  }
+  await evalJs(AUDIT);
   await panel('the search', '#sres', async () => { await press('KeyK', 'k', 2); await waitFor('document.activeElement.id === "q"', 3000); await send('Input.insertText', { text: 'al' }); });
   await evalJs('document.querySelector("#q").blur(); true');
   const station = async (label, sel, extra) => panel(label, sel, async () => { await menuPick(label === 'the station' ? 'Станция' : label === 'the crew wizard' ? 'Экипаж корабля' : 'Бортовой компьютер'); }, extra);
-  await station('the station', '#station', async () => {
-    await waitFor('document.querySelectorAll("#st-board [data-setting]").length > 5', 40000);
-    check(`${at}: the station, after its answer came: nothing wider than its box`, (await layoutProblems('#station')).length === 0, (await layoutProblems('#station')).join('; '));
-    // scrolled inside the dialog only (scrollIntoView would move the page itself, which has overflow:hidden)
-    await evalJs('(() => { const d = document.querySelector("#station"); const b = document.querySelector("#st-board"); if (d && b) d.scrollTop = b.getBoundingClientRect().top - d.getBoundingClientRect().top + d.scrollTop; return true; })()');
-    const parts = await evalJs('window.__nameParts("#st-board .setrow .nm")');
-    const brokenNames = (parts || []).filter((x) => x.broken > 0 || x.width < x.widest - 1);
-    check(`${at}: setting names stay whole: no name is broken inside a word, none is narrower than its widest word (${(parts || []).length} names)`, (parts || []).length > 5 && brokenNames.length === 0, JSON.stringify(brokenNames.slice(0, 3)));
-    const grid = await evalJs(`(() => { const r = document.querySelector('#st-board .setrow'); const nm = r.querySelector('.nm').getBoundingClientRect(); const sv = r.querySelector('.setval').getBoundingClientRect(); return { sameLine: nm.top < sv.bottom && sv.top < nm.bottom, stacked: sv.top >= nm.bottom - 1, nmW: nm.width, svL: sv.left, nmR: nm.right }; })()`);
-    check(`${at}: a setting row is one row or a column, its parts never squeezed side by side`, grid && (grid.stacked || (grid.sameLine && grid.svL >= grid.nmR - 1)), JSON.stringify(grid));
-  });
+  await station('the station', '#station', async () => { await boardChecks(at); });
   await station('the crew wizard', '#station.wizard');
   await station('the ship\'s computer', '#ship', async () => {
     // the list of machines comes from the server a moment later: judged once it is there
@@ -2061,6 +2104,28 @@ for (const [w, h] of [[1280, 720], [1920, 1080], [2560, 1440]]) {
     await navigate(base + '/?noauto&nocoach&bloom=0');
   }, { retry: true });
 }
+
+// The settings dialog on a phone-sized window (the dialog is narrower than the container query's width): the rows are columns, the names whole.
+section('layout narrow', async () => {
+  for (const [w, h, dsf, stacked] of [[430, 900, 2, true], [700, 900, 1, false]]) {
+    await resetUi();
+    await send('Emulation.setDeviceMetricsOverride', { width: w, height: h, screenWidth: w, screenHeight: h, deviceScaleFactor: dsf, mobile: false });
+    await waitFor(`innerWidth === ${w}`, 5000);
+    await navigate(base + '/?noauto&nocoach&bloom=0');
+    await resized();
+    await evalJs(AUDIT);
+    const at = `${w}×${h} @${dsf}`;
+    check(`${at}: the station opens`, await menuPick('Станция') && await waitFor('!!document.querySelector("#station")', 6000));
+    await boardChecks(at, stacked);
+    const r = await rectOf('#station');
+    check(`${at}: the station is inside the window`, r && r.l >= -1 && r.r <= w + 1, JSON.stringify(r));
+    check(`${at}: the page itself never scrolls sideways`, await waitFor(`document.documentElement.scrollWidth <= ${w + 1}`, 4000));
+    await resetUi();
+  }
+  await send('Emulation.setDeviceMetricsOverride', { width: 1500, height: 950, deviceScaleFactor: 1, mobile: false });
+  await waitFor('innerWidth === 1500', 5000);
+  await navigate(base + '/?noauto&nocoach&bloom=0');
+}, { retry: true });
 
 section('narrow', async () => {
   await navigate(base + '/?noauto&nocoach&bloom=0');

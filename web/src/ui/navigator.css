@@ -1,6 +1,6 @@
 .nav{top:3.75rem;left:0.75rem;width:var(--nav-w);bottom:4.375rem;display:flex;flex-direction:column;transition:transform var(--m-med) var(--m-ease),opacity var(--m-med)}
 .nav.off{transform:translateX(-110%);opacity:0;pointer-events:none}
-.tree{overflow:auto;padding:0.375rem 0.25rem;flex:1;scrollbar-width:thin}
+.tree{overflow:auto;padding:0.375rem 0.25rem;flex:1;scrollbar-width:thin;margin-right:0.5rem}
 .ti{display:flex;align-items:center;gap:0.375rem;padding:0.1875rem 0.375rem;border-radius:0.3125rem;cursor:pointer;white-space:nowrap;overflow:hidden;min-height:1.625rem;color:var(--pl-dim)}
 .ti:hover{background:var(--pl-hover)}
 .ti:focus-visible{outline-offset:-2px}
@@ -39,3 +39,4 @@
 .nav:hover .nav-grip::after,.nav-grip:focus-visible::after,.nav-grip.drag::after{opacity:1}
 .nav-grip:hover::after,.nav-grip.drag::after{background:var(--pl-accent)}
 :root.bp900 .nav-grip{display:none}
+:root.bp900 .tree{margin-right:0}

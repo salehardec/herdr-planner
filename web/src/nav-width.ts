@@ -21,8 +21,15 @@ const read = (): number | null => {
 /** The width the operator chose, in rem; null: the default. */
 export const navWidth = signal<number | null>(read());
 
-/** The most the panel may take: the window as the interface sees it, less room for the world and the focus card. */
-export const navMax = (): number => Math.max(NAV_W_MIN, Math.min(NAV_W_MAX, effectiveWidth() * 0.6));
+/* The chat needs this much between the navigator and the focus card (the same figure the wide chat uses), and the focus card and the gaps
+   are what base.css gives them: the navigator may take the rest, never less than what the narrow windows get by default. */
+const CHAT_MIN_REM = 30;
+const NAV_FLOOR = 20;
+const aside = (): number => (effectiveWidth() <= 1100 ? 20.625 : 24.375) + 3;
+
+/** The most the panel may take, in rem, at the size of the window now (the interface's own size included).
+    effectiveWidth() is in design pixels (16 to the rem): it is divided to rem here, the other figures are rem. */
+export const navMax = (): number => Math.max(NAV_FLOOR, Math.min(NAV_W_MAX, effectiveWidth() / 16 - aside() - CHAT_MIN_REM));
 
 export function setNavWidth(rem: number | null, save = true): void {
   const v = rem === null ? null : Math.round(Math.max(NAV_W_MIN, Math.min(navMax(), rem)) * 4) / 4;
@@ -61,7 +68,8 @@ export function installNavWidth(): void {
   if (!win) return;
   effect(() => {
     void scaleTick.value;
+    // a width kept from a bigger window or a smaller scale does not squeeze the chat here: it is cut to what fits now (it stays as saved)
     if (navWidth.value === null) win.style.removeProperty('--nav-user');
-    else win.style.setProperty('--nav-user', `${navWidth.value}rem`);
+    else win.style.setProperty('--nav-user', `${Math.min(navWidth.value, navMax())}rem`);
   });
 }
