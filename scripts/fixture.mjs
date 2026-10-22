@@ -613,6 +613,11 @@ write(path.join(chatDir, '.claude', 'commands', 'here-cmd.md'), '---\ndescriptio
 write(path.join(dir, 'agents', 'ui-ux-pro-max', 'SKILL.md'), '---\nname: ui-ux-pro-max\ndescription: Навык-ссылка фикстуры\n---\n');
 fs.mkdirSync(path.join(dir, 'claude', 'skills'), { recursive: true });
 fs.symlinkSync(path.join(dir, 'agents', 'ui-ux-pro-max'), path.join(dir, 'claude', 'skills', 'ui-ux-pro-max'));
+// A name longer than the list is wide: it must wrap, not run past the edge and hide its words.
+write(
+  path.join(dir, 'claude', 'skills', 'superpowers-executing-plans-with-subagent-driven-development-review', 'SKILL.md'),
+  '---\nname: superpowers-executing-plans-with-subagent-driven-development-review\ndescription: Навык с длинным именем\n---\n',
+);
 
 // Memory (Markdown files; the planner indexes them). The Galaxy's own: two entries and no MEMORY.md (the planner makes it).
 const memEntry = (id, title, desc, type, body, extra = '') => `---\nname: ${id}\ntitle: ${title}\ndescription: ${desc}\ntype: ${type}\nadded: 2026-10-19\nsource: chat\n${extra}---\n\n${body}\n`;

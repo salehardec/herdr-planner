@@ -98,9 +98,11 @@ running, create `DIR/state/coordinator-busy`: `herdr-projects coordinator` then 
 - Commands for the `/` list: `claude/skills/fixture-skill/SKILL.md` («Навык фикстуры…»),
   `claude/commands/fixture-cmd.md` («Команда фикстуры») and `board/coordinator/default/chat/.claude/commands/here-cmd.md`
   («Команда папки Координатора»), and `claude/skills/ui-ux-pro-max` — a **link** to `agents/ui-ux-pro-max`
-  («Навык-ссылка фикстуры»), as most of the real `~/.claude/skills` are. Claude Code's built-in commands are the
-  planner's own table (`src/hints.rs`); the `@` files are the repositories' (`projects/AI/alpha/README.md` and
-  `projects/AI/beta/README.md` are the shortest).
+  («Навык-ссылка фикстуры»), as most of the real `~/.claude/skills` are, and
+  `claude/skills/superpowers-executing-plans-with-subagent-driven-development-review` («Навык с длинным именем») —
+  a name longer than the list is wide, so the page check sees it wrap instead of running past the edge. Claude Code's
+  built-in commands are the planner's own table (`src/hints.rs`); the `@` files are the repositories'
+  (`projects/AI/alpha/README.md` and `projects/AI/beta/README.md` are the shortest).
 
 ## Machines the board knows (`vm-a`, `vm-b`)
 The planner works with its own board only. The stand-ins still answer as a board with other machines configured

@@ -5,11 +5,12 @@
 .cmpl .cmpl-group{display:flex;align-items:center;gap:0.3125rem;padding:0.3125rem 0.375rem 0.125rem;color:var(--pl-faint);font-size:0.6562rem;letter-spacing:.06em;text-transform:uppercase}
 .cmpl .cmpl-group svg{width:0.75rem;height:0.75rem}
 /* The row is a line of its own: the icon, then the name at its full width, then the words beside it. Only the
-   words give way when the line is long — a name cut to «/co…» names nothing. */
+   words give way when the line is long — a name cut to «/co…» names nothing. A name longer than its column
+   (a long skill) wraps inside it, so neither the name nor its words are lost. */
 .cmpl .cmpl-row{display:flex;align-items:baseline;gap:0.5rem;padding:0.1875rem 0.375rem;border-radius:0.25rem;cursor:pointer}
 .cmpl .cmpl-row .cmpl-ic{color:var(--pl-dim);display:inline-flex;align-self:center;flex:none}
 .cmpl .cmpl-row .cmpl-ic svg{width:0.8125rem;height:0.8125rem}
-.cmpl .cmpl-row .cmpl-name{color:var(--pl-title);white-space:nowrap;flex:none}
+.cmpl .cmpl-row .cmpl-name{color:var(--pl-title);flex:0 1 auto;max-width:min(100%,34ch);overflow-wrap:anywhere}
 .cmpl .cmpl-row .cmpl-hint{color:var(--pl-faint);font-size:0.75rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;direction:ltr;flex:1 1 0;min-width:0}
 .cmpl .cmpl-row.cmpl-cur{background:var(--pl-hover)}
 .cmpl .cmpl-row.cmpl-cur .cmpl-name{color:var(--pl-accent-ink)}

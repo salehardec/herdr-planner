@@ -915,6 +915,41 @@ section('hints', async () => {
   await press('Enter');
   check('and inserts it', (await evalJs('document.querySelector("#tell").value')) === 'ALP-2', await evalJs('document.querySelector("#tell").value'));
   await evalJs('(() => { const el = document.querySelector("#tell"); el.value = ""; el.dispatchEvent(new Event("input", { bubbles: true })); return true; })()');
+  // A skill with a name longer than the list is wide: it wraps inside its column, its words stay beside it.
+  const longName = '/superpowers-executing-plans-with-subagent-driven-development-review';
+  await evalJs(`(() => { const el = document.querySelector("#tell"); el.focus(); el.value = "/super"; el.setSelectionRange(6, 6); el.dispatchEvent(new Event("input", { bubbles: true })); return true; })()`);
+  check('a name longer than the list wraps inside it, and its words stay', await waitFor(`[...document.querySelectorAll("#tell-complete .cmpl-name")].some((n) => n.innerText === ${JSON.stringify(longName)})`, 10000) && await evalJs(`(() => {
+    const list = document.querySelector('#tell-complete');
+    const row = [...list.querySelectorAll('.cmpl-row')].find((r) => r.querySelector('.cmpl-name').innerText === ${JSON.stringify(longName)});
+    if (!row) return false;
+    const n = row.querySelector('.cmpl-name');
+    const h = row.querySelector('.cmpl-hint');
+    const nb = n.getBoundingClientRect();
+    const rb = row.getBoundingClientRect();
+    return list.scrollWidth <= list.clientWidth + 1 && nb.right <= rb.right + 1 && n.scrollWidth <= n.clientWidth + 1 && n.scrollHeight <= n.clientHeight + 1 && h.getBoundingClientRect().width > 10;
+  })()`), JSON.stringify(await evalJs(`(() => {
+    const list = document.querySelector('#tell-complete');
+    const row = [...list.querySelectorAll('.cmpl-row')].find((r) => r.querySelector('.cmpl-name').innerText.length > 40);
+    if (!row) return { rows: list.innerText.slice(0, 200) };
+    const n = row.querySelector('.cmpl-name'); const nb = n.getBoundingClientRect();
+    return { listScroll: [list.scrollWidth, list.clientWidth], name: [nb.left, nb.right, nb.top, nb.bottom], scroll: [n.scrollWidth, n.clientWidth, n.scrollHeight, n.clientHeight], hint: row.querySelector('.cmpl-hint').getBoundingClientRect().width };
+  })()`)));
+  await evalJs('(() => { const el = document.querySelector("#tell"); el.value = ""; el.dispatchEvent(new Event("input", { bubbles: true })); return true; })()');
+  // The list of a task whose agent is omp: its own commands, and a skill only as omp calls it (`/skill:name`).
+  await go('alpha/6');
+  check('an omp task opens its own reply field', await waitFor('!!document.querySelector("#tell") && plannerSnap().tasks.find((t) => t.id === "alpha/6")?.app === "omp"', 10000));
+  await evalJs('(() => { const el = document.querySelector("#tell"); el.focus(); el.value = "/"; el.setSelectionRange(1, 1); el.dispatchEvent(new Event("input", { bubbles: true })); return true; })()');
+  const ompRows = await (async () => {
+    const want = ['/compact', '/model', '/new', '/resume', '/settings'];
+    const ok = await waitFor(`[...document.querySelectorAll("#tell-complete .cmpl-row .cmpl-name")].filter((n) => ${JSON.stringify(want)}.includes(n.innerText)).length === 5`, 10000);
+    return { ok, labels: await evalJs('[...document.querySelectorAll("#tell-complete .cmpl-name")].map((n) => n.innerText)') };
+  })();
+  check('omp gets its own commands (compact, model, new, resume, settings)', ompRows.ok, JSON.stringify(ompRows.labels.slice(0, 34)));
+  const ompApi = await evalJs(`fetch('/api/hints/slash?program=omp&dir=').then((r) => r.json())`);
+  check('omp skill commands are named skill:<name>, not bare names', Array.isArray(ompApi?.commands) && ompApi.commands.filter((c) => c.kind !== 'builtin').every((c) => c.name.startsWith('skill:')), JSON.stringify((ompApi?.commands || []).filter((c) => c.kind !== 'builtin').slice(0, 5)));
+  const piApi = await evalJs(`fetch('/api/hints/slash?program=pi&dir=').then((r) => r.json())`);
+  check('pi does the same, and has its own commands', Array.isArray(piApi?.commands) && piApi.commands.filter((c) => c.kind !== 'builtin').every((c) => c.name.startsWith('skill:')) && ['settings', 'model', 'thinking', 'new', 'resume', 'compact'].every((n) => piApi.commands.some((c) => c.name === n && c.kind === 'builtin')), JSON.stringify((piApi?.commands || []).slice(0, 6)));
+  await evalJs('(() => { const el = document.querySelector("#tell"); el.value = ""; el.dispatchEvent(new Event("input", { bubbles: true })); return true; })()');
   await resetUi();
 }, { retry: true });
 

@@ -68,6 +68,10 @@ pub struct Roots {
     pub omp: PathBuf,
     /// `~/.pi` (the agent's folder is `agent` inside it).
     pub pi: PathBuf,
+    /// `~/.agents` — the skills folder both omp and pi read as their own (`<dir>/skills`).
+    pub agents: PathBuf,
+    /// `~/.agent` — the older name of that folder, read as well.
+    pub agent: PathBuf,
 }
 
 impl Roots {
@@ -85,6 +89,8 @@ impl Roots {
             codex: from_env("CODEX_HOME", home.join(".codex")),
             omp: home.join(".omp"),
             pi: home.join(".pi"),
+            agents: home.join(".agents"),
+            agent: home.join(".agent"),
         }
     }
 }
@@ -139,6 +145,71 @@ const CODEX: &[(&str, &str)] = &[
     ("undo", "cmd.codex.undo"),
 ];
 
+/// omp's own commands, from the command table of its own binary (v18).
+const OMP: &[(&str, &str)] = &[
+    ("model", "cmd.omp.model"),
+    ("settings", "cmd.omp.settings"),
+    ("plan", "cmd.omp.plan"),
+    ("goal", "cmd.omp.goal"),
+    ("new", "cmd.omp.new"),
+    ("clear", "cmd.omp.clear"),
+    ("compact", "cmd.omp.compact"),
+    ("resume", "cmd.omp.resume"),
+    ("rename", "cmd.omp.rename"),
+    ("session", "cmd.omp.session"),
+    ("todo", "cmd.omp.todo"),
+    ("context", "cmd.omp.context"),
+    ("tools", "cmd.omp.tools"),
+    ("usage", "cmd.omp.usage"),
+    ("stats", "cmd.omp.stats"),
+    ("hotkeys", "cmd.omp.hotkeys"),
+    ("changelog", "cmd.omp.changelog"),
+    ("skills", "cmd.omp.skills"),
+    ("plugins", "cmd.omp.plugins"),
+    ("mcp", "cmd.omp.mcp"),
+    ("agents", "cmd.omp.agents"),
+    ("memory", "cmd.omp.memory"),
+    ("add-dir", "cmd.omp.addDir"),
+    ("dirs", "cmd.omp.dirs"),
+    ("login", "cmd.omp.login"),
+    ("logout", "cmd.omp.logout"),
+    ("export", "cmd.omp.export"),
+    ("copy", "cmd.omp.copy"),
+    ("share", "cmd.omp.share"),
+    ("debug", "cmd.omp.debug"),
+    ("exit", "cmd.omp.exit"),
+    ("quit", "cmd.omp.quit"),
+];
+
+/// pi's own commands, from its documentation (`docs/slash-commands.md`).
+const PI: &[(&str, &str)] = &[
+    ("settings", "cmd.pi.settings"),
+    ("model", "cmd.pi.model"),
+    ("thinking", "cmd.pi.thinking"),
+    ("scoped-models", "cmd.pi.scopedModels"),
+    ("login", "cmd.pi.login"),
+    ("logout", "cmd.pi.logout"),
+    ("llama", "cmd.pi.llama"),
+    ("new", "cmd.pi.new"),
+    ("resume", "cmd.pi.resume"),
+    ("name", "cmd.pi.name"),
+    ("session", "cmd.pi.session"),
+    ("tree", "cmd.pi.tree"),
+    ("fork", "cmd.pi.fork"),
+    ("clone", "cmd.pi.clone"),
+    ("compact", "cmd.pi.compact"),
+    ("import", "cmd.pi.import"),
+    ("copy", "cmd.pi.copy"),
+    ("export", "cmd.pi.export"),
+    ("share", "cmd.pi.share"),
+    ("bug", "cmd.pi.bug"),
+    ("trust", "cmd.pi.trust"),
+    ("reload", "cmd.pi.reload"),
+    ("hotkeys", "cmd.pi.hotkeys"),
+    ("changelog", "cmd.pi.changelog"),
+    ("quit", "cmd.pi.quit"),
+];
+
 /// The commands a program knows, read from its files. `dir` is the folder the agent works in (the
 /// Coordinator's, or a task's worktree): its own `.claude` counts too.
 pub fn commands_at(roots: &Roots, program: &str, dir: Option<&Path>) -> Vec<Cmd> {
@@ -172,8 +243,27 @@ pub fn commands_at(roots: &Roots, program: &str, dir: Option<&Path>) -> Vec<Cmd>
             builtin(CODEX);
             commands_in(&roots.codex.join("prompts"), "", 0, &mut out, &mut seen);
         }
-        "omp" => skills_in(&roots.omp.join("agent/skills"), None, &mut out, &mut seen),
-        "pi" => skills_in(&roots.pi.join("agent/skills"), None, &mut out, &mut seen),
+        "omp" => {
+            builtin(OMP);
+            // omp reads the shared agent folders as its own, and calls a skill `/skill:name`.
+            for base in [roots.omp.join("agent/skills"), roots.agents.join("skills"), roots.agent.join("skills")] {
+                skills_in(&base, Some("skill"), &mut out, &mut seen);
+            }
+            if let Some(dir) = dir {
+                for base in [dir.join(".agents/skills"), dir.join(".agent/skills")] {
+                    skills_in(&base, Some("skill"), &mut out, &mut seen);
+                }
+            }
+        }
+        "pi" => {
+            builtin(PI);
+            for base in [roots.pi.join("agent/skills"), roots.agents.join("skills")] {
+                skills_in(&base, Some("skill"), &mut out, &mut seen);
+            }
+            if let Some(dir) = dir {
+                skills_in(&dir.join(".agents/skills"), Some("skill"), &mut out, &mut seen);
+            }
+        }
         // A program whose commands are not known here: no hints (the field works as it always did).
         _ => {}
     }
@@ -695,6 +785,8 @@ mod tests {
             codex: s.path().join("codex"),
             omp: s.path().join("omp"),
             pi: s.path().join("pi"),
+            agents: s.path().join("agents"),
+            agent: s.path().join("agent"),
         }
     }
 
@@ -814,10 +906,13 @@ mod tests {
         s.write("codex/prompts/fix.md", "---\ndescription: Fix the bug\n---\n");
         let roots = roots_at(&s);
         let omp = commands_at(&roots, "omp", None);
-        assert_eq!(names(&omp), vec!["archify"]);
-        assert_eq!(omp[0].kind, "skill");
+        // omp calls a skill `/skill:name` — a bare name would be a command it does not know.
+        assert!(names(&omp).contains(&"skill:archify"), "{:?}", names(&omp));
+        assert!(!names(&omp).contains(&"archify"));
+        assert_eq!(desc_of(&omp, "skill:archify"), "Diagrams");
+        assert_eq!(omp[0].kind, "builtin");
         let pi = commands_at(&roots, "pi", None);
-        assert_eq!(names(&pi), vec!["note"]);
+        assert_eq!(names(&pi).iter().filter(|n| n.starts_with("skill:")).copied().collect::<Vec<_>>(), vec!["skill:note"]);
         let codex = commands_at(&roots, "codex", None);
         assert_eq!(desc_of(&codex, "fix"), "Fix the bug");
         assert_eq!(codex[0].kind, "builtin");
@@ -825,6 +920,45 @@ mod tests {
         for p in ["opencode", "agy", "gemini", "nonsense", ""] {
             assert!(commands_at(&roots, p, None).is_empty(), "{p}");
         }
+    }
+
+    #[test]
+    fn omp_and_pi_offer_their_own_commands_and_the_shared_agent_skills() {
+        let s = Scratch::new("agents");
+        // The shared agent folders are the programs' own skills folders too.
+        s.write("agents/skills/shared-one/SKILL.md", "---\nname: shared-one\ndescription: From ~/.agents\n---\n");
+        s.write("agent/skills/older-one/SKILL.md", "---\nname: older-one\ndescription: From ~/.agent\n---\n");
+        s.write("omp/agent/skills/omp-only/SKILL.md", "---\nname: omp-only\ndescription: omp's own\n---\n");
+        s.write("pi/agent/skills/pi-only/SKILL.md", "---\nname: pi-only\ndescription: pi's own\n---\n");
+        // Project skills, as the agent's folder holds them.
+        s.write("work/.agents/skills/project-one/SKILL.md", "---\nname: project-one\ndescription: In the worktree\n---\n");
+        let roots = roots_at(&s);
+        let dir = s.path().join("work");
+        let omp = commands_at(&roots, "omp", Some(&dir));
+        for want in ["skill:shared-one", "skill:older-one", "skill:omp-only", "skill:project-one"] {
+            assert!(names(&omp).contains(&want), "{want} is missing: {:?}", names(&omp));
+        }
+        assert!(!names(&omp).contains(&"skill:pi-only"));
+        // omp's own commands are there, with their words.
+        for want in ["compact", "model", "new", "resume", "settings"] {
+            assert!(names(&omp).contains(&want), "{want} is missing: {:?}", names(&omp));
+            assert_eq!(desc_of(&omp, want), format!("cmd.omp.{want}"));
+        }
+        let pi = commands_at(&roots, "pi", Some(&dir));
+        for want in ["skill:shared-one", "skill:pi-only", "skill:project-one"] {
+            assert!(names(&pi).contains(&want), "{want} is missing: {:?}", names(&pi));
+        }
+        assert!(!names(&pi).contains(&"skill:omp-only"));
+        assert!(!names(&pi).contains(&"skill:older-one"));
+        for want in ["settings", "model", "thinking", "new", "resume", "compact"] {
+            assert!(names(&pi).contains(&want), "{want} is missing: {:?}", names(&pi));
+            assert_eq!(desc_of(&pi, want), format!("cmd.pi.{want}"));
+        }
+        // No name is offered twice, whatever the folders say.
+        let mut sorted = names(&omp);
+        sorted.sort();
+        sorted.dedup();
+        assert_eq!(sorted.len(), names(&omp).len());
     }
 
     #[test]
