@@ -163,10 +163,10 @@ export const ru: Record<string, string | string[]> = {
   'memory.compactOff': 'Сжать нельзя: Координатор отвечает или это не Claude', 'memory.newTip': 'Новый Координатор: чистый контекст, текущий разговор закрывается',
   // лимиты
   'limits.title': 'Лимиты подписок', 'limits.sub': 'остаток по окнам', 'limits.chip': 'Лимиты', 'limits.noData': 'нет данных', 'limits.noneTip': 'Лимиты подписок: нет данных',
-  'limits.left': 'осталось {n} %', 'limits.used': 'использовано {n} %', 'limits.stale': 'данные устарели', 'limits.staleShort': 'устарело', 'limits.staleTip': 'Данные старше {n} мин',
-  'limits.reset': 'сброс {at} · {left}', 'limits.noReset': 'время сброса не сообщено', 'limits.resetPassed': 'сброс прошёл', 'limits.inMin': 'через {n} мин',
+  'limits.left': 'Осталось {n} %', 'limits.used': 'использовано {n} %', 'limits.stale': 'данные устарели', 'limits.staleShort': 'устарело', 'limits.staleTip': 'Данные старше {n} мин',
+  'limits.reset': 'Сброс {at} · {left}', 'limits.noReset': 'Время сброса не сообщено', 'limits.resetPassed': 'Сброс прошёл', 'limits.inMin': 'через {n} мин',
   'limits.inHours': 'через {n} ч', 'limits.inDays': 'через {n} д', 'limits.balance': 'остаток', 'limits.estimate': 'оценка', 'limits.of': 'из {n} {c}',
-  'limits.updated': 'обновлено {at}', 'limits.updatedUnknown': 'время обновления неизвестно', 'limits.omarchyNone': 'Omarchy ещё не записал данные о лимитах.',
+  'limits.updated': 'Обновлено {at}', 'limits.updatedUnknown': 'Время обновления неизвестно', 'limits.cardTitle': 'Подписки', 'limits.omarchyNone': 'Omarchy ещё не записал данные о лимитах.',
   // архив, журнал
   'archive.title': 'Архив', 'archive.heading': 'Архив доски', 'archive.text': 'Сделанные задачи, убранные с доски. Верни любую — она появится планетой.',
   'archive.close': 'Закрыть архив', 'archive.doneAll': 'Убрать сделанные', 'archive.confirmAll': 'Точно? убрать все сделанные', 'archive.empty': 'Архив пуст.', 'archive.restore': 'Вернуть',
@@ -540,12 +540,12 @@ export const ru: Record<string, string | string[]> = {
   'runner.autoToast': 'Верфь {id}: убрано автоматически — {n}',
 
   'load.cpu': 'CPU', 'load.mem': 'MEM', 'load.gpu': 'GPU', 'load.short': 'Загрузка',
-  'load.own': 'эта машина', 'load.noGpu': 'Видеокарт нет', 'load.noData': 'нет данных', 'load.noTime': 'время чтения неизвестно',
+  'load.own': 'эта машина', 'load.noGpu': 'Видеокарт нет', 'load.noData': 'Нет данных', 'load.noTime': 'Время чтения неизвестно',
   'load.level.ok': 'норма', 'load.level.high': 'высокая', 'load.level.crit': 'критическая',
   'load.offline': 'нет связи с {host}', 'load.waiting': 'Загрузка {host} читается…',
-  'load.aria': 'Загрузка {host}: {list}', 'load.memOf': 'занято {used} из {total} ГБ', 'load.vram': 'видеопамять {used} из {total} ГБ',
+  'load.aria': 'Загрузка {host}: {list}', 'load.memOf': 'Занято {used} из {total} ГБ', 'load.vram': 'Видеопамять {used} из {total} ГБ',
   'load.cores': ['{n} ядро', '{n} ядра', '{n} ядер'], 'load.gpuMean': 'В шкале GPU — средняя загрузка карт: {n} %',
-  'load.updated': 'обновлено {at} · раз в {n} с', 'load.click': 'клик — к Галактике',
+  'load.updated': 'Обновлено {at} · раз в {n} с', 'load.more': 'Подробнее', 'load.disk': 'ДИСК',
 
   'ctl.logs': 'Логи', 'ctl.stop': 'Остановить', 'ctl.restart': 'Перезапустить', 'ctl.delete': 'Удалить',
   'ctl.noForeign': 'Чужой контейнер (не задачи доски или под маской защиты): запрещено.',

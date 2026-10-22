@@ -8,7 +8,7 @@ import { setMode } from '../keys';
 import { t } from '../i18n';
 import { LimitsChip } from './Limits';
 import { Menu } from './Menu';
-import { LoadBar, LoadPop } from './LoadBar';
+import { LoadBar } from './LoadBar';
 import './top.css';
 
 function Crumbs(): JSX.Element {
@@ -97,7 +97,6 @@ export function Top(): JSX.Element {
           <button type="button" data-mode="manual" class={m === 'manual' ? 'on' : ''} aria-pressed={m === 'manual'} title="P" onClick={() => setMode('manual', true)}>{t('mode.manual')}</button>
         </div>
       </div>
-      <LoadPop />
     </div>
   );
 }

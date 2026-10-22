@@ -145,6 +145,8 @@ export interface LoadInfo {
   cpu: { percent: number; cores: number };
   mem: { used: number; total: number; percent: number };
   gpus: LoadGpu[];
+  /** The disk, when the machine reports it (bytes, share 0..100). */
+  disk?: { used: number; total: number; percent: number };
 }
 
 export interface Usage {

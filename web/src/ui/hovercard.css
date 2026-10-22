@@ -1,0 +1,10 @@
+/* The card under an element of the top bar (the bars, the subscription chip). Hovercard.ts opens it, HoverCard.tsx puts it
+   under the element (left/top/max-height are set there), inside the window. */
+.topcard{position:fixed;z-index:58;width:min(24rem,calc(100vw - 1rem));max-width:calc(100vw - 1rem);overflow:auto;scrollbar-width:thin;padding:0.625rem 0.75rem;box-sizing:border-box;left:0.5rem;top:3.5rem;animation:topcard-in .12s ease-out}
+.topcard[data-card="limits"]{width:min(26rem,calc(100vw - 1rem))}
+@keyframes topcard-in{from{opacity:0}to{opacity:1}}
+@media (prefers-reduced-motion:reduce){.topcard{animation:none}}
+.lim-card{display:grid;gap:0.375rem}
+.lim-more{display:flex;justify-content:flex-end;padding-top:0.375rem;border-top:1px solid var(--pl-line)}
+/* a card taller than the window scrolls, and its link stays in view at the bottom */
+.topcard .ld-ft,.topcard .lim-more{position:sticky;bottom:-0.625rem;margin-bottom:-0.625rem;padding-bottom:0.625rem;background:var(--pl-panel-solid);z-index:1}

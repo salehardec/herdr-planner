@@ -13,6 +13,7 @@ import { t } from './i18n';
 import { addDialogs, closeDialogs, dialogOpen } from './dialogs';
 import { resetScale, stepScale } from './scale';
 import { chatBack } from './chat-wide';
+import { card, closeCard } from './ui/hovercard';
 
 export function setMode(m: 'auto' | 'manual', lock = false): void {
   const w = getWorld();
@@ -123,6 +124,8 @@ export function installKeys(): void {
       if (code === 'Digit0' || code === 'Numpad0') { e.preventDefault(); resetScale(); return; }
     }
     if (e.key === 'Escape') {
+      // the details card of the top bar goes first: one Esc, one thing
+      if (card.value) { e.preventDefault(); closeCard(true); return; }
       const inTodo = !!(target as HTMLElement | null)?.closest?.('#todo');
       if (typing(target) && (target as HTMLElement).id !== 'q' && (target as HTMLElement).id !== 'ask-in') (target as HTMLElement).blur();
       if (locked.value) return;
