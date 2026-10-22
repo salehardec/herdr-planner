@@ -16,8 +16,10 @@ export interface MemEntry {
   added: string;
   source: string;
   at: number;
-  /** A universe's draft (outside the checkout, not in git yet): `new`, `changed`, `deleted`; empty for a committed entry. */
+  /** A universe's draft (outside the checkout, not in git yet): `new`, `changed`, `deleted`; `sent` / `sentdel`: a board task
+   *  has it and has not merged it yet (`task` says which); empty for a committed entry. */
   draft?: string;
+  task?: string;
 }
 
 /** The memory block in the board's `coordinator.instructions`. */
@@ -51,7 +53,7 @@ export interface MemData {
   foreign?: { program: string; label: string; dir: string; entries: MemEntry[] }[];
   connect?: MemConnect;
   settings?: { suggest: boolean };
-  git?: { checkout: boolean; dirty: { state: string; file: string }[]; drafts: number };
+  git?: { checkout: boolean; dirty: { state: string; file: string }[]; drafts: number; sent: { task: string; id: string | null; title: string; files: number }[] };
   suggestions?: MemSuggestion[];
   note?: string;
 }
@@ -166,6 +168,11 @@ export const discardDraft = async (repo: string, id: string, token: string): Pro
 };
 
 export const previewSend = (repo: string): Promise<MemPreview> => post<MemPreview>('/api/memory/send', { repo });
+
+export const forgetSent = async (repo: string, task: string): Promise<void> => {
+  await post('/api/memory/sent/forget', { repo, task });
+  void loadMemory(repo);
+};
 
 /** The board task that was made for a send: its tag (`PLN-35`), id (`herdr-planner/35`) and title. */
 export interface SentTask { task: string; id: string | null; title: string; files: number }

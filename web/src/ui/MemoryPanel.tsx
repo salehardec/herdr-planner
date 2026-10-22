@@ -12,7 +12,7 @@ import { Gl } from './Gl';
 import {
   deleteEntry, discardDraft, dismissSuggestion, keepSuggestion, KINDS, kindLabel, loadMemory, memFocus, memoryOf, previewSend, sendMemory,
   previewDelete, previewDiscard, previewSave, previewSuggestion, rememberDlg, saveEntry, connectMemory, setSuggest,
-  type Accept, type MemData, type MemEntry, type MemPreview, type MemSuggestion, type SaveBody, type SentTask,
+  type Accept, type MemData, type MemEntry, type MemPreview, type MemSuggestion, type SaveBody, type SentTask, forgetSent,
 } from './memory-api';
 import { ChangeCard } from './MemoryChange';
 import { parseDocId } from './memory-ids';
@@ -26,6 +26,7 @@ function Row(props: {
 }): JSX.Element {
   const { e } = props;
   const gone = e.draft === 'deleted';
+  const frozen = gone || !!e.draft?.startsWith('sent');   // a board task has it: change it after the merge
   const ref = useRef<HTMLDivElement>(null);
   useEffect(() => { if (props.hot) ref.current?.scrollIntoView({ block: 'center' }); }, [props.hot]);
   return (
@@ -34,7 +35,7 @@ function Row(props: {
         <Gl n={props.open ? 'chev' : 'chev-r'} cls="mm-chev" />
         <span class={`mm-kind k-${e.kind || 'note'}`}>{kindLabel(e.kind)}</span>
         <b class="mm-title">{e.title}</b>
-        {e.draft && <span class={`mm-draft d-${e.draft}`} title={t('mem.draftTip')}>{t(`mem.draft.${e.draft}`)}</span>}
+        {e.draft && <span class={`mm-draft d-${e.draft}`} title={t('mem.draftTip')}>{t(`mem.draft.${e.draft}`, { task: e.task ?? '' })}</span>}
         {!props.open && e.description && e.description !== e.title && <span class="mm-desc">{e.description}</span>}
       </button>
       {props.open && (
@@ -49,9 +50,9 @@ function Row(props: {
           </div>
           {props.editable && (
             <div class="row">
-              {!gone && <button class="btn sm" type="button" data-act="mem-edit" onClick={props.onEdit}>{t('mem.edit')}</button>}
-              {!gone && <button class="btn sm danger" type="button" data-act="mem-del" onClick={props.onDelete}>{t('mem.delete')}</button>}
-              {e.draft && props.onDiscard && <button class="btn sm" type="button" data-act="mem-discard" onClick={props.onDiscard}>{t('mem.discard')}</button>}
+              {!frozen && <button class="btn sm" type="button" data-act="mem-edit" onClick={props.onEdit}>{t('mem.edit')}</button>}
+              {!frozen && <button class="btn sm danger" type="button" data-act="mem-del" onClick={props.onDelete}>{t('mem.delete')}</button>}
+              {e.draft && !e.draft.startsWith('sent') && props.onDiscard && <button class="btn sm" type="button" data-act="mem-discard" onClick={props.onDiscard}>{t('mem.discard')}</button>}
             </div>
           )}
         </div>
@@ -294,7 +295,6 @@ function Git(props: { repo: string; data: MemData }): JSX.Element | null {
   const [busy, setBusy] = useState(false);
   const [card, setCard] = useState<MemPreview | null>(null);
   const [err, setErr] = useState('');
-  const [sent, setSent] = useState<SentTask | null>(null);
   if (!g) return null;
   if (!g.checkout) return <div class="hint" id="mem-git">{t('mem.notGit')}</div>;
   const ask = async (): Promise<void> => {
@@ -308,15 +308,20 @@ function Git(props: { repo: string; data: MemData }): JSX.Element | null {
     setBusy(true);
     setErr('');
     try {
-      const r = await sendMemory(props.repo, card.token, a);
-      setSent(r);
+      const r: SentTask = await sendMemory(props.repo, card.token, a);
       toast(t('mem.sent', { tag: r.task }));
       setCard(null);
     } catch (e) { setErr(failWords(e)); }
     setBusy(false);
   };
-  const sentNote = sent && <div class="hint ok" id="mem-sent" data-task={sent.id ?? ''}>{t('mem.sentNote', { tag: sent.task, n: sent.files })}</div>;
-  if (g.dirty.length === 0 && g.drafts === 0) return <div class="hint" id="mem-git">{t('mem.gitClean')}{sentNote}</div>;
+  // What a board task has and the checkout has not yet: kept by the planner, so it survives a reload.
+  const sentNote = g.sent.map((b) => (
+    <div class="hint ok mm-sent" id="mem-sent" key={b.task} data-task={b.id ?? ''}>
+      {t('mem.sentNote', { tag: b.task, n: b.files })}{' '}
+      <button class="btn sm" type="button" data-act="mem-sent-forget" onClick={() => void forgetSent(props.repo, b.task)}>{t('mem.sentForget')}</button>
+    </div>
+  ));
+  if (g.dirty.length === 0 && g.drafts === 0) return <div class="hint" id="mem-git">{g.sent.length === 0 && t('mem.gitClean')}{sentNote}</div>;
   return (
     <div class="mm-git" id="mem-git">
       {g.drafts > 0 && <div class="hint warn" id="mem-drafts">{tn('mem.gitDrafts', g.drafts)}</div>}

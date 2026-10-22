@@ -2896,8 +2896,14 @@ section('memory universe', async () => {
   check('the checkout is not touched: same git status, same HEAD, no new commit, no docs folder', gitStatus(docsRepo) === status0 && status0 === 'A  OTHER.txt\n' && headOf(docsRepo) === head0 && commitsOf(docsRepo) === '1' && !existsSync(join(docsRepo, 'docs')), gitStatus(docsRepo));
   check('the drafts are handed over and gone', await waitLog(() => filesIn(draftsOf('docs')).length === 0, 8000));
   check('the page shows the id of the task made, and the board has it', await waitFor('!!document.querySelector("#mem-sent")', 8000) && /[A-Z]+-\d+/.test(await text('#mem-sent')) && (await evalJs('fetch("/api/state").then((r) => r.json()).then((s) => s.tasks.some((t) => t.id === document.querySelector("#mem-sent").dataset.task && t.title.startsWith("Запомнить")))')), await text('#mem-sent'));
+  check('the sent entry stays on the panel, marked as waiting for the task\'s merge', await waitFor('document.querySelector(\'#mem-universe-list [data-mem="testy-bez-seti"]\')?.dataset.draft === "sent" && (document.querySelector(\'#mem-universe-list [data-mem="testy-bez-seti"] .mm-draft\')?.innerText || "").toLowerCase().includes("слияни")', 8000), await text('#mem-universe-list'));
+  check('and the panel does not claim that everything is committed: nothing is in git yet', !(await text('#mem-git')).includes('закоммичено') && !(await text('#mem-universe')).includes('Пока пусто'), await text('#mem-git'));
   await shot('memory-sent.png');
-  check('the page then has nothing left to send', await waitFor('(document.querySelector("#mem-git")?.innerText || "").includes("закоммичено") && !document.querySelector("#mem-send")', 8000), await text('#mem-git'));
+  await navigate(base + '/?noauto&nocoach&bloom=0');
+  await universeOf('docs');
+  check('after a reload the note and the task id are still there', await waitFor('!!document.querySelector("#mem-sent") && /[A-Z]+-\\d+/.test(document.querySelector("#mem-sent").innerText) && !!document.querySelector(\'#mem-universe-list [data-mem="testy-bez-seti"][data-draft="sent"]\')', 12000), await text('#mem-git'));
+  await click('#mem-sent [data-act="mem-sent-forget"]');
+  check('«Забыть пометку» drops the note (the memory itself is untouched); only then it is just clean', await waitFor('!document.querySelector("#mem-sent") && (document.querySelector("#mem-git")?.innerText || "").includes("закоммичено")', 8000) && gitStatus(docsRepo) === status0, await text('#mem-git'));
   execFileSync('git', ['-C', docsRepo, 'reset', '--quiet', '--', 'OTHER.txt']);
   rmSync(join(docsRepo, 'OTHER.txt'), { force: true });
   // a folder that is not a git repository
@@ -3020,6 +3026,8 @@ section('memory guard', async () => {
   const machine = await save('docs', 'Стенд поднят на app-semantics, ключ лежит на salehost; деплой через dokploymain.');
   check('internal host names (ssh aliases) are found as hosts, not only IPs and domains', machine?.[0] === 200 && ['app-semantics', 'salehost'].every((n) => machine[1].findings.some((f) => f.kind === 'host' && f.text === n)) && machine[1].risk === 'confirm', JSON.stringify(machine?.[1]?.findings));
   check('and «Обезличить» takes them out', !(machine[1].redacted[0]?.body || '').includes('app-semantics') && (machine[1].redacted[0]?.body || '').includes('<хост>'), JSON.stringify(machine?.[1]?.redacted));
+  const runner = await save('docs', 'Контейнеры гоняем на верфи vm-r.');
+  check('the names of the board\'s runners (runners.json) are found as hosts too', runner?.[0] === 200 && runner[1].findings.some((f) => f.kind === 'host' && f.text === 'vm-r'), JSON.stringify(runner?.[1]?.findings));
   const machineAlpha = await save('alpha', 'Стенд поднят на app-semantics.');
   check('in a public (or unknown) repository such a name is blocked by default, like the rest', machineAlpha?.[1]?.risk === 'block' && machineAlpha[1].findings.some((f) => f.kind === 'host' && f.text === 'app-semantics'), JSON.stringify(machineAlpha?.[1]?.findings));
   const docsCommits = () => execFileSync('git', ['-C', docsRepo, 'rev-list', '--count', 'HEAD']).toString().trim();
@@ -3065,7 +3073,7 @@ section('memory guard', async () => {
   const cno = await post('/api/memory/send', { repo: 'docs', confirm: true, token: cprev[1].token });
   check('without the «да» about it no task is made', cno?.[0] === 422 && adds1() === addsBefore && filesIn(draftsOf('docs')).length === 1, JSON.stringify(cno));
   const cyes = await post('/api/memory/send', { repo: 'docs', confirm: true, token: cprev[1].token, accept_risk: true });
-  check('with it a board task is made, and the checkout has no new commit and is as it was', cyes?.[0] === 200 && /[A-Z]+-\d+/.test(cyes[1].task) && adds1() === addsBefore + 1 && execFileSync('git', ['-C', docsRepo, 'rev-parse', 'HEAD']).toString().trim() === headBefore && docsCommits() === commits0 && gitStatus(docsRepo) === '' && filesIn(draftsOf('docs')).length === 0, JSON.stringify(cyes));
+  check('with it a board task is made (the tag and the id of the board), and the checkout has no new commit and is as it was', cyes?.[0] === 200 && /[A-Z]+-\d+/.test(cyes[1].task) && /^docs\/\d+$/.test(cyes[1].id) && adds1() === addsBefore + 1 && execFileSync('git', ['-C', docsRepo, 'rev-parse', 'HEAD']).toString().trim() === headBefore && docsCommits() === commits0 && gitStatus(docsRepo) === '' && filesIn(draftsOf('docs')).length === 0, JSON.stringify(cyes));
   const nothing = await post('/api/memory/send', { repo: 'docs' });
   check('with no drafts there is nothing to send', nothing?.[0] === 422, JSON.stringify(nothing));
 

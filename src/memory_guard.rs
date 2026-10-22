@@ -729,6 +729,34 @@ fn host_name_ok(name: &str) -> bool {
         && !PUBLIC_DOMAINS.iter().any(|d| n == *d || n.ends_with(&format!(".{d}")))
 }
 
+/// `DokployMain_10.1.2.3` → `DokployMain`: tools that export an ssh config (Tabby, …) write the address into the alias,
+/// and a memory text names the machine without it.
+fn without_address(alias: &str) -> Option<String> {
+    let (head, tail) = alias.rsplit_once(['_', '-'])?;
+    (!head.is_empty() && is_ip_like(tail) && tail.contains('.')).then(|| head.to_string())
+}
+
+/// The names to look for in a text, as `host:` terms: each name whole, and without an address glued to its end. A name
+/// shorter than `min` letters is left out (it would be a word).
+pub fn host_terms(names: impl IntoIterator<Item = String>, min: usize) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for n in names {
+        let n = n.trim().to_string();
+        for name in std::iter::once(n.clone()).chain(without_address(&n)) {
+            let ok = if min >= 4 {
+                host_name_ok(&name)
+            } else {
+                name.chars().count() >= min && !GENERIC_HOSTS.contains(&name.to_lowercase().as_str()) && !is_ip_like(&name) && !name.contains(['*', '?', '!', '/', '@'])
+            };
+            let term = format!("{HOST_TERM}{name}");
+            if ok && !out.iter().any(|t| t.eq_ignore_ascii_case(&term)) {
+                out.push(term);
+            }
+        }
+    }
+    out
+}
+
 /// The `Host` aliases and `HostName`s of an `ssh_config` text.
 pub fn ssh_config_hosts(text: &str) -> Vec<String> {
     let mut out = Vec::new();
@@ -826,12 +854,7 @@ pub fn own_terms() -> Vec<String> {
             hosts.extend(std::fs::read_to_string("/etc/hostname").ok().map(|h| h.trim().to_string()));
             hosts.extend(etc_hosts_names(&std::fs::read_to_string("/etc/hosts").unwrap_or_default()));
             hosts.extend(ssh_config_hosts(&ssh_config_text(&crate::config::home())));
-            out.extend(
-                hosts
-                    .into_iter()
-                    .filter(|h| h.chars().count() >= 3 && seen.insert(h.to_lowercase()))
-                    .map(|h| format!("{HOST_TERM}{h}")),
-            );
+            out.extend(host_terms(hosts, 4).into_iter().filter(|t| seen.insert(t.to_lowercase())));
             out
         })
         .clone()
@@ -962,6 +985,22 @@ mod tests {
         assert_eq!(f.iter().map(|f| (f.kind, f.text.as_str())).collect::<Vec<_>>(), [("host", "app-semantics"), ("host", "salehost"), ("host", "dokploymain")]);
         assert!(scan("сервис app-semanticsx", "text", &terms).is_empty(), "a part of a word is not a hit");
         assert_eq!(redact("зайти на app-semantics по ssh", &terms), "зайти на <хост> по ssh");
+    }
+
+    #[test]
+    fn an_alias_with_an_address_glued_on_is_found_by_the_bare_name() {
+        // a Tabby export: `Host DokployMain_10.1.2.3`
+        let ssh = "Host DokployMain_10.1.2.3\n  HostName 10.1.2.3\nHost flowise_10.14.129.139\nHost web_10.0.0.1\n";
+        let terms = host_terms(ssh_config_hosts(ssh), 4);
+        assert!(terms.contains(&"host:DokployMain_10.1.2.3".to_string()) && terms.contains(&"host:DokployMain".to_string()), "{terms:?}");
+        assert!(terms.contains(&"host:flowise".to_string()), "{terms:?}");
+        assert!(!terms.contains(&"host:web".to_string()), "a generic word stays a word: {terms:?}");
+        let f = scan("Деплой идёт через dokploymain, а ещё DokployMain_10.1.2.3 и flowise", "text", &terms);
+        assert_eq!(f.iter().map(|f| f.kind).collect::<Vec<_>>(), ["host", "host", "host"], "{f:?}");
+        assert_eq!(redact("через dokploymain", &terms), "через <хост>");
+        // runner names are short by choice: three letters are enough there
+        let r = host_terms(["vm-r".to_string(), "ab".to_string(), "10.2.3.4".to_string()], 3);
+        assert_eq!(r, ["host:vm-r"]);
     }
 
     #[test]

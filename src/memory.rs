@@ -964,8 +964,91 @@ impl Drafts {
         a || b
     }
 
-    pub fn clear(&self) {
-        let _ = std::fs::remove_dir_all(&self.dir);
+    /// Drops what a send took: a drafted entry only while it still reads as it was sent (one saved again meanwhile stays),
+    /// and the removal markers. `sent` is `(id, text of the file sent, or None for a removal)`.
+    pub fn drop_sent(&self, sent: &[(String, Option<String>)]) {
+        let puts = self.puts();
+        for (id, text) in sent {
+            match text {
+                Some(text) => {
+                    if puts.iter().any(|e| &e.id == id && &render_entry(e) == text) {
+                        let _ = std::fs::remove_file(self.puts_dir().join(format!("{id}.md")));
+                    }
+                }
+                None => {
+                    let _ = std::fs::remove_file(self.dels_dir().join(id));
+                }
+            }
+        }
+    }
+}
+
+/// A send that a board task has not merged yet. The drafts are gone from the planner's folder once a task has their text;
+/// this note keeps them on the panel («ждёт слияния PLN-35») until the checkout has them, and after a reload.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SentBatch {
+    /// What the board answered: a tag (`PLN-35`) or the id (`herdr-planner/35`).
+    pub task: String,
+    /// `herdr-planner/35`, when known.
+    #[serde(default)]
+    pub id: Option<String>,
+    pub title: String,
+    pub at: u64,
+    /// `(id, text of the file)`, the text `None` for a removal.
+    pub files: Vec<(String, Option<String>)>,
+}
+
+#[derive(Debug, Clone)]
+pub struct SentLog {
+    dir: PathBuf,
+}
+
+/// A batch is forgotten after this long even when the checkout never got it (the task was dropped).
+const SENT_KEEP_MS: u64 = 60 * 24 * 3600 * 1000;
+
+impl SentLog {
+    pub fn new(cfg: &AppConfig, repo: &str) -> Self {
+        Self { dir: cfg.state_dir.join("memory-sent").join(repo) }
+    }
+
+    fn file(&self, task: &str) -> PathBuf {
+        let safe: String = task.chars().map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '_' }).collect();
+        self.dir.join(format!("{safe}.json"))
+    }
+
+    pub fn add(&self, b: &SentBatch) -> Result<(), String> {
+        std::fs::create_dir_all(&self.dir).map_err(|e| format!("{}: {e}", self.dir.display()))?;
+        let text = serde_json::to_string_pretty(b).map_err(|e| e.to_string())?;
+        std::fs::write(self.file(&b.task), text).map_err(|e| format!("{}: {e}", self.dir.display()))
+    }
+
+    pub fn forget(&self, task: &str) -> bool {
+        std::fs::remove_file(self.file(task)).is_ok()
+    }
+
+    /// The batches still waiting, oldest first. Those the checkout has now (every file as sent, every removal done) or
+    /// that are very old are dropped on the way.
+    pub fn list(&self, store: &Store, now: u64) -> Vec<SentBatch> {
+        let mut out: Vec<SentBatch> = Vec::new();
+        let Ok(rd) = std::fs::read_dir(&self.dir) else { return out };
+        for f in rd.flatten() {
+            let Some(b) = std::fs::read_to_string(f.path()).ok().and_then(|t| serde_json::from_str::<SentBatch>(&t).ok()) else { continue };
+            let done = b.files.iter().all(|(id, text)| match (text, store.get(id)) {
+                (Some(text), Some(have)) => {
+                    let want = parse_entry(id, text);
+                    have.title == want.title && have.body.trim() == want.body.trim() && have.kind == want.kind
+                }
+                (Some(_), None) => false,
+                (None, have) => have.is_none(),
+            });
+            if done || now.saturating_sub(b.at) > SENT_KEEP_MS {
+                let _ = std::fs::remove_file(f.path());
+            } else {
+                out.push(b);
+            }
+        }
+        out.sort_by_key(|b| b.at);
+        out
     }
 }
 
@@ -1557,8 +1640,47 @@ mod tests {
         assert_eq!(effective(&st, &drafts)[0].1, "deleted");
         assert!(st.get("raz").is_some(), "still in git until the task is merged");
         assert_eq!(status(&root), "");
-        drafts.clear();
+        assert!(drafts.discard("raz"));
         assert_eq!(drafts.puts().len() + drafts.dels().len(), 0);
+    }
+
+    #[test]
+    fn a_send_takes_only_what_it_sent_and_the_panel_keeps_it_until_the_checkout_has_it() {
+        let (proj, state) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let root = checkout(proj.path());
+        let drafts = Drafts::at(state.path().join("d"));
+        let mut a = entry("Раз", "первый текст");
+        a.id = "raz".into();
+        let mut b = entry("Два", "второй текст");
+        b.id = "dva".into();
+        drafts.put(&a).unwrap();
+        drafts.put(&b).unwrap();
+        drafts.delete("old", true).unwrap();
+        let sent = vec![("raz".to_string(), Some(render_entry(&a))), ("dva".to_string(), Some(render_entry(&b))), ("old".to_string(), None)];
+        // `dva` is saved again while the board is adding the task
+        let mut b2 = b.clone();
+        b2.body = "второй текст, правка".into();
+        drafts.put(&b2).unwrap();
+        drafts.drop_sent(&sent);
+        assert_eq!(drafts.puts().iter().map(|e| (e.id.as_str(), e.body.as_str())).collect::<Vec<_>>(), [("dva", "второй текст, правка")]);
+        assert!(drafts.dels().is_empty());
+
+        // the note of the send
+        let cfg = crate::testutil::test_cfg(state.path());
+        let log = SentLog { dir: cfg.state_dir.join("memory-sent/demo") };
+        let st = universe_store(&root, "demo");
+        log.add(&SentBatch { task: "DEM-7".into(), id: Some("demo/7".into()), title: "Запомнить в docs/memory: Раз".into(), at: 1000, files: sent.clone() }).unwrap();
+        let kept = log.list(&st, 2000);
+        assert_eq!((kept.len(), kept[0].task.as_str()), (1, "DEM-7"), "nothing in the checkout yet: still waiting");
+        assert_eq!(log.list(&st, 2000).len(), 1, "and again after a reload");
+        // the task is merged and the checkout pulled: the files are there, `old` is gone
+        st.save(a.clone()).unwrap();
+        st.save(b.clone()).unwrap();
+        assert!(log.list(&st, 2000).is_empty(), "the checkout has it all: the note goes");
+        // a send nobody ever merged is forgotten in time, or by hand
+        log.add(&SentBatch { task: "DEM-8".into(), id: None, title: "x".into(), at: 1, files: vec![("zzz".into(), Some(render_entry(&a)))] }).unwrap();
+        assert_eq!(log.list(&st, 2000).len(), 1);
+        assert!(log.forget("DEM-8") && log.list(&st, 2000).is_empty());
     }
 
     #[test]

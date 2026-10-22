@@ -82,7 +82,7 @@ pub async fn reindex_stores(app: &Shared) {
     let _ = tokio::task::spawn_blocking(move || {
         memory::galaxy_store(&cfg).reindex();
         // A universe's index is not rewritten here: that would make the human's checkout «dirty» for the board's merges.
-        // It is rebuilt when the memory is committed.
+        // The task that sends the memory to the repository brings its lines.
     })
     .await;
 }
@@ -134,7 +134,9 @@ async fn panel_read(app: &Shared, q: GetQuery) -> Result<Value, Fail> {
             let dirty = memory::git_dirty(&root);
             // In a git checkout the drafts are in front of the files (and not in the checkout).
             let drafts = dirty.is_some().then(|| memory::Drafts::new(&cfg, &repo2));
-            let entries: Vec<Value> = match &drafts {
+            // What was sent by a task and is not in the checkout yet stays on the panel, marked with the task.
+            let sent = if drafts.is_some() { memory::SentLog::new(&cfg, &repo2).list(&st, now_ms()) } else { Vec::new() };
+            let mut entries: Vec<Value> = match &drafts {
                 Some(d) => memory::effective(&st, d)
                     .iter()
                     .map(|(e, mark)| {
@@ -145,12 +147,37 @@ async fn panel_read(app: &Shared, q: GetQuery) -> Result<Value, Fail> {
                     .collect(),
                 None => st.list().iter().map(entry_json).collect(),
             };
+            for b in &sent {
+                for (id, text) in &b.files {
+                    let at = entries.iter().position(|j| j["id"] == json!(id));
+                    let drafted = at.is_some_and(|i| entries[i]["draft"].as_str().is_some_and(|m| !m.is_empty()));
+                    match (text, at) {
+                        _ if drafted => {}
+                        (Some(text), at) => {
+                            let mut j = entry_json(&memory::parse_entry(id, text));
+                            j["draft"] = json!("sent");
+                            j["task"] = json!(b.task);
+                            match at {
+                                Some(i) => entries[i] = j,
+                                None => entries.push(j),
+                            }
+                        }
+                        (None, Some(i)) => {
+                            entries[i]["draft"] = json!("sentdel");
+                            entries[i]["task"] = json!(b.task);
+                        }
+                        (None, None) => {}
+                    }
+                }
+            }
+            entries.sort_by(|a, b| a["id"].as_str().cmp(&b["id"].as_str()));
             let git = match &dirty {
-                None => json!({"checkout": false, "dirty": [], "drafts": 0}),
+                None => json!({"checkout": false, "dirty": [], "drafts": 0, "sent": []}),
                 Some(d) => json!({
                     "checkout": true,
                     "dirty": d.iter().map(|(s, f)| json!({"state": s, "file": f})).collect::<Vec<_>>(),
                     "drafts": drafts.as_ref().map(|d| d.puts().len() + d.dels().len()).unwrap_or(0),
+                    "sent": sent.iter().map(|b| json!({"task": b.task, "id": b.id, "title": b.title, "files": b.files.len()})).collect::<Vec<_>>(),
                 }),
             };
             Ok(json!({
@@ -331,9 +358,27 @@ fn change_of(id: &str, file: String, before: Option<&Entry>, after: Option<Entry
     }
 }
 
+/// What the personal-data check looks for besides the patterns: this person's own terms, the names of machines they know
+/// (ssh aliases, `/etc/hosts`), and the names of the board's shipyards (`runners.json`: the label and the host of each).
+fn guard_terms(cfg: &crate::config::AppConfig) -> Vec<String> {
+    let mut own = memory_guard::own_terms();
+    if let Ok(file) = crate::runners::load(&cfg.runners_file()) {
+        let names = file.runners.iter().flat_map(|r| {
+            let host = crate::ssh::split_target(&r.target).dest;
+            let host = host.rsplit('@').next().unwrap_or("").trim_matches(['[', ']']).to_string();
+            [r.id.clone(), host]
+        });
+        for t in memory_guard::host_terms(names, 3) {
+            if !own.iter().any(|o| o.eq_ignore_ascii_case(&t)) {
+                own.push(t);
+            }
+        }
+    }
+    own
+}
+
 /// What the check finds in the entries that will be written; for a universe only (the Galaxy's memory is local).
-fn check_entries(changes: &[Change]) -> (Vec<FindingOut>, Vec<Value>) {
-    let own = memory_guard::own_terms();
+fn check_entries(changes: &[Change], own: &[String]) -> (Vec<FindingOut>, Vec<Value>) {
     let mut findings = Vec::new();
     let mut redacted = Vec::new();
     for c in changes {
@@ -343,7 +388,7 @@ fn check_entries(changes: &[Change]) -> (Vec<FindingOut>, Vec<Value>) {
         };
         let before = findings.len();
         for (field, text) in [("title", &e.title), ("description", &e.description), ("body", &e.body)] {
-            for f in memory_guard::scan(text, field, &own) {
+            for f in memory_guard::scan(text, field, own) {
                 // the summary is cut from the body when the human wrote none: one hit, listed once
                 if !findings.iter().any(|o: &FindingOut| o.file == c.file && o.f.kind == f.kind && o.f.text == f.text) {
                     findings.push(FindingOut { file: c.file.clone(), f });
@@ -352,9 +397,9 @@ fn check_entries(changes: &[Change]) -> (Vec<FindingOut>, Vec<Value>) {
         }
         if findings.len() > before {
             redacted.push(json!({
-                "title": memory_guard::redact(&e.title, &own),
-                "description": memory_guard::redact(&e.description, &own),
-                "body": memory_guard::redact(&e.body, &own),
+                "title": memory_guard::redact(&e.title, own),
+                "description": memory_guard::redact(&e.description, own),
+                "body": memory_guard::redact(&e.body, own),
             }));
         } else {
             redacted.push(Value::Null);
@@ -368,16 +413,24 @@ struct Local {
     store: memory::Store,
     drafts: Option<memory::Drafts>,
     root: Option<String>,
+    /// The ids a board task is about to bring (sent, not merged yet): a new entry does not take them.
+    sent: Vec<String>,
 }
 
 impl Local {
     fn open(cfg: &crate::config::AppConfig, repo: &str) -> Result<Local, Fail> {
         if repo.is_empty() {
-            return Ok(Local { store: memory::galaxy_store(cfg), drafts: None, root: None });
+            return Ok(Local { store: memory::galaxy_store(cfg), drafts: None, root: None, sent: Vec::new() });
         }
         let root = memory::repo_root(cfg, repo).ok_or_else(|| Fail::new(404, "у этой вселенной нет папки на этой машине"))?;
         let drafts = memory::git_dirty(&root).is_some().then(|| memory::Drafts::new(cfg, repo));
-        Ok(Local { store: memory::universe_store(&root, repo), drafts, root: Some(root) })
+        let store = memory::universe_store(&root, repo);
+        let sent = if drafts.is_some() {
+            memory::SentLog::new(cfg, repo).list(&store, now_ms()).into_iter().flat_map(|b| b.files.into_iter().map(|(id, _)| id)).collect()
+        } else {
+            Vec::new()
+        };
+        Ok(Local { store, drafts, root: Some(root), sent })
     }
 
     fn get(&self, id: &str) -> Option<Entry> {
@@ -388,7 +441,7 @@ impl Local {
     }
 
     fn taken(&self, id: &str) -> bool {
-        self.store.dir.join(format!("{id}.md")).exists() || self.drafts.as_ref().is_some_and(|d| d.puts().iter().any(|e| e.id == id))
+        self.sent.iter().any(|s| s == id) || self.store.dir.join(format!("{id}.md")).exists() || self.drafts.as_ref().is_some_and(|d| d.puts().iter().any(|e| e.id == id))
     }
 
     fn file(&self, id: &str, repo: &str) -> String {
@@ -461,7 +514,7 @@ async fn plan(app: &Shared, req: &Req) -> Result<Plan, Fail> {
     let (findings, redacted, visibility) = if repo.is_empty() {
         (Vec::new(), Vec::new(), None)
     } else {
-        let (findings, redacted) = check_entries(&changes);
+        let (findings, redacted) = check_entries(&changes, &guard_terms(&app.cfg));
         let vis = match (&root, findings.is_empty()) {
             (Some(r), false) => Some(visibility_of(app, r).await),
             _ => None,
@@ -598,7 +651,7 @@ fn merged(existing: Option<Entry>, b: &SaveBody) -> Entry {
 
 /// `POST /api/memory/save`: a new entry (no `id`) or an edit. Without `confirm` it answers with what would change
 /// («было → стало», the level and file, what the personal-data check found); with `confirm` and that answer's `token`
-/// it writes. A universe in a git checkout gets a draft outside the checkout; its commit is `/api/memory/commit`.
+/// it writes. A universe in a git checkout gets a draft outside the checkout; it goes to the repository by a board task (`/api/memory/send`).
 pub async fn memory_save(State(app): State<Shared>, headers: HeaderMap, Json(body): Json<SaveReq>) -> Response {
     if !same_origin(&headers) {
         return error(StatusCode::FORBIDDEN, "cross-origin request refused");
@@ -813,7 +866,7 @@ pub async fn memory_send(State(app): State<Shared>, headers: HeaderMap, Json(bod
             .await
             .map_err(|e| Fail::new(500, e.to_string()))??;
         // what goes into git is checked as a whole, header and body
-        let findings = scan_files(&changes, &memory_guard::own_terms());
+        let findings = scan_files(&changes, &guard_terms(&app.cfg));
         let vis = if findings.is_empty() { None } else { Some(visibility_of(&app, &root).await) };
         let token = token_of(&changes, &findings);
         let risk = risk_of(&findings, vis);
@@ -834,16 +887,48 @@ pub async fn memory_send(State(app): State<Shared>, headers: HeaderMap, Json(bod
         let out = app::run_board(&app.cfg, &["add", &title, "--repo", &body.repo, "--desc", &desc], Duration::from_secs(60))
             .await
             .map_err(|e| Fail::new(502, e))?;
-        // `PLN-35: added`
-        let tag = out.lines().find_map(|l| l.split_once(':').map(|(t, _)| t.trim().to_string())).unwrap_or_default();
-        let id = tag.rsplit_once('-').and_then(|(_, n)| n.parse::<u64>().ok()).map(|n| format!("{}/{n}", body.repo));
-        // the texts are in the task now: the drafts are done
-        memory::Drafts::new(&app.cfg, &body.repo).clear();
+        // The board says `<repo>/<n>: added…` (the fixture's older words: `PLN-35: added`): the id, and the tag from the board.
+        let said = out.lines().find_map(|l| l.split_once(':').map(|(t, _)| t.trim().to_string())).unwrap_or_default();
+        let id = if said.contains('/') {
+            Some(said.clone())
+        } else {
+            said.rsplit_once('-').and_then(|(_, n)| n.parse::<u64>().ok()).map(|n| format!("{}/{n}", body.repo))
+        };
         app::refresh(&app).await;
+        let tag = match &id {
+            Some(id) => app.snapshot.read().await.tasks.iter().find(|t| &t.id == id).map(|t| t.tag.clone()).filter(|t| !t.is_empty()),
+            None => None,
+        }
+        .unwrap_or_else(|| said.clone());
+        // Only what this send took leaves the drafts (one saved meanwhile stays), and the panel keeps it, with the task,
+        // until the checkout has it.
+        let files: Vec<(String, Option<String>)> = changes.iter().map(|c| (c.id.clone(), c.after.clone())).collect();
+        memory::Drafts::new(&app.cfg, &body.repo).drop_sent(&files);
+        let batch = memory::SentBatch { task: tag.clone(), id: id.clone(), title: title.clone(), at: now_ms(), files };
+        let _ = memory::SentLog::new(&app.cfg, &body.repo).add(&batch);
         Ok(json!({"ok": true, "task": tag, "id": id, "title": title, "files": changes.len()}))
     }
     .await;
     respond(result)
+}
+
+#[derive(Deserialize)]
+pub struct ForgetBody {
+    repo: String,
+    task: String,
+}
+
+/// `POST /api/memory/sent/forget`: drops the panel's note of a send (the task was dropped, or the memory came another way).
+/// It only forgets what the planner kept; no memory file is touched, so there is no card.
+pub async fn memory_sent_forget(State(app): State<Shared>, headers: HeaderMap, Json(body): Json<ForgetBody>) -> Response {
+    if !same_origin(&headers) {
+        return error(StatusCode::FORBIDDEN, "cross-origin request refused");
+    }
+    if !taskmeta::valid_repo(&body.repo) {
+        return error(StatusCode::BAD_REQUEST, "bad universe name");
+    }
+    let gone = memory::SentLog::new(&app.cfg, &body.repo).forget(&body.task);
+    Json(json!({"ok": true, "forgotten": gone})).into_response()
 }
 
 #[derive(Deserialize)]
@@ -1109,7 +1194,7 @@ mod tests {
         let mut e = memory::complete(Entry { title: "Т".into(), body: body.into(), ..Entry::default() }, "decision", 0).unwrap();
         e.id = "t".into();
         let changes = vec![change_of("t", "docs/memory/t.md".into(), None, Some(e))];
-        let (findings, redacted) = check_entries(&changes);
+        let (findings, redacted) = check_entries(&changes, &memory_guard::own_terms());
         Plan { repo: "demo".into(), changes, findings, visibility: vis, draft: true, redacted }
     }
 
@@ -1163,6 +1248,30 @@ mod tests {
         assert_eq!(private, "confirm");
         assert!(risk_allowed(private, &Gate::default()).is_err() && risk_allowed(private, &gate("t", true, false)).is_ok());
         assert!(risk_allowed(risk_of(&[], Some(Visibility::Public)), &Gate::default()).is_ok(), "clean text needs no word");
+    }
+
+    #[test]
+    fn the_names_of_the_boards_runners_are_looked_for_too() {
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = crate::testutil::test_cfg(dir.path());
+        std::fs::create_dir_all(cfg.runners_file().parent().unwrap()).unwrap();
+        std::fs::write(
+            cfg.runners_file(),
+            serde_json::json!({"version": 1, "runners": [{"id": "vm-r", "target": "root@yard-host.lan:2222"}, {"id": "ip-one", "target": "10.9.8.7"}]}).to_string(),
+        )
+        .unwrap();
+        let terms = guard_terms(&cfg);
+        for want in ["host:vm-r", "host:yard-host.lan", "host:ip-one"] {
+            assert!(terms.contains(&want.to_string()), "{want} in {terms:?}");
+        }
+        assert!(!terms.iter().any(|t| t.contains("10.9.8.7")), "an address is found as an address: {terms:?}");
+        let changes = vec![add_change("yard", "Верфь", "Контейнеры гоняем на верфи vm-r.")];
+        let found = scan_files(&changes, &terms);
+        assert!(found.iter().any(|f| f.f.kind == "host" && f.f.text == "vm-r"), "{found:?}");
+        assert_eq!(risk_of(&found, Some(Visibility::Public)), "block");
+        // no runners file: nothing more to look for
+        std::fs::remove_file(cfg.runners_file()).unwrap();
+        assert!(!guard_terms(&cfg).contains(&"host:vm-r".to_string()));
     }
 
     #[test]
@@ -1255,7 +1364,7 @@ mod tests {
     fn the_check_looks_at_title_description_and_body_and_names_the_file() {
         let mut e = Entry { id: "t".into(), title: "Хост db01.office.local".into(), description: "см. /home/ivan/x".into(), body: "token=abc123XYZ789".into(), kind: "decision".into(), ..Entry::default() };
         e.added = "2026-10-21".into();
-        let (f, r) = check_entries(&[change_of("t", "docs/memory/t.md".into(), None, Some(e))]);
+        let (f, r) = check_entries(&[change_of("t", "docs/memory/t.md".into(), None, Some(e))], &[]);
         let got: Vec<(&str, &str)> = f.iter().map(|x| (x.f.field.as_str(), x.f.kind)).collect();
         assert_eq!(got, [("title", "host"), ("description", "path"), ("body", "secret")]);
         assert!(f.iter().all(|x| x.file == "docs/memory/t.md"));
