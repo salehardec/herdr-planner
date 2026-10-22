@@ -78,6 +78,21 @@ pub fn logs_gate(c: &Container) -> Result<(), String> {
     Ok(())
 }
 
+/// Who may get a shell inside the container (PLN-44): the container of a board task, never a foreign one or a shared
+/// build cache; an unsure one is not a task's container; only a running container can be entered. A shell changes
+/// nothing on the yard by itself, but it is as close as logs: a container of another task in work may be entered too.
+pub fn shell_gate(c: &Container) -> Result<(), String> {
+    match c.class {
+        Class::Foreign => Err("чужой контейнер (не задачи доски или под маской защиты): оболочку в него не открываю".into()),
+        Class::Shared => Err("общий кэш сборок верфи (herdr.shared): оболочку в него не открываю".into()),
+        Class::Unsure => Err("неясно, какой задаче принадлежит контейнер: оболочку в него не открываю".into()),
+        Class::Active | Class::Forgotten if c.state != "running" => {
+            Err("контейнер не работает: оболочка внутрь недоступна".into())
+        }
+        _ => Ok(()),
+    }
+}
+
 /// Who may be stopped, restarted or removed from the screen of `scope` (the task id, `""` from the shipyard's own).
 pub fn gate(c: &Container, act: Act, scope: &str) -> Result<(), String> {
     match c.class {
@@ -239,9 +254,20 @@ mod tests {
     fn an_unsure_one_is_read_but_not_touched() {
         let u = c(Class::Unsure, "exited", "");
         assert!(logs_gate(&u).is_ok());
+        assert!(shell_gate(&u).is_err(), "its task is not known: no shell either");
         for a in [Act::Stop, Act::Restart, Act::Delete] {
             assert!(gate(&u, a, "t1").is_err());
         }
+    }
+
+    #[test]
+    fn a_shell_goes_into_a_running_container_of_a_task_only() {
+        assert!(shell_gate(&c(Class::Active, "running", "t1")).is_ok());
+        assert!(shell_gate(&c(Class::Forgotten, "running", "t1")).is_ok(), "a live forgotten container can be entered");
+        assert!(shell_gate(&c(Class::Active, "exited", "t1")).is_err(), "a stopped container takes no exec");
+        assert!(shell_gate(&c(Class::Forgotten, "paused", "t1")).is_err());
+        assert!(shell_gate(&c(Class::Foreign, "running", "")).is_err());
+        assert!(shell_gate(&c(Class::Shared, "running", "")).is_err());
     }
 
     #[test]

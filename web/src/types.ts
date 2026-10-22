@@ -243,6 +243,22 @@ export interface RunnerHost {
   gpu: { index: string; name: string; util_pct: number | null; mem_used_mib: number | null; mem_total_mib: number | null; temp_c: number | null }[];
 }
 
+/** One published port of a container, parsed from docker's `0.0.0.0:15432->5432/tcp`. */
+export interface RunnerPort {
+  host_ip: string;
+  /** The port on the shipyard; null for a range, which has no single link. */
+  host_port: number | null;
+  container_port: number | null;
+  proto: string;
+  /** A known service of the port: the page prints its client command. */
+  service: 'postgres' | 'redis' | null;
+  /** A web port of an all-interface binding: the page makes a link of it. */
+  http: boolean;
+  https: boolean;
+  /** Bound to the shipyard's own loopback: no link and no command from here. */
+  loopback: boolean;
+}
+
 export interface RunnerContainer {
   id: string;
   name: string;
@@ -252,6 +268,8 @@ export interface RunnerContainer {
   created_ms: number;
   labels: Record<string, string>;
   ports: string;
+  /** Published ports out of `ports`; empty for an older saved read (the page falls back to the text). */
+  published?: RunnerPort[];
   networks: string;
   mounts: string;
   size: string;

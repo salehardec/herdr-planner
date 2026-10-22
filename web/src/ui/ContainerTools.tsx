@@ -13,7 +13,7 @@ import { toast } from '../toast';
 import type { RunnerContainer } from '../types';
 import { clockOf } from '../util/dates';
 import { Gl } from './Gl';
-import { type CtlAct, ctlGate, grep, isUp, logsGate, stripAnsi } from './ctl-gate';
+import { type CtlAct, ctlGate, grep, isUp, logsGate, shellGate, stripAnsi } from './ctl-gate';
 import './ctl.css';
 
 /** The log window reads again this often while it is open. */
@@ -26,15 +26,78 @@ export function ContainerButtons(props: { runner: string; c: RunnerContainer; sc
   const { runner, c } = props;
   const scope = props.scope ?? '';
   const logsLock = logsGate(c);
+  const shellLock = shellGate(c);
+  // As «Терминал» on the yard: a window of this machine's own terminal opens only at the machine with the board.
+  const local = ['127.0.0.1', '::1', '[::1]', 'localhost'].includes(location.hostname);
+  const shell = async (): Promise<void> => {
+    try {
+      const r = await post<{ ok: boolean; name: string }>('/api/runner/container/shell', { runner, id: c.id });
+      toast(t('ctl.shellOpened', { name: r.name || c.name }), { icon: 'done' });
+    } catch (e) {
+      toast((e as Error).message, { icon: 'failed' });
+    }
+  };
   return (
     <span class="ctl-btns" data-id={c.id}>
       <button class="btn sm" type="button" data-ctl="logs" disabled={!!logsLock} title={logsLock ? t(logsLock) : undefined}
         onClick={() => { addDialogs.ctlLogs.value = { runner, id: c.id }; }}>{t('ctl.logs')}</button>
+      {local && (
+        <button class="btn sm" type="button" data-ctl="shell" disabled={!!shellLock} title={shellLock ? t(shellLock) : t('ctl.shellHint')}
+          onClick={() => { void shell(); }}>{t('ctl.shell')}</button>
+      )}
       {ACTS.map((act) => {
         const lock = ctlGate(c, act, scope);
         return (
           <button key={act} class={`btn sm ${act === 'delete' ? 'danger' : ''}`} type="button" data-ctl={act} disabled={!!lock} title={lock ? t(lock) : undefined}
             onClick={() => { addDialogs.ctlAct.value = { runner, id: c.id, act, scope }; }}>{t(`ctl.${act}`)}</button>
+        );
+      })}
+    </span>
+  );
+}
+
+/** The published ports of a container (PLN-44): a web port is a link to the yard, a known service its client command,
+    anything else the mapping docker prints. A port bound to the yard's own loopback is text with the reason: this
+    machine cannot reach it. Older saved reads have the text only, and it is shown as it is. */
+export function ContainerPorts(props: { c: RunnerContainer; host: string }): JSX.Element {
+  const c = props.c;
+  const list = c.published ?? [];
+  if (list.length === 0) return <span class="hint">{c.ports || '—'}</span>;
+  return (
+    <span class="cports">
+      {list.map((p, i) => {
+        const key = `${i}:${p.host_port ?? '-'}:${p.container_port ?? '-'}:${p.proto}`;
+        const map = p.host_port == null
+          ? t('runner.portRange')
+          : t('runner.portMap', { host: String(p.host_port), container: String(p.container_port ?? '?'), proto: p.proto });
+        // A port bound to one interface answers at that address; an any-address (`0.0.0.0`, `::`) at the yard's address.
+        const target = p.host_ip === '' || p.host_ip === '0.0.0.0' || p.host_ip === '::' ? props.host : p.host_ip;
+        if (p.service && p.host_port != null && !p.loopback && target) {
+          const cmd = t(`runner.connect.${p.service}`, { host: target, port: String(p.host_port) });
+          return (
+            <span key={key} class="cport srv" data-service={p.service} data-port={p.host_port} title={t('runner.portConnect', { service: p.service })}>
+              <span class="hint">{p.service}</span>{' '}
+              <code>
+                {cmd.split(' ').flatMap((w, j, all) => [
+                  <span key={`w${j}`} class="w">{w}</span>,
+                  j < all.length - 1 ? ' ' : null,
+                ])}
+              </code>
+            </span>
+          );
+        }
+        if (p.http && p.host_port != null && !p.loopback && target) {
+          // An IPv6 literal goes in brackets in a URL.
+          const url = `${p.https ? 'https' : 'http'}://${target.includes(':') ? `[${target}]` : target}:${p.host_port}`;
+          return (
+            <a key={key} class="cport" data-port={p.host_port} data-http={p.https ? 'https' : 'http'}
+              href={url} target="_blank" rel="noreferrer" title={map}>{url}</a>
+          );
+        }
+        return (
+          <span key={key} class="cport" data-port={p.host_port ?? ''} title={p.loopback ? `${t('runner.loopbackOnly')} (${map})` : map}>
+            {map}
+          </span>
         );
       })}
     </span>

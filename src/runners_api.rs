@@ -1448,10 +1448,62 @@ pub async fn container_act(State(app): State<Shared>, headers: HeaderMap, Json(b
     }
 }
 
+/// `POST /api/runner/container/shell`: a terminal on this machine that ssh's into the yard and runs
+/// `docker exec -it <id> …` there (PLN-44). The container must be a task's and running; the server checks the same
+/// rule again after the page's own button.
+pub async fn container_shell(
+    State(app): State<Shared>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    Json(body): Json<ContainerBody>,
+) -> Response {
+    if !same_origin(&headers) {
+        return fail(403, "cross-origin request refused");
+    }
+    if !client_is_local(addr, &headers) {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(json!({"error": "Shell открывается только за компьютером с доской", "remote": true})),
+        )
+            .into_response();
+    }
+    let (r, _state, c) = match container_of(&app, &body.runner, &body.id).await {
+        Ok(x) => x,
+        Err(resp) => return resp,
+    };
+    if let Err(why) = runners_ctl::shell_gate(&c) {
+        return fail(409, why);
+    }
+    let args = match ssh::container_shell_args(&r.target, &c.id) {
+        Ok(a) => a,
+        Err(e) => return fail(422, e),
+    };
+    // As with «Терминал»: a window of this machine's own terminal, not a bare child with no tty.
+    match tokio::process::Command::new("xdg-terminal-exec")
+        .arg(&app.cfg.ssh_bin)
+        .args(&args)
+        .spawn()
+    {
+        Ok(_) => Json(json!({
+            "ok": true,
+            "name": c.name,
+            "command": format!("{} {}", app.cfg.ssh_bin, args.join(" ")),
+        }))
+        .into_response(),
+        Err(e) => fail(500, format!("не удалось открыть терминал: {e}")),
+    }
+}
+
 /* ───────── the terminal ───────── */
 
 #[derive(Deserialize)]
 pub struct RunnerBody {
+    id: String,
+}
+
+#[derive(Deserialize)]
+pub struct ContainerBody {
+    runner: String,
     id: String,
 }
 

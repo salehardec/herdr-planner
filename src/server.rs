@@ -116,6 +116,7 @@ pub fn router(app: Shared) -> Router {
         .route("/api/runner/container/logs", post(crate::runners_api::container_logs))
         .route("/api/runner/container/preview", post(crate::runners_api::container_preview))
         .route("/api/runner/container/act", post(crate::runners_api::container_act))
+        .route("/api/runner/container/shell", post(crate::runners_api::container_shell))
         .route("/api/runner/terminal", post(crate::runners_api::runner_terminal))
         .route("/api/station", get(station::station_get))
         .route("/api/station/models", get(station::station_models))

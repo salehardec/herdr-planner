@@ -403,6 +403,40 @@ pub struct TaskRef {
     pub finished_ms: u64,
 }
 
+/// A service whose client command the page knows for a published port (PLN-44).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Service {
+    Postgres,
+    Redis,
+}
+
+/// One published port of a container, out of docker's `0.0.0.0:15432->5432/tcp`: the page links a web port and
+/// prints a client command for a known service. A container port with no host side (`5432/tcp`) is not published.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct PublishedPort {
+    /// The host address docker bound to (`0.0.0.0`, `::`, `127.0.0.1`); empty when docker printed none.
+    pub host_ip: String,
+    /// The port on the yard; `None` for a range (`8000-8010`) — no link then.
+    pub host_port: Option<u16>,
+    /// The port inside the container; `None` for a range.
+    pub container_port: Option<u16>,
+    #[serde(default)]
+    pub proto: String,
+    /// A known service of this port (`postgres`, `redis`): the page offers its client command instead of a link.
+    #[serde(default)]
+    pub service: Option<Service>,
+    /// A web port of an all-interface binding: the page makes a link of it.
+    #[serde(default)]
+    pub http: bool,
+    /// The container port is 443: the link is `https`.
+    #[serde(default)]
+    pub https: bool,
+    /// Bound to the yard's own loopback: no link and no command from this machine, the page says why.
+    #[serde(default)]
+    pub loopback: bool,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct Container {
     pub id: String,
@@ -413,6 +447,9 @@ pub struct Container {
     pub created_ms: u64,
     pub labels: BTreeMap<String, String>,
     pub ports: String,
+    /// The published ports parsed out of `ports` (PLN-44); empty for an older saved read.
+    #[serde(default)]
+    pub published: Vec<PublishedPort>,
     pub networks: String,
     pub mounts: String,
     pub size: String,
@@ -811,18 +848,123 @@ pub fn labels_of(s: &str) -> BTreeMap<String, String> {
     map
 }
 
+/// Ports the page makes links of: the well-known web ports of a container, when nothing says it is a database.
+const WEB_PORTS: &[u16] = &[
+    80, 443, 3000, 3001, 4000, 4173, 5000, 5173, 7860, 8000, 8001, 8080, 8081, 8443, 8501, 8888, 9000, 9090, 9200, 11434,
+];
+
+/// Web ports that speak TLS: the link must be `https` (Kong's 8443 is its https listener, not a plain one).
+const TLS_PORTS: &[u16] = &[443, 8443];
+
+fn port_at(s: &str) -> Option<u16> {
+    s.trim().parse::<u16>().ok().filter(|p| *p > 0)
+}
+
+/// The image's own name, without a registry, a tag or a digest (`docker.io/library/postgres:16` → `postgres`).
+fn image_name(image: &str) -> String {
+    let base = image.split('@').next().unwrap_or(image);
+    let last = base.rsplit('/').next().unwrap_or(base);
+    last.split(':').next().unwrap_or(last).to_ascii_lowercase()
+}
+
+/// The service a port speaks: by its usual port first (a custom image still runs a database on 5432), then by the
+/// image's name. The page knows a client command for each of these (PLN-44).
+pub fn service_of(image: &str, port: Option<u16>) -> Option<Service> {
+    match port {
+        Some(5432) => return Some(Service::Postgres),
+        Some(6379) => return Some(Service::Redis),
+        _ => {}
+    }
+    let name = image_name(image);
+    if name.contains("postgres") || name.contains("postgis") || name.contains("timescale") {
+        Some(Service::Postgres)
+    } else if name.contains("redis") || name.contains("valkey") {
+        Some(Service::Redis)
+    } else {
+        None
+    }
+}
+
+fn web_image(image: &str) -> bool {
+    let name = image_name(image);
+    ["nginx", "httpd", "caddy", "traefik", "vite", "nextcloud"]
+        .iter()
+        .any(|w| name.contains(w))
+}
+
+/// The published ports out of docker's `Ports` field (`0.0.0.0:15432->5432/tcp, :::15432->5432/tcp`): a port with
+/// no host side (`5432/tcp`) is not published and is left out. A port bound twice (IPv4 and IPv6 any address) is one
+/// entry; a loopback binding and a public one of the same port stay apart only when nothing else links them — the
+/// public one wins, because it is the one reachable from this machine.
+pub fn published_ports(ports: &str, image: &str) -> Vec<PublishedPort> {
+    let mut out: Vec<PublishedPort> = Vec::new();
+    for part in ports.split(',') {
+        let Some((left, right)) = part.trim().split_once("->") else {
+            continue;
+        };
+        let (right, proto) = match right.split_once('/') {
+            Some((r, p)) => (r.trim(), p.trim().to_ascii_lowercase()),
+            None => (right.trim(), "tcp".to_string()),
+        };
+        let container_port = port_at(right);
+        let left = left.trim();
+        let (host_ip, host_port) = match left.rsplit_once(':') {
+            Some((ip, p)) => (ip.trim().trim_matches(['[', ']']).to_string(), port_at(p)),
+            None => (String::new(), port_at(left)),
+        };
+        let loopback = host_ip == "localhost"
+            || host_ip == "::1"
+            || host_ip.strip_prefix("127.").is_some();
+        // Any binding but the yard's own loopback is reachable from this machine: the any-address, or one interface
+        // (`10.31.21.29:18080->80/tcp` — the page links that very address).
+        let public = !loopback;
+        // A database image may publish a web port too (redis-stack's 8001 is its browser UI): that one stays a link.
+        let service = match container_port {
+            Some(p) if WEB_PORTS.contains(&p) => None,
+            _ => service_of(image, container_port),
+        };
+        let http = proto == "tcp"
+            && public
+            && service.is_none()
+            && (container_port.is_some_and(|p| WEB_PORTS.contains(&p)) || web_image(image));
+        let one = PublishedPort {
+            host_ip,
+            host_port,
+            container_port,
+            proto: if proto.is_empty() { "tcp".into() } else { proto },
+            service,
+            http,
+            https: container_port.is_some_and(|p| TLS_PORTS.contains(&p)),
+            loopback,
+        };
+        let same = |p: &PublishedPort| {
+            p.host_port == one.host_port && p.container_port == one.container_port && p.proto == one.proto
+        };
+        match out.iter_mut().find(|p| same(p)) {
+            Some(had) if had.loopback && !one.loopback => *had = one,
+            Some(_) => {}
+            None => out.push(one),
+        }
+    }
+    out
+}
+
 pub fn container_of(v: &Value) -> Container {
     let created = s_of(v, "CreatedAt");
     let size = s_of(v, "Size");
+    let image = s_of(v, "Image");
+    let ports = s_of(v, "Ports");
+    let published = published_ports(&ports, &image);
     Container {
         id: s_of(v, "ID"),
         name: s_of(v, "Names"),
-        image: s_of(v, "Image"),
+        image,
         state: s_of(v, "State"),
         status: s_of(v, "Status"),
         created_ms: parse_docker_time(&created).unwrap_or(0),
         labels: labels_of(&s_of(v, "Labels")),
-        ports: s_of(v, "Ports"),
+        published,
+        ports,
         networks: s_of(v, "Networks"),
         mounts: s_of(v, "Mounts"),
         size_bytes: parse_bytes(&size).unwrap_or(0),
@@ -2745,5 +2887,84 @@ mod tests {
         // `docker ps` with `--size` appends the virtual size of the image.
         assert_eq!(parse_bytes("182kB (virtual 9.74GB)"), Some(182_000));
         assert_eq!(host_of_target("me@192.0.2.29:2222"), "192.0.2.29");
+    }
+
+    #[test]
+    fn a_published_port_carries_its_service_and_a_web_link() {
+        let p = published_ports("0.0.0.0:15432->5432/tcp", "postgres:16");
+        assert_eq!(p.len(), 1);
+        assert_eq!(p[0].host_port, Some(15432));
+        assert_eq!(p[0].container_port, Some(5432));
+        assert_eq!(p[0].proto, "tcp");
+        assert_eq!(p[0].service, Some(Service::Postgres));
+        assert!(!p[0].http && !p[0].loopback);
+        // A custom image still runs a database on its usual port.
+        let p = published_ports("0.0.0.0:16379->6379/tcp", "acme/stand:7");
+        assert_eq!(p[0].service, Some(Service::Redis));
+        // A web port of an all-interface binding is a link; 443 is https.
+        let p = published_ports("0.0.0.0:18080->8080/tcp", "acme/app:1");
+        assert!(p[0].http && !p[0].https && p[0].service.is_none());
+        let p = published_ports("0.0.0.0:18443->443/tcp", "acme/app:1");
+        assert!(p[0].http && p[0].https);
+        // 8443 is a TLS port too (Kong's https listener): a plain http link would not answer.
+        let p = published_ports("0.0.0.0:18443->8443/tcp", "kong:3");
+        assert!(p[0].http && p[0].https);
+        // A port bound to one interface of the yard is reachable at that very address, not only at an any-address.
+        let p = published_ports("10.31.21.29:18080->80/tcp", "acme/app:1");
+        assert!(p[0].http && !p[0].loopback);
+        assert_eq!(p[0].host_ip, "10.31.21.29");
+        let p = published_ports("[fd00::1]:18080->80/tcp", "acme/app:1");
+        assert!(p[0].http);
+        // A web server on a port that says nothing still serves HTTP; udp never is.
+        let p = published_ports("0.0.0.0:9999->9999/tcp", "nginx:1.27");
+        assert!(p[0].http);
+        let p = published_ports("0.0.0.0:8080->8080/udp", "acme/app:1");
+        assert!(!p[0].http);
+        // A database image can publish a browser UI: its web port is a link, not a client command.
+        let p = published_ports("0.0.0.0:18001->8001/tcp", "redis/redis-stack:latest");
+        assert_eq!(p[0].service, None);
+        assert!(p[0].http);
+    }
+
+    #[test]
+    fn a_port_bound_twice_is_one_entry_and_a_loopback_one_says_so() {
+        let p = published_ports("0.0.0.0:18080->80/tcp, :::18080->80/tcp", "nginx:1.27");
+        assert_eq!(p.len(), 1);
+        assert_eq!(p[0].host_port, Some(18080));
+        // The public binding wins over the loopback one, in either order.
+        let p = published_ports("127.0.0.1:18080->80/tcp, 0.0.0.0:18080->80/tcp", "nginx:1.27");
+        assert_eq!(p.len(), 1);
+        assert!(!p[0].loopback);
+        assert_eq!(p[0].host_ip, "0.0.0.0");
+        let p = published_ports("127.0.0.1:15434->5432/tcp", "postgres:16");
+        assert!(p[0].loopback && !p[0].http);
+        let p = published_ports("[::1]:18080->80/tcp", "nginx:1.27");
+        assert!(p[0].loopback && !p[0].http);
+        // A port with no host side is not published; a range has no single port to link.
+        assert!(published_ports("5432/tcp", "postgres:16").is_empty());
+        let p = published_ports("0.0.0.0:8000-8010->8000-8010/tcp", "acme/app:1");
+        assert_eq!(p.len(), 1);
+        assert_eq!(p[0].host_port, None);
+        assert_eq!(p[0].container_port, None);
+    }
+
+    #[test]
+    fn the_container_takes_its_ports_from_the_probe() {
+        let v: Value = serde_json::from_str(
+            r#"{"ID":"a","Names":"pg-ALP-3","Image":"postgres:16","Ports":"0.0.0.0:15432->5432/tcp"}"#,
+        )
+        .unwrap();
+        let c = container_of(&v);
+        assert_eq!(c.published.len(), 1);
+        assert_eq!(c.published[0].host_port, Some(15432));
+        // An older saved read has the text only; the page falls back to it.
+        let old: Container = serde_json::from_str(
+            r#"{"id":"a","name":"n","image":"postgres:16","state":"running","status":"","created_ms":0,
+                "labels":{},"ports":"0.0.0.0:15432->5432/tcp","networks":"","mounts":"","size":"",
+                "size_bytes":0,"cpu_pct":null,"mem_bytes":null,"mem_limit":null,"pids":null,"net_io":"",
+                "block_io":"","gpu_mem_mib":null,"task":null,"class":"active"}"#,
+        )
+        .unwrap();
+        assert!(old.published.is_empty());
     }
 }

@@ -16,7 +16,7 @@ import { Translatable } from './Translatable';
 import { RequestBlock } from './Request';
 import { TaskActionButtons, TellBox } from './AgentActions';
 import { CleanCard } from './CleanCard';
-import { ContainerButtons } from './ContainerTools';
+import { ContainerButtons, ContainerPorts } from './ContainerTools';
 import { dayTimeOf } from '../util/dates';
 import { duration } from '../util/format';
 import type { Entity, Subagent, Task } from '../types';
@@ -110,6 +110,7 @@ function TaskFocus(props: { task: Task }): JSX.Element {
             <div class="row" key={c.id}>
               <button class="k" type="button" onClick={() => void navigateTo({ kind: 'runner', id: r.id })}>{r.id}</button>
               <span class="hint">{c.name} · {c.created_ms ? duration(Date.now() - c.created_ms, t) : '—'}</span>
+              <ContainerPorts c={c} host={r.ports_host} />
               {c.no_limits && <span class="chip hot" data-nolimit="1" title={t('runner.noLimitHint')}>{t('runner.noLimitMark')}</span>}
               <ContainerButtons runner={r.id} c={c} scope={task.id} />
             </div>
