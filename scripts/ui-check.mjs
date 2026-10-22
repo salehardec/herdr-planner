@@ -3264,6 +3264,43 @@ section('runners', async () => {
   check('the world draws the yard outside the Galaxy boundary', !!yardDebug?.docks?.['vm-r'] && Math.hypot(yardDebug.docks['vm-r'].x, yardDebug.docks['vm-r'].z) > 760, JSON.stringify(yardDebug?.docks));
   await click('#nav [data-nav="run|vm-r"]');
   check('the shipyard focus opens: state, CPU, memory, disk, GPU', await waitFor('!!document.querySelector("[data-focus=runner]")', 12000) && await hasText('#focus', 'vm-r') && await hasText('#focus', 'на связи') && await hasText('#focus', 'CPU') && await hasText('#focus', 'GPU NVIDIA L4-24Q'), await text('#focus'));
+  // The yard's look: a station with a light per container of a task, in the frame as a whole, calm when asked to be.
+  check('the flight to the yard ends with it selected', await waitFor('world.debug().flight === "idle" && plannerDebug().selected?.kind === "runner"', 15000), JSON.stringify(await pd()));
+  const yard = (await debug())?.docks?.['vm-r'];
+  check('the yard is lit: one light per container of a task (4), the forgotten two of them warm', yard?.ok === true && yard.lights === 4 && yard.warm === 2, JSON.stringify(yard));
+  const vp = await evalJs('({ w: innerWidth, h: innerHeight })');
+  const sc = yard?.screen;
+  check('the whole yard is in the frame with room to spare, not the whole screen',
+    !!sc && sc.x - sc.r > 0 && sc.x + sc.r < vp.w && sc.y - sc.r * 0.6 > 0 && sc.y + sc.r * 0.6 < vp.h * 0.72 && sc.r < Math.min(vp.w, vp.h) * 0.3 && sc.r > 60, JSON.stringify({ sc, vp }));
+  check('its label shows the name, CPU and memory, in the frame, apart from the other labels',
+    await evalJs(`[...document.querySelectorAll('#labels > div')].some((e) => { const b = e.getBoundingClientRect(); return e.textContent.includes('vm-r') && e.textContent.includes('CPU') && e.textContent.includes('MEM') && b.left >= 0 && b.right <= innerWidth && b.top >= 0 && b.bottom <= ${vp.h} })`)
+      && (await debug()).overlaps === 0, await evalJs(`[...document.querySelectorAll('#labels > div')].map((e) => e.textContent).join(' | ')`));
+  // the ring turns slowly; calm mode (and so prefers-reduced-motion) keeps it still
+  const yaw0 = yard?.yaw;
+  check('the ring turns', await waitFor(`world.debug().docks['vm-r'].yaw !== ${JSON.stringify(yaw0)}`, 8000), String(yaw0));
+  await evalJs('world.setSimple(true); true');
+  await frames(3);
+  const still = (await debug())?.docks?.['vm-r']?.yaw;
+  await frames(4);
+  check('in calm mode the ring stands still', still === 0 && (await debug())?.docks?.['vm-r']?.yaw === 0, String(still));
+  await evalJs('world.setSimple(false); true');
+  // a yard out of reach: dim, no lights (a yard that cannot be reached is added and taken away again)
+  const dead = await post('/api/runner/add', { target: 'me@dead.invalid', label: 'yard-dead', confirm: true, ports_host: 'dead.invalid', tags: [], protected: [], note: '' });
+  check('a yard that cannot be reached is added', dead[0] === 200 && dead[1]?.ok, JSON.stringify(dead));
+  check('it is dark in the world: out of reach, no lights', await waitFor('(() => { const y = world.debug().docks["yard-dead"]; return !!y && y.ok === false && y.lights === 0; })()', 15000), JSON.stringify((await debug())?.docks));
+  await post('/api/runner/remove', { id: 'yard-dead', confirm: true, force: true });
+  check('and the world forgets it', await waitFor('!world.debug().docks["yard-dead"]', 15000), JSON.stringify((await debug())?.docks));
+  // the light theme: the same yard, the same lights
+  const colors = join(fixture, 'theme', 'colors.toml');
+  const darkTheme = readFileSync(colors, 'utf8');
+  writeFileSync(colors, darkTheme.replace('mode = "dark"', 'mode = "light"').replace('background = "#1a120c"', 'background = "#f9f1e8"').replace('foreground = "#ecded6"', 'foreground = "#372b1f"'));
+  check('in a light theme the yard is drawn again with its lights', await waitFor('document.documentElement.dataset.mode === "light" && world.debug().docks["vm-r"]?.light === true && world.debug().docks["vm-r"].lights === 4', 20000), JSON.stringify((await debug())?.docks?.['vm-r']));
+  await frames(3);
+  await shot('shipyard-light.png');
+  writeFileSync(colors, darkTheme);
+  check('and in the dark theme again', await waitFor('document.documentElement.dataset.mode === "dark" && world.debug().docks["vm-r"]?.light === false', 20000));
+  check('the yard costs the frame little: the update is under 24 ms', (await debug()).updateMs < 24, String((await debug()).updateMs));
+  await shot('shipyard-focus.png');
   const active = await evalJs('document.querySelectorAll("#rf-tasks tbody tr").length');
   const forgotten = await evalJs('document.querySelectorAll("#rf-forgotten tbody tr").length');
   const unsure = await evalJs('document.querySelectorAll("#rf-forgotten tbody tr[data-class=unsure]").length');
