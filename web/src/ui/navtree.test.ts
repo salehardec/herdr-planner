@@ -14,7 +14,7 @@ const view = (tasks: Task[], projects: Project[] = [project('alpha')]): GalaxyVi
 const now = day(20, 15);
 
 const build = (v: GalaxyView, folds: Record<string, boolean> = {}, extra: Partial<Parameters<typeof buildTree>[0]> = {}) =>
-  buildTree({ view: v, selected: null, folds, hostLabel: 'host', coordinator: null, attentionWaits: 0, now, ...extra });
+  buildTree({ view: v, selected: null, folds, hostLabel: 'host', coordinator: null, attentionWaits: 0, runners: [], now, ...extra });
 
 describe('navigator tree', () => {
   const tasks = [task(1, day(20, 9)), task(2, day(20, 10), 'waiting'), task(3, day(19, 9)), task(4, day(14, 9), 'done'), task(5, day(19, 20))];
@@ -61,6 +61,23 @@ describe('navigator tree', () => {
   it('has no row for other machines: the galaxy, the quasar, the universes and «add a universe» only', () => {
     const rows = build(view(tasks));
     expect(rows.filter((r) => r.kind === 'galaxy').map((g) => g.label)).toEqual(['host']);
-    expect(rows[rows.length - 1].kind).toBe('addUniverse');
+    expect(rows[rows.length - 1].kind).toBe('addRunner');
+  });
+
+  it('lists the shipyards after the universes, with their containers and forgotten count', () => {
+    const r = {
+      id: 'vm-r', target: 'me@192.0.2.29', ports_host: '192.0.2.29', tags: [], protected: [], note: '', ok: true,
+      why: null, fetched_at_ms: 1, host: {} as any, networks: [], volumes: [],
+      containers: [{ class: 'active' }, { class: 'forgotten' }, { class: 'unsure' }, { class: 'foreign' }] as any,
+    } as any;
+    const rows = buildTree({ view: view(tasks), selected: null, folds: {}, hostLabel: 'host', coordinator: null, attentionWaits: 0, runners: [r], now });
+    const group = rows.find((x) => x.kind === 'runners' && x.label === 'Верфи');
+    expect(group?.count).toBe(1);
+    const yard = rows.find((x) => x.kind === 'runner');
+    expect(yard?.entity).toEqual({ kind: 'runner', id: 'vm-r' });
+    expect(yard?.badge).toBe('2');
+    expect(yard?.sub).toContain('на связи');
+    expect(rows[rows.length - 2].kind).toBe('runner');
+    expect(rows[rows.length - 1].kind).toBe('addRunner');
   });
 });

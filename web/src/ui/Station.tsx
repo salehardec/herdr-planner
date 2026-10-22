@@ -9,6 +9,7 @@ import { armed, snap } from '../store';
 import { confirmStep } from '../actions';
 import { t, tn } from '../i18n';
 import { toast } from '../toast';
+import { api, post } from '../api';
 import { dialogOpen } from '../dialogs';
 import { Gl } from './Gl';
 import { coachShown, firstRunShown } from './FirstRun';
@@ -449,6 +450,84 @@ function ErrorBlock({ err, onRetry }: { err: CallError; onRetry: () => void }): 
   );
 }
 
+/* ───────── the shipyards' block in this machine's instructions ───────── */
+
+interface RunnerSetting {
+  setting: string; connected: boolean; stale: boolean; current: string; block: string;
+  next_on: string; next_on_dropped: string; next_off: string; has_old_docker_paragraph: boolean;
+}
+
+function Shipyards(): JSX.Element {
+  const [rows, setRows] = useState<RunnerSetting[] | null>(null);
+  const [err, setErr] = useState('');
+  const [drop, setDrop] = useState(false);
+  const load = async (): Promise<void> => {
+    setErr('');
+    try {
+      const r = await api<{ settings: RunnerSetting[] }>('/api/runner/connect');
+      setRows(r.settings);
+    } catch (e) {
+      setRows(null);
+      setErr((e as Error).message);
+    }
+  };
+  useEffect(() => { void load(); }, []);
+  const key = 'sy:home';
+  const on = !!rows && rows.some((r) => r.connected);
+  // The card previews what the button will do, not what is in place now: «Подключить» writes the block, «Отключить»
+  // takes it out. Everything below (the «Станет» text, the drop-old tick, drop_old) keys off the same action.
+  const willConnect = !on;
+  const stale = !!rows && rows.some((r) => r.stale);
+  const go = (): void => {
+    confirmStep(key, async () => {
+      setErr('');
+      try {
+        // Dropping the old hand-written docker lines is a separate, explicit choice; never a side effect of connecting.
+        await post('/api/runner/connect', { on: willConnect, drop_old: willConnect ? drop : false, confirm: true });
+        toast(t('runner.saved'));
+        setDrop(false);
+        await load();
+      } catch (e) {
+        setErr((e as Error).message);
+      }
+    });
+  };
+  if (err) return <section class="st-sec" id="st-yards"><h3>{t('runner.stationTitle')}</h3><p class="hint bad">{err}</p><button class="btn sm" type="button" onClick={() => void load()}>{t('runner.retry')}</button></section>;
+  if (!rows) return <section class="st-sec" id="st-yards"><h3>{t('runner.stationTitle')}</h3><p class="hint">{t('st.loading')}</p></section>;
+  const hasYards = rows.some((r) => r.block.length > 0);
+  return (
+    <section class="st-sec" id="st-yards">
+      <h3>{t('runner.stationTitle')}</h3>
+      <p class="hint">
+        {!hasYards ? t('runner.stationNone') : on ? (stale ? t('runner.stationStale') : t('runner.stationOn')) : t('runner.stationOff')}
+      </p>
+      {hasYards && (
+        <details class="rf-block">
+          <summary>{t('runner.stationPreview')}</summary>
+          {rows.map((r) => (
+            <div key={r.setting} data-setting={r.setting}>
+              <div class="hint">{r.setting} · {t('runner.stationWas')}</div>
+              <pre>{r.current || t('runner.stationEmpty')}</pre>
+              <div class="hint">{t('runner.stationNow')}</div>
+              <pre data-next={r.setting}>{(willConnect ? (drop ? r.next_on_dropped : r.next_on) : r.next_off) || t('runner.stationEmpty')}</pre>
+            </div>
+          ))}
+        </details>
+      )}
+      {hasYards && willConnect && rows.some((r) => r.has_old_docker_paragraph) && (
+        <label class="rf-check"><input type="checkbox" id="st-yards-drop" checked={drop} onChange={(e) => setDrop((e.target as HTMLInputElement).checked)} />{t('runner.dropOld')}</label>
+      )}
+      {hasYards && (
+        <div class="act">
+          <button class={`btn ${armed.value?.key === key ? 'arm' : ''}`} type="button" id="st-yards-btn" onClick={go}>
+            {armed.value?.key === key ? t('runner.saveConfirm') : on ? t('runner.stationOffBtn') : t('runner.stationOnBtn')}
+          </button>
+        </div>
+      )}
+    </section>
+  );
+}
+
 function StationBody(props: { wizard: boolean }): JSX.Element {
   const { wizard } = props;
   const [data, setData] = useState<StationData | null>(null);
@@ -516,6 +595,7 @@ function StationBody(props: { wizard: boolean }): JSX.Element {
               <button class="btn" type="button" id="st-all" onClick={() => openStation(false)}>{t('st.allSettings')}</button>
             </div>
           )}
+          {!wizard && <Shipyards />}
           {!wizard && <Board repo={level === 'repo' ? repo : ''} data={data} reload={reload} />}
         </>
       )}

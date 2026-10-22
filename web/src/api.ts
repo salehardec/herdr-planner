@@ -1,5 +1,7 @@
 /* Talking to the server: JSON calls, and the event stream that replaces polling. */
 import { chat, details, lastError, live, setLoad, snap } from './store';
+import { t } from './i18n';
+import { toast } from './toast';
 import type { LoadInfo, Snapshot } from './types';
 
 export class ApiError extends Error {
@@ -87,6 +89,12 @@ export function connect(): void {
     es.addEventListener('chat', () => chatListeners.forEach((fn) => fn()));
     es.addEventListener('progress', (e) => {
       try { const p = JSON.parse((e as MessageEvent).data); progressListeners.forEach((fn) => fn(p)); } catch { /* a broken frame */ }
+    });
+    es.addEventListener('toast', (e) => {
+      try {
+        const p = JSON.parse((e as MessageEvent).data);
+        if (p && typeof p.key === 'string') toast(t(p.key, p.vars ?? {}), { icon: p.icon ?? 'done' });
+      } catch { /* a broken frame */ }
     });
     es.onerror = () => {
       live.value = false;

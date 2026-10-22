@@ -1,8 +1,8 @@
 import { signal } from '@preact/signals';
 import type { JSX } from 'preact';
-import { useEffect } from 'preact/hooks';
+import { useEffect, useState } from 'preact/hooks';
 import {
-  currentView, details, linkSel, panels, requests, selected, snap, taskOf,
+  currentView, details, linkSel, panels, requests, runners, selected, snap, taskOf,
 } from '../store';
 import { api } from '../api';
 import { openFiles, removeLink, archiveAllDone } from '../actions';
@@ -15,10 +15,11 @@ import { RichText } from './RichText';
 import { Translatable } from './Translatable';
 import { RequestBlock } from './Request';
 import { TaskActionButtons, TellBox } from './AgentActions';
+import { CleanCard } from './CleanCard';
 import { dayTimeOf } from '../util/dates';
 import { duration } from '../util/format';
 import type { Entity, Subagent, Task } from '../types';
-import { UniverseFocus, QuasarFocus, ArchiveFocus } from './FocusOther';
+import { UniverseFocus, QuasarFocus, ArchiveFocus, RunnerFocus } from './FocusOther';
 import { SuggestionCard, suggestionsOfTask } from './MemoryPanel';
 import { openRemember } from './memory-api';
 import './focus.css';
@@ -58,6 +59,8 @@ function TaskFocus(props: { task: Task }): JSX.Element {
   const moons = task.subagents.filter((s) => s.state !== 'done' || Date.now() - s.last_at_ms < 5 * 60000);
   const agentLabel = [task.app, task.model || task.worker_agent.split('/').slice(1).join('/')].filter(Boolean).join(' · ');
   const linkCard = linkSel.value && linkSel.value.to === task.id ? linkSel.value : null;
+  const yard = runners.value.flatMap((r) => r.containers.filter((c) => c.task?.id === task.id).map((c) => ({ r, c })));
+  const [clean, setClean] = useState(false);
 
   useEffect(() => { void fetchDetails(task.id); void loadClosing(task); }, [task.id, task.status, task.msg]);
 
@@ -99,6 +102,24 @@ function TaskFocus(props: { task: Task }): JSX.Element {
         )}
       </div>
       {!local && <div class="remote">{t('focus.remoteFiles', { path: worktree || d?.reports_dir || t('focus.none') })}</div>}
+      {yard.length > 0 && (
+        <section class="rf-task" id="rf-task">
+          <h3>{t('runner.taskTitle')}</h3>
+          {yard.map(({ r, c }) => (
+            <div class="row" key={c.id}>
+              <button class="k" type="button" onClick={() => void navigateTo({ kind: 'runner', id: r.id })}>{r.id}</button>
+              <span class="hint">{c.name} · {c.created_ms ? duration(Date.now() - c.created_ms, t) : '—'}</span>
+            </div>
+          ))}
+          {task.status === 'done' && (
+            <div class="hint warn">
+              {t('runner.leftOnYard')}{' '}
+              {!clean && <button class="btn sm danger" type="button" id="rf-task-clean" onClick={() => setClean(true)}>{t('runner.cleanOpen')}</button>}
+            </div>
+          )}
+          {clean && yard[0] && <CleanCard runner={yard[0].r.id} ids={yard.map((x) => x.c.id)} onClose={() => setClean(false)} onDone={() => setClean(false)} />}
+        </section>
+      )}
       <TellBox task={task} />
 
       {(task.status === 'done' || cl?.text) && (
@@ -239,6 +260,7 @@ export function Focus(): JSX.Element {
     body = task ? <TaskFocus task={task} /> : <div class="fbody"><h2>{t('focus.gone')}</h2></div>;
   } else if (e.kind === 'universe') body = <UniverseFocus entity={e} />;
   else if (e.kind === 'quasar') body = <QuasarFocus />;
+  else if (e.kind === 'runner') body = <RunnerFocus entity={e} />;
   else body = <MoonFocus entity={e} />;
   return (
     <aside class={`panel focus ${open ? '' : 'off'}`} id="focus" aria-label={t('focus.aria')} aria-hidden={!open}>

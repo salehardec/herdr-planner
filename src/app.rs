@@ -128,6 +128,10 @@ pub struct Snapshot {
     pub memory_suggestions: Vec<crate::memory_api::SuggestOut>,
     pub journal: Vec<JournalEntry>,
     pub coordinator: CoordinatorState,
+    /// Shipyards: machines the tasks' containers run on.
+    pub runners: Vec<crate::runners::RunnerState>,
+    /// Whether the docker block is in this machine's agent instructions.
+    pub runner_block: crate::runners::BlockState,
     pub theme: Theme,
     pub herdr: HerdrInfo,
     pub auth: AuthInfo,
@@ -193,6 +197,13 @@ pub struct App {
     pub force_after: AtomicBool,
     /// Main-branch lag of this machine's clones, by repo name.
     pub lag: Mutex<BTreeMap<String, gitlag::Lag>>,
+    /// The last read of every shipyard (from `runners.json` and one probe each).
+    pub runners: Mutex<Vec<crate::runners::RunnerState>>,
+    pub runner_plans: Mutex<HashMap<String, crate::runners::CleanPlan>>,
+    /// `docker system df` answers, cached by runner id.
+    pub runner_df: Mutex<HashMap<String, (u64, serde_json::Value)>>,
+    /// Whether the docker block is in this machine's instructions (as last synced).
+    pub runner_block: Mutex<crate::runners::BlockState>,
     /// How loaded this machine is (CPU, memory, video cards); kept fresh while a page is open.
     pub load: RwLock<crate::load::Load>,
     /// A page has just connected: read the load now, not at the next beat.
@@ -232,7 +243,7 @@ impl App {
             Ok(_) => {}
             Err(e) => eprintln!("herdr-planner: import of the old state files: {e}"),
         }
-        let snapshot = Snapshot {
+        let mut snapshot = Snapshot {
             version: VERSION.to_string(),
             at: 0,
             seq: 0,
@@ -261,6 +272,8 @@ impl App {
                 can_compact: false,
                 program: String::new(),
             },
+            runners: Vec::new(),
+            runner_block: crate::runners::BlockState::default(),
             theme,
             herdr: HerdrInfo {
                 running: cfg.herdr_socket.exists(),
@@ -290,6 +303,25 @@ impl App {
             cfg.user.clone(),
             cfg.password_hash.clone(),
         );
+        // The last reads of the shipyards survive a restart too; they are not live until a probe says so.
+        let mut runners: Vec<crate::runners::RunnerState> = db
+            .runner_all()
+            .into_iter()
+            .filter_map(|(_, json, _, _, _)| serde_json::from_str(&json).ok())
+            .map(|mut s: crate::runners::RunnerState| {
+                s.ok = false;
+                s
+            })
+            .collect();
+        if let Ok(file) = crate::runners::load(&cfg.runners_file()) {
+            runners.retain(|s| file.get(&s.id).is_some());
+        }
+        let runner_block: crate::runners::BlockState = db
+            .meta_get("runner_block")
+            .and_then(|t| serde_json::from_str(&t).ok())
+            .unwrap_or_default();
+        snapshot.runners = runners.clone();
+        snapshot.runner_block = runner_block.clone();
         Arc::new(Self {
             cfg,
             db,
@@ -305,6 +337,10 @@ impl App {
             after: Mutex::new(AfterCache::default()),
             force_after: AtomicBool::new(false),
             lag: Mutex::new(BTreeMap::new()),
+            runners: Mutex::new(runners),
+            runner_plans: Mutex::new(HashMap::new()),
+            runner_df: Mutex::new(HashMap::new()),
+            runner_block: Mutex::new(runner_block),
             load: RwLock::new(crate::load::Load::default()),
             load_poke: Notify::new(),
         })
@@ -528,6 +564,77 @@ pub async fn apply_lag(app: &Shared) {
     }
 }
 
+/// A line for the journal that is not a task's status (a shipyard's cleaning, a block connected).
+pub async fn journal_note(app: &Shared, id: &str, status: &str, text: &str) {
+    let now = now_ms();
+    let entry = {
+        let mut journal = app.journal.lock().await;
+        journal.seq += 1;
+        let e = JournalEntry {
+            n: journal.seq,
+            t: now,
+            id: id.to_string(),
+            s: status.to_string(),
+            text: text.to_string(),
+        };
+        journal.entries.push_front(e.clone());
+        trim_journal(&mut journal);
+        e
+    };
+    app.db.journal_append(&[entry]);
+    let entries: Vec<JournalEntry> = app.journal.lock().await.entries.iter().cloned().collect();
+    app.snapshot.write().await.journal = entries;
+}
+
+/// A forgotten container is news once: a journal line and a toast for each id the page has not seen before.
+async fn note_forgotten(app: &Shared, states: &[crate::runners::RunnerState]) {
+    for st in states {
+        for c in st.containers.iter().filter(|c| c.class == crate::runners::Class::Forgotten) {
+            let key = format!("runner_seen:{}:{}", st.id, c.id);
+            if app.db.meta_get(&key).is_some() {
+                continue;
+            }
+            app.db.meta_set(&key, "1");
+            let tag = c.task.as_ref().map(|t| t.tag.clone()).unwrap_or_default();
+            journal_note(
+                app,
+                &format!("runner/{}", st.id),
+                "runner",
+                &format!("на верфи {} забыт контейнер {} ({tag})", st.id, c.name),
+            )
+            .await;
+            app.bus.send(
+                "toast",
+                serde_json::json!({
+                    "key": "runner.forgotToast",
+                    "vars": {"id": st.id, "name": c.name, "tag": tag},
+                    "icon": "failed",
+                })
+                .to_string(),
+            );
+        }
+    }
+}
+
+/// Recomputes the containers' classes against this board and puts the shipyards into the snapshot.
+pub async fn rebuild_runners(app: &Shared) {
+    let (tasks, archived) = {
+        let s = app.snapshot.read().await;
+        (s.tasks.clone(), s.archived.clone())
+    };
+    let repos = taskmeta::repos(&app.cfg.data_dir);
+    let index = crate::runners::TaskIndex::build(&tasks, &archived, &repos);
+    let mut states = app.runners.lock().await.clone();
+    for st in &mut states {
+        crate::runners::classify(&mut st.containers, &st.protected, &index);
+    }
+    note_forgotten(app, &states).await;
+    let block = app.runner_block.lock().await.clone();
+    let mut snap = app.snapshot.write().await;
+    snap.runners = states;
+    snap.runner_block = block;
+}
+
 /// Serialises the snapshot for the page's event stream, when somebody listens.
 pub async fn publish(app: &Shared) {
     if app.bus.subscribers() == 0 {
@@ -547,6 +654,7 @@ pub async fn publish(app: &Shared) {
 pub async fn refresh(app: &Shared) {
     refresh_inner(app).await;
     apply_lag(app).await;
+    rebuild_runners(app).await;
     publish(app).await;
 }
 

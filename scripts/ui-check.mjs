@@ -3155,6 +3155,119 @@ await send('Emulation.setDeviceMetricsOverride', { width: 1500, height: 950, dev
 await navigate(base + '/?noauto&nocoach&bloom=0');
 
 const retried = [];   // [{ name, first: [the checks that failed the first time], passed }]
+
+section('runners', async () => {
+  await resetUi();
+  await evalJs('planner.goHome()');
+  await waitFor('world.debug().flight === "idle"', 8000);
+  check('the navigator has the shipyards group and vm-r', await waitFor('!!document.querySelector("#nav [data-kind=runners]") && !!document.querySelector("#nav [data-nav=\\"run|vm-r\\"]")', 12000), await text('#nav'));
+  const yardDebug = await debug();
+  check('the world draws the yard outside the Galaxy boundary', !!yardDebug?.docks?.['vm-r'] && Math.hypot(yardDebug.docks['vm-r'].x, yardDebug.docks['vm-r'].z) > 760, JSON.stringify(yardDebug?.docks));
+  await click('#nav [data-nav="run|vm-r"]');
+  check('the shipyard focus opens: state, CPU, memory, disk, GPU', await waitFor('!!document.querySelector("[data-focus=runner]")', 12000) && await hasText('#focus', 'vm-r') && await hasText('#focus', 'на связи') && await hasText('#focus', 'CPU') && await hasText('#focus', 'GPU NVIDIA L4-24Q'), await text('#focus'));
+  const active = await evalJs('document.querySelectorAll("#rf-tasks tbody tr").length');
+  const forgotten = await evalJs('document.querySelectorAll("#rf-forgotten tbody tr").length');
+  const unsure = await evalJs('document.querySelectorAll("#rf-forgotten tbody tr[data-class=unsure]").length');
+  check('two containers of live tasks, one forgotten, one unsure, two foreign', active === 2 && forgotten === 2 && unsure === 1 && (await hasText('#rf-foreign', 'Чужие: 2')), `${active}/${forgotten}/${unsure} ${await text('#rf-foreign')}`);
+  check('a key with a digit finds its task: pg-AL9-4 is alpha/4', await hasText('#rf-tasks', 'pg-ALP-3') && await hasText('#rf-tasks', 'pg-AL9-4') && await hasText('#rf-tasks', 'ALP-4') && await hasText('#rf-forgotten', 'ALP-15'), await text('#rf-tasks'));
+  check('the unsure one is grey and has no default tick', await hasText('#rf-forgotten', 'неясно'), await text('#rf-forgotten'));
+  // The planet's own line: the yard and its containers.
+  await go('alpha/3');
+  check('the planet names the shipyard and its containers', await waitFor('!!document.querySelector("#rf-task")', 8000) && await hasText('#rf-task', 'vm-r') && await hasText('#rf-task', 'pg-ALP-3'), await text('#rf-task'));
+  // The search finds the yard, Enter opens it.
+  await press('KeyK', 'k', 2);
+  await waitFor('document.activeElement.id === "q"', 4000);
+  await send('Input.insertText', { text: 'vm-r' });
+  check('the search finds the shipyard', await waitFor('[...document.querySelectorAll("#sres .srow")].some((e) => e.dataset.kind === "runner")', 5000), await text('#sres'));
+  await evalJs('(() => { const e = [...document.querySelectorAll("#sres .srow")].find((x) => x.dataset.kind === "runner"); if (e) e.click(); return !!e; })()');
+  check('a click on the shipyard opens its focus', await waitFor('plannerDebug().selected?.kind === "runner" && !!document.querySelector("[data-focus=runner]")', 15000), JSON.stringify(await pd()));
+  // The terminal button asks this machine's terminal to run ssh in it, not a bare child with no tty.
+  await click('#rf-terminal');
+  check('«Терминал» opens a terminal window with ssh -t', await waitLog(() => calls('terminal.jsonl').some((c) => (c.argv ?? []).includes('-t') && (c.argv ?? []).join(' ').includes('192.0.2.29')), 8000), JSON.stringify(calls('terminal.jsonl').slice(-2)));
+  // «Было → стало»: the card, the two presses, the exact ids.
+  await waitFor('!!document.querySelector("#rf-clean")', 8000);
+  await click('#rf-clean');
+  check('the cleaning card shows was → now for the ticks (only the forgotten one is ticked)', await waitFor('!!document.querySelector("#rf-was")', 8000) && (await text('#rf-was')).includes('контейнеров 6 → 5') && (await evalJs('[...document.querySelectorAll(".rf-clean tbody input")].filter((i) => !i.checked).length')) === 1, await text('#rf-clean'));
+  const tickUnsure = (want) => `(() => { const tr = [...document.querySelectorAll(".rf-clean tbody tr")].find((r) => r.innerText.includes("x-ALP-99")); const i = tr?.querySelector("input"); if (!i) return false; if (i.checked !== ${want}) i.click(); return i.checked === ${want}; })()`;
+  await evalJs(tickUnsure(true));
+  check('ticking the unsure one changes «стало» at once', await waitFor('document.querySelector("#rf-was")?.textContent.includes("контейнеров 6 → 4")', 5000), await text('#rf-was'));
+  await evalJs(tickUnsure(false));
+  check('unticking it takes the numbers and the MB back', await waitFor('document.querySelector("#rf-was")?.textContent.includes("контейнеров 6 → 5")', 5000), await text('#rf-was'));
+  const before = calls('ssh.jsonl').filter((c) => c.runner).length;
+  await twoPresses('#rf-clean-go');
+  check('the clean removes exactly the ticked id and nothing else', await waitLog(() => calls('ssh.jsonl').some((c) => c.runner && c.inner === 'docker rm -f -v ' + 'b'.repeat(64)) && calls('ssh.jsonl').filter((c) => c.runner).length > before, 20000), JSON.stringify(calls('ssh.jsonl').filter((c) => c.runner).slice(-2)));
+  check('the forgotten container leaves the yard; the unsure and the foreign ones stay', await waitFor('plannerSnap().runners[0].containers.every((c) => c.name !== "web-ALP-15") && plannerSnap().runners[0].containers.some((c) => c.name === "x-ALP-99") && plannerSnap().runners[0].containers.some((c) => c.name === "neighbor-db-1") && plannerSnap().runners[0].containers.some((c) => c.name === "buildx_buildkit_x0")', 30000), JSON.stringify((await stateApi())?.runners?.[0]?.containers?.map((c) => c.name)));
+  check('the journal keeps a line about it', await waitFor('plannerSnap().journal.some((j) => j.s === "runner")', 8000), JSON.stringify((await stateApi())?.journal?.slice(-2)));
+  // The wizard: a second yard, the machine and this machine's way in, the list written, the agents connected.
+  await click('#nav [data-nav="addr"]');
+  check('«Добавить верфь…» opens the wizard', await waitFor('!!document.querySelector("#addr #r-go")', 5000) && await hasText('#addr', 'Добавить верфь'), await text('#addr'));
+  await evalJs('(() => { const i = document.querySelector("#r-target"); i.value = "me@192.0.2.29"; i.dispatchEvent(new Event("input", { bubbles: true })); const l = document.querySelector("#r-label"); l.value = "vm-r2"; l.dispatchEvent(new Event("input", { bubbles: true })); })()');
+  await click('#r-go');
+  check('the check shows the machine: Ubuntu, cores, Docker, the containers seen', await waitFor('!!document.querySelector("#r-steps")', 20000) && (await evalJs('document.querySelectorAll("#addr .wstep").length')) === 3 && await hasText('#r-steps', 'Ubuntu 24.04 LTS') && await hasText('#r-steps', 'Docker 28.3.0') && await hasText('#r-steps', 'контейнер'), await text('#addr'));
+  check('the check shows this machine’s own way in: client, ssh, docker over ssh', await waitFor('!!document.querySelector("#r-local")', 20000) && await hasText('#r-local', 'клиент docker') && await hasText('#r-local', 'верфь me@192.0.2.29') && await hasText('#r-local', 'Docker 28.3.0'), await text('#r-local'));
+  await click('#r-check-next');
+  await waitFor('!!document.querySelector("#r-masks")', 5000);
+  check('the suggested masks and tags are there, editable', (await evalJs('document.querySelector("#r-masks").value.includes("neighbor")')) && (await evalJs('document.querySelector("#r-masks").value.includes("buildx_*")')) && (await evalJs('document.querySelector("#r-tags").value.includes("gpu")')), JSON.stringify(await evalJs('[document.querySelector("#r-tags").value, document.querySelector("#r-masks").value]')));
+  await click('#r-add');
+  check('adding asks twice', await hasText('#r-add', 'Точно'));
+  await secondPress('#r-add');
+  check('the list file has vm-r2', await waitLog(() => { try { return JSON.parse(readFileSync(join(fixture, 'settings', 'runners.json'), 'utf8')).runners.some((r) => r.id === 'vm-r2'); } catch { return false; } }, 10000), readFileSync(join(fixture, 'settings', 'runners.json'), 'utf8').slice(0, 200));
+  check('the yard is ready and offers the agents', await waitFor('!!document.querySelector("#r-connect")', 8000) && await hasText('#addr', 'готова'), await text('#addr'));
+  await twoPresses('#r-connect');
+  check('the block reaches this machine’s agent instructions', await waitLog(() => { try { const t = readFileSync(join(fixture, 'state', 'board-settings.json'), 'utf8'); return t.includes('herdr-planner:runners') && t.includes('me@192.0.2.29') && !t.includes('herdr.galaxy'); } catch { return false; } }, 20000), 'board-settings');
+  check('no copy of the block goes to another machine', (() => { try { return !readFileSync(join(fixture, 'state', 'vm-a-settings.json'), 'utf8').includes('herdr-planner:runners'); } catch { return true; } })());
+  // The Station card shows the block and its «было → стало» text.
+  await resetUi();
+  await menuPick('Станция');
+  check('the Station has the shipyards card for the agents', await waitFor('!!document.querySelector("#st-yards details pre")', 20000) && await hasText('#st-yards', 'на месте') && (await evalJs('document.querySelector("#st-yards details pre")?.textContent.includes("herdr-planner:runners")')), await text('#st-yards'));
+  // The card previews what its button will do: connected now, the button disconnects and «Станет» has no block; the
+  // drop-old tick has nothing to do here. (It was once keyed off the current state, showing the opposite.)
+  const stationNext = (name) => `(document.querySelector('#st-yards pre[data-next="${name}"]')?.textContent ?? "")`;
+  check('connected: the button will disconnect, «Станет» has no block and no drop tick',
+    await hasText('#st-yards-btn', 'Отключить')
+      && !(await evalJs('!!document.querySelector("#st-yards-drop")'))
+      && !(await evalJs(`${stationNext('worker.instructions')}.includes("herdr-planner:runners")`)),
+    await text('#st-yards'));
+  // A machine that is not connected, whose instructions hold an old docker line and two rules of the human.
+  const HUMAN = 'Docker-контейнеры: export DOCKER_HOST=ssh://old-yard, порты на 192.0.2.29.\nПроверки: браузер закрывай сразу после них.\nКоммиты подписывай по-русски.';
+  for (const name of ['worker.instructions', 'reviewer.instructions']) {
+    execFileSync(join(fixture, 'bin', 'herdr-projects'), ['set', name, HUMAN]);
+  }
+  await press('Escape');
+  await waitFor('!document.querySelector("#station")', 4000);
+  await menuPick('Станция');
+  check('not connected: the button will connect and «Станет» is the block over the human text',
+    await waitFor(`!!document.querySelector("#st-yards-btn") && ${stationNext('worker.instructions')}.includes("herdr-planner:runners") && ${stationNext('worker.instructions')}.includes("Проверки")`, 20000)
+      && await hasText('#st-yards-btn', 'Подключить')
+      && await evalJs('!!document.querySelector("#st-yards-drop")'),
+    await text('#st-yards'));
+  await evalJs('document.querySelector("#st-yards-drop").click()');
+  check('ticking it previews dropping only the old docker line, the human rules stay',
+    await waitFor(`${stationNext('worker.instructions')}.includes("Проверки") && ${stationNext('worker.instructions')}.includes("Коммиты") && !${stationNext('worker.instructions')}.includes("old-yard")`, 5000),
+    await evalJs(stationNext('worker.instructions')));
+  await twoPresses('#st-yards-btn');
+  const homeValue = (name) => {
+    try {
+      const d = JSON.parse(readFileSync(join(fixture, 'state', 'board-settings.json'), 'utf8'));
+      const v = d?.['']?.[name];
+      return typeof v === 'string' ? v : v?.value ?? '';
+    } catch { return ''; }
+  };
+  check('pressing it wrote the block and kept the human rules',
+    await waitLog(() => {
+      const v = homeValue('worker.instructions');
+      return v.includes('herdr-planner:runners') && v.includes('Проверки') && v.includes('Коммиты') && !v.includes('old-yard');
+    }, 15000),
+    homeValue('worker.instructions'));
+  await press('Escape');
+  await waitFor('!document.querySelector("#station")', 4000);
+  // Clean up after the section: the second yard is removed; its containers never existed on the machine.
+  const rm = await post('/api/runner/remove', { id: 'vm-r2', confirm: true, force: true });
+  check('the second yard can be removed from the list', rm[0] === 200 && rm[1]?.ok, JSON.stringify(rm));
+  check('and the navigator forgets it', await waitFor('plannerSnap().runners.every((r) => r.id !== "vm-r2")', 8000), JSON.stringify((await stateApi())?.journal?.slice(-2)));
+  await shot('shipyard.png');
+}, { retry: false });
+
 for (const [name, fn, opts] of sections) {
   if (only.length && !only.some((o) => name.includes(o))) continue;
   let first = null;

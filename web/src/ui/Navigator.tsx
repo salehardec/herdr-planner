@@ -1,6 +1,6 @@
 import { signal } from '@preact/signals';
 import type { JSX } from 'preact';
-import { attention, currentView, navFolds, panels, persist, selected, snap } from '../store';
+import { attention, currentView, navFolds, panels, persist, runners, selected, snap } from '../store';
 import { sameEntity } from '../types';
 import { buildTree, type NavNode } from './navtree';
 import { Gl } from './Gl';
@@ -8,6 +8,7 @@ import { t } from '../i18n';
 import { navigateTo } from '../nav';
 import { NAV_W_MIN, dragNav, navMax, navWidthNow, setNavWidth } from '../nav-width';
 import { openAddUniverse } from './AddUniverse';
+import { openAddRunner } from './AddRunner';
 import './navigator.css';
 
 const focusKey = signal<string>('');
@@ -20,7 +21,8 @@ function setFold(key: string, open: boolean): void {
 function activate(n: NavNode): void {
   switch (n.kind) {
     case 'addUniverse': openAddUniverse(); return;
-    case 'group': case 'quiet': setFold(n.key, !n.open); return;
+    case 'addRunner': openAddRunner(); return;
+    case 'group': case 'quiet': case 'runners': setFold(n.key, !n.open); return;
     case 'galaxy': void navigateTo({ kind: 'quasar', id: 'quasar' }); return;
     default:
       if (n.entity) void navigateTo(n.entity);
@@ -35,6 +37,8 @@ function icon(n: NavNode): JSX.Element {
     case 'planet': return <Gl n={n.status ?? 'queued'} cls={n.status === 'working' ? 'spin' : ''} />;
     case 'moon': return <Gl n="moon" />;
     case 'addUniverse': return <Gl n="plus" />;
+    case 'runner': return <Gl n="yard" />;
+    case 'addRunner': return <Gl n="plus" />;
     default: return <span class="tw" />;
   }
 }
@@ -75,7 +79,7 @@ export function Navigator(): JSX.Element {
   const rows = buildTree({
     view: currentView.value, selected: selected.value, folds: navFolds.value,
     hostLabel: s?.host ?? '', coordinator: s ? { status: s.coordinator.status, subagents: s.coordinator.subagents } : null,
-    attentionWaits: attention.value,
+    attentionWaits: attention.value, runners: runners.value,
   });
   const onKey = (e: KeyboardEvent): void => {
     const keys = rows.map((r) => r.key);

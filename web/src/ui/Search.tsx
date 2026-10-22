@@ -32,11 +32,11 @@ let timer = 0;
 let seq = 0;
 
 const GROUP_ICON: Record<string, string> = {
-  galaxy: 'galaxy', quasar: 'quasar', universe: 'universe', planet: 'ship', moon: 'moon', todo: 'list', chat: 'chat', memory: 'memory', closing: 'done',
+  galaxy: 'galaxy', quasar: 'quasar', universe: 'universe', planet: 'ship', moon: 'moon', runner: 'yard', todo: 'list', chat: 'chat', memory: 'memory', closing: 'done',
 };
 const GROUP_LABEL: Record<string, string> = {
   galaxy: 'search.galaxies', quasar: 'search.quasar', universe: 'search.universes', planet: 'search.planets',
-  moon: 'search.moons', todo: 'search.todo', chat: 'search.chat', memory: 'search.memory', closing: 'search.closing',
+  moon: 'search.moons', runner: 'search.runners', todo: 'search.todo', chat: 'search.chat', memory: 'search.memory', closing: 'search.closing',
 };
 
 function onType(q: string): void {

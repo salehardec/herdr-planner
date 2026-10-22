@@ -26,6 +26,7 @@ pub(crate) fn test_cfg(dir: &Path) -> AppConfig {
         tls_cert: None,
         tls_key: None,
         translator: "claude/claude-haiku-5-5".into(),
+        ssh_bin: "ssh".into(),
         projects_dir: dir.join("Projects"),
     }
 }

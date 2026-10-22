@@ -141,6 +141,23 @@ The planner works with its own board only. The stand-ins still answer as a board
   replaces the planner's reading of `/proc`: a JSON `Load` (`{ok, cpu:{percent,cores}, mem:{used,total,percent},
   gpus:[…], at}`); `{"ok": false}` is a machine that cannot be read; no file means the real machine.
 
+## The shipyard vm-r (`me@192.0.2.29`)
+
+`192.0.2.0/24` is a documentation address: no real host. The ssh stand-in answers for it with one fixed probe
+(`herdr-planner-runner 1`), `ssh -G`, `true`, `docker version`, `docker system df`, and the exact-id removals the
+planner may ask for.
+
+- `settings/runners.json` (next to `board/`, where the planner reads it): one yard `vm-r`, target `me@192.0.2.29`,
+  ports on `192.0.2.29`, tags `docker28 gpu x86_64`, masks `buildx_*` and `neighbor` (the compose project next door).
+- `state/runner.json`: ids, networks and volume names already removed; the probe leaves them out.
+- Six containers: `pg-ALP-3` (a live task, compose project `work-3`), `pg-AL9-4` (the same task alpha/4 under the
+  repository's older key `AL9`, from `repo-keys.json` `had`), `web-ALP-15` (task ALP-15 is done → forgotten),
+  `x-ALP-99` (tag with no such task → unsure), `neighbor-db-1` (compose project `neighbor`) and
+  `buildx_buildkit_x0` (protected by mask). Two networks and two volumes belong to the first and the neighbour project.
+- `log/ssh.jsonl` gets a line with `runner: "vm-r"` for every such call. No copy of the list goes to another machine.
+- The wizard's local check: `ssh -G me@192.0.2.29` prints its `hostname`, `bin/docker` exists, and the stand-in ssh
+  answers `true` and `docker version` with `28.3.0`.
+
 ## The scale world (`--scale 50x500`)
 
 Adds universes `s01`…`s50` (keys `S01`…`S50`) in four folder groups (AI, herdr, work, lab), 10
