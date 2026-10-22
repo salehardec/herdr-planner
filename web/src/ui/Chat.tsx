@@ -12,7 +12,9 @@ import { hasFiles, pastedFiles } from '../attach';
 import { parseOptions } from '../requests';
 import { post, refreshNow, onChatEvent } from '../api';
 import { fetchScreen, todoToDraft } from '../actions';
-import { t } from '../i18n';
+import { t, tn } from '../i18n';
+import { sigOf } from '../chat-read';
+import { markRead, SEE_MS, unreadCount, unreadTurns, windowActive } from '../chat-unread';
 import { dayTimeOf, timeOf } from '../util/dates';
 import { Gl } from './Gl';
 import { RichText } from './RichText';
@@ -77,14 +79,17 @@ function caretLines(ta: HTMLTextAreaElement): { first: boolean; last: boolean } 
   return { first, last };
 }
 
-function Turn(props: { turn: TurnData; hit: boolean; onReuse: (q: string) => void }): JSX.Element {
+function Turn(props: { turn: TurnData; hit: boolean; unread: boolean; onReuse: (q: string) => void }): JSX.Element {
   const tn = props.turn;
   const long = tn.a.length > 520 || tn.a.split('\n').length > 11;
   const open = wide.value.has(tn.n);
   return (
     <div class={`turn ${tn.from} ${props.hit ? 'hit' : ''}`} data-n={tn.n}>
-      <div class="q" data-reuse={tn.n} title={t('chat.reuse')} onClick={() => props.onReuse(tn.q)}>
-        <span class="who">{t('chat.you')}</span>
+      <div class="q" data-reuse={tn.n} title={t('chat.reuse')} onClick={() => props.onReuse(tn.q)} data-unread={props.unread && !tn.a ? tn.n : undefined} data-sig={0}>
+        <span class="who">
+          {t('chat.you')}
+          {tn.from === 'board' && !tn.a && <i class={`udot ${props.unread ? 'on' : ''}`} role={props.unread ? 'img' : undefined} aria-label={props.unread ? t('chat.unreadDot') : undefined} title={props.unread ? t('chat.unreadDot') : undefined} />}
+        </span>
         <span class="txt">{tn.q}</span>
         <button class="btn sm mm-tomem" type="button" data-act="to-memory" data-who="q" title={t('mem.toMemoryTip')}
           onClick={(e) => { e.stopPropagation(); openRemember({ text: tn.q, source: 'chat' }); }}><Gl n="memory" />{t('mem.toMemory')}</button>
@@ -92,8 +97,11 @@ function Turn(props: { turn: TurnData; hit: boolean; onReuse: (q: string) => voi
       <div class="meta"><span>{dayTimeOf(tn.at)}</span>{tn.from === 'board' && <span>· {t('chat.boardNotice')}</span>}</div>
       {tn.a && (
         <>
-          <div class="a">
-            <span class="who">{t('quasar.short')}</span>
+          <div class="a" data-unread={props.unread ? tn.n : undefined} data-sig={sigOf(tn.a)}>
+            <span class="who">
+              {t('quasar.short')}
+              <i class={`udot ${props.unread ? 'on' : ''}`} role={props.unread ? 'img' : undefined} aria-label={props.unread ? t('chat.unreadDot') : undefined} title={props.unread ? t('chat.unreadDot') : undefined} />
+            </span>
             <RichText class={`txt ${long && !open ? 'clamp' : ''}`} text={tn.a} />
             <button class="btn sm mm-tomem" type="button" data-act="to-memory" data-who="a" title={t('mem.toMemoryTip')}
               onClick={() => openRemember({ text: tn.a, source: 'chat' })}><Gl n="memory" />{t('mem.toMemory')}</button>
@@ -109,6 +117,12 @@ function Turn(props: { turn: TurnData; hit: boolean; onReuse: (q: string) => voi
       )}
     </div>
   );
+}
+
+/** A visible share of the element that counts as «seen»: most of it, or, for a tall one, most of what the log can show. */
+function seen(e: IntersectionObserverEntry): boolean {
+  const room = e.rootBounds?.height ?? 0;
+  return e.isIntersecting && e.intersectionRect.height >= Math.min(e.boundingClientRect.height * 0.6, room * 0.5) - 1;
 }
 
 export function Chat(): JSX.Element {
@@ -131,14 +145,18 @@ export function Chat(): JSX.Element {
   const lastReply = (showTurns ? c.turns[c.turns.length - 1].a : '') || reply;
   const options = dialog || busy ? [] : parseOptions(lastReply);
   const scr = screens.value.coordinator;
+  const unread = unreadTurns.value;
+  // With the words they were read as: an answer that changes (an interim line, then the real one) is news again.
+  const unreadKey = unread.map((n) => `${n}:${sigOf(c.turns.find((x) => x.n === n)?.a ?? '')}`).join(',');
+  const active = windowActive.value;
   // The commands of the program that reads these words: the Coordinator's own.
   const comp = useComplete({ program: coord?.program ?? '', dir: '' });
   // The Coordinator's selection menu, read from its screen: shown as a card with buttons while the screen has it.
   const menu: MenuData | null = dialog && !scr?.error ? (scr?.menu ?? null) : null;
 
-  // Load the transcript when the chat opens and when it grows.
-  useEffect(() => { if (open) void loadLatest(); }, [open]);
-  useEffect(() => onChatEvent(() => { if (panels.chat.value) void loadLatest(); }), []);
+  // Load the transcript when the page starts, when the chat opens and when it grows: a hidden chat counts what is new in it.
+  useEffect(() => { void loadLatest(); }, [open]);
+  useEffect(() => onChatEvent(() => { void loadLatest(); }), []);
   useEffect(() => { if (open && dialog) void fetchScreen('coordinator'); }, [open, dialog, coord?.reply]);
   // While the Coordinator waits for a choice the card follows the screen: an answer given in the terminal closes it.
   useEffect(() => {
@@ -161,9 +179,58 @@ export function Chat(): JSX.Element {
     if (!target) return;
     requestAnimationFrame(() => {
       const el = logRef.current?.querySelector<HTMLElement>(`[data-n="${target.n}"]`);
-      if (el) { stuck.value = false; el.scrollIntoView({ block: 'center', behavior: 'smooth' }); }
+      if (el) { stuck.value = false; el.scrollIntoView({ block: target.block ?? 'center', behavior: 'smooth' }); }
     });
   }, [scrollTo.value]);
+
+  // A message counts as read once it has been in view for a moment while the chat is open and the window is the one in front.
+  useEffect(() => {
+    const log = logRef.current;
+    if (!log || !open || !active || !unreadKey || typeof IntersectionObserver === 'undefined') return;
+    const timers = new Map<number, number>();
+    const io = new IntersectionObserver((entries) => {
+      for (const e of entries) {
+        const n = Number((e.target as HTMLElement).dataset.unread);
+        const sig = Number((e.target as HTMLElement).dataset.sig);
+        const timer = timers.get(n);
+        if (seen(e)) {
+          if (timer === undefined) timers.set(n, window.setTimeout(() => { timers.delete(n); markRead([[n, sig]]); }, SEE_MS));
+        } else if (timer !== undefined) { window.clearTimeout(timer); timers.delete(n); }
+      }
+    }, { root: log, threshold: Array.from({ length: 21 }, (_, i) => i / 20) });
+    log.querySelectorAll('[data-unread]').forEach((el) => io.observe(el));
+    return () => { io.disconnect(); timers.forEach((id) => window.clearTimeout(id)); };
+  }, [open, active, unreadKey, c.turns.length]);
+
+  /** Takes the log to the first unread turn: older turns are loaded until it is there. */
+  const toUnread = async (onlyIfHidden: boolean): Promise<void> => {
+    const first = unreadTurns.peek()[0];
+    if (first === undefined) return;
+    for (let i = 0; i < 40 && !chat.peek().turns.some((x) => x.n === first) && hasOlder(); i++) {
+      if (!(await loadOlder())) break;
+    }
+    const log = logRef.current;
+    const el = log?.querySelector<HTMLElement>(`[data-n="${first}"]`);
+    if (!log || !el) return;
+    if (onlyIfHidden) {
+      const at = el.getBoundingClientRect();
+      const room = log.getBoundingClientRect();
+      if (at.top >= room.top && at.bottom <= room.bottom) return;
+    }
+    stuck.value = false;
+    scrollTo.value = { n: first, at: Date.now(), block: 'start' };
+  };
+
+  // Opening the chat shows what is new in it. A chat that is open from the start (the wide one is restored open) waits for the history.
+  const jumped = useRef(false);
+  const ready = c.available !== null;
+  useEffect(() => {
+    if (!open) { jumped.current = false; return; }
+    if (!ready || jumped.current) return;
+    jumped.current = true;
+    const id = requestAnimationFrame(() => { void toUnread(true); });
+    return () => cancelAnimationFrame(id);
+  }, [open, ready]);
 
   const older = async (): Promise<void> => {
     stuck.value = false;
@@ -259,6 +326,11 @@ export function Chat(): JSX.Element {
       <header>
         <b>{t('quasar.label')}</b>
         <span class={`st ${err ? 'bad' : busy ? 'busy' : ''}`} id="cstate">● {status}</span>
+        {unread.length > 0 && (
+          <button class="btn sm ubtn" id="cunread" type="button" title={t('chat.toUnread')} onClick={() => void toUnread(false)}>
+            <i class="udot on" />↓ {tn('chat.unreadN', unread.length)}
+          </button>
+        )}
         <input
           id="chat-q" class="cq" type="search" value={c.q} placeholder={t('chat.search')} aria-label={t('chat.search')}
           onInput={(e) => searchChat((e.target as HTMLInputElement).value)}
@@ -297,7 +369,7 @@ export function Chat(): JSX.Element {
               </button>
             ) : <div class="meta start">{t('chat.start')}</div>}
             {c.turns.map((x) => (
-              <Turn key={x.n} turn={x} hit={c.highlight === x.n} onReuse={(q) => { const ta = taRef.current; if (ta) { ta.value = q; fitText(ta); ta.focus(); ta.setSelectionRange(q.length, q.length); } }} />
+              <Turn key={x.n} turn={x} hit={c.highlight === x.n} unread={unread.includes(x.n)} onReuse={(q) => { const ta = taRef.current; if (ta) { ta.value = q; fitText(ta); ta.focus(); ta.setSelectionRange(q.length, q.length); } }} />
             ))}
           </>
         ) : (

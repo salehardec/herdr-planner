@@ -29,6 +29,7 @@
   --pl-hover:color-mix(in srgb,var(--c-fg) 9%,transparent);
   --pl-accent:var(--c-accent);
   --pl-accent-ink:var(--c-accent);
+  --pl-ok:var(--c-green);
   --pl-danger:color-mix(in srgb,var(--c-red) 70%,var(--c-fg));
   --pl-on-accent:var(--c-bg);
   --pl-focus:color-mix(in srgb,var(--c-accent) 70%,var(--c-bg));
@@ -46,6 +47,7 @@
   --pl-faint:color-mix(in srgb,var(--c-fg) 88%,var(--c-bg));
   --pl-accent-ink:color-mix(in srgb,var(--c-accent) 55%,var(--c-fg));
   --pl-danger:color-mix(in srgb,var(--c-red) 35%,var(--c-fg));
+  --pl-ok:color-mix(in srgb,var(--c-green) 40%,var(--c-fg));
   --pl-on-accent:color-mix(in srgb,var(--c-bg) 25%,#fff);
   --pl-panel:color-mix(in srgb,var(--pl-bg) 90%,transparent);
 }

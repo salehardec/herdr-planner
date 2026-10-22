@@ -70,3 +70,11 @@
 .chat .memory.compact .mhead b{font-size:0.75rem}
 .chat .memory.compact .row{flex-wrap:nowrap}
 .chat .memory.compact .hint{display:none}
+/* Unread: a green light by the Coordinator's label of a message that has not been in view yet, a green count on the chat button and in the header */
+.udot{display:inline-block;flex:none;width:0.5rem;height:0.5rem;border-radius:50%;background:var(--pl-ok);box-shadow:0 0 0.4375rem color-mix(in srgb,var(--pl-ok) 70%,transparent);opacity:0;transform:scale(.4);transition:opacity .7s var(--m-ease),transform .7s var(--m-ease)}
+.udot.on{opacity:1;transform:none;transition-duration:var(--m-med)}
+.chat .who{position:relative}
+.chat .who .udot{position:absolute;left:-0.6875rem;top:0.25rem;pointer-events:none}
+.ubadge{display:inline-flex;align-items:center;justify-content:center;min-width:1.125rem;height:1.125rem;padding:0 0.3125rem;border-radius:0.5625rem;background:color-mix(in srgb,var(--pl-ok) 22%,var(--pl-bg));border:1px solid var(--pl-ok);color:var(--pl-ok);font-size:0.6875rem;font-weight:700;line-height:1}
+.chat .ubtn{border-color:var(--pl-ok);color:var(--pl-ok);gap:0.375rem}
+.chat .ubtn .udot{box-shadow:none}
