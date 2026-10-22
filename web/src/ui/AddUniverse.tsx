@@ -260,4 +260,3 @@ function Details(props: { i: Inspect; gname: string; taken: Set<string> }): JSX.
     </div>
   );
 }
-

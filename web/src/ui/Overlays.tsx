@@ -119,4 +119,3 @@ export function HerdrPop(): JSX.Element | null {
     </div>
   );
 }
-
