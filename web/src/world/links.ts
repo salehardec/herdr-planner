@@ -40,7 +40,6 @@ void main() {
 
 export interface LinkRec {
   link: Link;
-  galaxy: string;
   points: Vector3[];
   length: number;
   a: Vector3;
@@ -92,9 +91,8 @@ export class Links {
 
   setFilter(on: (id: string) => boolean): void { this.on = on; this.alphaDirty = true; }
 
-  /** `resolve(ref)` gives a world position for an id, or for a far reference (`vm-a:ELA-3`). */
-  build(links: Link[], galaxy: string): void {
-    this.recs = links.map((link) => ({ link, galaxy, points: Array.from({ length: SAMPLES + 1 }, () => new Vector3()), length: 0, a: new Vector3(), b: new Vector3() }));
+  build(links: Link[]): void {
+    this.recs = links.map((link) => ({ link, points: Array.from({ length: SAMPLES + 1 }, () => new Vector3()), length: 0, a: new Vector3(), b: new Vector3() }));
     const n = this.recs.length;
     const segs = n * SAMPLES;
     const pos = new Float32Array(segs * 6);

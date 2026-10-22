@@ -1,13 +1,12 @@
 import { signal } from '@preact/signals';
 import type { JSX } from 'preact';
-import { attention, galaxyId, navFolds, panels, persist, selected, snap, views } from '../store';
+import { attention, currentView, navFolds, panels, persist, selected, snap } from '../store';
 import { sameEntity } from '../types';
 import { buildTree, type NavNode } from './navtree';
 import { Gl } from './Gl';
 import { t } from '../i18n';
-import { enterGalaxy, navigateTo } from '../nav';
+import { navigateTo } from '../nav';
 import { NAV_W_MIN, dragNav, navMax, navWidthNow, setNavWidth } from '../nav-width';
-import { addDialogs } from '../dialogs';
 import { openAddUniverse } from './AddUniverse';
 import './navigator.css';
 
@@ -20,12 +19,9 @@ function setFold(key: string, open: boolean): void {
 
 function activate(n: NavNode): void {
   switch (n.kind) {
-    case 'addUniverse': openAddUniverse(n.galaxy ?? ''); return;
-    case 'addGalaxy': addDialogs.galaxy.value = true; return;
+    case 'addUniverse': openAddUniverse(); return;
     case 'group': case 'quiet': setFold(n.key, !n.open); return;
-    case 'galaxy':
-      if (n.entity) void (n.galaxy === galaxyId.value ? navigateTo({ kind: 'quasar', galaxy: n.galaxy ?? '', id: 'quasar' }) : enterGalaxy(n.galaxy ?? ''));
-      return;
+    case 'galaxy': void navigateTo({ kind: 'quasar', id: 'quasar' }); return;
     default:
       if (n.entity) void navigateTo(n.entity);
   }
@@ -38,7 +34,7 @@ function icon(n: NavNode): JSX.Element {
     case 'universe': return <Gl n="universe" />;
     case 'planet': return <Gl n={n.status ?? 'queued'} cls={n.status === 'working' ? 'spin' : ''} />;
     case 'moon': return <Gl n="moon" />;
-    case 'addUniverse': case 'addGalaxy': return <Gl n="plus" />;
+    case 'addUniverse': return <Gl n="plus" />;
     default: return <span class="tw" />;
   }
 }
@@ -77,7 +73,7 @@ function Grip(): JSX.Element {
 export function Navigator(): JSX.Element {
   const s = snap.value;
   const rows = buildTree({
-    views: views.value, currentGalaxy: galaxyId.value, selected: selected.value, folds: navFolds.value,
+    view: currentView.value, selected: selected.value, folds: navFolds.value,
     hostLabel: s?.host ?? '', coordinator: s ? { status: s.coordinator.status, subagents: s.coordinator.subagents } : null,
     attentionWaits: attention.value,
   });
@@ -110,12 +106,12 @@ export function Navigator(): JSX.Element {
       <div class="tree" role="tree" onKeyDown={onKey}>
         {rows.map((n) => {
           const sel = !!n.entity && sameEntity(n.entity, selected.value);
-          const here = n.kind === 'galaxy' && n.galaxy === galaxyId.value;
+          const here = n.kind === 'galaxy';
           return (
             <div
               key={n.key} role="treeitem" tabIndex={focusKey.value === n.key || (!focusKey.value && sel) ? 0 : -1}
               data-nav={n.key} data-kind={n.kind} aria-selected={sel} aria-expanded={n.expandable ? n.open : undefined}
-              class={`ti ${n.kind} ${n.status ? `s-${n.status}` : ''} ${sel ? 'sel' : ''} ${here ? 'here' : ''} ${n.dim ? 'dim' : ''} ${n.off ? 'off' : ''} ${n.attention ? 'attn' : ''}`}
+              class={`ti ${n.kind} ${n.status ? `s-${n.status}` : ''} ${sel ? 'sel' : ''} ${here ? 'here' : ''} ${n.dim ? 'dim' : ''} ${n.attention ? 'attn' : ''}`}
               style={`padding-left:${(6 + n.depth * 14) / 16}rem`} title={tip(n)}
               onFocus={() => { focusKey.value = n.key; }}
               onClick={() => activate(n)}

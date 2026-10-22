@@ -70,13 +70,6 @@ export interface Link {
   label?: string;
 }
 
-export interface LagClone {
-  galaxy: string;
-  behind: number;
-  ahead: number;
-  state: 'same' | 'behind' | 'ahead' | 'diverged' | 'unknown';
-}
-
 export interface Lag {
   origin: string;
   main: string;
@@ -85,7 +78,6 @@ export interface Lag {
   known: boolean;
   as_of_ms: number;
   note: string;
-  vs: LagClone[];
 }
 
 export interface Project {
@@ -176,41 +168,6 @@ export interface CoordinatorState {
   program: string;
 }
 
-export interface Why {
-  line: string;
-  detail: string[];
-}
-
-export interface RemoteProject {
-  name: string;
-  key: string;
-  folder: string;
-  origin: string | null;
-}
-
-export interface Galaxy {
-  label: string;
-  target: string;
-  ok: boolean;
-  connecting: boolean;
-  why: Why | null;
-  version: string;
-  host: string;
-  coordinator: { status: string; reply: string; talk: { you: boolean; text: string }[] };
-  projects: RemoteProject[];
-  tasks: Task[];
-  links: Link[];
-  fetched_at_ms: number;
-  lag: Record<string, Lag>;
-}
-
-export interface Bridge {
-  origin: string;
-  a: { galaxy: string; repo: string };
-  b: { galaxy: string; repo: string };
-  lag: string;
-}
-
 export interface TodoItem {
   id: string;
   text: string;
@@ -251,35 +208,29 @@ export interface Snapshot {
   memory_suggestions: { task: string; repo: string; tag: string; title: string; lines: { kind: string; text: string }[]; at: number }[];
   journal: JournalEntry[];
   coordinator: CoordinatorState;
-  galaxies: Galaxy[];
-  bridges: Bridge[];
   theme: Theme;
   herdr: { running: boolean; socket: string };
   auth: { required: boolean; user: string };
   server: { listen: string; port: number; local_only: boolean; tls: boolean; projects_dir: string };
 }
 
-/** One galaxy as the world draws it: the machine's board, home or distant. */
+/** This machine's board as the world draws it. */
 export interface GalaxyView {
-  /** `''` for this machine, otherwise the machine's label. */
-  id: string;
   label: string;
-  home: boolean;
   ok: boolean;
   tasks: Task[];
   projects: Project[];
   links: Link[];
 }
 
-export type Level = 'galaxy' | 'nebula' | 'far';
+export type Level = 'galaxy' | 'nebula';
 
-export type EntityKind = 'quasar' | 'galaxy' | 'universe' | 'planet' | 'moon';
+export type EntityKind = 'quasar' | 'universe' | 'planet' | 'moon';
 
-/** What is selected. `galaxy` is the machine label; empty for this machine. */
+/** What is selected. */
 export interface Entity {
   kind: EntityKind;
-  galaxy: string;
-  /** universe: repo name · planet: task id · moon: `<task id>#<subagent id>` · galaxy: label */
+  /** universe: repo name · planet: task id · moon: `<task id>#<subagent id>` */
   id: string;
 }
 
@@ -303,13 +254,11 @@ export interface Request {
   task?: Task;
   options?: { label: string; value: string }[];
   urgency: number;
-  galaxy: string;
 }
 
 export interface SearchHit {
   kind: 'galaxy' | 'quasar' | 'universe' | 'planet' | 'moon' | 'todo' | 'chat' | 'memory' | 'closing';
   id: string;
-  galaxy: string;
   path: string;
   title: string;
   snippet: string;
@@ -317,6 +266,6 @@ export interface SearchHit {
   rank: number;
 }
 
-export const entityKey = (e: Entity): string => `${e.kind}|${e.galaxy}|${e.id}`;
+export const entityKey = (e: Entity): string => `${e.kind}|${e.id}`;
 export const sameEntity = (a: Entity | null, b: Entity | null): boolean =>
-  !!a && !!b && a.kind === b.kind && a.galaxy === b.galaxy && a.id === b.id;
+  !!a && !!b && a.kind === b.kind && a.id === b.id;

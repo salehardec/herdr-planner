@@ -6,7 +6,7 @@
 // $HERDR_PLANNER_BIN, else ${HERDR_PLANNER_TARGET_DIR:-~/.cache/herdr-planner/target}/release|debug (build it first:
 // scripts/web-build.sh, cargo build --release). Needs Chromium (CHROMIUM=...), Node 22+, ffmpeg for the GIF.
 // The fixture folder is a fresh folder under the system temp dir (demo-XXXXXX) and is named without anything personal: paths of worktrees,
-// folders and the machine name (`orion`, `vm-a`) show on the pictures, so they must not be a real user's.
+// folders and the machine name (`orion`) show on the pictures, so they must not be a real user's.
 
 import { spawn, execFileSync } from 'node:child_process';
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync } from 'node:fs';
@@ -44,7 +44,7 @@ const HOST = 'orion';
 const procs = [];
 const run = (cmd, args, env) => { const p = spawn(cmd, args, { env, stdio: 'ignore' }); procs.push(p); return p; };
 run(bin, ['--port', String(serverPort), '--data', join(D, 'board')], {
-  ...process.env, HOME: join(work, 'home'), HERDR_PLANNER_HOST: HOST, CODEX_HOME: join(D, 'codex'), HERDR_PLANNER_SSH: join(D, 'bin/ssh'),
+  ...process.env, HOME: join(work, 'home'), HERDR_PLANNER_HOST: HOST, CODEX_HOME: join(D, 'codex'),
   HERDR_PLANNER_CLAUDE: join(D, 'bin/claude'), HERDR_PLANNER_GH: join(D, 'bin/gh'), HERDR_PLANNER_GLAB: join(D, 'bin/glab'),
   HERDR_BIN: join(D, 'bin/herdr'), HERDR_PLANNER_TERMINAL: join(D, 'bin/xdg-terminal-exec'), FIXTURE_DIR: D,
   HERDR_PROJECTS_BIN: join(D, 'bin/herdr-projects'), HERDR_SOCKET_PATH: join(D, 'herdr.sock'), OMARCHY_THEME_DIR: join(D, 'theme'),
@@ -132,7 +132,7 @@ const shot = async (name) => {
   console.log('shot', name);
 };
 const goTask = async (taskId) => {
-  await evalJs(`planner.navigateTo({kind:'planet',galaxy:'',id:${JSON.stringify(taskId)}}); true`);
+  await evalJs(`planner.navigateTo({kind:'planet',id:${JSON.stringify(taskId)}}); true`);
   await waitFor('world.debug().flight === "idle"', 15000);
   await sleep(1200);
 };
@@ -216,54 +216,31 @@ await press('KeyP', 'p');
 await waitFor('world.mode === "auto"', 3000);
 await reset();
 
-// 5. a far galaxy: the arrival card
-await evalJs('localStorage.removeItem("herdr-planner.arrive.vm-a"); planner.goHome(); true');
-await waitFor('plannerDebug().galaxy === "" && world.debug().flight === "idle"', 8000);
-await evalJs('planner.enterGalaxy("vm-a"); true');
-await waitFor('!!document.querySelector("#arrive")', 30000);
-await panels(false, false);
-await sleep(1500);
-await shot('far-galaxy.jpg');
-await click('#arrive button');
-await evalJs('planner.goHome(); true');
-await waitFor('plannerDebug().galaxy === "" && world.debug().flight === "idle"', 15000);
-await reset();
-
-// 6. the station: the crew of the ship
+// 5. the station: the crew of the ship
 await menuPick('Станция');
 await waitFor('!!document.querySelector("[data-role=\\"plan\\"] [data-value=\\"plan.agent\\"]")', 10000);
 await sleep(800);
 await shot('station.jpg');
 await reset();
 
-// 7. the wizard «Add a galaxy»: the check of a new machine
-await evalJs('document.querySelector(\'#nav [data-kind="addGalaxy"]\')?.click(); true');
-await waitFor('!!document.querySelector("#addg")', 3000);
-await typeIn('#g-target', 'dev@vm-c');
-await click('#g-go');
-await waitFor('!!document.querySelector("#g-steps") && /node v/.test(document.querySelector("#g-steps").innerText)', 25000);
-await sleep(600);
-await shot('add-galaxy.jpg');
-await reset();
-
-// 8. the ship's computer
+// 6. the ship's computer
 await menuPick('Бортовой компьютер');
 await waitFor('!!document.querySelector("#ship-dir")', 6000);
 await sleep(600);
 await shot('ship.jpg');
 await reset();
 
-// 9. the flight to a planet (GIF): the autopilot from the overview into a nebula
+// 7. the flight to a planet (GIF): the autopilot from the overview into a nebula
 await evalJs('planner.goOverview(); true');
 await panels(false, false);
 await sleep(1500);
 await record('flight.gif', async () => {
-  await evalJs(`planner.navigateTo({kind:'planet',galaxy:'',id:'alpha/6'}); true`);
+  await evalJs(`planner.navigateTo({kind:'planet',id:'alpha/6'}); true`);
   await waitFor('world.debug().flight === "idle"', 20000);
   await sleep(500);
 });
 
-// 10. the login page of a planner with a password
+// 8. the login page of a planner with a password
 await send('Page.navigate', { url: `http://127.0.0.1:${loginPort}/login` });
 await sleep(2000);
 await shot('login.jpg');

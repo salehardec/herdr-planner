@@ -18,7 +18,7 @@ const attention = (status: string): boolean => ['waiting', 'failed', 'ready', 'p
 export function AgentSummary(): JSX.Element | null {
   const ref = addDialogs.summary.value;
   const part = ref?.part ?? 'closing';
-  const task = ref ? taskOf(ref.task, ref.galaxy) : undefined;
+  const task = ref ? taskOf(ref.task) : undefined;
   useEffect(() => {
     if (task && part === 'closing') void loadClosing(task);
   }, [task?.id, task?.status, task?.msg, part]);
@@ -63,11 +63,11 @@ export function AgentSummary(): JSX.Element | null {
             {attention(task.status) && (
               <>
                 <div class={`req s-${task.status} summary-request`}><RequestHead task={task} /></div>
-                <RequestActions task={task} input="summary-tell" galaxy={ref.galaxy} />
+                <RequestActions task={task} input="summary-tell" />
               </>
             )}
-            {!attention(task.status) && <div class="row"><TaskActionButtons task={task} galaxy={ref.galaxy} /></div>}
-            <TellBox task={task} galaxy={ref.galaxy} input="summary-tell" />
+            {!attention(task.status) && <div class="row"><TaskActionButtons task={task} /></div>}
+            <TellBox task={task} input="summary-tell" />
           </div>
         )}
       </section>

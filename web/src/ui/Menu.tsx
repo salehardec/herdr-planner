@@ -1,13 +1,12 @@
 import { signal } from '@preact/signals';
 import type { JSX } from 'preact';
 import {
-  linkMode, NOTIFY_KEY, INVERT_KEY, SENS_KEY, SIMPLE_KEY, invertY, notifyOn, panels, persist, sensitivity, showQuiet, simple, snap, QUERY, requests, galaxyId,
+  linkMode, NOTIFY_KEY, INVERT_KEY, SENS_KEY, SIMPLE_KEY, invertY, notifyOn, panels, persist, sensitivity, showQuiet, simple, snap, QUERY, requests,
 } from '../store';
 import { lang, setLang, t } from '../i18n';
 import { post, refreshNow } from '../api';
 import { toast } from '../toast';
 import { Gl } from './Gl';
-import { addDialogs } from '../dialogs';
 import { openAddUniverse } from './AddUniverse';
 import { setLinkMode } from '../keys';
 import { getWorld, goHome } from '../nav';
@@ -39,10 +38,9 @@ export function Menu(): JSX.Element {
           {item('link', t('menu.linkMode'), () => { setLinkMode(!linkMode.value); }, linkMode.value, 'L')}
           {item('universe', t('menu.quiet'), () => { showQuiet.value = !showQuiet.value; }, showQuiet.value)}
           <hr />
-          {item('globe', t('menu.addUniverse'), () => { openAddUniverse(''); })}
-          {item('galaxy', t('menu.addGalaxy'), () => { addDialogs.galaxy.value = true; })}
-          {item('universe', galaxyId.value === '' ? t('menu.station') : t('menu.stationOf', { g: galaxyId.value }), () => { openStation(galaxyId.value); })}
-          {item('plan', t('menu.crewWizard'), () => { openStation('', true); })}
+          {item('globe', t('menu.addUniverse'), () => { openAddUniverse(); })}
+          {item('universe', t('menu.station'), () => { openStation(); })}
+          {item('plan', t('menu.crewWizard'), () => { openStation(true); })}
           {item('ship', t('menu.ship'), () => { openShip(); })}
           <hr />
           <div class="setrow">

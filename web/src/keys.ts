@@ -2,7 +2,7 @@
    Esc is exactly one step back (see nav.ts). */
 import { batch } from '@preact/signals';
 import {
-  answered, armed, attention, chat, currentView, galaxyId, linkMode, mode, panels, requests, searchState, selected,
+  answered, armed, attention, chat, currentView, linkMode, mode, panels, requests, searchState, selected,
   simple, filter, universe, SIMPLE_KEY, persist, locked, level, selectedTask,
 } from './store';
 import { back, getWorld, goHome, goOverview, navigateTo, openRequest, pushFrame, queueCursor, fromQueue } from './nav';
@@ -55,7 +55,7 @@ function sortedPlanets(): Entity[] {
     .filter((x) => x.status !== 'done')
     .slice()
     .sort((a, b) => order(a.status) - order(b.status) || a.n - b.n)
-    .map((x) => ({ kind: 'planet', galaxy: galaxyId.value, id: x.id }) as Entity);
+    .map((x) => ({ kind: 'planet', id: x.id }) as Entity);
 }
 
 function nextPlanet(delta: number): void {
@@ -71,7 +71,7 @@ function nextUniverse(delta: number): void {
   if (!names.length) return;
   const cur = universe.value ?? '';
   const i = names.indexOf(cur);
-  void navigateTo({ kind: 'universe', galaxy: galaxyId.value, id: names[(i + delta + names.length) % names.length] });
+  void navigateTo({ kind: 'universe', id: names[(i + delta + names.length) % names.length] });
 }
 
 /** Esc: the topmost overlay, then panels, then one step back along the way. */

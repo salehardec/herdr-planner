@@ -164,8 +164,7 @@ export const clampPitch = (p: number, lo = 0.08, hi = 1.3): number => Math.max(l
 export const ease = (t: number): number => 1 - Math.pow(1 - t, 3);
 
 /** A warp flight takes longer for longer distances, within limits (seconds). */
-export function flightDuration(distance: number, far = false): number {
-  if (far) return 2.2;
+export function flightDuration(distance: number): number {
   return Math.max(1.1, Math.min(2.6, 0.9 + distance / 700));
 }
 

@@ -2,7 +2,7 @@ import { signal } from '@preact/signals';
 import type { JSX } from 'preact';
 import { useEffect, useLayoutEffect, useRef } from 'preact/hooks';
 import {
-  chat, galaxies, galaxyId, panels, snap, screens,
+  chat, panels, snap, screens,
 } from '../store';
 import {
   addFiles, draftRequest, draftTodos, hasOlder, loadLatest, loadOlder, notePending, openChatAt, optimistic, pendingFiles, pendingMessage, reconcile, removeFile, scrollTo,
@@ -113,26 +113,24 @@ export function Chat(): JSX.Element {
   const open = panels.chat.value;
   const s = snap.value;
   const coord = s?.coordinator;
-  const far = galaxyId.value !== '';
-  const farG = far ? galaxies.value.find((g) => g.label === galaxyId.value) : null;
   const logRef = useRef<HTMLDivElement>(null);
   const taRef = useRef<HTMLTextAreaElement>(null);
   const anchor = useRef<{ h: number; top: number } | null>(null);
-  const showTurns = !far && c.available === true && c.turns.length > 0;
+  const showTurns = c.available === true && c.turns.length > 0;
   const pending = pendingMessage();
   const opt = optimistic.value;
   const history = coord?.history ?? [];
-  const reply = far ? (farG?.coordinator.reply ?? '') : (coord?.reply ?? '');
+  const reply = coord?.reply ?? '';
   const err = c.error || (coord?.error ?? '');
-  const busy = !!coord?.busy && !far;
-  const dialog = !!coord?.dialog && !far;
+  const busy = !!coord?.busy;
+  const dialog = !!coord?.dialog;
   // The Coordinator's last words: its transcript's, or (while that answer is not written yet) the tail of its window.
   const lastReply = (showTurns ? c.turns[c.turns.length - 1].a : '') || reply;
   const options = dialog || busy ? [] : parseOptions(lastReply);
   const scr = screens.value.coordinator;
 
   // Load the transcript when the chat opens and when it grows.
-  useEffect(() => { if (open && !far) void loadLatest(); }, [open, far]);
+  useEffect(() => { if (open) void loadLatest(); }, [open]);
   useEffect(() => onChatEvent(() => { if (panels.chat.value) void loadLatest(); }), []);
   useEffect(() => { if (open && dialog) void fetchScreen('coordinator'); }, [open, dialog, coord?.reply]);
   useEffect(() => { reconcile(); }, [coord?.history.length]);
@@ -211,7 +209,7 @@ export function Chat(): JSX.Element {
 
   const variantSend = (value: string): void => {
     notePending(value);
-    void post('/api/chat', { text: value, galaxy: galaxyId.value || undefined }).catch((er: Error) => {
+    void post('/api/chat', { text: value }).catch((er: Error) => {
       chat.value = { ...chat.value, pending: null, error: er.message };
     });
     setTimeout(() => { void refreshNow(); void loadLatest(); }, 900);
@@ -245,7 +243,7 @@ export function Chat(): JSX.Element {
   return (
     <section class={`panel chat ${chatWide.value ? 'wide' : ''} ${open ? '' : 'off'} ${todoOver.value ? 'drop' : ''}`} id="chat" aria-label={t('chat.aria')} aria-hidden={!open} {...dropProps}>
       <header>
-        <b>{far ? `${galaxyId.value} · ${t('chat.coordinator')}` : t('quasar.label')}</b>
+        <b>{t('quasar.label')}</b>
         <span class={`st ${err ? 'bad' : busy ? 'busy' : ''}`} id="cstate">● {status}</span>
         <input
           id="chat-q" class="cq" type="search" value={c.q} placeholder={t('chat.search')} aria-label={t('chat.search')}
@@ -262,7 +260,7 @@ export function Chat(): JSX.Element {
         </button>
         <button class="btn sm" id="chide" type="button" title="/" onClick={() => { panels.chat.value = false; }}>{t('chat.hide')}</button>
       </header>
-      {!far && <div class="cmem"><Memory compact /></div>}
+      <div class="cmem"><Memory compact /></div>
       {c.q.trim().length >= 2 && (
         <div id="chits" class="chits">
           {c.hitsBusy && c.hits.length === 0 && <div class="h dim">{t('chat.searching')}</div>}
@@ -290,7 +288,7 @@ export function Chat(): JSX.Element {
           </>
         ) : (
           <Fallback
-            far={far} history={history} reply={reply} talk={farG?.coordinator.talk ?? []} status={coord?.status ?? ''}
+            history={history} reply={reply} status={coord?.status ?? ''}
             sentAt={coord?.sent_at ?? 0} sent={coord?.last_sent ?? ''}
           />
         )}
@@ -355,14 +353,12 @@ export function Chat(): JSX.Element {
 }
 
 function Fallback(props: {
-  far: boolean; history: { text: string; at: number; attachments: { id: string; name: string }[] }[]; reply: string;
-  talk: { you: boolean; text: string }[]; status: string; sentAt: number; sent: string;
+  history: { text: string; at: number; attachments: { id: string; name: string }[] }[]; reply: string;
+  status: string; sentAt: number; sent: string;
 }): JSX.Element {
-  const lines = props.far ? props.talk : [];
   return (
     <>
-      {props.far && <div class="meta start">{t('chat.farNoTranscript')}</div>}
-      {!props.far && !props.history.length && props.sent && (
+      {!props.history.length && props.sent && (
         <div class="q"><span class="who">{t('chat.you')}</span><span class="txt">{props.sent}</span></div>
       )}
       {props.history.map((m) => (
@@ -372,19 +368,13 @@ function Fallback(props: {
           <div class="meta"><span>{timeOf(m.at)}</span><span>· {t('chat.sentToQuasar')}</span></div>
         </div>
       ))}
-      {lines.map((l, i) => (
-        <div class={l.you ? 'q' : 'a'} key={i}><span class="who">{l.you ? t('chat.you') : t('quasar.short')}</span><span class="txt">{l.text}</span></div>
-      ))}
-      {props.reply && !props.far && (
+      {props.reply && (
         <>
           <div class="a"><span class="who">{t('quasar.short')}</span><RichText class="txt" text={props.reply} /></div>
           <div class="meta"><span>{t('chat.lastFromWindow')}</span><span>· {props.status}</span></div>
         </>
       )}
-      {props.far && !lines.length && props.reply && (
-        <div class="a"><span class="who">{t('quasar.short')}</span><RichText class="txt" text={props.reply} /></div>
-      )}
-      {!props.reply && !props.history.length && !lines.length && !props.sent && (
+      {!props.reply && !props.history.length && !props.sent && (
         <div class="a empty"><span class="who">{t('quasar.short')}</span><span class="txt">{t('chat.empty')}</span></div>
       )}
     </>

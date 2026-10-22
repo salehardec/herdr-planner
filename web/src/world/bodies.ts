@@ -132,7 +132,6 @@ export class Bodies {
   readonly moonItems: Item[] = [];
   readonly planetItems: Item[] = [];
   private hoverId: string | null = null;
-  private galaxy = '';
   private fresh: Record<string, number> = {};
   private lastTime = 0;
 
@@ -204,10 +203,9 @@ export class Bodies {
   setPalette(p: Palette): void { this.pal = p; this.colorsDirty = true; }
 
   /** Rebuilds the instances for a layout; moons are kept by id so they can fade out. */
-  build(layout: Layout, tasks: Task[], pal: Palette, galaxy: string, coordinatorMoons: Subagent[], now: number): void {
+  build(layout: Layout, tasks: Task[], pal: Palette, coordinatorMoons: Subagent[], now: number): void {
     this.pal = pal;
     this.layout = layout;
-    this.galaxy = galaxy;
     this.tasks = new Map(tasks.map((t) => [t.id, t]));
     this.coordMoons = coordinatorMoons;
     const planets = layout.universes.flatMap((u) => u.planets.map((p) => ({ u, p })));
@@ -218,8 +216,8 @@ export class Bodies {
     planets.forEach(({ u, p }, idx) => {
       const task = this.tasks.get(p.id);
       const item: Item = {
-        key: `planet|${galaxy}|${p.id}`,
-        entity: { kind: 'planet', galaxy, id: p.id },
+        key: `planet|${p.id}`,
+        entity: { kind: 'planet', id: p.id },
         pos: new Vector3(), radius: p.size, label: p.tag, sub: p.title, status: p.status,
         priority: p.status === 'waiting' || p.status === 'failed' ? 60 : p.status === 'ready' || p.status === 'plan' ? 50 : p.status === 'done' ? 5 : 30,
         universe: u.name,
@@ -277,8 +275,8 @@ export class Bodies {
       }
       if (sa.state === 'done') return;
       const item: Item = {
-        key: `moon|${this.galaxy}|${key}`,
-        entity: { kind: 'moon', galaxy: this.galaxy, id: key },
+        key: `moon|${key}`,
+        entity: { kind: 'moon', id: key },
         pos: new Vector3(), radius: 0.9, label: sa.role || label, sub: sa.doing || sa.title, priority: 20,
         universe: planetId === 'quasar' ? '' : (this.byId.get(planetId)?.u.name ?? ''),
       };

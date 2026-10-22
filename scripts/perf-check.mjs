@@ -101,7 +101,7 @@ check('the page\'s own work per frame is small (< 24 ms for the update, stretche
 check('the particles are bounded (LOD): under 60 000', d.particles < 60000, String(d.particles));
 if (shots) { const r = await send('Page.captureScreenshot', { format: 'png' }); writeFileSync(join(shots, 'scale-overview.png'), Buffer.from(r.result.data, 'base64')); }
 // into a nebula: the cost stays small and the labels stay in order
-await evalJs(`planner.navigateTo({kind:'universe',galaxy:'',id:'s05'}); true`);
+await evalJs(`planner.navigateTo({kind:'universe',id:'s05'}); true`);
 await flightIdle();
 await waitFor('world.debug().level === "nebula" && world.debug().labels > 0', 30000);
 await frames(5);
@@ -110,7 +110,7 @@ const lo2 = await evalJs(labelOverlaps);
 const upd2 = await bestUpdate();
 check('inside a nebula: the labels stay few and apart', inside.level === 'nebula' && inside.labels <= 24 && lo2.overlaps === 0 && upd2.ms < upd2.limit, JSON.stringify({ ...inside, ...lo2, upd: upd2 }));
 // the selected planet's card and the one under the pointer must not sit on other labels either
-await evalJs(`planner.navigateTo({kind:'planet',galaxy:'',id:'s05/1'}); true`);
+await evalJs(`planner.navigateTo({kind:'planet',id:'s05/1'}); true`);
 await flightIdle();
 await waitFor('plannerDebug().selected?.id === "s05/1" && world.debug().labels > 0', 30000);
 await frames(5);

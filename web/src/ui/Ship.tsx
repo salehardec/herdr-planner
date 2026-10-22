@@ -1,18 +1,17 @@
-/* The ship's computer («Бортовой компьютер»): the planner's own settings, the same wherever the ship flies.
+/* The ship's computer («Бортовой компьютер»): the planner's own settings.
    Device preferences (language, mouse, simple mode, notifications) act at once, as the menu's quick items do.
-   Everything that changes the planner or its machines shows «было → стало» and asks twice (confirmStep). */
+   Everything that changes the planner shows «было → стало» and asks twice (confirmStep). */
 import { signal } from '@preact/signals';
 import type { JSX } from 'preact';
 import { useEffect, useState } from 'preact/hooks';
 import { scalePercent, scaleTick, setScale, stepScale, uiScale } from '../scale';
-import { armed, invertY, notifyOn, NOTIFY_KEY, INVERT_KEY, persist, QUERY, sensitivity, SENS_KEY, simple, SIMPLE_KEY, snap, galaxyId } from '../store';
-import { addDialogs } from '../dialogs';
+import { armed, invertY, notifyOn, NOTIFY_KEY, INVERT_KEY, persist, QUERY, sensitivity, SENS_KEY, simple, SIMPLE_KEY, snap } from '../store';
 import { confirmStep } from '../actions';
 import { lang, setLang, t } from '../i18n';
 import { toast } from '../toast';
 import { getWorld } from '../nav';
 import { Gl } from './Gl';
-import { callError, CallError, galaxyRemove, shipDlg, shipGet, shipPost, ShipData } from './station-api';
+import { callError, CallError, shipDlg, shipGet, shipPost, ShipData } from './station-api';
 import './ship.css';
 
 interface Row { label: string; was: string; now: string }
@@ -262,47 +261,6 @@ function Address({ d }: { d: ShipData }): JSX.Element {
   );
 }
 
-function Galaxies(): JSX.Element {
-  const list = snap.value?.galaxies ?? [];
-  return (
-    <section class="sh-sec" id="ship-galaxies">
-      <h3>{t('ship.galaxies')}</h3>
-      <p class="hint">{t('ship.galaxiesHint')}</p>
-      {list.length === 0 && <div class="hint">{t('ship.noGalaxies')}</div>}
-      <ul class="gals">
-        {list.map((g) => {
-          const key = `ship:remove:${g.label}`;
-          const showing = pending.value?.key === key;
-          return (
-            <li key={g.label} data-galaxy={g.label}>
-              <div class="gline">
-                <Gl n="galaxy" />
-                <b>{g.label}</b>
-                <span class={`badge s-${g.ok ? 'working' : 'failed'}`}>{g.ok ? t('galaxy.online') : t('galaxy.off')}</span>
-                {g.version && <span class="m">herdr-projects {g.version}</span>}
-                {galaxyId.value === g.label && <span class="hint">{t('ship.here')}</span>}
-                <button class="btn sm danger" type="button" data-remove={g.label} onClick={() => ask({
-                  key,
-                  rows: [{ label: t('ship.galaxy'), was: `${g.label} (${g.ok ? t('galaxy.online') : t('galaxy.off')})`, now: t('ship.removed') }],
-                  note: t('ship.removeNote'),
-                  run: async () => { await galaxyRemove(g.label); },
-                })}>{t('ship.remove')}</button>
-              </div>
-              {!g.ok && g.why && <div class="hint">{g.why.line}</div>}
-              {showing && <ChangeCard />}
-            </li>
-          );
-        })}
-      </ul>
-      <div class="row">
-        <button class="btn" type="button" id="ship-add-galaxy" onClick={() => { shipDlg.value = false; addDialogs.galaxy.value = true; }}>
-          <Gl n="plus" />{t('ship.addGalaxy')}
-        </button>
-      </div>
-    </section>
-  );
-}
-
 function Tls({ d }: { d: ShipData }): JSX.Element {
   return (
     <section class="sh-sec" id="ship-tls">
@@ -339,7 +297,6 @@ export function Ship(): JSX.Element | null {
               <Login d={d} />
               <Address d={d} />
               <Tls d={d} />
-              <Galaxies />
               <p class="hint">{t('ship.configFile', { path: d.config_file })}</p>
             </>
           )}

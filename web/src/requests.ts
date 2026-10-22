@@ -57,7 +57,7 @@ const TITLE_KEY: Record<string, string> = {
 
 export const requestTitle = (type: string): string => t(TITLE_KEY[type] ?? 'req.other');
 
-export function collectRequests(input: { tasks: Task[]; coordinator: CoordinatorState | null; galaxy: string }): Request[] {
+export function collectRequests(input: { tasks: Task[]; coordinator: CoordinatorState | null }): Request[] {
   const out: Request[] = [];
   for (const task of input.tasks) {
     if (!ATTN.has(task.status)) continue;
@@ -65,21 +65,21 @@ export function collectRequests(input: { tasks: Task[]; coordinator: Coordinator
     out.push({
       key: `${type}:${task.id}`, type, title: requestTitle(type), id: task.id, tag: task.tag, repo: task.repo,
       msg: task.msg || task.board_label || '', text: firstSentence(task.msg || task.board_label || ''), task,
-      urgency: ORDER[task.status] ?? 9, galaxy: input.galaxy,
+      urgency: ORDER[task.status] ?? 9,
     });
   }
   const c = input.coordinator;
   if (c?.dialog) {
     out.push({
       key: 'coordinator-dialog', type: 'coordinator-dialog', title: requestTitle('coordinator-dialog'), id: 'coordinator',
-      tag: t('quasar.short'), repo: 'coordinator', msg: c.reply || '', text: firstSentence(c.reply || ''), urgency: -1, galaxy: input.galaxy,
+      tag: t('quasar.short'), repo: 'coordinator', msg: c.reply || '', text: firstSentence(c.reply || ''), urgency: -1,
     });
   } else if (c) {
     const options = parseOptions(c.reply);
     if (options.length) {
       out.push({
         key: 'coordinator-options', type: 'coordinator-options', title: requestTitle('coordinator-options'), id: 'coordinator',
-        tag: t('quasar.short'), repo: 'coordinator', msg: c.reply || '', text: firstSentence(c.reply || ''), options, urgency: 0.5, galaxy: input.galaxy,
+        tag: t('quasar.short'), repo: 'coordinator', msg: c.reply || '', text: firstSentence(c.reply || ''), options, urgency: 0.5,
       });
     }
   }

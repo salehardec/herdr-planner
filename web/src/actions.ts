@@ -1,7 +1,6 @@
 /* What the operator can do to tasks, links and the Coordinator. Every action asks twice
-   when it cannot be undone, goes to the machine the task lives on, and leaves the
-   operator where they are. */
-import { armed, details, galaxyId, panels, screens, snap, tellDraft, currentView, taskOf } from './store';
+   when it cannot be undone and leaves the operator where they are. */
+import { armed, details, panels, screens, snap, tellDraft, currentView, taskOf } from './store';
 import { draftMessage, draftSent } from './chat';
 import { endDrag } from './todo-drag';
 import type { SavedFile } from './attach';
@@ -16,15 +15,9 @@ export const ACTION_LABEL: Record<string, string> = {
   delegate: 'act.delegate', archive: 'act.archive', restore: 'act.restore', answer: 'act.answer', fix: 'act.fix', finish: 'act.finish',
 };
 
-/** The machine an action goes to: the one the thing lives on. */
-const machineOf = (galaxy?: string): string | undefined => {
-  const g = galaxy ?? galaxyId.value;
-  return g ? g : undefined;
-};
-
-export async function sendAction(action: string, extra: Record<string, unknown> = {}, galaxy?: string): Promise<any> {
+export async function sendAction(action: string, extra: Record<string, unknown> = {}): Promise<any> {
   try {
-    const r = await post('/api/action', { action, galaxy: machineOf(galaxy), ...extra });
+    const r = await post('/api/action', { action, ...extra });
     setTimeout(() => { void refreshNow(); }, 600);
     return r;
   } catch (e) {
@@ -56,9 +49,8 @@ export function boardOk(): boolean {
   return snap.value?.board.ok !== false;
 }
 
-export function runTaskAction(cmd: string, task: Task, entity?: Entity): void {
-  const galaxy = entity?.galaxy ?? galaxyId.value;
-  if (!boardOk() && galaxy === '') { toast(t('toast.boardDown'), { icon: 'failed' }); return; }
+export function runTaskAction(cmd: string, task: Task): void {
+  if (!boardOk()) { toast(t('toast.boardDown'), { icon: 'failed' }); return; }
   const done = async (msg: string): Promise<void> => {
     toast(msg);
     if (ANSWERING.has(cmd)) await afterAnswered(task.id);
@@ -66,7 +58,7 @@ export function runTaskAction(cmd: string, task: Task, entity?: Entity): void {
   if (cmd === 'approve' || cmd === 'anyway') {
     confirmStep(`${task.id}:${cmd}`, async () => {
       try {
-        await sendAction(cmd, { id: task.id, confirm: true }, galaxy);
+        await sendAction(cmd, { id: task.id, confirm: true });
         await done(cmd === 'approve' ? t('toast.approved', { tag: task.tag }) : t('toast.anyway', { tag: task.tag }));
       } catch { /* the toast is shown */ }
     });
@@ -74,17 +66,17 @@ export function runTaskAction(cmd: string, task: Task, entity?: Entity): void {
   }
   void (async () => {
     try {
-      await sendAction(cmd, { id: task.id }, galaxy);
+      await sendAction(cmd, { id: task.id });
       await done(`${task.tag}: ${t(ACTION_LABEL[cmd] ?? cmd)}`);
     } catch { /* shown */ }
   })();
 }
 
-export async function tellTask(task: Task, text: string, galaxy?: string): Promise<boolean> {
+export async function tellTask(task: Task, text: string): Promise<boolean> {
   const body = text.trim();
   if (!body) return false;
   try {
-    await sendAction('tell', { id: task.id, text: body }, galaxy);
+    await sendAction('tell', { id: task.id, text: body });
     const d = { ...tellDraft.value };
     delete d[task.id];
     tellDraft.value = d;
@@ -104,7 +96,6 @@ export async function pickAttempt(task: Task, letter: string): Promise<void> {
 
 export async function openFiles(task: Task, kind: 'worktree' | 'reports'): Promise<void> {
   const local = ['127.0.0.1', '::1', '[::1]', 'localhost'].includes(location.hostname);
-  if (galaxyId.value !== '') { toast(t('toast.filesFar', { path: task.worktree || '—' })); return; }
   if (!local) {
     const d = details.value[task.id] ?? {};
     const p = kind === 'reports' ? d.reports_dir : d.worktree;
@@ -124,67 +115,6 @@ export async function archiveAllDone(): Promise<void> {
   } catch { /* shown */ }
 }
 
-/* ───────── agent screen and files on another machine ───────── */
-
-import { signal } from '@preact/signals';
-import { onProgress } from './api';
-
-export interface YaziState {
-  present: boolean; path: string | null; os: string; arch: string; has_file: boolean; has_chafa: boolean;
-  managers: { id: string; command: string; sudo: boolean; available: boolean; why_not: string | null }[];
-  binary_url: string | null; notes: string[];
-}
-export const yaziDlg = signal<{ galaxy: string; task: Task; state: YaziState | null; busy: boolean; log: string[]; err: string; done: string } | null>(null);
-
-export async function farScreen(task: Task): Promise<void> {
-  try {
-    const r = await post('/api/far/files', { galaxy: galaxyId.value, task: task.id, op: 'screen' });
-    toast(t('far.screenOpened', { agent: r.agent ?? '' }));
-  } catch (e) { toast((e as Error).message, { icon: 'failed' }); }
-}
-
-/** yazi of a task on another machine: opened if it is there, else the install dialog offers it. */
-export async function farYazi(task: Task): Promise<void> {
-  const galaxy = galaxyId.value;
-  try {
-    const c = await post<{ state: YaziState }>('/api/far/files', { galaxy, task: task.id, op: 'check' });
-    if (c.state.present) {
-      const r = await post('/api/far/files', { galaxy, task: task.id, op: 'yazi' });
-      toast(t('far.yaziOpened', { path: r.path ?? '' }));
-    } else {
-      yaziDlg.value = { galaxy, task, state: c.state, busy: false, log: [], err: '', done: '' };
-    }
-  } catch (e) { toast((e as Error).message, { icon: 'failed' }); }
-}
-
-export function installYazi(method: string): void {
-  const d = yaziDlg.value;
-  if (!d) return;
-  if (method === 'pacman') {
-    void post('/api/far/files', { galaxy: d.galaxy, op: 'install-terminal', method }).then(() => {
-      toast(t('far.terminalOpened'));
-    }).catch((e: Error) => { yaziDlg.value = { ...d, err: e.message }; });
-    return;
-  }
-  confirmStep(`yazi:${method}`, async () => {
-    yaziDlg.value = { ...d, busy: true, log: [], err: '' };
-    try {
-      const r = await post<{ job: string }>('/api/far/files', { galaxy: d.galaxy, op: 'install', method, confirm: true });
-      const off = onProgress((p) => {
-        if (p.job !== r.job) return;
-        const cur = yaziDlg.value;
-        if (!cur) { off(); return; }
-        if (p.steps?.[0]) yaziDlg.value = { ...cur, log: [...cur.log, p.steps[0].label] };
-        if (p.done) {
-          off();
-          yaziDlg.value = { ...(yaziDlg.value ?? cur), busy: false, err: p.ok ? '' : p.error, done: p.ok ? p.result?.path ?? '' : '' };
-          if (p.ok) void farYazi(d.task).then(() => { if (yaziDlg.value?.done) yaziDlg.value = null; });
-        }
-      });
-    } catch (e) { yaziDlg.value = { ...d, busy: false, err: (e as Error).message }; }
-  });
-}
-
 /* ───────── agent screens (herdr) ───────── */
 
 export async function fetchScreen(target: string, role = ''): Promise<void> {
@@ -201,7 +131,7 @@ export async function fetchScreen(target: string, role = ''): Promise<void> {
 
 export async function sendKey(target: string, key: string, role = ''): Promise<void> {
   try {
-    await sendAction('keys', { target, keys: [key], role }, '');
+    await sendAction('keys', { target, keys: [key], role });
     setTimeout(() => { void fetchScreen(target, role); }, 500);
     toast(t('toast.key', { key }));
   } catch { /* shown */ }
@@ -216,15 +146,15 @@ function linkOp<T>(fn: () => Promise<T>): Promise<T> {
   return p;
 }
 
-const tagOf = (id: string, galaxy: string): string => taskOf(id, galaxy)?.tag ?? id;
+const tagOf = (id: string): string => taskOf(id)?.tag ?? id;
 
-async function saveAfter(id: string, refs: string[], undoRefs: string[] | null, galaxy: string): Promise<boolean> {
+async function saveAfter(id: string, refs: string[], undoRefs: string[] | null): Promise<boolean> {
   try {
-    await post('/api/action', { action: 'after', id, after: refs, galaxy: machineOf(galaxy) });
+    await post('/api/action', { action: 'after', id, after: refs });
     setTimeout(() => { void refreshNow(); }, 500);
     toast(
-      `${tagOf(id, galaxy)}: ${refs.length ? t('toast.afterSet', { tags: refs.map((r) => tagOf(r, galaxy)).join(', ') }) : t('toast.afterCleared')}`,
-      { icon: 'link', timeout: 12000, label: t('act.undo'), action: undoRefs ? () => { void saveAfter(id, undoRefs, null, galaxy); } : undefined },
+      `${tagOf(id)}: ${refs.length ? t('toast.afterSet', { tags: refs.map((r) => tagOf(r)).join(', ') }) : t('toast.afterCleared')}`,
+      { icon: 'link', timeout: 12000, label: t('act.undo'), action: undoRefs ? () => { void saveAfter(id, undoRefs, null); } : undefined },
     );
     return true;
   } catch (e) {
@@ -233,25 +163,23 @@ async function saveAfter(id: string, refs: string[], undoRefs: string[] | null, 
   }
 }
 
-export function connectTasks(from: string, to: string, galaxy: string): Promise<void> {
+export function connectTasks(from: string, to: string): Promise<void> {
   return linkOp(async () => {
     await refreshNow();
-    const view = galaxy === galaxyId.value ? currentView.value : null;
-    const a = taskOf(from, galaxy);
+    const a = taskOf(from);
     if (!a) { toast(t('toast.linkNoTask'), { icon: 'failed' }); return; }
-    const current = (view?.links ?? []).filter((l) => l.to === from).map((l) => l.from);
-    if (current.includes(to)) { toast(t('toast.linkExists', { a: a.tag, b: tagOf(to, galaxy) })); return; }
-    await saveAfter(from, [...current, to], current, galaxy);
+    const current = currentView.value.links.filter((l) => l.to === from).map((l) => l.from);
+    if (current.includes(to)) { toast(t('toast.linkExists', { a: a.tag, b: tagOf(to) })); return; }
+    await saveAfter(from, [...current, to], current);
     await refreshNow();
   });
 }
 
-export function removeLink(waiting: string, from: string, galaxy: string): Promise<void> {
+export function removeLink(waiting: string, from: string): Promise<void> {
   return linkOp(async () => {
     await refreshNow();
-    const view = galaxy === galaxyId.value ? currentView.value : null;
-    const all = (view?.links ?? []).filter((l) => l.to === waiting).map((l) => l.from);
-    await saveAfter(waiting, all.filter((x) => x !== from), all, galaxy);
+    const all = currentView.value.links.filter((l) => l.to === waiting).map((l) => l.from);
+    await saveAfter(waiting, all.filter((x) => x !== from), all);
     await refreshNow();
   });
 }
@@ -261,7 +189,7 @@ export function removeLink(waiting: string, from: string, galaxy: string): Promi
 export function compactCoordinator(): void {
   confirmStep('coordinator:compact', async () => {
     try {
-      await sendAction('coordinator-compact', { confirm: true }, '');
+      await sendAction('coordinator-compact', { confirm: true });
       toast(t('toast.compacting'));
     } catch { /* shown */ }
   });
@@ -270,7 +198,7 @@ export function compactCoordinator(): void {
 export function newCoordinator(): void {
   confirmStep('coordinator:new', async () => {
     try {
-      await sendAction('coordinator-new', { confirm: true }, '');
+      await sendAction('coordinator-new', { confirm: true });
       toast(t('toast.newCoordinator'));
     } catch { /* shown */ }
   });

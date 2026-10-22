@@ -10,11 +10,11 @@ const task = (n: number, created: number, status: Task['status'] = 'working', ex
 });
 const project = (name: string, quiet = false): Project => ({ name, key: name.slice(0, 3).toUpperCase(), active: 1, done: 0, total: 1, statuses: {}, quiet, root: '', folder: '', origin: '', lag: null, empty: false });
 
-const view = (tasks: Task[], projects: Project[] = [project('alpha')]): GalaxyView => ({ id: '', label: 'host', home: true, ok: true, tasks, projects, links: [] });
+const view = (tasks: Task[], projects: Project[] = [project('alpha')]): GalaxyView => ({ label: 'host', ok: true, tasks, projects, links: [] });
 const now = day(20, 15);
 
 const build = (v: GalaxyView, folds: Record<string, boolean> = {}, extra: Partial<Parameters<typeof buildTree>[0]> = {}) =>
-  buildTree({ views: [v], currentGalaxy: '', selected: null, folds, hostLabel: 'host', coordinator: null, attentionWaits: 0, now, ...extra });
+  buildTree({ view: v, selected: null, folds, hostLabel: 'host', coordinator: null, attentionWaits: 0, now, ...extra });
 
 describe('navigator tree', () => {
   const tasks = [task(1, day(20, 9)), task(2, day(20, 10), 'waiting'), task(3, day(19, 9)), task(4, day(14, 9), 'done'), task(5, day(19, 20))];
@@ -36,7 +36,7 @@ describe('navigator tree', () => {
   });
 
   it('opens a date when the operator folded it open, and the choice wins', () => {
-    const rows = build(view(tasks), { 'grp||alpha|19.10.2026': true, 'grp||alpha|today': false });
+    const rows = build(view(tasks), { 'grp|alpha|19.10.2026': true, 'grp|alpha|today': false });
     const groups = rows.filter((r) => r.kind === 'group');
     expect(groups.map((g) => g.open)).toEqual([false, true, false]);
     expect(rows.filter((r) => r.kind === 'planet').map((p) => p.entity?.id)).toEqual(['alpha/5', 'alpha/3']);
@@ -58,12 +58,9 @@ describe('navigator tree', () => {
     expect(rows.filter((r) => r.kind === 'moon').map((r) => r.label)).toEqual(['R-a', 'R-c']);
   });
 
-  it('lists far galaxies below this one, and a lost one is dimmed with its state', () => {
-    const far: GalaxyView = { id: 'vm-b', label: 'vm-b', home: false, ok: false, tasks: [], projects: [], links: [] };
-    const rows = buildTree({ views: [view(tasks), far], currentGalaxy: '', selected: null, folds: {}, hostLabel: 'host', coordinator: null, attentionWaits: 0, now });
-    const galaxies = rows.filter((r) => r.kind === 'galaxy');
-    expect(galaxies.map((g) => g.label)).toEqual(['host', 'vm-b']);
-    expect(galaxies[1].off).toBe(true);
-    expect(rows[rows.length - 1].kind).toBe('addGalaxy');
+  it('has no row for other machines: the galaxy, the quasar, the universes and «add a universe» only', () => {
+    const rows = build(view(tasks));
+    expect(rows.filter((r) => r.kind === 'galaxy').map((g) => g.label)).toEqual(['host']);
+    expect(rows[rows.length - 1].kind).toBe('addUniverse');
   });
 });

@@ -6,13 +6,11 @@
    a task key, manual flight) flies there and puts the place they left on the stack. */
 import { batch, signal } from '@preact/signals';
 import {
-  answered, details, galaxyId, galaxies, linkStatus, mode, panels, requests, selected, snap, universe,
+  answered, details, mode, panels, requests, selected, universe,
 } from './store';
 import type { CamState, World } from './world';
 import type { Entity } from './types';
-import { api, post } from './api';
-import { toast } from './toast';
-import { t } from './i18n';
+import { api } from './api';
 
 let world: World | null = null;
 export const setWorld = (w: World): void => { world = w; };
@@ -27,7 +25,6 @@ interface Frame {
   archive: boolean;
   focus: boolean;
   cursor: number;
-  galaxy: string;
   fromQueue: boolean;
 }
 
@@ -48,7 +45,6 @@ function capture(): Frame {
     archive: panels.archive.value,
     focus: panels.focus.value,
     cursor: queueCursor.value,
-    galaxy: galaxyId.value,
     fromQueue: fromQueue.value,
   };
 }
@@ -66,7 +62,6 @@ export function clearStack(): void {
 
 async function restore(f: Frame): Promise<void> {
   batch(() => {
-    if (f.galaxy !== galaxyId.value) galaxyId.value = f.galaxy;
     selected.value = f.sel;
     panels.wait.value = f.wait;
     panels.todo.value = f.todo;
@@ -95,14 +90,6 @@ export async function navigateTo(e: Entity, o: { push?: boolean } = {}): Promise
   if (!world) return;
   if (o.push !== false) pushFrame();
   fromQueue.value = false;
-  if (e.kind === 'galaxy') {
-    await enterGalaxy(e.id);
-    return;
-  }
-  if (e.galaxy !== galaxyId.value) {
-    const ok = await switchGalaxy(e.galaxy);
-    if (!ok) return;
-  }
   batch(() => {
     selected.value = e;
     panels.focus.value = true;
@@ -123,58 +110,14 @@ export async function goOverview(o: { push?: boolean } = {}): Promise<void> {
   await world.flyTo({ kind: 'overview' });
 }
 
-/** Home: this machine's Galaxy. */
+/** Home: the Galaxy as a whole. */
 export async function goHome(): Promise<void> {
   if (!world) return;
   pushFrame();
   fromQueue.value = false;
-  if (galaxyId.value !== '') {
-    batch(() => { galaxyId.value = ''; selected.value = null; });
-    linkStatus.value = { state: 'idle', label: '' };
-    await world.land();
-    return;
-  }
   batch(() => { selected.value = null; });
   world.setSelection(null);
   await world.flyTo({ kind: 'overview' });
-}
-
-/** The ship flies to a far galaxy and connects to its machine. */
-export async function enterGalaxy(label: string): Promise<void> {
-  if (!world) return;
-  if (label === galaxyId.value) { await world.flyTo({ kind: 'overview' }); return; }
-  if (label === '') { await goHome(); return; }
-  batch(() => { selected.value = { kind: 'galaxy', galaxy: label, id: label }; });
-  world.setSelection(null);
-  linkStatus.value = { state: 'connecting', label };
-  // The flight and the connection run side by side; landing needs both.
-  const flying = world.flyTo({ kind: 'far', galaxy: label });
-  const ask = post('/api/galaxy/ask', { label }).catch((e: Error) => ({ ok: false, why: { line: e.message, detail: [] } }));
-  const [r] = await Promise.all([ask, flying]);
-  if (!r.ok) {
-    const why = r.why ?? { line: t('galaxy.noLink'), detail: [] };
-    linkStatus.value = { state: 'offline', label, why: why.line, detail: why.detail };
-    return;
-  }
-  const g = galaxies.value.find((x) => x.label === label);
-  linkStatus.value = { state: 'online', label, version: g?.version };
-  batch(() => { galaxyId.value = label; selected.value = null; });
-  await world.land();
-}
-
-/** Switches the scene to a galaxy whose data is already here (home, or a connected machine). */
-async function switchGalaxy(label: string): Promise<boolean> {
-  if (label === galaxyId.value) return true;
-  if (label === '') {
-    batch(() => { galaxyId.value = ''; });
-    linkStatus.value = { state: 'idle', label: '' };
-    return true;
-  }
-  const g = galaxies.value.find((x) => x.label === label);
-  if (!g || !g.ok) { await enterGalaxy(label); return false; }
-  batch(() => { galaxyId.value = label; });
-  linkStatus.value = { state: 'online', label, version: g.version };
-  return true;
 }
 
 /** From the «Ждёт тебя» list into a request: the list and the camera are kept for the way back. */
@@ -184,8 +127,8 @@ export async function openRequest(index: number): Promise<void> {
   queueCursor.value = index;
   pushFrame();
   const entity: Entity = r.id === 'coordinator'
-    ? { kind: 'quasar', galaxy: galaxyId.value, id: 'quasar' }
-    : { kind: 'planet', galaxy: galaxyId.value, id: r.id };
+    ? { kind: 'quasar', id: 'quasar' }
+    : { kind: 'planet', id: r.id };
   await navigateTo(entity, { push: false });
   fromQueue.value = true;
 }
@@ -217,7 +160,7 @@ export async function afterAnswered(id: string): Promise<void> {
 const loading = new Set<string>();
 
 export async function fetchDetails(id: string, force = false): Promise<void> {
-  if (!id || galaxyId.value !== '' || loading.has(id) || (!force && details.value[id])) return;
+  if (!id || loading.has(id) || (!force && details.value[id])) return;
   loading.add(id);
   try {
     const r = await api<{ details: any }>('/api/details?id=' + encodeURIComponent(id));
@@ -230,4 +173,3 @@ export async function fetchDetails(id: string, force = false): Promise<void> {
 }
 
 export const modeNow = (): 'auto' | 'manual' => mode.value;
-void snap; void toast;
