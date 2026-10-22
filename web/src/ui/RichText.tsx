@@ -1,5 +1,5 @@
 import type { JSX } from 'preact';
-import { views } from '../store';
+import { currentView } from '../store';
 import { navigateTo } from '../nav';
 
 const KEY = /\b([A-Z][A-Z0-9]{1,6}-\d+)\b/g;
@@ -26,8 +26,6 @@ export function RichText(props: { text: string; class?: string }): JSX.Element {
 }
 
 export function goToTag(tag: string): void {
-  for (const v of views.value) {
-    const t = v.tasks.find((x) => x.tag === tag);
-    if (t) { void navigateTo({ kind: 'planet', galaxy: v.id, id: t.id }); return; }
-  }
+  const t = currentView.value.tasks.find((x) => x.tag === tag);
+  if (t) void navigateTo({ kind: 'planet', id: t.id });
 }

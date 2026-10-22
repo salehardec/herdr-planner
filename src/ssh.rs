@@ -51,18 +51,6 @@ fn valid_session(s: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '-'))
 }
 
-/// POSIX shell quoting: bare when every character is harmless, otherwise single-quoted.
-pub(crate) fn sh_quote(s: &str) -> String {
-    let bare = !s.is_empty()
-        && s.chars()
-            .all(|c| c.is_ascii_alphanumeric() || "_./:@%+=,-".contains(c));
-    if bare {
-        s.to_string()
-    } else {
-        format!("'{}'", s.replace('\'', "'\\''"))
-    }
-}
-
 /// The argv of the planner's ssh call to a machine; the program is `cfg.ssh_bin`. Copied from herdr-projects 1.2.4
 /// crates/flow/src/remote.rs (`ssh_command`): the board's own known-hosts file and control sockets, batch mode (no
 /// password prompt), and a login shell on the far side so its PATH is set. `HERDR_SESSION=<s> ` is put in front of
@@ -229,28 +217,6 @@ async fn run_ended(cfg: &AppConfig, args: &[String], wait: Duration) -> Result<E
 pub(crate) struct CheckHint {
     pub test: String,
     pub program: String,
-    /// The board's own words (a missing `herdr-projects`, an old plugin).
-    pub board: bool,
-}
-
-pub(crate) fn test_line(m: &MachineRef) -> String {
-    format!(
-        "Проверить с этой машины: ssh {} 'exec $SHELL -lc \"herdr-projects remote list\"' | tail -c 200",
-        m.target
-    )
-}
-
-/// The words of the board's own `why_not` for a distant machine.
-pub(crate) fn why_not(end: &Ended, m: &MachineRef) -> Why {
-    why_not_with(
-        end,
-        m,
-        &CheckHint {
-            test: test_line(m),
-            program: "herdr-projects".into(),
-            board: true,
-        },
-    )
 }
 
 /// Why an ssh call did not give what was asked. The last detail is a command to check by hand.
@@ -304,7 +270,7 @@ pub(crate) fn why_not_with(end: &Ended, m: &MachineRef, hint: &CheckHint) -> Why
         }
         if err.contains("permission denied") || err.contains("too many authentication failures") {
             return make(
-                if hint.board { "она не пускает доску" } else { "она не пускает эту машину" },
+                "она не пускает эту машину",
                 vec![
                     format!("{name} отказала во входе. ssh работает в пакетном режиме: ключ должен подходить сам, пароль не спрашивается."),
                     format!("Положите свой публичный ключ на машину (ssh-copy-id {}) или загрузите ключ в ssh-agent, из которого работает этот сервис.", m.target),
@@ -343,15 +309,6 @@ pub(crate) fn why_not_with(end: &Ended, m: &MachineRef, hint: &CheckHint) -> Why
             ],
         );
     }
-    if hint.board && (all.contains("herdr-projects") && all.contains("not found") || end.code == Some(127)) {
-        return make(
-            "herdr-projects там не найден",
-            vec![
-                format!("Оболочка входа на {name} не находит `herdr-projects`."),
-                "Положите его в PATH входа: в ~/.profile (bash) или ~/.zprofile (zsh), либо сделайте ссылку в ~/.local/bin.".into(),
-            ],
-        );
-    }
     if end.code == Some(127) || all.contains(&format!("{}: not found", hint.program.to_lowercase())) {
         return make(
             &format!("{} там не найден", hint.program),
@@ -359,12 +316,6 @@ pub(crate) fn why_not_with(end: &Ended, m: &MachineRef, hint: &CheckHint) -> Why
                 format!("Оболочка входа на {name} не находит `{}`.", hint.program),
                 format!("Установите его на {name} или положите в PATH входа."),
             ],
-        );
-    }
-    if hint.board && all.contains("remote") && (all.contains("does not know") || all.contains("unknown")) {
-        return make(
-            "там старый herdr-projects: обновите",
-            vec![format!("{name} не знает команды `remote`: там старая версия herdr-projects. Обновите её на той машине.")],
         );
     }
     if let Some(code) = end.code.filter(|c| *c != 0) {
@@ -380,36 +331,15 @@ pub(crate) fn why_not_with(end: &Ended, m: &MachineRef, hint: &CheckHint) -> Why
         );
     }
     make(
-        if hint.board { "ответила не то, что ждёт доска" } else { "ответила не то, что ждёт планировщик" },
+        "ответила не то, что ждёт планировщик",
         vec![format!("{name} напечатала текст, но в нём нет нужного ответа.")],
     )
-}
-
-/// An AppConfig for the tests, with every path under `dir`.
-#[cfg(test)]
-pub(crate) fn test_cfg(dir: &std::path::Path) -> AppConfig {
-    AppConfig {
-        listen: "127.0.0.1".into(),
-        port: 0,
-        data_dir: dir.join("data"),
-        data_named: true,
-        config_file: dir.join("config.toml"),
-        state_dir: dir.join("state"),
-        herdr_projects: "herdr-projects".into(),
-        herdr_socket: dir.join("herdr.sock"),
-        user: "herdr".into(),
-        password_hash: String::new(),
-        tls_cert: None,
-        tls_key: None,
-        translator: "claude/claude-haiku-5-5".into(),
-        ssh_bin: "ssh".into(),
-        projects_dir: dir.join("Projects"),
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::testutil::test_cfg;
 
     fn mref(label: &str, target: &str, session: &str) -> MachineRef {
         MachineRef {

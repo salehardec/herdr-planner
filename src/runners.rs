@@ -899,7 +899,6 @@ fn why(end: &ssh::Ended, m: &MachineRef) -> Why {
         &CheckHint {
             test: format!("Проверить с этой машины: ssh {} docker version", m.target),
             program: "docker".into(),
-            board: false,
         },
     )
 }
@@ -997,7 +996,7 @@ pub async fn poll_all(app: &Shared) {
     old.extend(fresh);
     old.sort_by(|a, b| a.id.cmp(&b.id));
     *app.runners.lock().await = old;
-    crate::app::rebuild_extras(app).await;
+    crate::app::rebuild_runners(app).await;
     crate::app::publish(app).await;
     crate::app::index_snapshot(app).await;
 }
@@ -1289,8 +1288,7 @@ pub async fn sync_blocks(app: &Shared) {
     };
     let block = block_text(&file);
     let was = app.runner_block.lock().await.clone();
-    let place = crate::station::Place::Home;
-    let settings = match crate::station::read_settings(&app.cfg, &place, "").await {
+    let settings = match crate::station::read_settings(&app.cfg, "").await {
         Ok(s) => s,
         Err(e) => {
             *app.runner_block.lock().await = BlockState {
@@ -1329,11 +1327,11 @@ pub async fn sync_blocks(app: &Shared) {
             Ok(Some(v)) => v,
             Ok(None) => {
                 let args = vec!["unset".to_string(), name.to_string()];
-                match crate::station::board_run(&app.cfg, &place, &args, crate::station::BOARD_WAIT)
-                    .await
-                {
-                    Ok(_) => changed = true,
-                    Err(e) => why = e.message(),
+                let out = crate::station::board_run(&app.cfg, &args, crate::station::BOARD_WAIT).await;
+                if out.ok() {
+                    changed = true;
+                } else {
+                    why = out.words();
                 }
                 continue;
             }
@@ -1346,10 +1344,11 @@ pub async fn sync_blocks(app: &Shared) {
             continue;
         }
         let args = vec!["set".to_string(), name.to_string(), value];
-        match crate::station::board_run(&app.cfg, &place, &args, crate::station::BOARD_WAIT).await {
-            Ok(o) if o.ok() => changed = true,
-            Ok(o) => why = o.words(),
-            Err(e) => why = e.message(),
+        let out = crate::station::board_run(&app.cfg, &args, crate::station::BOARD_WAIT).await;
+        if out.ok() {
+            changed = true;
+        } else {
+            why = out.words();
         }
     }
     if block.is_empty() && changed {
@@ -1375,7 +1374,7 @@ pub async fn sync_blocks(app: &Shared) {
     if let Ok(json) = serde_json::to_string(&state) {
         app.db.meta_set("runner_block", &json);
     }
-    crate::app::rebuild_extras(app).await;
+    crate::app::rebuild_runners(app).await;
     crate::app::publish(app).await;
 }
 

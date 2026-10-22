@@ -14,11 +14,10 @@ still has to add these (the script is not edited here):
 | variable | value | why |
 |---|---|---|
 | `CODEX_HOME` | `DIR/codex` | **required**: codex sub-agents of `DEL-1` are read from here; without it the server reads the real `~/.codex` |
-| `HERDR_PLANNER_SSH` | `DIR/bin/ssh` | recommended: the machines (`vm-a`, `vm-b`). The bare name `ssh` also resolves through `PATH` |
 | `HERDR_PLANNER_CLAUDE` | `DIR/bin/claude` | recommended: translation. Also found through `PATH` |
 | `HERDR_PLANNER_GH` | `DIR/bin/gh` | recommended: hosting checks (`acme/mine`, `acme/theirs`). Also found through `PATH` |
 | `HERDR_PLANNER_GLAB` | `DIR/bin/glab` | recommended: the not-logged-in hint for gitlab.example.com. Also found through `PATH` |
-| `HERDR_BIN` | `DIR/bin/herdr` | recommended: `herdr machine list --json` and `herdr agent list`. Also found through `PATH` |
+| `HERDR_BIN` | `DIR/bin/herdr` | recommended: `herdr agent list`. Also found through `PATH` |
 
 The stand-ins also work when the env is missing, because the names resolve through `PATH=DIR/bin`.
 The one that changes the answer is `CODEX_HOME`.
@@ -33,10 +32,10 @@ The one that changes the answer is `CODEX_HOME`.
 
 | repo | folder | git | key | notes |
 |---|---|---|---|---|
-| alpha | `projects/AI/alpha` | clone of `origins/alpha.git`; main two commits behind origin/main; FETCH_HEAD present | ALP | bridge with `vm-a` (same origin) |
+| alpha | `projects/AI/alpha` | clone of `origins/alpha.git`; main two commits behind origin/main; FETCH_HEAD present | ALP | |
 | beta | `projects/AI/beta` | clone of `origins/beta.git`, level with origin | BET | quiet: done only |
 | gamma | `projects/AI/gamma` | plain | GAM | |
-| omega | `projects/AI/omega` | plain | OMG | **no tasks here**; vm-a has `OMG-1`, `OMG-2` |
+| omega | `projects/AI/omega` | plain | OMG | **no tasks here** |
 | delta | `projects/herdr/delta` | plain | DEL | |
 | sigma | `projects/herdr/sigma` | plain | SIG | |
 | docs | `projects/herdr/docs` | plain | DOC | only archived work (`DOC-1`) |
@@ -97,30 +96,15 @@ running, create `DIR/state/coordinator-busy`: `herdr-projects coordinator` then 
   `tell -- /compact`. `coordinator new` logs `commands.jsonl` and prints `ok`.
 - `state/coordinator-dialog` makes it blocked (dialog); `state/coordinator-busy` makes it working.
 
-## Machines (`vm-a`, `vm-b`)
-- `vm-a`'s own board (`herdr-projects show|set|unset|doctor|models`, `state/vm-a-settings.json`): its crew is
-  `coordinator.agent codex/gpt-5-codex` (effort high) and `reviewer.agent claude/claude-opus-5-5`; its repo alpha
-  sets `worker.effort xhigh`. `doctor` says claude, codex and omp are there and signed in (codex signed in; omp
-  on API keys). A `for p in claude codex …; do command -v …` line prints the crew's programs on its PATH: claude,
-  codex and omp. Home's PATH gets `bin/codex` and `bin/omp` stand-ins (claude is the translator stand-in).
-
+## Machines the board knows (`vm-a`, `vm-b`)
+The planner works with its own board only. The stand-ins still answer as a board with other machines configured
+(`board.machines`), and the page checks assert that nothing of them reaches the page:
 - `herdr machine list --json` → `[{label vm-a, ssh_target deploy@vm-a, remote_session work},
   {label vm-b, ssh_target deploy@vm-b}]`.
-- `herdr-projects machines --json` → vm-a ok (version 1.2.4, 4 tasks); vm-b not ok with the `why`
-  of the spec («herdr-projects is not found there», code 127).
-- `bin/ssh` answers only the board's own form (`ssh … deploy@vm-a 'exec "${SHELL:-/bin/sh}" -lc
-  '…''`). The inner command for vm-a must start with `HERDR_SESSION=work `; each call logs
-  `session_ok` in `log/ssh.jsonl`. vm-a prints a login banner, then the reply's line.
-  - `herdr-projects remote list` → JSON of version, host, coordinator and tasks: `ALP-4` working,
-    `ALP-5` blocked (waits for `ALP-4`), `OMG-1` working (omp), `OMG-2` done. Folders
-    `/srv/projects/alpha` and `/srv/projects/omega`.
-  - `remote do` / `remote dispatch` (base64 payload) → `log/remote.jsonl`, reply `{"ok":true,"msg":…}`.
-  - `herdr-projects after <id> <refs>` → `ID: waits for TAG`, `--clear` → `waits for nothing`.
-  - the gitlag snippet → TSV lines: vm-a's alpha is one commit behind its origin (same origin as
-    the local clone), omega is level.
-- `deploy@vm-b` → exit 255, `ssh: connect to host vm-b port 22: Connection refused`.
-  (The machines list says «herdr-projects is not found»; the two are shown on different paths.)
-- To link a local task to a far one: `herdr-projects after alpha/10 vm-a:OMG-1` (accepted, stored).
+- `herdr-projects machines --json` → vm-a ok (version 1.2.4, 4 tasks); vm-b not ok («herdr-projects is not found
+  there», code 127).
+- To link a local task to one of another machine: `herdr-projects after alpha/10 vm-a:OMG-1` (accepted, stored).
+  The page lists such a link in the task's links and does not draw it.
 
 ## Other stand-ins (`DIR/bin`)
 
@@ -148,6 +132,23 @@ running, create `DIR/state/coordinator-busy`: `herdr-projects coordinator` then 
 - `glab`: `auth status --hostname gitlab.example.com` → not logged in (exit 1, the hint); `api` → 401.
 - `xdg-terminal-exec`: logs `terminal.jsonl`.
 
+## The shipyard vm-r (`me@192.0.2.29`)
+
+`192.0.2.0/24` is a documentation address: no real host. The ssh stand-in answers for it with one fixed probe
+(`herdr-planner-runner 1`), `ssh -G`, `true`, `docker version`, `docker system df`, and the exact-id removals the
+planner may ask for.
+
+- `settings/runners.json` (next to `board/`, where the planner reads it): one yard `vm-r`, target `me@192.0.2.29`,
+  ports on `192.0.2.29`, tags `docker28 gpu x86_64`, masks `buildx_*` and `neighbor` (the compose project next door).
+- `state/runner.json`: ids, networks and volume names already removed; the probe leaves them out.
+- Six containers: `pg-ALP-3` (a live task, compose project `work-3`), `pg-AL9-4` (the same task alpha/4 under the
+  repository's older key `AL9`, from `repo-keys.json` `had`), `web-ALP-15` (task ALP-15 is done → forgotten),
+  `x-ALP-99` (tag with no such task → unsure), `neighbor-db-1` (compose project `neighbor`) and
+  `buildx_buildkit_x0` (protected by mask). Two networks and two volumes belong to the first and the neighbour project.
+- `log/ssh.jsonl` gets a line with `runner: "vm-r"` for every such call. No copy of the list goes to another machine.
+- The wizard's local check: `ssh -G me@192.0.2.29` prints its `hostname`, `bin/docker` exists, and the stand-in ssh
+  answers `true` and `docker version` with `28.3.0`.
+
 ## The scale world (`--scale 50x500`)
 
 Adds universes `s01`…`s50` (keys `S01`…`S50`) in four folder groups (AI, herdr, work, lab), 10
@@ -165,48 +166,3 @@ Totals after `--scale 50x500`: 522 rows (`list --all --json`), 56 universes; the
   (`docs` and `omega` are empty) and 3 quiet ones (`beta`, `docs`, `omega`). Those numbers change.
 - `ui-check.mjs` line 12 imports `../web/requests.js`, which this branch no longer has (the page is
   now `web/src/*.ts`). The check does not start on this branch. This predates the fixture.
-
-## The far machine vm-c (`dev@vm-c`): adding a galaxy from SSH
-
-A fresh machine, with nothing of herdr's on it. The ssh stand-in runs its commands with `/bin/sh -c`, with HOME =
-`machines/vm-c/home` and PATH = `machines/vm-c/bin` (symlinks to the host's git, node, env, sh and the shell tools
-the checks use) plus `home/.local/bin`, where what gets installed goes. So the probe sees what the machine has:
-git and node (and npm, from node), no curl, no herdr, no plugin, no agents.
-
-- `home/Projects`: `api`, `web` (no origin), `labs/tools` (two folders deep). All on `main`.
-- `machines/vm-c/state.json`: `plugin` (version, ref), `board` (repos, tasks), `agents` (version, signedIn).
-- `herdr machine list --json` reads `state/herdr-machines.json`, which starts as the saved machines; `machine
-  add` and `machine remove` change it.
-- `herdr machine add dev@vm-c --label vm-c` asks `[y/N]` only in a terminal (stdin must be a tty); `y` installs
-  herdr on the machine and saves it. A machine already saved is a no-op. The real prompt text is unknown: the
-  fixture's text is invented.
-- Home `herdr plugin list`: `herdr-projects 1.2.4  eliasstravik/herdr-projects@7d8bba7c…`. On vm-c,
-  `herdr plugin install eliasstravik/herdr-projects [--ref X] -y` installs herdr-projects 1.2.4 and records the ref.
-- vm-c's `herdr-projects`: `version`, `install`, `doctor` (one line per installed agent: `✓ codex 0.5.1, signed in
-  (fixture)` or `⚠ … not signed in`), `remote list`, `add TITLE --repo DIR` (the first task is `KEY-1`), `archive`,
-  `show --repo N --json`, `set NAME VALUE --repo N`.
-- `npm install -g <package>` on vm-c installs the program's command into `home/.local/bin` (codex, omp, pi,
-  opencode; the packages are `DATA.packages`). `claude` needs curl, which vm-c lacks: its install says so.
-- `<program> login` (`claude auth login` for claude) signs the agent in there. `xdg-terminal-exec` runs a login
-  window's `ssh` call at once (there is no person to finish a browser login), so `agent-check` then says signed in.
-- `log/far.jsonl`: each command vm-c's stand-ins got.
-- The planner's probe and plugin step read the home board's `herdr-projects version` (`herdr-projects 1.2.4 …`).
-  The home stand-in must answer `version`.
-
-
-## The shipyard vm-r (`me@192.0.2.29`)
-
-`192.0.2.0/24` is a documentation address: no real host. The ssh stand-in answers for it with one fixed probe
-(`herdr-planner-runner 1`), `docker version`, `docker system df`, and the exact-id removals the planner may ask for.
-
-- `settings/runners.json` (next to `board/`, where the planner reads it): one yard `vm-r`, target `me@192.0.2.29`,
-  ports on `192.0.2.29`, tags `docker28 gpu x86_64`, masks `buildx_*` and `neighbor` (the compose project next door).
-- `state/runner.json`: ids, networks and volume names already removed; the probe leaves them out.
-- Six containers: `pg-ALP-3` (a live task, compose project `work-3`), `pg-AL9-4` (the same task alpha/4 under the
-  repository's older key `AL9`, from `repo-keys.json` `had`), `web-ALP-15` (task ALP-15 is done → forgotten),
-  `x-ALP-99` (tag with no such task → unsure), `neighbor-db-1` (compose project `neighbor`) and
-  `buildx_buildkit_x0` (protected by mask). Two networks and two volumes belong to the first and the neighbour project.
-- `log/ssh.jsonl` gets a line with `runner: "vm-r"` for every such call. No copy of the list goes to another machine.
-- The wizard's local check: `ssh -G me@192.0.2.29` prints its `hostname`, `bin/docker` exists, and the stand-in ssh
-  answers `true` and `docker version` with `28.3.0`. vm-c has its own `docker` and `ssh` in `machines/vm-c/bin`; vm-b
-  refuses.

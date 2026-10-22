@@ -38,7 +38,7 @@ pub struct AppConfig {
     pub tls_key: Option<PathBuf>,
     /// Who translates answers for the page: `claude/<model>` (default) or `omp/<model>`.
     pub translator: String,
-    /// The ssh program used to reach other machines (`HERDR_PLANNER_SSH` overrides, for checks).
+    /// The ssh program the planner uses for the shipyards (`HERDR_PLANNER_SSH` overrides, for checks).
     pub ssh_bin: String,
     /// Where a repository added by address is cloned (`~/Projects`).
     pub projects_dir: PathBuf,
@@ -83,7 +83,6 @@ struct FileConfig {
     tls_cert: Option<String>,
     tls_key: Option<String>,
     translator: Option<String>,
-    ssh_bin: Option<String>,
     projects_dir: Option<String>,
 }
 
@@ -169,8 +168,7 @@ impl AppConfig {
                 .unwrap_or_else(|| "claude/claude-haiku-5-5".to_string()),
             ssh_bin: env::var("HERDR_PLANNER_SSH")
                 .ok()
-                .filter(|v| !v.is_empty())
-                .or(file.ssh_bin.filter(|v| !v.trim().is_empty()))
+                .filter(|v| !v.trim().is_empty())
                 .unwrap_or_else(|| "ssh".to_string()),
             projects_dir: file
                 .projects_dir

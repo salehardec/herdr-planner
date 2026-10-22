@@ -307,7 +307,7 @@ Effort (worker.effort and the like): off, minimal, low, medium, high, xhigh, max
         );
         let cfg = AppConfig {
             herdr_projects: board,
-            ..crate::machines::test_cfg(dir.path())
+            ..crate::testutil::test_cfg(dir.path())
         };
         let first = get(&cfg, "fakea").await;
         assert!(first.loading, "{first:?}");
@@ -334,7 +334,7 @@ Effort (worker.effort and the like): off, minimal, low, medium, high, xhigh, max
         );
         let cfg = AppConfig {
             herdr_projects: board,
-            ..crate::machines::test_cfg(dir.path())
+            ..crate::testutil::test_cfg(dir.path())
         };
         let _ = get(&cfg, "fakeb").await;
         let ready = wait_ready(&cfg, "fakeb").await;
@@ -346,7 +346,7 @@ Effort (worker.effort and the like): off, minimal, low, medium, high, xhigh, max
     #[tokio::test]
     async fn an_invalid_program_is_not_read() {
         let dir = tempfile::tempdir().unwrap();
-        let cfg = crate::machines::test_cfg(dir.path());
+        let cfg = crate::testutil::test_cfg(dir.path());
         let m = get(&cfg, "no way").await;
         assert!(!m.loading);
         assert!(m.names.is_empty());

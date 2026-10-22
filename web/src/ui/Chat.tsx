@@ -2,14 +2,13 @@ import { signal } from '@preact/signals';
 import type { JSX } from 'preact';
 import { useEffect, useLayoutEffect, useRef } from 'preact/hooks';
 import {
-  chat, galaxies, galaxyId, panels, snap, screens,
+  chat, panels, snap, screens,
 } from '../store';
 import {
   addFiles, draftRequest, draftTodos, hasOlder, loadLatest, loadOlder, notePending, openChatAt, optimistic, pendingFiles, pendingMessage, reconcile, removeFile, scrollTo,
   searchChat, send, sending,
 } from '../chat';
 import { hasFiles, pastedFiles } from '../attach';
-import { rootPx } from '../scale';
 import { parseOptions } from '../requests';
 import { post, refreshNow, onChatEvent } from '../api';
 import { fetchScreen, sendKey, todoToDraft } from '../actions';
@@ -21,6 +20,7 @@ import { Memory } from './FocusOther';
 import { openRemember } from './memory-api';
 import { dialogOpen } from '../dialogs';
 import { PendingFiles, SavedFiles } from './Attached';
+import { AutoTextarea, fitText } from './AutoText';
 import { chatBack, chatWide, setChatWide } from '../chat-wide';
 import { dragTodo } from '../todo-drag';
 import type { TurnData } from '../types';
@@ -34,6 +34,45 @@ function Shots(props: { list: { id: string; name: string; mime?: string }[] }): 
 }
 
 const todoOver = signal(false);
+
+/**
+ * Where the caret is in the wrapped text: on the first or on the last visual line. A paragraph without
+ * line breaks may still take several lines, so the line breaks alone do not answer this.
+ */
+function caretLines(ta: HTMLTextAreaElement): { first: boolean; last: boolean } {
+  const cs = getComputedStyle(ta);
+  const mirror = document.createElement('div');
+  mirror.setAttribute('aria-hidden', 'true');
+  mirror.style.cssText = 'position:absolute;visibility:hidden;left:-100000px;top:0;height:auto;margin:0;border:0;box-sizing:border-box;overflow:visible;';
+  mirror.style.width = `${ta.clientWidth}px`;
+  for (const p of [
+    'font', 'font-family', 'font-size', 'font-weight', 'font-style', 'letter-spacing', 'line-height',
+    'text-transform', 'word-spacing', 'tab-size', 'padding-top', 'padding-right', 'padding-bottom',
+    'padding-left', 'white-space', 'overflow-wrap', 'word-break', 'direction',
+  ]) mirror.style.setProperty(p, cs.getPropertyValue(p));
+  // The whole text, with the caret marked inside it: the text after the caret is what makes a line
+  // that is not the last one, so a mirror that stopped at the caret would always say «last».
+  mirror.textContent = ta.value.slice(0, ta.selectionStart);
+  const marker = document.createElement('span');
+  marker.textContent = '\u200b';
+  mirror.appendChild(marker);
+  mirror.appendChild(document.createTextNode(ta.value.slice(ta.selectionStart)));
+  // A textarea shows an empty line after a trailing break; a div with `pre-wrap` gives it no box,
+  // so a zero-width character keeps that line measurable and the caret above it is not «last».
+  if (ta.value.endsWith('\n')) mirror.appendChild(document.createTextNode('\u200b'));
+  document.body.appendChild(mirror);
+  const box = mirror.getBoundingClientRect();
+  const at = marker.getBoundingClientRect();
+  const padTop = parseFloat(cs.paddingTop) || 0;
+  const padBottom = parseFloat(cs.paddingBottom) || 0;
+  const line = parseFloat(cs.lineHeight) || at.height || 16;
+  // The marker's rect is the glyph, not the line box: take half of the line's leading off.
+  const lineTop = at.top - Math.max(0, (line - at.height) / 2);
+  const first = lineTop <= box.top + padTop + 1;
+  const last = lineTop >= box.top + mirror.scrollHeight - padBottom - line - 1;
+  mirror.remove();
+  return { first, last };
+}
 
 function Turn(props: { turn: TurnData; hit: boolean; onReuse: (q: string) => void }): JSX.Element {
   const tn = props.turn;
@@ -74,26 +113,24 @@ export function Chat(): JSX.Element {
   const open = panels.chat.value;
   const s = snap.value;
   const coord = s?.coordinator;
-  const far = galaxyId.value !== '';
-  const farG = far ? galaxies.value.find((g) => g.label === galaxyId.value) : null;
   const logRef = useRef<HTMLDivElement>(null);
   const taRef = useRef<HTMLTextAreaElement>(null);
   const anchor = useRef<{ h: number; top: number } | null>(null);
-  const showTurns = !far && c.available === true && c.turns.length > 0;
+  const showTurns = c.available === true && c.turns.length > 0;
   const pending = pendingMessage();
   const opt = optimistic.value;
   const history = coord?.history ?? [];
-  const reply = far ? (farG?.coordinator.reply ?? '') : (coord?.reply ?? '');
+  const reply = coord?.reply ?? '';
   const err = c.error || (coord?.error ?? '');
-  const busy = !!coord?.busy && !far;
-  const dialog = !!coord?.dialog && !far;
+  const busy = !!coord?.busy;
+  const dialog = !!coord?.dialog;
   // The Coordinator's last words: its transcript's, or (while that answer is not written yet) the tail of its window.
   const lastReply = (showTurns ? c.turns[c.turns.length - 1].a : '') || reply;
   const options = dialog || busy ? [] : parseOptions(lastReply);
   const scr = screens.value.coordinator;
 
   // Load the transcript when the chat opens and when it grows.
-  useEffect(() => { if (open && !far) void loadLatest(); }, [open, far]);
+  useEffect(() => { if (open) void loadLatest(); }, [open]);
   useEffect(() => onChatEvent(() => { if (panels.chat.value) void loadLatest(); }), []);
   useEffect(() => { if (open && dialog) void fetchScreen('coordinator'); }, [open, dialog, coord?.reply]);
   useEffect(() => { reconcile(); }, [coord?.history.length]);
@@ -130,42 +167,33 @@ export function Chat(): JSX.Element {
     if (open && showTurns && el.scrollTop < 40) void older();
   };
 
-  const submit = async (e: Event): Promise<void> => {
-    e.preventDefault();
+  const submit = async (): Promise<void> => {
     const ta = taRef.current;
     if (!ta) return;
     stuck.value = true;
     const text = ta.value;
     const ok = await send(text);
-    if (ok) { ta.value = ''; ta.style.height = ''; }
+    if (ok) { ta.value = ''; fitText(ta); }
   };
 
   const onKey = (e: KeyboardEvent): void => {
     const ta = e.target as HTMLTextAreaElement;
-    if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); void submit(e); return; }
     // A dialog over the chat (the «В память» one) takes Esc: the page's own handler closes it.
     if (e.key === 'Escape' && dialogOpen()) return;
-    if (e.key === 'Escape') { ta.value = ''; draftTodos.value = []; ta.blur(); chatBack(); e.stopPropagation(); return; }
+    if (e.key === 'Escape') { ta.value = ''; fitText(ta); draftTodos.value = []; ta.blur(); chatBack(); e.stopPropagation(); return; }
     const log = logRef.current;
     if (!log || !showTurns) return;
-    const caret = ta.selectionStart;
-    const firstRow = !ta.value.slice(0, caret).includes('\n');
-    const lastRow = !ta.value.slice(ta.selectionEnd).includes('\n');
+    if (!['ArrowUp', 'ArrowDown', 'PageUp', 'PageDown'].includes(e.key)) return;
+    const edge = ta.selectionStart === ta.selectionEnd ? caretLines(ta) : { first: false, last: false };
     const step = e.key === 'PageUp' || e.key === 'PageDown' ? log.clientHeight * 0.85 : 70;
-    if ((e.key === 'ArrowUp' && firstRow) || e.key === 'PageUp') {
+    if ((e.key === 'ArrowUp' && edge.first) || (e.key === 'PageUp' && edge.first)) {
       e.preventDefault();
       stuck.value = false;
       if (log.scrollTop <= 1) void older(); else log.scrollTop -= step;
-    } else if ((e.key === 'ArrowDown' && lastRow) || e.key === 'PageDown') {
+    } else if ((e.key === 'ArrowDown' && edge.last) || (e.key === 'PageDown' && edge.last)) {
       e.preventDefault();
       log.scrollTop += step;
     }
-  };
-
-  const grow = (e: Event): void => {
-    const ta = e.target as HTMLTextAreaElement;
-    ta.style.height = '';
-    ta.style.height = Math.min(ta.scrollHeight, 7.5 * rootPx()) + 'px';
   };
 
   const onPaste = (e: ClipboardEvent): void => {
@@ -181,7 +209,7 @@ export function Chat(): JSX.Element {
 
   const variantSend = (value: string): void => {
     notePending(value);
-    void post('/api/chat', { text: value, galaxy: galaxyId.value || undefined }).catch((er: Error) => {
+    void post('/api/chat', { text: value }).catch((er: Error) => {
       chat.value = { ...chat.value, pending: null, error: er.message };
     });
     setTimeout(() => { void refreshNow(); void loadLatest(); }, 900);
@@ -207,7 +235,7 @@ export function Chat(): JSX.Element {
     if (!draft || !ta) return;
     draftRequest.value = null;
     ta.value = ta.value.trim() ? `${ta.value.replace(/\s+$/, '')}\n${draft.text}` : draft.text;
-    grow({ target: ta } as unknown as Event);
+    fitText(ta);
     ta.focus();
     ta.setSelectionRange(ta.value.length, ta.value.length);
   }, [draft]);
@@ -215,7 +243,7 @@ export function Chat(): JSX.Element {
   return (
     <section class={`panel chat ${chatWide.value ? 'wide' : ''} ${open ? '' : 'off'} ${todoOver.value ? 'drop' : ''}`} id="chat" aria-label={t('chat.aria')} aria-hidden={!open} {...dropProps}>
       <header>
-        <b>{far ? `${galaxyId.value} · ${t('chat.coordinator')}` : t('quasar.label')}</b>
+        <b>{t('quasar.label')}</b>
         <span class={`st ${err ? 'bad' : busy ? 'busy' : ''}`} id="cstate">● {status}</span>
         <input
           id="chat-q" class="cq" type="search" value={c.q} placeholder={t('chat.search')} aria-label={t('chat.search')}
@@ -232,7 +260,7 @@ export function Chat(): JSX.Element {
         </button>
         <button class="btn sm" id="chide" type="button" title="/" onClick={() => { panels.chat.value = false; }}>{t('chat.hide')}</button>
       </header>
-      {!far && <div class="cmem"><Memory compact /></div>}
+      <div class="cmem"><Memory compact /></div>
       {c.q.trim().length >= 2 && (
         <div id="chits" class="chits">
           {c.hitsBusy && c.hits.length === 0 && <div class="h dim">{t('chat.searching')}</div>}
@@ -255,12 +283,12 @@ export function Chat(): JSX.Element {
               </button>
             ) : <div class="meta start">{t('chat.start')}</div>}
             {c.turns.map((x) => (
-              <Turn key={x.n} turn={x} hit={c.highlight === x.n} onReuse={(q) => { if (taRef.current) { taRef.current.value = q; taRef.current.focus(); grow({ target: taRef.current } as unknown as Event); } }} />
+              <Turn key={x.n} turn={x} hit={c.highlight === x.n} onReuse={(q) => { const ta = taRef.current; if (ta) { ta.value = q; fitText(ta); ta.focus(); ta.setSelectionRange(q.length, q.length); } }} />
             ))}
           </>
         ) : (
           <Fallback
-            far={far} history={history} reply={reply} talk={farG?.coordinator.talk ?? []} status={coord?.status ?? ''}
+            history={history} reply={reply} status={coord?.status ?? ''}
             sentAt={coord?.sent_at ?? 0} sent={coord?.last_sent ?? ''}
           />
         )}
@@ -308,30 +336,29 @@ export function Chat(): JSX.Element {
         </div>
       )}
       <PendingFiles files={pendingFiles.value} onRemove={removeFile} id="attach" />
-      <form class="compose" id="ask" autocomplete="off" onSubmit={(e) => void submit(e)}>
-        <textarea
-          id="ask-in" ref={taRef} rows={1} placeholder={t('chat.placeholder')} aria-label={t('chat.aria')}
-          onInput={grow} onKeyDown={onKey} onPaste={onPaste} onFocus={() => { panels.chat.value = true; }}
+      <form class="compose" id="ask" autocomplete="off" onSubmit={(e) => { e.preventDefault(); void submit(); }}>
+        <AutoTextarea
+          id="ask-in" elRef={taRef} placeholder={t('chat.placeholder')} aria-label={t('chat.aria')}
+          onSend={() => void submit()} onKeyDown={onKey} onPaste={onPaste} onFocus={() => { panels.chat.value = true; }}
         />
         <label class="attachbtn" title={t('chat.attachTitle')}>
           <Gl n="attach" />
           <input type="file" id="file-in" accept="image/png,image/jpeg,image/webp,image/gif,audio/*,text/*,.md,.log,.json,.yaml,.yml,.toml,.csv" multiple hidden onChange={(e) => { addFiles((e.target as HTMLInputElement).files); (e.target as HTMLInputElement).value = ''; }} />
         </label>
         <button class={`btn primary send`} type="submit" id="send" data-ready={String(typed)} disabled={sending.value} aria-label={t('chat.send')}>{t('chat.send')}</button>
+        <div class="keyhint" id="ask-hint">{t('text.keys.send')}</div>
       </form>
     </section>
   );
 }
 
 function Fallback(props: {
-  far: boolean; history: { text: string; at: number; attachments: { id: string; name: string }[] }[]; reply: string;
-  talk: { you: boolean; text: string }[]; status: string; sentAt: number; sent: string;
+  history: { text: string; at: number; attachments: { id: string; name: string }[] }[]; reply: string;
+  status: string; sentAt: number; sent: string;
 }): JSX.Element {
-  const lines = props.far ? props.talk : [];
   return (
     <>
-      {props.far && <div class="meta start">{t('chat.farNoTranscript')}</div>}
-      {!props.far && !props.history.length && props.sent && (
+      {!props.history.length && props.sent && (
         <div class="q"><span class="who">{t('chat.you')}</span><span class="txt">{props.sent}</span></div>
       )}
       {props.history.map((m) => (
@@ -341,19 +368,13 @@ function Fallback(props: {
           <div class="meta"><span>{timeOf(m.at)}</span><span>· {t('chat.sentToQuasar')}</span></div>
         </div>
       ))}
-      {lines.map((l, i) => (
-        <div class={l.you ? 'q' : 'a'} key={i}><span class="who">{l.you ? t('chat.you') : t('quasar.short')}</span><span class="txt">{l.text}</span></div>
-      ))}
-      {props.reply && !props.far && (
+      {props.reply && (
         <>
           <div class="a"><span class="who">{t('quasar.short')}</span><RichText class="txt" text={props.reply} /></div>
           <div class="meta"><span>{t('chat.lastFromWindow')}</span><span>· {props.status}</span></div>
         </>
       )}
-      {props.far && !lines.length && props.reply && (
-        <div class="a"><span class="who">{t('quasar.short')}</span><RichText class="txt" text={props.reply} /></div>
-      )}
-      {!props.reply && !props.history.length && !lines.length && !props.sent && (
+      {!props.reply && !props.history.length && !props.sent && (
         <div class="a empty"><span class="who">{t('quasar.short')}</span><span class="txt">{t('chat.empty')}</span></div>
       )}
     </>

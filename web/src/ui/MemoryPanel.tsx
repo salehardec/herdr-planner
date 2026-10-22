@@ -1,7 +1,7 @@
 import { signal } from '@preact/signals';
 import type { JSX } from 'preact';
 import { useEffect, useRef, useState } from 'preact/hooks';
-import { armed, currentView, galaxyId, snap } from '../store';
+import { armed, currentView, snap } from '../store';
 import { confirmStep } from '../actions';
 import { send } from '../chat';
 import { navigateTo } from '../nav';
@@ -62,14 +62,14 @@ function Row(props: {
 
 interface Draft { id: string; title: string; kind: string; description: string; body: string }
 
-function Form(props: { galaxy: string; repo: string; draft: Draft; onDone: () => void }): JSX.Element {
+function Form(props: { repo: string; draft: Draft; onDone: () => void }): JSX.Element {
   const [d, setD] = useState(props.draft);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
   const [card, setCard] = useState<{ p: MemPreview; body: SaveBody } | null>(null);
   const set = (patch: Partial<Draft>): void => setD({ ...d, ...patch });
   const ok = d.body.trim().length > 0 || d.title.trim().length > 0;
-  const bodyOf = (x: Draft, repo: string, id: string): SaveBody => ({ galaxy: props.galaxy, repo, id, title: x.title, kind: x.kind, description: x.description, body: x.body });
+  const bodyOf = (x: Draft, repo: string, id: string): SaveBody => ({ repo, id, title: x.title, kind: x.kind, description: x.description, body: x.body });
   // Saving shows «было → стало» first; the entry is written only when the card is confirmed.
   const ask = async (x: Draft, repo: string = props.repo, id: string = x.id): Promise<void> => {
     setBusy(true);
@@ -152,12 +152,12 @@ export function SuggestionCard(props: { s: MemSuggestion; compact?: boolean }): 
     try {
       await keepSuggestion(s.task, kept, card.token, a);
       toast(t(card.draft ? 'mem.suggestKeptDraft' : 'mem.suggestKept', { repo: s.repo }));
-      void loadMemory('', s.repo);
+      void loadMemory(s.repo);
     } catch (e) { setErr(failWords(e)); setBusy(false); }
   };
   const dismiss = async (): Promise<void> => {
     setBusy(true);
-    try { await dismissSuggestion(s.task); void loadMemory('', s.repo); } catch (e) { toast(failWords(e), { icon: 'failed' }); setBusy(false); }
+    try { await dismissSuggestion(s.task); void loadMemory(s.repo); } catch (e) { toast(failWords(e), { icon: 'failed' }); setBusy(false); }
   };
   // The lines without what was found; a new preview follows.
   const redact = (): void => {
@@ -195,32 +195,31 @@ export function SuggestionCard(props: { s: MemSuggestion; compact?: boolean }): 
 /** What the Coordinator is told about the memory: a block in the board's setting `coordinator.instructions`. A change
  *  shows «было → стало» (the human's own text stays, the block is added at the end) and waits for two presses; the
  *  board's own `set` makes it. */
-function Connect(props: { galaxy: string; data: MemData }): JSX.Element | null {
+function Connect(props: { data: MemData }): JSX.Element | null {
   const c = props.data.connect;
   const [card, setCard] = useState<{ on: boolean; current: string; value: string | null; error: string } | null>(null);
   const [busy, setBusy] = useState(false);
   const [showBlock, setShowBlock] = useState(false);
   if (!c) return null;
-  const home = props.galaxy === '';
   // The card is made by the server from the instructions as they are at that moment.
   const ask = async (on: boolean): Promise<void> => {
     setBusy(true);
     try {
-      const p = await connectMemory(props.galaxy, on);
+      const p = await connectMemory(on);
       setCard({ on, current: p.current, value: p.now, error: '' });
     } catch (e) { toast(failWords(e), { icon: 'failed' }); }
     setBusy(false);
   };
   const go = (): void => {
     if (!card) return;
-    confirmStep(`mem-connect:${props.galaxy}`, async () => {
+    confirmStep('mem-connect', async () => {
       setBusy(true);
       try {
         // what the card showed goes with the confirmation: the server refuses if the instructions changed meanwhile
-        await connectMemory(props.galaxy, card.on, card.current);
+        await connectMemory(card.on, card.current);
         toast(card.on ? t('mem.connectedNow') : t('mem.disconnected'));
         setCard(null);
-        void loadMemory(props.galaxy, '');
+        void loadMemory('');
       } catch (e) {
         if ((e as { status?: number }).status === 409) {
           // changed under us: nothing was sent; the card is made again from the new text
@@ -238,7 +237,7 @@ function Connect(props: { galaxy: string; data: MemData }): JSX.Element | null {
     const text = t('mem.tellText', { path: `${props.data.dir}/MEMORY.md` });
     if (await send(text)) toast(t('mem.told'));
   };
-  const armedNow = armed.value?.key === `mem-connect:${props.galaxy}`;
+  const armedNow = armed.value?.key === 'mem-connect';
   const on = c.connected;
   return (
     <div class={`mm-conn ${on ? 'on' : 'off'}`} id="mem-connect">
@@ -252,7 +251,7 @@ function Connect(props: { galaxy: string; data: MemData }): JSX.Element | null {
         <div class="row">
           {(!on || c.stale) && <button class="btn sm" type="button" id="mem-connect-toggle" disabled={busy || !!c.error} onClick={() => void ask(true)}>{c.stale ? t('mem.connUpdate') : t('mem.connect')}</button>}
           {on && <button class="btn sm" type="button" id="mem-disconnect" disabled={busy} onClick={() => void ask(false)}>{t('mem.disconnect')}</button>}
-          {home && on && <button class="btn sm" type="button" id="mem-tell" onClick={() => void tell()}>{t('mem.tell')}</button>}
+          {on && <button class="btn sm" type="button" id="mem-tell" onClick={() => void tell()}>{t('mem.tell')}</button>}
           <button class="btn sm" type="button" id="mem-showblock" aria-pressed={showBlock} onClick={() => setShowBlock(!showBlock)}>{t('mem.showBlock')}</button>
         </div>
       )}
@@ -337,9 +336,9 @@ const matches = (e: MemEntry, q: string): boolean => {
 };
 
 /** The memory of one level: the Galaxy's (`repo` empty) or a universe's. Entries are Markdown files; edits go to the files. */
-export function MemoryPanel(props: { galaxy: string; repo: string }): JSX.Element {
-  const { galaxy, repo } = props;
-  const st = memoryOf(galaxy, repo);
+export function MemoryPanel(props: { repo: string }): JSX.Element {
+  const { repo } = props;
+  const st = memoryOf(repo);
   const data = st.data;
   const [q, setQ] = useState('');
   const [openIds, setOpen] = useState<Record<string, boolean>>({});
@@ -348,14 +347,14 @@ export function MemoryPanel(props: { galaxy: string; repo: string }): JSX.Elemen
   const [delBusy, setDelBusy] = useState(false);
   const [delErr, setDelErr] = useState('');
   const focus = memFocus.value;
-  const hot = focus && focus.galaxy === galaxy && focus.repo === repo ? focus.id : '';
+  const hot = focus && focus.repo === repo ? focus.id : '';
   const seq = snap.value?.seq ?? 0;
   const lastLoad = useRef(0);
 
-  useEffect(() => { void loadMemory(galaxy, repo); lastLoad.current = Date.now(); }, [galaxy, repo]);
-  // Files change under us (an agent wrote one): a fresh look when the board's state moves, at most every 6 s, at home.
+  useEffect(() => { void loadMemory(repo); lastLoad.current = Date.now(); }, [repo]);
+  // Files change under us (an agent wrote one): a fresh look when the board's state moves, at most every 6 s.
   useEffect(() => {
-    if (galaxy === '' && Date.now() - lastLoad.current > 6000) { lastLoad.current = Date.now(); void loadMemory(galaxy, repo); }
+    if (Date.now() - lastLoad.current > 6000) { lastLoad.current = Date.now(); void loadMemory(repo); }
   }, [seq]);
   useEffect(() => {
     if (hot) {
@@ -366,7 +365,7 @@ export function MemoryPanel(props: { galaxy: string; repo: string }): JSX.Elemen
     return undefined;
   }, [hot]);
 
-  const title = repo ? t('mem.titleUniverse', { repo }) : t('mem.titleGalaxy', { g: galaxy || snap.value?.host || '' });
+  const title = repo ? t('mem.titleUniverse', { repo }) : t('mem.titleGalaxy', { g: snap.value?.host || '' });
   const entries = data?.entries ?? [];
   const shown = entries.filter((e) => matches(e, q));
   const editable = !!data?.writable;
@@ -387,7 +386,7 @@ export function MemoryPanel(props: { galaxy: string; repo: string }): JSX.Elemen
 
       {universeSug.map((s) => <SuggestionCard key={s.task} s={s} />)}
 
-      {!repo && data && <Connect galaxy={galaxy} data={data} />}
+      {!repo && data && <Connect data={data} />}
       {!repo && data?.settings && (
         <div class="mm-set">
           <button class={`tog ${data.settings.suggest ? 'on' : ''}`} type="button" id="mem-suggest-toggle" aria-pressed={data.settings.suggest}
@@ -403,7 +402,7 @@ export function MemoryPanel(props: { galaxy: string; repo: string }): JSX.Elemen
             setDelBusy(true);
             const done = delCard.discard
               ? discardDraft(repo, delCard.id, delCard.p.token).then(() => toast(t('mem.discarded')))
-              : deleteEntry(galaxy, repo, delCard.id, delCard.p.token, a).then(() => toast(t(delCard.p.draft ? 'mem.deletedDraft' : 'mem.deleted')));
+              : deleteEntry(repo, delCard.id, delCard.p.token, a).then(() => toast(t(delCard.p.draft ? 'mem.deletedDraft' : 'mem.deleted')));
             done
               .then(() => setDelCard(null))
               .catch((er) => setDelErr(failWords(er)))
@@ -418,7 +417,7 @@ export function MemoryPanel(props: { galaxy: string; repo: string }): JSX.Elemen
         {data && entries.length === 0 && !editing && <div class="hint mm-empty">{repo ? t('mem.emptyUniverse') : t('mem.emptyGalaxy')}</div>}
         {shown.map((e) => (
           editing && editing.id === e.id
-            ? <Form key={e.id} galaxy={galaxy} repo={repo} draft={editing} onDone={() => setEditing(null)} />
+            ? <Form key={e.id} repo={repo} draft={editing} onDone={() => setEditing(null)} />
             : (
               <Row
                 key={e.id} e={e} open={!!openIds[e.id]} editable={editable} hot={hot === e.id}
@@ -427,7 +426,7 @@ export function MemoryPanel(props: { galaxy: string; repo: string }): JSX.Elemen
                 // deleting shows «было → стало» first, like any change
                 onDelete={() => {
                   setDelErr('');
-                  previewDelete(galaxy, repo, e.id).then((p) => setDelCard({ p, id: e.id })).catch((er) => toast(failWords(er), { icon: 'failed' }));
+                  previewDelete(repo, e.id).then((p) => setDelCard({ p, id: e.id })).catch((er) => toast(failWords(er), { icon: 'failed' }));
                 }}
                 // throwing a draft away shows «было → стало» too (the draft → what git has)
                 onDiscard={() => {
@@ -439,13 +438,13 @@ export function MemoryPanel(props: { galaxy: string; repo: string }): JSX.Elemen
         ))}
         {entries.length > 0 && shown.length === 0 && <div class="hint">{t('mem.noMatch')}</div>}
       </div>
-      {editing && editing.id === '' && <Form galaxy={galaxy} repo={repo} draft={editing} onDone={() => setEditing(null)} />}
+      {editing && editing.id === '' && <Form repo={repo} draft={editing} onDone={() => setEditing(null)} />}
       {editable && !editing && (
         <div class="row">
           <button class="btn sm" type="button" id="mem-add" onClick={() => setEditing({ id: '', title: '', kind: defaultKind, description: '', body: '' })}><Gl n="plus" />{t('mem.add')}</button>
         </div>
       )}
-      {repo && galaxy === '' && data && <Git repo={repo} data={data} />}
+      {repo && data && <Git repo={repo} data={data} />}
 
       {!repo && (data?.foreign ?? []).map((f) => (
         <div class="mm-foreign" key={f.program} data-foreign={f.program}>
@@ -479,7 +478,6 @@ let shown: unknown = null;
 export function RememberDialog(): JSX.Element | null {
   const init = rememberDlg.value;
   const view = currentView.value;
-  const far = galaxyId.value !== '';
   // A fresh opening resets the form.
   if (init !== shown) {
     shown = init;
@@ -487,7 +485,7 @@ export function RememberDialog(): JSX.Element | null {
       dText.value = init.text;
       dTitle.value = init.title ?? '';
       dRepo.value = init.repo && view.projects.some((p) => p.name === init.repo) ? init.repo : view.projects[0]?.name ?? '';
-      dLevel.value = init.repo && !far && dRepo.value ? 'universe' : 'galaxy';
+      dLevel.value = init.repo && dRepo.value ? 'universe' : 'galaxy';
       dKind.value = init.kind ?? (dLevel.value === 'universe' ? 'decision' : 'rule');
       dBusy.value = false;
       dErr.value = '';
@@ -499,14 +497,14 @@ export function RememberDialog(): JSX.Element | null {
   if (!init) return null;
   const close = (): void => { rememberDlg.value = null; };
   const universe = dLevel.value === 'universe';
-  const where = universe ? t('mem.whereUniverse', { repo: dRepo.value }) : t('mem.whereGalaxy', { g: galaxyId.value || snap.value?.host || '' });
+  const where = universe ? t('mem.whereUniverse', { repo: dRepo.value }) : t('mem.whereGalaxy', { g: snap.value?.host || '' });
   // «В память» shows «было → стало» first; the entry is written when the card is confirmed.
   const ask = async (toGalaxy = false): Promise<void> => {
     dBusy.value = true;
     dErr.value = '';
     try {
       const repo = universe && !toGalaxy ? dRepo.value : '';
-      const body: SaveBody = { galaxy: galaxyId.value, repo, title: dTitle.value, kind: dKind.value, body: dText.value, source: init.source };
+      const body: SaveBody = { repo, title: dTitle.value, kind: dKind.value, body: dText.value, source: init.source };
       dCard.value = { p: await previewSave(body), body };
     } catch (e) { dErr.value = failWords(e); }
     dBusy.value = false;
@@ -518,7 +516,7 @@ export function RememberDialog(): JSX.Element | null {
     dErr.value = '';
     try {
       await saveEntry(c.body, c.p.token, a);
-      toast(t('mem.rememberedIn', { where: c.body.repo ? t('mem.whereUniverse', { repo: c.body.repo }) : t('mem.whereGalaxy', { g: galaxyId.value || snap.value?.host || '' }) }));
+      toast(t('mem.rememberedIn', { where: c.body.repo ? t('mem.whereUniverse', { repo: c.body.repo }) : t('mem.whereGalaxy', { g: snap.value?.host || '' }) }));
       close();
     } catch (e) { dErr.value = failWords(e); dBusy.value = false; }
   };
@@ -538,7 +536,7 @@ export function RememberDialog(): JSX.Element | null {
         <div class="bd">
           <div class="mm-level" role="group" aria-label={t('mem.level')}>
             <button type="button" class={`btn sm ${!universe ? 'on' : ''}`} id="rem-galaxy" onClick={() => { dCard.value = null; dLevel.value = 'galaxy'; if (dKind.value === 'decision') dKind.value = 'rule'; }}>{t('mem.levelGalaxy')}</button>
-            <button type="button" class={`btn sm ${universe ? 'on' : ''}`} id="rem-universe" disabled={far || view.projects.length === 0} title={far ? t('mem.farNoUniverse') : ''} onClick={() => { dCard.value = null; dLevel.value = 'universe'; if (dKind.value === 'rule') dKind.value = 'decision'; }}>{t('mem.levelUniverse')}</button>
+            <button type="button" class={`btn sm ${universe ? 'on' : ''}`} id="rem-universe" disabled={view.projects.length === 0} onClick={() => { dCard.value = null; dLevel.value = 'universe'; if (dKind.value === 'rule') dKind.value = 'decision'; }}>{t('mem.levelUniverse')}</button>
             {universe && (
               <select class="field" id="rem-repo" value={dRepo.value} aria-label={t('mem.fRepo')} onChange={(e) => { dCard.value = null; dRepo.value = (e.target as HTMLSelectElement).value; }}>
                 {view.projects.map((p) => <option value={p.name}>{p.name}</option>)}
@@ -564,7 +562,7 @@ export function RememberDialog(): JSX.Element | null {
           {card ? (
             <ChangeCard
               p={card.p} busy={dBusy.value} error={dErr.value} onConfirm={(a) => void confirm(a)} onCancel={() => { dCard.value = null; dErr.value = ''; }}
-              onRedact={redact} onToGalaxy={card.body.repo ? toGalaxy : undefined} confirmLabel={t('mem.rememberGo', { where: card.body.repo ? t('mem.whereUniverse', { repo: card.body.repo }) : t('mem.whereGalaxy', { g: galaxyId.value || snap.value?.host || '' }) })}
+              onRedact={redact} onToGalaxy={card.body.repo ? toGalaxy : undefined} confirmLabel={t('mem.rememberGo', { where: card.body.repo ? t('mem.whereUniverse', { repo: card.body.repo }) : t('mem.whereGalaxy', { g: snap.value?.host || '' }) })}
             />
           ) : (
             <div class="act">
@@ -579,11 +577,11 @@ export function RememberDialog(): JSX.Element | null {
 }
 
 /** Opens a found memory entry: its panel on the Quasar (Galaxy level) or on the universe. */
-export function openMemoryEntry(galaxy: string, docId: string): void {
+export function openMemoryEntry(docId: string): void {
   const { repo, focus } = parseDocId(docId);
-  memFocus.value = { galaxy, repo, id: focus };
-  if (repo) void navigateTo({ kind: 'universe', galaxy, id: repo });
-  else void navigateTo({ kind: 'quasar', galaxy, id: 'quasar' });
+  memFocus.value = { repo, id: focus };
+  if (repo) void navigateTo({ kind: 'universe', id: repo });
+  else void navigateTo({ kind: 'quasar', id: 'quasar' });
 }
 
 /** The suggestions waiting for a task's universe, for the task's own panel. */

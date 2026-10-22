@@ -19,8 +19,6 @@
 .ti .gl{color:var(--s-ink,var(--pl-dim))}
 .ti.galaxy{color:var(--pl-title);font-weight:600;margin-top:0.25rem}
 .ti.galaxy.here{color:var(--pl-accent-ink)}
-.ti.galaxy.off{color:var(--c-red)}
-.ti.galaxy.off .meta{color:var(--c-red)}
 .ti.quasar{color:var(--pl-title)}
 .ti.universe{color:var(--pl-title);font-weight:600}
 .ti.group{color:var(--pl-faint);font-size:0.6875rem;min-height:1.375rem}
@@ -28,8 +26,8 @@
 .ti.dim{opacity:.55}
 .ti.moon{font-size:0.6875rem}
 .ti.moon .meta{max-width:55%}
-.ti.addUniverse,.ti.addGalaxy{color:var(--pl-accent-ink);font-size:0.7188rem}
-.ti.addUniverse .gl,.ti.addGalaxy .gl{color:var(--pl-accent-ink)}
+.ti.addUniverse{color:var(--pl-accent-ink);font-size:0.7188rem}
+.ti.addUniverse .gl{color:var(--pl-accent-ink)}
 .win.calm .ti{min-height:2rem;font-size:0.8125rem}
 :root.bp900 .nav{left:0.5rem;right:0.5rem;width:auto;top:auto;bottom:0.5rem;max-height:62vh;z-index:40}:root.bp900 .nav.off{transform:translateY(110%)}
 

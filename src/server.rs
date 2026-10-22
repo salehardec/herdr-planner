@@ -26,6 +26,36 @@ use std::time::{Duration, SystemTime};
 use tokio::process::Command;
 use tokio::time::timeout;
 
+/// The longest text a person can write in a todo or a chat message: a page of a spec or a log,
+/// far past the old one-line limits. Longer texts are refused with a message, never cut by the page.
+const MAX_TEXT_CHARS: usize = 100_000;
+
+/// The same text, in bytes: it goes to `herdr-projects` as one argument, and Linux refuses an
+/// argument longer than 128 KiB (`MAX_ARG_STRLEN`). Room is kept for the attachment paths that
+/// travel in the same argument. A Cyrillic letter is two bytes, so this is about 65 000 of them:
+/// counting only characters would accept a text the process cannot even start with.
+const MAX_ARG_BYTES: usize = 130_000;
+
+/// Why a text cannot be sent to the board, if it cannot: too many characters, or more UTF-8 bytes
+/// than one command-line argument may hold (the message names the real limit, never a cryptic E2BIG).
+fn text_limit_error(text: &str, what: &str) -> Option<String> {
+    if text.chars().count() > MAX_TEXT_CHARS {
+        return Some(format!("{what} длиннее {MAX_TEXT_CHARS} символов"));
+    }
+    bytes_limit_error(text, what)
+}
+
+fn bytes_limit_error(text: &str, what: &str) -> Option<String> {
+    if text.len() <= MAX_ARG_BYTES {
+        return None;
+    }
+    Some(format!(
+        "{what} не помещается в доску: {} байт в UTF-8, а предел — {MAX_ARG_BYTES} байт \
+         (около 65000 русских букв); разбейте текст на части",
+        text.len()
+    ))
+}
+
 /// The built page (Vite): embedded into the binary; a debug build reads the folder.
 #[derive(rust_embed::RustEmbed)]
 #[folder = "$HERDR_PLANNER_DIST"]
@@ -52,24 +82,7 @@ pub fn router(app: Shared) -> Router {
         .route("/api/translate", post(api::translate_api))
         .route("/api/subagent", get(api::subagent_api))
         .route("/api/task/closing", get(api::closing_api))
-        .route("/api/runners", get(crate::runners_api::runners_get))
-        .route("/api/runner/ask", post(crate::runners_api::runner_ask))
-        .route("/api/runner/probe", post(crate::runners_api::runner_probe))
-        .route("/api/runner/add", post(crate::runners_api::runner_add))
-        .route("/api/runner/set", post(crate::runners_api::runner_set))
-        .route("/api/runner/remove", post(crate::runners_api::runner_remove))
-        .route("/api/runner/connect", get(crate::runners_api::runner_connect_get).post(crate::runners_api::runner_connect))
-        .route("/api/runner/clean/preview", post(crate::runners_api::clean_preview))
-        .route("/api/runner/clean", post(crate::runners_api::runner_clean))
-        .route("/api/runner/df", post(crate::runners_api::runner_df))
-        .route("/api/runner/terminal", post(crate::runners_api::runner_terminal))
-        .route("/api/galaxy/ask", post(api::galaxy_ask))
-        .route("/api/galaxy/add", post(api::galaxy_add))
-        .route("/api/galaxy/probe", post(crate::galaxy_setup::probe))
-        .route("/api/galaxy/step", post(crate::galaxy_setup::step))
-        .route("/api/galaxy/projects", get(crate::galaxy_setup::projects))
         .route("/api/fs/complete", get(api::fs_complete))
-        .route("/api/far/files", post(api::far_files))
         .route("/api/universe/inspect", post(api::universe_inspect))
         .route("/api/universe/add", post(api::universe_add))
         .route("/api/universe/info", get(api::universe_info))
@@ -82,13 +95,23 @@ pub fn router(app: Shared) -> Router {
         .route("/api/memory/settings", post(crate::memory_api::memory_settings))
         .route("/api/memory/connect", post(crate::memory_api::memory_connect))
         .route("/api/memory/suggestion", post(crate::memory_api::memory_suggestion))
+        .route("/api/runners", get(crate::runners_api::runners_get))
+        .route("/api/runner/ask", post(crate::runners_api::runner_ask))
+        .route("/api/runner/probe", post(crate::runners_api::runner_probe))
+        .route("/api/runner/add", post(crate::runners_api::runner_add))
+        .route("/api/runner/set", post(crate::runners_api::runner_set))
+        .route("/api/runner/remove", post(crate::runners_api::runner_remove))
+        .route("/api/runner/connect", get(crate::runners_api::runner_connect_get).post(crate::runners_api::runner_connect))
+        .route("/api/runner/clean/preview", post(crate::runners_api::clean_preview))
+        .route("/api/runner/clean", post(crate::runners_api::runner_clean))
+        .route("/api/runner/df", post(crate::runners_api::runner_df))
+        .route("/api/runner/terminal", post(crate::runners_api::runner_terminal))
         .route("/api/station", get(station::station_get))
         .route("/api/station/models", get(station::station_models))
         .route("/api/station/preview", post(station::station_preview))
         .route("/api/station/set", post(station::station_set))
         .route("/api/station/light", post(station::station_light))
         .route("/api/ship", get(ship::ship_get).post(ship::ship_post))
-        .route("/api/galaxy/remove", post(ship::galaxy_remove))
         .route("/api/logout", post(api_logout))
         .route_layer(middleware::from_fn_with_state(
             app.clone(),
@@ -471,19 +494,51 @@ fn valid_repo(repo: &str) -> bool {
             .all(|c| c.is_alphanumeric() || matches!(c, '-' | '_' | '.' | '/'))
 }
 
-/// A God's-list text, made one line; the board's `add` takes it as a title.
+/// A God's-list text with the lines a person wrote; the board's `add` takes it as a title.
 fn todo_text(text: &str) -> Result<String, String> {
-    let t = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    // The line breaks and the indentation a person wrote stay (a nested list, code, a log): only
+    // trailing blanks and the blank lines at the ends go.
+    let normalized = text.replace("\r\n", "\n").replace('\r', "\n");
+    let lines: Vec<&str> = normalized.lines().map(str::trim_end).collect();
+    let start = lines.iter().position(|l| !l.trim().is_empty()).unwrap_or(lines.len());
+    let end = lines.iter().rposition(|l| !l.trim().is_empty()).map_or(start, |i| i + 1);
+    let t = lines[start..end].join("\n");
     if t.is_empty() {
         return Err("пустое дело".into());
     }
-    if t.chars().count() > 400 {
-        return Err("дело длиннее 400 символов".into());
+    if let Some(e) = text_limit_error(&t, "дело") {
+        return Err(e);
     }
-    if t.starts_with('-') {
-        return Err("дело не может начинаться с «-»".into());
-    }
+    // A pasted markdown list starts with «-» and is kept as it is: only the task title of
+    // `todo-create` reaches the board as a bare argument, and it is made safe there.
     Ok(t)
+}
+
+/// A task's title from the first line of a todo: one line, without a list marker, and short enough
+/// for the board's 60 columns in ordinary letters. A wider script may be shortened by the board;
+/// the full text is in `--desc` anyway, so its line breaks are kept.
+fn task_title(text: &str) -> String {
+    let first = text.lines().find(|l| !l.trim().is_empty()).unwrap_or("").trim();
+    // A markdown list item (`- milk`, `* milk`, `- [ ] milk`) is a title in words: the board reads
+    // the first word as a flag when it starts with «-», and the whole text stays in the description.
+    let mut first = first
+        .trim_start_matches(|c: char| matches!(c, '-' | '*' | '+'))
+        .trim_start();
+    for box_ in ["[ ] ", "[x] ", "[X] "] {
+        if let Some(rest) = first.strip_prefix(box_) {
+            first = rest.trim_start();
+            break;
+        }
+    }
+    let mut out: String = first.chars().take(55).collect();
+    if first.chars().count() > 55 {
+        out.push('…');
+    }
+    if out.is_empty() {
+        "Дело".into()
+    } else {
+        out
+    }
 }
 
 fn valid_key(k: &str) -> bool {
@@ -582,9 +637,6 @@ async fn api_chat_history(State(app): State<Shared>, Query(q): Query<HistoryQuer
 struct ChatBody {
     #[serde(default)]
     text: String,
-    /// The machine whose Coordinator is written to; absent or empty: this one.
-    #[serde(default)]
-    galaxy: Option<String>,
     #[serde(default)]
     attachments: Vec<AttachmentRef>,
 }
@@ -688,28 +740,9 @@ async fn api_chat(
             ),
         );
     }
-    if text.chars().count() > 4000 {
-        return error(StatusCode::BAD_REQUEST, "message is too long");
+    if let Some(e) = text_limit_error(text, "сообщение") {
+        return error(StatusCode::BAD_REQUEST, e);
     }
-    if let Some(g) = body.galaxy.as_deref().filter(|g| !g.is_empty()) {
-        if !crate::machines::valid_label(g) {
-            return error(StatusCode::BAD_REQUEST, "bad machine label");
-        }
-        if !body.attachments.is_empty() {
-            return error(StatusCode::BAD_REQUEST, "вложения в далёкую галактику не передаются");
-        }
-        if text.is_empty() {
-            return error(StatusCode::BAD_REQUEST, "empty message");
-        }
-        return match crate::machines::remote_dispatch(&app.cfg, g, "", text, false, None).await {
-            Ok(out) => {
-                let _ = api::ask_galaxy(&app, g).await;
-                Json(json!({"ok": true, "out": clip(out)})).into_response()
-            }
-            Err(e) => error(StatusCode::BAD_GATEWAY, e),
-        };
-    }
-
     let dir = app.cfg.attachments_dir();
     let (stored, files) = match resolve_attachments(&dir, &body.attachments).await {
         Ok(r) => r,
@@ -720,6 +753,9 @@ async fn api_chat(
     }
 
     let message = attachments::message(text, &files);
+    if let Some(e) = bytes_limit_error(&message, "сообщение с вложениями") {
+        return error(StatusCode::BAD_REQUEST, e);
+    }
     if let Err(e) = run_board(
         &app.cfg,
         &["coordinator", "tell", "--", &message],
@@ -881,8 +917,6 @@ struct ActionBody {
     target: Option<String>,
     /// `reviewer` asks for `<agent>-r`; the worker is the default.
     role: Option<String>,
-    /// The machine the action is for; empty or absent means this one.
-    galaxy: Option<String>,
     /// The worker agent for a new task: `claude/claude-sonnet-5-5`.
     agent: Option<String>,
     /// Uploaded files a todo item holds (todo-add; todo-update replaces the set).
@@ -922,10 +956,6 @@ async fn api_action(
         if let Err(e) = task_id(&body) {
             return error(StatusCode::BAD_REQUEST, e);
         }
-    }
-    if let Some(galaxy) = body.galaxy.as_deref().filter(|g| !g.is_empty()) {
-        let _guard = app.action_lock.lock().await;
-        return remote_action(&app, galaxy, &body).await;
     }
     let _guard = app.action_lock.lock().await;
     let result = match body.action.as_str() {
@@ -1092,6 +1122,9 @@ async fn api_action(
             // The files go along as absolute paths on this machine.
             let paths = held_paths(&app.cfg.attachments_dir(), &item.attachments).await;
             let text = attachments::message(&text, &paths);
+            if let Some(e) = bytes_limit_error(&text, "дело с вложениями") {
+                return error(StatusCode::BAD_REQUEST, e);
+            }
             let sent = if item.to == "quasar" {
                 run_board(&app.cfg, &["coordinator", "tell", "--", &text], Duration::from_secs(30)).await
             } else if board::valid_id(&item.to) && item.to.contains('/') {
@@ -1133,12 +1166,23 @@ async fn api_action(
             if !known {
                 return error(StatusCode::BAD_REQUEST, format!("нет такой вселенной: {repo}"));
             }
-            let title = match todo_text(&item.text) {
+            let text = match todo_text(&item.text) {
                 Ok(t) => t,
                 Err(e) => return error(StatusCode::BAD_REQUEST, e),
             };
             let paths = held_paths(&app.cfg.attachments_dir(), &item.attachments).await;
-            let desc = attachments::message("", &paths);
+            // The board's `add` cleans the title (every line break becomes a space) and keeps it as
+            // the description only when it had to shorten it: a multi-line todo is sent as a short
+            // one-line title plus the whole text as `--desc`, which is kept as it is.
+            let title = task_title(&text);
+            let desc = if title == text {
+                attachments::message("", &paths)
+            } else {
+                attachments::message(&text, &paths)
+            };
+            if let Some(e) = bytes_limit_error(&desc, "дело с вложениями") {
+                return error(StatusCode::BAD_REQUEST, e);
+            }
             let mut args: Vec<&str> = vec!["add", title.as_str(), "--repo", repo.as_str()];
             if !desc.is_empty() {
                 args.push("--desc");
@@ -1227,6 +1271,9 @@ async fn api_action(
             if text.is_empty() {
                 return error(StatusCode::BAD_REQUEST, "empty message");
             }
+            if let Some(e) = text_limit_error(text, "сообщение") {
+                return error(StatusCode::BAD_REQUEST, e);
+            }
             run_board(&app.cfg, &["tell", id, "--", text], Duration::from_secs(60)).await
         }
         "archive-done" => return archive_done(&app, &body).await,
@@ -1268,100 +1315,6 @@ async fn todo_reply(app: &Shared) -> Response {
     let reply = todo_json(app).await;
     app::publish(app).await;
     Json(reply).into_response()
-}
-
-/// An action on a task of another machine: the board's own `remote do` over SSH, and `after` in its shell.
-/// Everything that needs this machine's herdr (screens, keys, files) is refused honestly.
-async fn remote_action(app: &Shared, galaxy: &str, body: &ActionBody) -> Response {
-    use crate::machines;
-    if !machines::valid_label(galaxy) {
-        return error(StatusCode::BAD_REQUEST, "bad machine label");
-    }
-    match body.action.as_str() {
-        // The Coordinator of that machine is written to, as a person would: its words are the command.
-        "coordinator-compact" => {
-            if body.confirm != Some(true) {
-                return error(StatusCode::BAD_REQUEST, "compacting needs an explicit confirmation");
-            }
-            return match machines::remote_dispatch(&app.cfg, galaxy, "", "/compact", false, None).await {
-                Ok(out) => Json(json!({"ok": true, "out": clip(out)})).into_response(),
-                Err(e) => error(StatusCode::BAD_GATEWAY, e),
-            };
-        }
-        "suggest-update" => {
-            let repo = body.repo.as_deref().unwrap_or("").trim().to_string();
-            if !valid_repo(&repo) {
-                return error(StatusCode::BAD_REQUEST, "bad universe name");
-            }
-            let about = {
-                let list = app.galaxies.lock().await;
-                list.iter().find(|g| g.label == galaxy).and_then(|g| g.tasks.iter().find(|t| t.repo == repo).map(|t| t.id.clone()))
-            };
-            let folder = {
-                let list = app.galaxies.lock().await;
-                list.iter().find(|g| g.label == galaxy).and_then(|g| g.projects.iter().find(|p| p.name == repo).map(|p| p.folder.clone())).unwrap_or_default()
-            };
-            let behind = body.n.unwrap_or(0);
-            let text = format!("Обнови главную ветку в {folder} из origin (git pull --ff-only): отстаёт на {behind} коммитов");
-            return match machines::remote_dispatch(&app.cfg, galaxy, "", &text, false, about.as_deref()).await {
-                Ok(out) => Json(json!({"ok": true, "out": clip(out)})).into_response(),
-                Err(e) => error(StatusCode::BAD_GATEWAY, e),
-            };
-        }
-        _ => {}
-    }
-    let id = match task_id(body) {
-        Ok(id) => id.to_string(),
-        Err(e) => return error(StatusCode::BAD_REQUEST, e),
-    };
-    let result: Result<String, String> = match body.action.as_str() {
-        "approve" | "anyway" => {
-            if body.confirm != Some(true) {
-                return error(StatusCode::BAD_REQUEST, "approval needs an explicit confirmation");
-            }
-            machines::remote_do(&app.cfg, galaxy, &json!({"id": id, "action": "approve", "anyway": body.action == "anyway"})).await
-        }
-        "tell" => {
-            let text = body.text.as_deref().unwrap_or("").trim().to_string();
-            if text.is_empty() {
-                return error(StatusCode::BAD_REQUEST, "empty message");
-            }
-            machines::remote_do(&app.cfg, galaxy, &json!({"id": id, "action": "tell", "text": text})).await
-        }
-        "pick" => {
-            let letter = body.letter.as_deref().unwrap_or("");
-            if !board::valid_letter(letter) {
-                return error(StatusCode::BAD_REQUEST, "bad attempt letter");
-            }
-            machines::remote_do(&app.cfg, galaxy, &json!({"id": id, "action": "pick", "letter": letter})).await
-        }
-        "retry" | "review" | "stop" | "fix" | "finish" | "archive" | "restore" => {
-            machines::remote_do(&app.cfg, galaxy, &json!({"id": id, "action": body.action})).await
-        }
-        "delegate" => machines::remote_do(&app.cfg, galaxy, &json!({"id": id, "action": "delegate", "now": true})).await,
-        "after" => {
-            let Some(refs) = body.after.clone() else {
-                return error(StatusCode::BAD_REQUEST, "after needs the list of tasks; an empty list clears the wait");
-            };
-            if let Some(bad) = refs.iter().find(|r| !board::valid_ref(r)) {
-                return error(StatusCode::BAD_REQUEST, format!("bad task reference: {bad}"));
-            }
-            machines::remote_after(&app.cfg, galaxy, &id, &refs).await.map(|tags| tags.join(", "))
-        }
-        other => {
-            return error(
-                StatusCode::BAD_REQUEST,
-                format!("«{other}» в далёкой галактике недоступно: экран агента, клавиши и файлы живут на той машине"),
-            )
-        }
-    };
-    match result {
-        Ok(out) => {
-            let _ = api::ask_galaxy(app, galaxy).await;
-            Json(json!({"ok": true, "out": clip(out)})).into_response()
-        }
-        Err(e) => error(StatusCode::BAD_GATEWAY, e),
-    }
 }
 
 fn task_id(body: &ActionBody) -> Result<&str, String> {
@@ -1527,15 +1480,47 @@ mod tests {
     }
 
     #[test]
-    fn todo_text_is_one_safe_title() {
+    fn todo_text_keeps_lines_and_stays_safe() {
         assert_eq!(
             todo_text("  Починить   кэш \n отчётов ").unwrap(),
-            "Починить кэш отчётов"
+            "  Починить   кэш\n отчётов"
         );
+        assert_eq!(todo_text("first\r\nsecond\rthird").unwrap(), "first\nsecond\nthird");
+        assert_eq!(todo_text("\n  first\n\nsecond  \n\n").unwrap(), "  first\n\nsecond");
         assert!(todo_text("").is_err());
-        assert!(todo_text("   ").is_err());
-        assert!(todo_text("--all").is_err());
-        assert!(todo_text(&"x".repeat(401)).is_err());
+        assert!(todo_text("\n \n").is_err());
+        assert_eq!(todo_text("--all").unwrap(), "--all");
+        assert_eq!(
+            todo_text("- купить молоко\n- позвонить в банк").unwrap(),
+            "- купить молоко\n- позвонить в банк"
+        );
+        assert!(todo_text(&"x".repeat(401)).is_ok());
+        assert!(todo_text(&"x".repeat(MAX_TEXT_CHARS)).is_ok());
+        assert!(todo_text(&"x".repeat(MAX_TEXT_CHARS + 1)).is_err());
+        // A Cyrillic letter is two bytes: the real bound is the command-line argument, not the count.
+        assert!(todo_text(&"ж".repeat(60_000)).is_ok());
+        assert!(text_limit_error(&"ж".repeat(MAX_ARG_BYTES / 2), "дело").is_none());
+        let too_many_bytes = todo_text(&"ж".repeat(MAX_ARG_BYTES / 2 + 1)).unwrap_err();
+        assert!(too_many_bytes.contains("130000"), "{too_many_bytes}");
+        assert!(!too_many_bytes.contains("Argument list"), "{too_many_bytes}");
+        assert_eq!(
+            text_limit_error(&"ж".repeat(60_000), "дело"),
+            None
+        );
+        assert!(text_limit_error(&"x".repeat(MAX_TEXT_CHARS + 1), "сообщение")
+            .unwrap()
+            .contains("100000"));
+        assert!(bytes_limit_error(&"ж".repeat(MAX_ARG_BYTES / 2 + 1), "сообщение")
+            .unwrap()
+            .contains("130000"));
+        assert_eq!(task_title("  Первая строка дела\nвторая строка"), "Первая строка дела");
+        assert_eq!(task_title("- купить молоко\n- позвонить в банк"), "купить молоко");
+        assert_eq!(task_title("- [ ] купить молоко"), "купить молоко");
+        assert_eq!(task_title("---"), "Дело");
+        assert_eq!(task_title("коротко"), "коротко");
+        assert_eq!(task_title(&"ж".repeat(50)), "ж".repeat(50));
+        assert_eq!(task_title(&"ж".repeat(60)), format!("{}…", "ж".repeat(55)));
+        assert!(!task_title(&"x".repeat(50)).starts_with('\n'));
         assert!(valid_todo_id("t1792407710774-1"));
         assert!(!valid_todo_id("../../etc"));
         assert!(!valid_todo_id(""));

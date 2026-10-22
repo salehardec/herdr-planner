@@ -27,7 +27,7 @@ for (const path of ['/api/events', '/api/search?q=alpha', '/api/models?program=c
   const r = await get(path);
   check(`${path.split('?')[0]} needs a session`, r.status === 401, String(r.status));
 }
-for (const [path, body] of [['/api/translate', { text: 'hello' }], ['/api/galaxy/ask', { label: 'vm-a' }], ['/api/galaxy/add', { target: 'a@b', confirm: true }], ['/api/universe/inspect', { input: '/tmp' }], ['/api/universe/add', { mode: 'folder', name: 'x', path: '/tmp', confirm: true }], ['/api/universe/fork', { repo: 'alpha', op: 'pull', confirm: true }]]) {
+for (const [path, body] of [['/api/translate', { text: 'hello' }], ['/api/station/set', { name: 'worker.agent', value: 'claude/x', confirm: true }], ['/api/memory/save', { title: 'x', body: 'y' }], ['/api/universe/inspect', { input: '/tmp' }], ['/api/universe/add', { mode: 'folder', name: 'x', path: '/tmp', confirm: true }], ['/api/universe/fork', { repo: 'alpha', op: 'pull', confirm: true }]]) {
   const r = await get(path, null, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
   check(`POST ${path} needs a session`, r.status === 401, String(r.status));
 }

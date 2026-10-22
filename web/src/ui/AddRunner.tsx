@@ -11,7 +11,7 @@ import { t, tn } from '../i18n';
 import { toast } from '../toast';
 import { Gl } from './Gl';
 import type { Runner } from '../types';
-import './AddGalaxy.css';
+import './AddRunner.css';
 
 interface Local {
   docker_client: boolean;

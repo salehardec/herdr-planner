@@ -1,11 +1,11 @@
 //! The page's newer endpoints: the event stream, search, models, translation,
-//! sub-agent cards, the closing note of a task and the other machines.
+//! sub-agent cards and the closing note of a task.
 
 use crate::app::{self, Shared};
 use crate::board;
 use crate::config::now_ms;
 use crate::server::{clip, client_is_local, error, same_origin};
-use crate::{machines, models, search, subagents, taskmeta, translate};
+use crate::{models, search, subagents, taskmeta, translate};
 use axum::extract::{ConnectInfo, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::sse::{Event, KeepAlive, Sse};
@@ -49,7 +49,7 @@ pub struct SearchQuery {
     limit: Option<usize>,
 }
 
-/// `GET /api/search?q=`: the full-text part of the world search (descriptions, old chat, other machines).
+/// `GET /api/search?q=`: the full-text part of the world search (descriptions, old chat, memory).
 pub async fn search_api(State(app): State<Shared>, Query(q): Query<SearchQuery>) -> Response {
     let text = q.q.unwrap_or_default();
     let limit = q.limit.unwrap_or(20).clamp(1, 50);
@@ -182,140 +182,23 @@ pub async fn closing_api(State(app): State<Shared>, Query(q): Query<ClosingQuery
     }
 }
 
-#[derive(Deserialize)]
-pub struct AskBody {
-    label: String,
-}
-
-/// `POST /api/galaxy/ask`: connect to a far galaxy now (a fresh read over SSH).
-pub async fn galaxy_ask(State(app): State<Shared>, headers: HeaderMap, Json(body): Json<AskBody>) -> Response {
-    if !same_origin(&headers) {
-        return error(StatusCode::FORBIDDEN, "cross-origin request refused");
-    }
-    if !machines::valid_label(&body.label) {
-        return error(StatusCode::BAD_REQUEST, "bad machine label");
-    }
-    match ask_galaxy(&app, &body.label).await {
-        Ok(()) => Json(json!({"ok": true})).into_response(),
-        Err(why) => Json(json!({"ok": false, "why": why})).into_response(),
-    }
-}
-
-/// Reads a far galaxy afresh and stores the answer; the page hears of it on the event stream.
-pub async fn ask_galaxy(app: &Shared, label: &str) -> Result<(), machines::Why> {
-    {
-        let mut c = app.connecting.lock().await;
-        if !c.iter().any(|l| l == label) {
-            c.push(label.to_string());
-        }
-    }
-    app::rebuild_extras(app).await;
-    app::publish(app).await;
-    let result = machines::ask(&app.cfg, label).await;
-    app.connecting.lock().await.retain(|l| l != label);
-    let reply = match result {
-        Ok(g) => {
-            if let Ok(json) = serde_json::to_string(&g) {
-                app.db.galaxy_put(&g.label, &json, g.ok, "");
-            }
-            let mut list = app.galaxies.lock().await;
-            list.retain(|x| x.label != g.label);
-            list.push(g);
-            Ok(())
-        }
-        Err(why) => Err(why),
-    };
-    app::rebuild_extras(app).await;
-    app::publish(app).await;
-    reply
-}
-
-#[derive(Deserialize)]
-pub struct AddGalaxyBody {
-    target: String,
-    label: Option<String>,
-    confirm: Option<bool>,
-}
-
-/// `POST /api/galaxy/add`: opens a terminal with `herdr machine add <target> --label <label>` so the human
-/// confirms there. Only for someone at this machine.
-pub async fn galaxy_add(
-    State(_app): State<Shared>,
-    ConnectInfo(addr): ConnectInfo<SocketAddr>,
-    headers: HeaderMap,
-    Json(body): Json<AddGalaxyBody>,
-) -> Response {
-    if !same_origin(&headers) {
-        return error(StatusCode::FORBIDDEN, "cross-origin request refused");
-    }
-    if !client_is_local(addr, &headers) {
-        return (
-            StatusCode::FORBIDDEN,
-            Json(json!({"error": "Машину добавляют только за компьютером с доской", "remote": true})),
-        )
-            .into_response();
-    }
-    if body.confirm != Some(true) {
-        return error(StatusCode::BAD_REQUEST, "adding a machine needs an explicit confirmation");
-    }
-    let label = body.label.clone().filter(|l| !l.trim().is_empty()).unwrap_or_else(|| {
-        body.target.rsplit('@').next().unwrap_or(&body.target).split(':').next().unwrap_or("").to_string()
-    });
-    let argv = match machines::machine_add_command(&body.target, &label) {
-        Ok(a) => a,
-        Err(e) => return error(StatusCode::BAD_REQUEST, e),
-    };
-    let herdr = std::env::var("HERDR_BIN").ok().filter(|v| !v.is_empty()).unwrap_or_else(|| "herdr".to_string());
-    let mut cmd = if cfg!(target_os = "macos") {
-        let line = std::iter::once(herdr.clone())
-            .chain(argv.iter().skip(1).cloned())
-            .collect::<Vec<_>>()
-            .join(" ");
-        let mut c = tokio::process::Command::new("osascript");
-        c.args(["-e", &format!("tell application \"Terminal\" to do script \"{line}\"")]);
-        c
-    } else {
-        let mut c = tokio::process::Command::new(std::env::var("HERDR_PLANNER_TERMINAL").unwrap_or_else(|_| "xdg-terminal-exec".to_string()));
-        c.arg(&herdr).args(argv.iter().skip(1));
-        c
-    };
-    match cmd.spawn() {
-        Ok(_) => Json(json!({"ok": true, "label": label, "command": format!("herdr {}", argv.iter().skip(1).cloned().collect::<Vec<_>>().join(" "))})).into_response(),
-        Err(e) => error(StatusCode::INTERNAL_SERVER_ERROR, clip(format!("не удалось открыть терминал: {e}"))),
-    }
-}
-
 /* ───────── universes (projects) ───────── */
 
 #[derive(Deserialize)]
 pub struct FsQuery {
     path: String,
-    galaxy: Option<String>,
 }
 
-/// `GET /api/fs/complete?path=&galaxy=`: folders for the path field, on this machine or a far one.
+/// `GET /api/fs/complete?path=`: folders for the path field.
 pub async fn fs_complete(State(app): State<Shared>, Query(q): Query<FsQuery>) -> Response {
     if q.path.contains('\0') || q.path.len() > 1000 {
         return error(StatusCode::BAD_REQUEST, "bad path");
     }
-    match q.galaxy.as_deref().filter(|g| !g.is_empty()) {
-        Some(label) => {
-            if !machines::valid_label(label) {
-                return error(StatusCode::BAD_REQUEST, "bad machine label");
-            }
-            match crate::universe::complete_path_remote(&app.cfg, label, &q.path).await {
-                Ok(list) => Json(json!({"ok": true, "entries": list})).into_response(),
-                Err(e) => error(StatusCode::BAD_GATEWAY, e),
-            }
-        }
-        None => {
-            let roots: Vec<String> = taskmeta::repos(&app.cfg.data_dir).into_iter().map(|r| r.root).collect();
-            let path = q.path.clone();
-            match tokio::task::spawn_blocking(move || crate::universe::complete_path(&path, &roots, 24)).await {
-                Ok(list) => Json(json!({"ok": true, "entries": list})).into_response(),
-                Err(e) => error(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
-            }
-        }
+    let roots: Vec<String> = taskmeta::repos(&app.cfg.data_dir).into_iter().map(|r| r.root).collect();
+    let path = q.path.clone();
+    match tokio::task::spawn_blocking(move || crate::universe::complete_path(&path, &roots, 24)).await {
+        Ok(list) => Json(json!({"ok": true, "entries": list})).into_response(),
+        Err(e) => error(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
     }
 }
 
@@ -339,7 +222,6 @@ pub async fn universe_inspect(State(app): State<Shared>, headers: HeaderMap, Jso
 pub struct AddUniverseBody {
     #[serde(flatten)]
     req: crate::universe::AddRequest,
-    galaxy: Option<String>,
     confirm: Option<bool>,
 }
 
@@ -356,14 +238,8 @@ pub async fn universe_add(
     if body.confirm != Some(true) {
         return error(StatusCode::BAD_REQUEST, "adding a universe needs an explicit confirmation");
     }
-    let galaxy = body.galaxy.clone().filter(|g| !g.is_empty());
-    if galaxy.is_none() && !client_is_local(addr, &headers) && app.cfg.is_loopback() {
+    if !client_is_local(addr, &headers) && app.cfg.is_loopback() {
         return error(StatusCode::FORBIDDEN, "only from this machine");
-    }
-    if let Some(g) = &galaxy {
-        if !machines::valid_label(g) {
-            return error(StatusCode::BAD_REQUEST, "bad machine label");
-        }
     }
     let job = format!("u{}", now_ms());
     let app2 = app.clone();
@@ -375,19 +251,12 @@ pub async fn universe_add(
         let progress = move |steps: &[crate::universe::Step]| {
             bus.send("progress", json!({"job": jid, "steps": steps, "done": false}).to_string());
         };
-        let result = match &galaxy {
-            Some(label) => crate::universe::add_remote(&app2.cfg, label, &req, &progress).await,
-            None => crate::universe::add(&app2.cfg, &req, &progress).await,
-        };
-        let payload = match result {
+        let payload = match crate::universe::add(&app2.cfg, &req, &progress).await {
             Ok(r) => json!({"job": job2, "done": true, "ok": true, "result": r}),
             Err(e) => json!({"job": job2, "done": true, "ok": false, "error": e}),
         };
         app2.bus.send("progress", payload.to_string());
         app::refresh(&app2).await;
-        if let Some(label) = &galaxy {
-            let _ = ask_galaxy(&app2, label).await;
-        }
     });
     Json(json!({"ok": true, "job": job})).into_response()
 }
@@ -469,112 +338,10 @@ pub async fn universe_fork(State(app): State<Shared>, headers: HeaderMap, Json(b
                 Err(e) => error(StatusCode::BAD_GATEWAY, e),
             }
         }
-        "fork" => match crate::universe::make_fork(&app.cfg, &info.root).await {
+        "fork" => match crate::universe::make_fork(&info.root).await {
             Ok(out) => { app::update_lag(&app).await; Json(json!({"ok": true, "out": clip(out)})).into_response() }
             Err(e) => error(StatusCode::BAD_GATEWAY, e),
         },
-        _ => error(StatusCode::BAD_REQUEST, "unknown operation"),
-    }
-}
-
-/* ───────── agent screen and files on another machine ───────── */
-
-#[derive(Deserialize)]
-pub struct FarFilesBody {
-    galaxy: String,
-    /// The task id on that machine (`repo/n`), for `yazi` and `screen`.
-    task: Option<String>,
-    /// `check`, `yazi`, `screen`, `install`, `install-terminal`.
-    op: String,
-    /// `binary`, `brew` or `pacman`.
-    method: Option<String>,
-    confirm: Option<bool>,
-}
-
-/// `POST /api/far/files`: the agent's screen and yazi of a task on another machine, in a terminal on this one.
-pub async fn far_files(
-    State(app): State<Shared>,
-    ConnectInfo(addr): ConnectInfo<SocketAddr>,
-    headers: HeaderMap,
-    Json(b): Json<FarFilesBody>,
-) -> Response {
-    if !same_origin(&headers) {
-        return error(StatusCode::FORBIDDEN, "cross-origin request refused");
-    }
-    if !machines::valid_label(&b.galaxy) {
-        return error(StatusCode::BAD_REQUEST, "bad machine label");
-    }
-    let galaxy = b.galaxy.clone();
-    if b.op == "check" {
-        return match crate::farfiles::check_yazi(&app.cfg, &galaxy).await {
-            Ok(state) => Json(json!({"ok": true, "state": state})).into_response(),
-            Err(e) => error(StatusCode::BAD_GATEWAY, e),
-        };
-    }
-    // Everything else opens a terminal: only for someone at this machine.
-    if !client_is_local(addr, &headers) {
-        return (
-            StatusCode::FORBIDDEN,
-            Json(json!({"error": "Терминал открывается только за компьютером с доской", "remote": true})),
-        )
-            .into_response();
-    }
-    let task = b.task.clone().unwrap_or_default();
-    let found = {
-        let list = app.galaxies.lock().await;
-        list.iter()
-            .find(|g| g.label == galaxy)
-            .and_then(|g| g.tasks.iter().find(|t| t.id == task).cloned())
-    };
-    match b.op.as_str() {
-        "yazi" => {
-            let Some(t) = found.filter(|t| !t.worktree.is_empty()) else {
-                return error(StatusCode::NOT_FOUND, "у задачи ещё нет папки на той машине");
-            };
-            match crate::farfiles::open_yazi(&app.cfg, &galaxy, &t.worktree).await {
-                Ok(line) => Json(json!({"ok": true, "command": line, "path": t.worktree})).into_response(),
-                Err(e) => error(StatusCode::BAD_GATEWAY, e),
-            }
-        }
-        "screen" => {
-            let Some(t) = found else {
-                return error(StatusCode::NOT_FOUND, "no such task on that machine");
-            };
-            let name = format!("sw-{}-{}", t.repo, t.n);
-            match crate::farfiles::open_agent_screen(&app.cfg, &galaxy, &name).await {
-                Ok(line) => Json(json!({"ok": true, "command": line, "agent": name})).into_response(),
-                Err(e) => error(StatusCode::BAD_GATEWAY, e),
-            }
-        }
-        "install-terminal" => {
-            let method = b.method.clone().unwrap_or_else(|| "pacman".into());
-            match crate::farfiles::open_install_terminal(&app.cfg, &galaxy, &method).await {
-                Ok(line) => Json(json!({"ok": true, "command": line})).into_response(),
-                Err(e) => error(StatusCode::BAD_GATEWAY, e),
-            }
-        }
-        "install" => {
-            if b.confirm != Some(true) {
-                return error(StatusCode::BAD_REQUEST, "installing needs an explicit confirmation");
-            }
-            let method = b.method.clone().unwrap_or_else(|| "binary".into());
-            let job = format!("y{}", now_ms());
-            let app2 = app.clone();
-            let job2 = job.clone();
-            tokio::spawn(async move {
-                let bus = app2.bus.clone();
-                let jid = job2.clone();
-                let progress = move |line: &str| {
-                    bus.send("progress", json!({"job": jid, "steps": [{"id": "install", "label": line, "state": "run", "detail": "", "percent": null}], "done": false}).to_string());
-                };
-                let payload = match crate::farfiles::install_yazi(&app2.cfg, &galaxy, &method, &progress).await {
-                    Ok(path) => json!({"job": job2, "done": true, "ok": true, "result": {"path": path}}),
-                    Err(e) => json!({"job": job2, "done": true, "ok": false, "error": e}),
-                };
-                app2.bus.send("progress", payload.to_string());
-            });
-            Json(json!({"ok": true, "job": job})).into_response()
-        }
         _ => error(StatusCode::BAD_REQUEST, "unknown operation"),
     }
 }

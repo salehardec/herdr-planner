@@ -3,7 +3,7 @@
 //! * **Galaxy** (the machine): rules and preferences of the human, agreements. One folder of Markdown files,
 //!   `~/.herdr-projects/memory/galaxy/` (`memory_dir`).
 //! * **Universe** (a project): decisions, conventions, pitfalls. `docs/memory/` inside the repository, so it travels
-//!   with git into every galaxy.
+//!   with git to every machine.
 //! * **Planet** (a task): its closing note, which the board keeps already. Not copied here.
 //!
 //! The files are the truth: any agent reads them without the planner. Every entry is one file, `<id>.md`, with a
@@ -11,7 +11,7 @@
 //! (FTS5) only indexes them — together with the tasks' closing notes, the Coordinator's chat and, read-only, the
 //! memory its own program keeps (Claude Code's `memory/` folder).
 //!
-//! This module is the pure part and the local file part; the endpoints and the far machines are in `memory_api`.
+//! This module is the pure part and the local file part; the endpoints are in `memory_api`.
 
 use crate::config::AppConfig;
 use crate::db::SearchDoc;
@@ -665,7 +665,7 @@ pub const BLOCK_END: &str = "<!-- /herdr-planner:memory -->";
 
 /// The standing lines about memory that are added to the Coordinator's instructions (the board's setting
 /// `coordinator.instructions`, which the board puts into the file its program reads). `galaxy_dir` is where this
-/// machine's Galaxy memory lives (a far machine's: `~/.herdr-projects/memory/galaxy`). Short, because the human's own
+/// machine's Galaxy memory lives. Short, because the human's own
 /// instructions are in the same setting.
 pub fn coordinator_block(galaxy_dir: &str) -> String {
     format!(
@@ -735,14 +735,13 @@ pub fn doc_id(scope: &str, id: &str) -> String {
 }
 
 /// The search documents of one set of entries.
-pub fn docs_of(galaxy: &str, scope: &str, path: &str, entries: &[Entry]) -> Vec<SearchDoc> {
+pub fn docs_of(scope: &str, path: &str, entries: &[Entry]) -> Vec<SearchDoc> {
     entries
         .iter()
         .map(|e| SearchDoc {
-            key: format!("memory:{galaxy}:{}", doc_id(scope, &e.id)),
+            key: format!("memory:{}", doc_id(scope, &e.id)),
             kind: "memory".into(),
             id: doc_id(scope, &e.id),
-            galaxy: galaxy.to_string(),
             path: path.to_string(),
             title: e.title.clone(),
             text: format!("{} {}", e.description, e.body),
@@ -760,7 +759,6 @@ pub fn home_docs(cfg: &AppConfig, host: &str) -> Vec<SearchDoc> {
 pub fn home_docs_at(cfg: &AppConfig, host: &str, claude_home: &Path) -> Vec<SearchDoc> {
     let mut docs = docs_of(
         "",
-        "",
         &format!("Память › {host} (Галактика)"),
         &galaxy_store(cfg).list(),
     );
@@ -770,7 +768,6 @@ pub fn home_docs_at(cfg: &AppConfig, host: &str, claude_home: &Path) -> Vec<Sear
         }
         let entries = universe_store(&r.root, &r.name).list();
         docs.extend(docs_of(
-            "",
             &r.name,
             &format!("Память › {} (вселенная)", r.name),
             &entries,
@@ -778,7 +775,6 @@ pub fn home_docs_at(cfg: &AppConfig, host: &str, claude_home: &Path) -> Vec<Sear
     }
     for f in foreign_sources_at(cfg, claude_home) {
         docs.extend(docs_of(
-            "",
             &format!("@{}", f.program),
             &format!("Память {} (только чтение)", f.label),
             &read_dir_entries(&f.dir),
@@ -830,10 +826,9 @@ pub fn closing_docs(cfg: &AppConfig, host: &str, tasks: &[crate::board::Task]) -
             continue;
         }
         docs.push(SearchDoc {
-            key: format!("closing::{}", t.id),
+            key: format!("closing:{}", t.id),
             kind: "closing".into(),
             id: t.id.clone(),
-            galaxy: String::new(),
             path: format!("{host} › {} › {}", t.repo, t.tag),
             title: format!("{} {}", t.tag, t.title),
             text,
@@ -1487,27 +1482,25 @@ mod tests {
 
     #[test]
     fn search_documents_carry_where_they_belong() {
-        let docs = docs_of("", "", "Память › host (Галактика)", &[e("a", "Раз", "один", "rule", "тело")]);
-        assert_eq!(docs[0].key, "memory::|a");
+        let docs = docs_of("", "Память › host (Галактика)", &[e("a", "Раз", "один", "rule", "тело")]);
+        assert_eq!(docs[0].key, "memory:|a");
         assert_eq!(docs[0].id, "|a");
         assert_eq!(docs[0].kind, "memory");
         assert!(docs[0].text.contains("тело") && docs[0].text.contains("один"));
-        let u = docs_of("vm-a", "alpha", "p", &[e("b", "Два", "", "pitfall", "")]);
+        let u = docs_of("alpha", "p", &[e("b", "Два", "", "pitfall", "")]);
         assert_eq!(u[0].id, "alpha|b");
-        assert_eq!(u[0].galaxy, "vm-a");
     }
 
     #[test]
     fn memory_is_found_by_the_space_search_with_its_scope_in_the_id() {
         let db = crate::db::Db::memory().unwrap();
         let mut docs = docs_of(
-            "",
             "alpha",
             "Память › alpha (вселенная)",
             &[e("merge-squash", "Слияние — squash", "задачи сливаются squash", "decision", "Ветки задач короткие.")],
         );
-        docs.extend(docs_of("", "", "Память › host (Галактика)", &[e("gitlab", "GitLab без PR", "для GitLab PR не нужен", "rule", "merge.pr false")]));
-        db.search_docs_replace("", &docs);
+        docs.extend(docs_of("", "Память › host (Галактика)", &[e("gitlab", "GitLab без PR", "для GitLab PR не нужен", "rule", "merge.pr false")]));
+        db.search_docs_replace(&docs);
         let hits = crate::search::query(&db, "squash", 10);
         assert_eq!(hits.len(), 1);
         assert_eq!((hits[0].kind.as_str(), hits[0].id.as_str()), ("memory", "alpha|merge-squash"));
@@ -1520,7 +1513,7 @@ mod tests {
     #[test]
     fn the_program_s_own_memory_is_found_where_it_keeps_it() {
         let dir = tempfile::tempdir().unwrap();
-        let cfg = crate::machines::test_cfg(dir.path());
+        let cfg = crate::testutil::test_cfg(dir.path());
         let coord = cfg.data_dir.join("coordinator/default");
         std::fs::create_dir_all(coord.join("chat")).unwrap();
         std::fs::write(coord.join("state.json"), r#"{"run":{"kind":"claude"}}"#).unwrap();
@@ -1549,7 +1542,7 @@ mod tests {
     #[test]
     fn closing_notes_are_indexed_and_read_again_only_when_they_change() {
         let dir = tempfile::tempdir().unwrap();
-        let cfg = crate::machines::test_cfg(dir.path());
+        let cfg = crate::testutil::test_cfg(dir.path());
         let t = crate::board::Task {
             id: "alpha/4".into(),
             repo: "alpha".into(),
@@ -1573,7 +1566,7 @@ mod tests {
     #[test]
     fn universes_are_the_boards_repos_that_have_a_project_folder_here() {
         let dir = tempfile::tempdir().unwrap();
-        let cfg = crate::machines::test_cfg(dir.path());
+        let cfg = crate::testutil::test_cfg(dir.path());
         let proj = dir.path().join("projects/alpha");
         std::fs::create_dir_all(&proj).unwrap();
         std::fs::create_dir_all(cfg.data_dir.join("coordinator/default/chat")).unwrap();

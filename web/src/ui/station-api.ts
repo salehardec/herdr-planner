@@ -1,17 +1,15 @@
-/* The Station (a galaxy's crew and board settings), the ship's computer, and the calls they make.
-   How other screens open them: openStation(label), openShip(). The calls mirror src/station.rs, src/ship.rs. */
+/* The Station (the crew and board settings), the ship's computer, and the calls they make.
+   How other screens open them: openStation(), openShip(). The calls mirror src/station.rs, src/ship.rs. */
 import { signal } from '@preact/signals';
 import { api, ApiError, post } from '../api';
 import { t } from '../i18n';
 
-/** The Station screen: `galaxy` is `''` for this machine's own station; `wizard` is the first-run «Экипаж корабля». */
-export const stationDlg = signal<{ galaxy: string; wizard?: boolean } | null>(null);
+/** The Station screen; `wizard` is the first-run «Экипаж корабля». */
+export const stationDlg = signal<{ wizard?: boolean } | null>(null);
 /** The ship's computer («Бортовой компьютер»). */
 export const shipDlg = signal(false);
-/** The arrival notice: the ship has landed in a far galaxy (`label`). */
-export const arrival = signal<{ label: string } | null>(null);
 
-export function openStation(galaxy: string, wizard = false): void { stationDlg.value = { galaxy, wizard }; }
+export function openStation(wizard = false): void { stationDlg.value = { wizard }; }
 export function openShip(): void { shipDlg.value = true; }
 
 /** The first-run wizard is seen once (set by «Готово», «Пропустить» and closing it). */
@@ -23,15 +21,6 @@ export function markCrewSeen(): void { try { localStorage.setItem(CREW_SEEN_KEY,
 export function closeStation(): void {
   if (stationDlg.value?.wizard) markCrewSeen();
   stationDlg.value = null;
-}
-
-/** The arrival notice of one galaxy: «не показывать для этой галактики». */
-export const arriveKey = (label: string): string => `herdr-planner.arrive.${label}`;
-export function arrivalHidden(label: string): boolean {
-  try { return localStorage.getItem(arriveKey(label)) === 'hidden'; } catch { return false; }
-}
-export function hideArrival(label: string): void {
-  try { localStorage.setItem(arriveKey(label), 'hidden'); } catch { /* private mode */ }
 }
 
 /* ───────── types ───────── */
@@ -56,7 +45,6 @@ export interface StationProgram {
 
 export interface StationData {
   ok: true;
-  galaxy: string;
   level: 'you' | 'repo';
   repo: string;
   repos: string[];
@@ -106,49 +94,47 @@ export interface ShipData {
 
 export interface ShipResult { ok: true; changed: { name: string; was: string; now: string }[]; restart: boolean }
 
-/** A failed call: the words for the page (the board's own when it refused) and the machine's reason when it did not answer. */
-export interface CallError { message: string; status: number; why?: { line: string; detail: string[] } }
+/** A failed call: the words for the page (the board's own when it refused). */
+export interface CallError { message: string; status: number }
 
 export function callError(e: unknown): CallError {
-  const err = e as { message?: string; status?: number; data?: { error?: string; why?: { line: string; detail: string[] } } };
+  const err = e as { message?: string; status?: number; data?: { error?: string } };
   return {
     message: err.data?.error || err.message || 'error',
     status: err.status ?? 0,
-    why: err.data?.why,
   };
 }
 
 /* ───────── the calls ───────── */
 
-const q = (galaxy: string, repo = ''): string => `galaxy=${encodeURIComponent(galaxy)}${repo ? `&repo=${encodeURIComponent(repo)}` : ''}`;
+const q = (repo = ''): string => (repo ? `repo=${encodeURIComponent(repo)}` : '');
 
-export const stationGet = (galaxy: string, repo = ''): Promise<StationData> =>
-  api<StationData>(`/api/station?${q(galaxy, repo)}`).then((d) => { lightCache.set(galaxy, { value: d.light, at: Date.now() }); return d; });
+export const stationGet = (repo = ''): Promise<StationData> =>
+  api<StationData>(`/api/station?${q(repo)}`).then((d) => { lightCache = { value: d.light, at: Date.now() }; return d; });
 
-export const stationModels = (galaxy: string, program: string): Promise<ModelsData> =>
-  api<ModelsData>(`/api/station/models?galaxy=${encodeURIComponent(galaxy)}&program=${encodeURIComponent(program)}`);
+export const stationModels = (program: string): Promise<ModelsData> =>
+  api<ModelsData>(`/api/station/models?program=${encodeURIComponent(program)}`);
 
-export interface ChangeBody { galaxy: string; name: string; value?: string; unset?: boolean; repo?: string }
+export interface ChangeBody { name: string; value?: string; unset?: boolean; repo?: string }
 
 export const stationPreview = (b: ChangeBody): Promise<Preview> => post<Preview>('/api/station/preview', b);
 
 export const stationSet = (b: ChangeBody): Promise<SetResult> => post<SetResult>('/api/station/set', { ...b, confirm: true });
 
-/** The «Лёгкие задачи» preset of a galaxy (`''` clears it). */
-export const stationLight = (galaxy: string, agent: string): Promise<{ ok: true; light: string }> =>
-  post('/api/station/light', { galaxy, agent, confirm: true });
+/** The «Лёгкие задачи» preset (`''` clears it). */
+export const stationLight = (agent: string): Promise<{ ok: true; light: string }> =>
+  post('/api/station/light', { agent, confirm: true });
 
-const lightCache = new Map<string, { value: string; at: number }>();
+let lightCache: { value: string; at: number } | null = null;
 
 /**
- * The «Лёгкие задачи» preset of a galaxy, for the todo → task choice («Лёгкая»). Reads the last station answer when
- * it is recent, otherwise asks the station. `''` when the galaxy has no preset or cannot be asked.
+ * The «Лёгкие задачи» preset, for the todo → task choice («Лёгкая»). Reads the last station answer when
+ * it is recent, otherwise asks the station. `''` when there is no preset or it cannot be asked.
  */
-export async function lightPreset(galaxy: string): Promise<string> {
-  const hit = lightCache.get(galaxy);
-  if (hit && Date.now() - hit.at < 60000) return hit.value;
+export async function lightPreset(): Promise<string> {
+  if (lightCache && Date.now() - lightCache.at < 60000) return lightCache.value;
   try {
-    return (await stationGet(galaxy)).light;
+    return (await stationGet()).light;
   } catch {
     return '';
   }
@@ -170,8 +156,6 @@ async function postAnswer<T>(path: string, body: unknown): Promise<T> {
 }
 
 export const shipPost = (b: Record<string, unknown>): Promise<ShipResult> => postAnswer<ShipResult>('/api/ship', { ...b, confirm: true });
-
-export const galaxyRemove = (label: string): Promise<{ ok: true; label: string }> => post('/api/galaxy/remove', { label, confirm: true });
 
 /* ───────── small helpers the screens share ───────── */
 

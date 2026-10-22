@@ -6,14 +6,14 @@ import { render, h } from 'preact';
 import { SPRITE } from './ui/glyphs';
 import { App } from './ui/App';
 import {
-  aim, answered, armed, attention, currentView, edge, filter, flight, fresh, galaxyId, hover, invertY, level, locked, mode, narrow, notifyOn,
-  panels, QUERY, requests, selected, sensitivity, showQuiet, simple, snap, speed, universe, webgl, views, SIMPLE_KEY, persist,
-  linkStatus, linkSel,
+  aim, answered, armed, attention, currentView, edge, filter, flight, fresh, hover, invertY, level, locked, mode, narrow, notifyOn,
+  panels, QUERY, requests, selected, sensitivity, showQuiet, simple, snap, speed, universe, webgl, SIMPLE_KEY, persist,
+  linkSel,
 } from './store';
 import { connect, dropDetails, onState } from './api';
 import { setLang, lang, t } from './i18n';
 import { createWorld } from './world';
-import { clearStack, getWorld, goHome, goOverview, navigateTo, openRequest, setWorld, enterGalaxy, back } from './nav';
+import { clearStack, getWorld, goHome, goOverview, navigateTo, openRequest, setWorld, back } from './nav';
 import { escape, installKeys, setMode } from './keys';
 import { effectiveWidth, installScale } from './scale';
 import { chatWide, installChatWide, installWideRoom } from './chat-wide';
@@ -56,13 +56,13 @@ const h2 = world.hooks;
 h2.onPick = (e) => { void navigateTo(e); };
 h2.onDive = (e) => { void navigateTo(e); };
 h2.onEmpty = () => { linkSel.value = null; };
-h2.onLink = (l, galaxy) => {
-  linkSel.value = { ...l, galaxy };
-  selected.value = { kind: 'planet', galaxy, id: l.to };
+h2.onLink = (l) => {
+  linkSel.value = { ...l };
+  selected.value = { kind: 'planet', id: l.to };
   world.setSelection(selected.value);
   panels.focus.value = true;
 };
-h2.onConnect = (from, to) => { void connectTasks(from, to, galaxyId.value); };
+h2.onConnect = (from, to) => { void connectTasks(from, to); };
 h2.onHover = (e) => { hover.value = e; };
 h2.onLevel = (l, u) => { level.value = l; universe.value = u; };
 h2.onEdge = (v) => { edge.value = v; };
@@ -92,16 +92,13 @@ effect(() => {
   const s = snap.value;
   if (!s) return;
   const view = currentView.value;
-  const others = views.value.filter((v) => v.id !== view.id).map((v) => ({ id: v.id, label: v.home ? s.host : v.label, ok: v.ok }));
   world.setData({
     view,
-    others,
     limits: s.limits,
-    coordinator: view.home ? s.coordinator : null,
+    coordinator: s.coordinator,
     attention: attention.value,
     fresh: fresh.value,
     showQuiet: showQuiet.value,
-    bridges: s.bridges ?? [],
     filter: filter.value,
     runners: (s.runners ?? []).map((r) => ({
       id: r.id, ok: r.ok,
@@ -157,7 +154,7 @@ onState((s: Snapshot) => {
   if (seenSuggest) {
     for (const m of sug.filter((x) => !seenSuggest!.has(x.task))) {
       toast(t('mem.suggestToast', { tag: m.tag, repo: m.repo }), {
-        action: () => { void navigateTo({ kind: 'universe', galaxy: '', id: m.repo }); }, label: t('mem.suggestOpen'),
+        action: () => { void navigateTo({ kind: 'universe', id: m.repo }); }, label: t('mem.suggestOpen'),
       });
     }
   }
@@ -176,7 +173,7 @@ onState((s: Snapshot) => {
   prevStatus = next;
   // A selected thing that has left the board is no longer selected.
   const sel = selected.value;
-  if (sel && sel.kind === 'planet' && sel.galaxy === galaxyId.value && !currentView.value.tasks.some((x) => x.id === sel.id) && !s.archived.some((x) => x.id === sel.id)) {
+  if (sel && sel.kind === 'planet' && !currentView.value.tasks.some((x) => x.id === sel.id) && !s.archived.some((x) => x.id === sel.id)) {
     selected.value = null;
   }
   // New requests to the human: a sound and a notification, if switched on.
@@ -219,13 +216,13 @@ connect();
 const w = window as unknown as Record<string, unknown>;
 w.world = world;
 w.plannerDebug = () => ({
-  galaxy: galaxyId.value, selected: selected.value, mode: mode.value, level: level.value, universe: universe.value,
+  selected: selected.value, mode: mode.value, level: level.value, universe: universe.value,
   panels: Object.fromEntries(Object.entries(panels).map(([k, v]) => [k, v.value])), filter: filter.value,
-  requests: requests.value.length, answered: [...answered.value], link: linkStatus.value, flight: flight.value, simple: simple.value,
+  requests: requests.value.length, answered: [...answered.value], flight: flight.value, simple: simple.value,
   armed: armed.value,
 });
 w.setLang = setLang;
 w.plannerSnap = () => snap.value;
 /* the page's own commands, for the checks */
-w.planner = { navigateTo, goHome, goOverview, openRequest, enterGalaxy, escape, back, setMode, connectTasks: (a: string, b: string) => connectTasks(a, b, galaxyId.value) };
+w.planner = { navigateTo, goHome, goOverview, openRequest, escape, back, setMode, connectTasks: (a: string, b: string) => connectTasks(a, b) };
 void getWorld; void clearStack;

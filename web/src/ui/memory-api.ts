@@ -42,7 +42,6 @@ export interface MemSuggestion {
 
 export interface MemData {
   ok: true;
-  galaxy: string;
   repo: string;
   level: 'galaxy' | 'universe';
   dir: string;
@@ -64,31 +63,27 @@ export interface MemState {
   at: number;
 }
 
-const key = (galaxy: string, repo: string): string => `${galaxy}|${repo}`;
-
-/** The panels' data, by `galaxy|repo` (`repo` empty: the Galaxy's own memory). */
+/** The panels' data, by repo (`''`: the Galaxy's own memory). */
 export const memState = signal<Record<string, MemState>>({});
 
-export const memoryOf = (galaxy: string, repo: string): MemState =>
-  memState.value[key(galaxy, repo)] ?? { data: null, error: '', loading: false, at: 0 };
+export const memoryOf = (repo: string): MemState =>
+  memState.value[repo] ?? { data: null, error: '', loading: false, at: 0 };
 
-function put(galaxy: string, repo: string, patch: Partial<MemState>): void {
-  const k = key(galaxy, repo);
-  memState.value = { ...memState.value, [k]: { ...memoryOf(galaxy, repo), ...patch } };
+function put(repo: string, patch: Partial<MemState>): void {
+  memState.value = { ...memState.value, [repo]: { ...memoryOf(repo), ...patch } };
 }
 
-export async function loadMemory(galaxy: string, repo: string): Promise<void> {
-  put(galaxy, repo, { loading: true });
+export async function loadMemory(repo: string): Promise<void> {
+  put(repo, { loading: true });
   try {
-    const data = await api<MemData>(`/api/memory?galaxy=${encodeURIComponent(galaxy)}${repo ? `&repo=${encodeURIComponent(repo)}` : ''}`);
-    put(galaxy, repo, { data, error: '', loading: false, at: Date.now() });
+    const data = await api<MemData>(`/api/memory${repo ? `?repo=${encodeURIComponent(repo)}` : ''}`);
+    put(repo, { data, error: '', loading: false, at: Date.now() });
   } catch (e) {
-    put(galaxy, repo, { error: (e as Error).message, loading: false, at: Date.now() });
+    put(repo, { error: (e as Error).message, loading: false, at: Date.now() });
   }
 }
 
 export interface SaveBody {
-  galaxy: string;
   repo: string;
   id?: string;
   title: string;
@@ -122,7 +117,6 @@ export interface MemFinding {
 export interface MemPreview {
   token: string;
   level: 'galaxy' | 'universe';
-  galaxy: string;
   repo: string;
   /** The entries go to the universe's drafts (outside the checkout), not to files. */
   draft: boolean;
@@ -151,16 +145,16 @@ export const previewSave = (b: SaveBody): Promise<MemPreview> => post<MemPreview
 
 export const saveEntry = async (b: SaveBody, token: string, a: Accept = {}): Promise<MemEntry> => {
   const r = await post<{ entry: MemEntry }>('/api/memory/save', { ...b, ...gate(token, a) });
-  void loadMemory(b.galaxy, b.repo);
+  void loadMemory(b.repo);
   return r.entry;
 };
 
-export const previewDelete = (galaxy: string, repo: string, id: string): Promise<MemPreview> =>
-  post<MemPreview>('/api/memory/delete', { galaxy, repo, id });
+export const previewDelete = (repo: string, id: string): Promise<MemPreview> =>
+  post<MemPreview>('/api/memory/delete', { repo, id });
 
-export const deleteEntry = async (galaxy: string, repo: string, id: string, token: string, a: Accept = {}): Promise<void> => {
-  await post('/api/memory/delete', { galaxy, repo, id, ...gate(token, a) });
-  void loadMemory(galaxy, repo);
+export const deleteEntry = async (repo: string, id: string, token: string, a: Accept = {}): Promise<void> => {
+  await post('/api/memory/delete', { repo, id, ...gate(token, a) });
+  void loadMemory(repo);
 };
 
 export const previewDiscard = (repo: string, id: string): Promise<MemPreview> => post<MemPreview>('/api/memory/discard', { repo, id });
@@ -168,26 +162,26 @@ export const previewDiscard = (repo: string, id: string): Promise<MemPreview> =>
 /** Drops a universe's draft of an entry (what git has stays), after its card was confirmed. */
 export const discardDraft = async (repo: string, id: string, token: string): Promise<void> => {
   await post('/api/memory/discard', { repo, id, confirm: true, token });
-  void loadMemory('', repo);
+  void loadMemory(repo);
 };
 
 export const previewCommit = (repo: string): Promise<MemPreview> => post<MemPreview>('/api/memory/commit', { repo });
 
 export const commitMemory = async (repo: string, token: string, a: Accept = {}): Promise<{ commit: string; message: string; files: number }> => {
   const r = await post<{ commit: string; message: string; files: number }>('/api/memory/commit', { repo, ...gate(token, a) });
-  void loadMemory('', repo);
+  void loadMemory(repo);
   return r;
 };
 
 /** Switches the memory block in the board's `coordinator.instructions` on or off. Without `expect` it only previews
  *  (`current` → `now`, `now: null` means the setting would be unset); with `expect` (the text the card showed) it
  *  makes the change, unless the instructions are not those any more (409). */
-export const connectMemory = (galaxy: string, on: boolean, expect?: string): Promise<{ current: string; now: string | null }> =>
-  post<{ current: string; now: string | null }>('/api/memory/connect', expect === undefined ? { galaxy, on } : { galaxy, on, expect, confirm: true });
+export const connectMemory = (on: boolean, expect?: string): Promise<{ current: string; now: string | null }> =>
+  post<{ current: string; now: string | null }>('/api/memory/connect', expect === undefined ? { on } : { on, expect, confirm: true });
 
 export const setSuggest = async (suggest: boolean): Promise<void> => {
   await post('/api/memory/settings', { suggest });
-  void loadMemory('', '');
+  void loadMemory('');
 };
 
 type Line = { kind: string; text: string };
@@ -201,7 +195,7 @@ export const keepSuggestion = (task: string, lines: Line[], token: string, a: Ac
 export const dismissSuggestion = (task: string): Promise<unknown> => post('/api/memory/suggestion', { task, action: 'dismiss' });
 
 /** An entry to show: the search found it. The panel opens it and scrolls to it. */
-export const memFocus = signal<{ galaxy: string; repo: string; id: string } | null>(null);
+export const memFocus = signal<{ repo: string; id: string } | null>(null);
 
 /** The «В память» dialog: what to remember (the human edits it) and where it came from. */
 export interface RememberInit {

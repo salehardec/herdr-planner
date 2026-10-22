@@ -1,7 +1,7 @@
 import { signal } from '@preact/signals';
 import type { JSX } from 'preact';
-import { useEffect, useRef } from 'preact/hooks';
-import { currentView, galaxyId, panels, snap } from '../store';
+import { useEffect, useLayoutEffect, useRef, useState } from 'preact/hooks';
+import { currentView, panels, snap } from '../store';
 import { todoAdd, todoDropOn, todoRemove, todoReorder, todoAssign, todoSend, todoToTask, todoUpdate } from '../actions';
 import { api } from '../api';
 import { t } from '../i18n';
@@ -15,6 +15,7 @@ import { hasFiles, makeShelf, pastedFiles } from '../attach';
 import { dragTodo, endDrag, overId, startDrag } from '../todo-drag';
 import { draftTodos } from '../chat';
 import { PendingFiles, SavedFiles } from './Attached';
+import { AutoTextarea, fitText } from './AutoText';
 import './todo.css';
 
 export { dragTodo };
@@ -28,7 +29,7 @@ export function Todo(): JSX.Element {
   const open = panels.todo.value;
   const asideRef = useRef<HTMLElement>(null);
   const listRef = useRef<HTMLUListElement>(null);
-  const inputRef = useRef<HTMLInputElement>(null);
+  const inputRef = useRef<HTMLTextAreaElement>(null);
   const tasks = currentView.value.tasks.filter((x) => x.status !== 'done');
 
   useEffect(() => { if (open) drawerItems(listRef.current); }, [open]);
@@ -82,18 +83,18 @@ export function Todo(): JSX.Element {
     setTimeout(() => (document.querySelector(`[data-todo="${CSS.escape(id)}"]`) as HTMLElement | null)?.focus(), 60);
   };
 
-  const submit = async (e: Event): Promise<void> => {
-    e.preventDefault();
+  const submit = async (): Promise<void> => {
     const el = inputRef.current;
     if (!el) return;
-    let text = el.value.trim();
-    if (!text && !shelf.files.value.length) return;
+    // The server trims blank edges; leading indentation of the lines is what a person typed.
+    let text = el.value;
+    if (!text.trim() && !shelf.files.value.length) return;
     const got = await shelf.settled();
     if (!got.ok) { return; }
     // Only a file: the item is named after it.
     if (!text) text = t('todo.fileOnly', { name: got.saved[0].name });
     const r = await todoAdd(text, got.saved);
-    if (r) { el.value = ''; shelf.clear(); }
+    if (r) { el.value = ''; fitText(el); shelf.clear(); }
   };
 
   return (
@@ -105,8 +106,11 @@ export function Todo(): JSX.Element {
       onDrop={(e) => { fileOver.value = false; if (e.dataTransfer?.files?.length) { e.preventDefault(); shelf.add(e.dataTransfer.files); } }}
     >
       <header><span>{t('todo.title')} <kbd>T</kbd></span><button class="btn icon sm" type="button" aria-label={t('close')} onClick={() => { panels.todo.value = false; }}><Gl n="close" /></button></header>
-      <form class="tadd" id="todo-new" autocomplete="off" onSubmit={(e) => void submit(e)}>
-        <input id="todo-in" ref={inputRef} class="field" maxLength={400} placeholder={t('todo.new')} aria-label={t('todo.new')} />
+      <form class="tadd" id="todo-new" autocomplete="off" onSubmit={(e) => { e.preventDefault(); void submit(); }}>
+        <AutoTextarea
+          id="todo-in" elRef={inputRef} class="field"
+          placeholder={t('todo.new')} aria-label={t('todo.new')} onSend={() => void submit()}
+        />
         <label class="btn browse" id="todo-browse" title={t('todo.browseTip')}>
           <Gl n="attach" />{t('todo.browse')}
           <input
@@ -116,6 +120,7 @@ export function Todo(): JSX.Element {
           />
         </label>
         <button class="btn" type="submit" aria-label={t('todo.add')} title={t('todo.add')}>+</button>
+        <div class="keyhint" id="todo-hint">{t('text.keys.add')}</div>
       </form>
       <PendingFiles files={shelf.files.value} onRemove={shelf.remove} id="todo-attach" />
       <ul class="tlist" id="todo-list" ref={listRef}>
@@ -132,12 +137,75 @@ export function Todo(): JSX.Element {
   );
 }
 
+/** The words of an item: three lines, then «ещё»; a double click opens them for correction. */
+function TodoText(props: { id: string; text: string }): JSX.Element {
+  const [open, setOpen] = useState(false);
+  const [long, setLong] = useState(false);
+  const ref = useRef<HTMLSpanElement>(null);
+  useLayoutEffect(() => {
+    if (open) return;
+    const el = ref.current;
+    if (!el) return;
+    const measure = (): void => { setLong(el.scrollHeight > el.clientHeight + 1); };
+    measure();
+    if (typeof ResizeObserver === 'undefined') return;
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [props.text, open]);
+  return (
+    <>
+      <span
+        ref={ref} class={`txt ${open ? 'open' : ''}`} data-todo-text={props.id} title={t('todo.edit')}
+        onDblClick={() => { editing.value = props.id; }}
+      >{props.text}</span>
+      {long && (
+        <button class="btn sm more" type="button" aria-expanded={open} onClick={(e) => { e.stopPropagation(); setOpen(!open); }}>
+          {open ? t('todo.less') : t('todo.more')}
+        </button>
+      )}
+    </>
+  );
+}
+
+/** The words being corrected: its own state, so a board refresh cannot replace what is being typed. */
+function TodoEdit(props: { text: string; onCommit: (text: string) => Promise<void>; onCancel: () => void }): JSX.Element {
+  const [draft, setDraft] = useState(props.text);
+  const ref = useRef<HTMLTextAreaElement>(null);
+  const tried = useRef<string | null>(null);
+  // Enter and then leaving the field are one attempt: a refused text is not sent twice.
+  const commit = (): void => {
+    const text = ref.current?.value ?? draft;
+    if (tried.current === text) return;
+    tried.current = text;
+    void props.onCommit(text);
+  };
+  return (
+    <>
+      <AutoTextarea
+        class="field edit" elRef={ref} value={draft} autoFocus
+        onInput={(e) => { tried.current = null; setDraft((e.target as HTMLTextAreaElement).value); }}
+        onSend={commit}
+        onKeyDown={(e) => { if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); props.onCancel(); } }}
+        onBlur={commit}
+      />
+      <span class="hint edit-hint">{t('text.keys.save')}</span>
+    </>
+  );
+}
+
 function TodoRow(props: {
   it: TodoItem; tasks: { id: string; tag: string }[]; hl: boolean; onMove: (id: string, d: number) => void; onDropBefore: (from: string) => void;
 }): JSX.Element {
   const { it } = props;
   const isEditing = editing.value === it.id;
   const files = it.attachments ?? [];
+  /** Enter (or leaving the field) keeps the words; Shift+Enter is a new line. A refused save stays open. */
+  const commitEdit = async (text: string): Promise<void> => {
+    if (editing.value !== it.id) return;
+    const v = text;
+    if (!v.trim() || v === it.text || (await todoUpdate(it.id, { text: v }))) editing.value = null;
+  };
   return (
     <li
       class={`titem ${draftTodos.value.includes(it.id) ? 'drafted' : ''} ${dragTodo.value === it.id ? 'drag' : ''} ${overId.value === it.id ? 'over' : ''} ${props.hl ? 'hl' : ''}`}
@@ -163,16 +231,9 @@ function TodoRow(props: {
       <span class="h" aria-hidden="true">⋮⋮</span>
       <div class="body">
         {isEditing ? (
-          <input
-            class="field edit" value={it.text} autoFocus
-            onKeyDown={(e) => {
-              if (e.key === 'Enter') { e.preventDefault(); const v = (e.target as HTMLInputElement).value.trim(); editing.value = null; if (v && v !== it.text) void todoUpdate(it.id, { text: v }); }
-              else if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); editing.value = null; }
-            }}
-            onBlur={(e) => { const v = (e.target as HTMLInputElement).value.trim(); if (editing.value === it.id) { editing.value = null; if (v && v !== it.text) void todoUpdate(it.id, { text: v }); } }}
-          />
+          <TodoEdit key={it.id} text={it.text} onCommit={commitEdit} onCancel={() => { editing.value = null; }} />
         ) : (
-          <span class="txt" data-todo-text={it.id} title={t('todo.edit')} onDblClick={() => { editing.value = it.id; }}>{it.text}</span>
+          <TodoText id={it.id} text={it.text} />
         )}
         {draftTodos.value.includes(it.id) && <span class="dnote">{t('todo.inDraft')}</span>}
         <SavedFiles list={files} class="tfiles" onRemove={(id) => void todoUpdate(it.id, { attachments: files.filter((a) => a.id !== id) })} />
@@ -236,11 +297,11 @@ export function installTodoDnD(canvas: HTMLElement): void {
     endDrag();
     if (!target) return;
     void todoDropOn(id, target).then((r) => {
-      if (r === 'asked') { openNewTask(id, target.id, target.galaxy); void loadModels('claude'); }
-      else if (r === 'tell') openTell(id, target.id, target.galaxy);
+      if (r === 'asked') { openNewTask(id, target.id); void loadModels('claude'); }
+      else if (r === 'tell') openTell(id, target.id);
     });
   });
 }
 
 export { models as modelList };
-void galaxyId; void todoToTask;
+void todoToTask;

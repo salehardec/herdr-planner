@@ -46,12 +46,13 @@
 .chat .dialog pre{margin:0;max-height:9.375rem;overflow:auto;white-space:pre-wrap;word-break:break-word;color:var(--pl-dim);font:0.6875rem/1.35 var(--font)}
 .chat .keys{display:flex;flex-wrap:wrap;gap:0.25rem}
 .chat .variants{display:flex;flex-wrap:wrap;gap:0.3125rem;padding:0 0.625rem 0.4375rem}
-.chat .compose{display:flex;gap:0.5rem;padding:0.5rem 0.625rem;border-top:1px solid var(--pl-line);align-items:flex-end}
-.chat .compose textarea{flex:1;height:2.25rem;min-height:2.25rem;max-height:7.5rem;resize:none;border:1px solid var(--pl-line);background:var(--pl-tile);border-radius:0.375rem;padding:0.4375rem 0.625rem;font-size:0.875rem;line-height:1.25rem;outline:none}
+.chat .compose{display:grid;grid-template-columns:minmax(0,1fr) auto auto;grid-template-areas:"f a s" "h h h";gap:0.25rem 0.5rem;padding:0.5rem 0.625rem;border-top:1px solid var(--pl-line);align-items:end}
+.chat .compose textarea{grid-area:f;width:100%;min-height:2.25rem;max-height:7.5rem;resize:none;overflow-y:auto;border:1px solid var(--pl-line);background:var(--pl-tile);border-radius:0.375rem;padding:0.4375rem 0.625rem;font-size:0.875rem;line-height:1.25rem;outline:none}
 .chat .compose textarea:focus{border-color:var(--pl-focus)}
-.chat .attachbtn{display:inline-flex;align-items:center;justify-content:center;width:1.875rem;height:2.25rem;border-radius:0.3125rem;color:var(--pl-faint);cursor:pointer}
+.chat .compose .keyhint{grid-area:h}
+.chat .attachbtn{grid-area:a;display:inline-flex;align-items:center;justify-content:center;width:1.875rem;height:2.25rem;border-radius:0.3125rem;color:var(--pl-faint);cursor:pointer}
 .chat .attachbtn:hover{color:var(--pl-title);background:var(--pl-hover)}
-.chat .send{height:2.25rem}
+.chat .send{grid-area:s;height:2.25rem}
 .chat .send[data-ready="false"]{background:var(--pl-raised);border-color:var(--pl-line);color:var(--pl-faint)}
 .dots{display:inline-flex;gap:0.1875rem;margin-left:0.3125rem}
 .dots i{width:0.25rem;height:0.25rem;border-radius:50%;background:var(--pl-dim);animation:blink 1.2s infinite both}

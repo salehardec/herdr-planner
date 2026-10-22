@@ -2,17 +2,16 @@ import { signal } from '@preact/signals';
 import type { JSX } from 'preact';
 import { useEffect } from 'preact/hooks';
 import { addDialogs, todoDraft } from '../dialogs';
-import { currentView, galaxyId, snap, taskOf } from '../store';
-import { installYazi, todoAssign, todoSend, todoToTask, todoUpdate, yaziDlg } from '../actions';
-import { armed } from '../store';
+import { currentView, snap, taskOf } from '../store';
+import { todoAssign, todoSend, todoToTask, todoUpdate } from '../actions';
 import { t } from '../i18n';
 import { Gl } from './Gl';
 import { loadModels, modelList } from './Todo';
-import { AddGalaxy } from './AddGalaxy';
-import { AddRunner } from './AddRunner';
 import { AddUniverse } from './AddUniverse';
+import { AddRunner } from './AddRunner';
 import { lightPreset } from './station-api';
 import { SavedFiles } from './Attached';
+import { AutoTextarea } from './AutoText';
 import { toast } from '../toast';
 import type { SavedFile } from '../attach';
 import { Coach, FirstRun } from './FirstRun';
@@ -37,11 +36,15 @@ async function saveDraft(id: string): Promise<boolean> {
   return !!(await todoUpdate(id, patch));
 }
 
-function DraftFields(props: { prefix: string }): JSX.Element {
+function DraftFields(props: { prefix: string; onSend: () => void; hint: string }): JSX.Element {
   return (
     <>
       <label>{t('todo.popText')}
-        <textarea class="field" id={`${props.prefix}-text`} rows={3} maxLength={400} value={editText.value} onInput={(e) => { editText.value = (e.target as HTMLTextAreaElement).value; }} />
+        <AutoTextarea
+          class="field" id={`${props.prefix}-text`} value={editText.value}
+          onInput={(e) => { editText.value = (e.target as HTMLTextAreaElement).value; }} onSend={props.onSend}
+        />
+        <span class="hint keyhint" id={`${props.prefix}-text-hint`}>{props.hint}</span>
       </label>
       <SavedFiles list={editFiles.value} class="dfiles" onRemove={(id) => { editFiles.value = editFiles.value.filter((a) => a.id !== id); }} />
     </>
@@ -66,9 +69,9 @@ function TodoPopover(): JSX.Element | null {
       <section class="panel dlg sm" id="pop" role="dialog" aria-label={t('todo.popTitle')}>
         <header><b>{t('todo.popTitle')}</b><button class="btn icon sm" type="button" aria-label={t('close')} onClick={() => { addDialogs.popover.value = null; }}><Gl n="close" /></button></header>
         <div class="bd">
-          <DraftFields prefix="pop" />
+          <DraftFields prefix="pop" onSend={() => void go()} hint={t('text.keys.create')} />
           <label>{t('todo.popProject')}
-            <select class="field" id="pop-repo" value={p.repo} onChange={(e) => { addDialogs.popover.value = { id: p.id, repo: (e.target as HTMLSelectElement).value, galaxy: p.galaxy }; }}>
+            <select class="field" id="pop-repo" value={p.repo} onChange={(e) => { addDialogs.popover.value = { id: p.id, repo: (e.target as HTMLSelectElement).value }; }}>
               {projects.map((x) => <option value={x.name}>{x.name}</option>)}
             </select>
           </label>
@@ -80,7 +83,7 @@ function TodoPopover(): JSX.Element | null {
           </div>
           <div class="prog">
             <button type="button" class="btn sm" id="pop-light" title={t('todo.lightHint')} onClick={() => {
-              void lightPreset(p.galaxy ?? '').then((v) => {
+              void lightPreset().then((v) => {
                 if (v) { popProgram.value = v.split('/')[0]; popModel.value = v; } else toast(t('todo.lightNone'));
               });
             }}>{t('todo.light')}</button>
@@ -104,7 +107,7 @@ function TodoPopover(): JSX.Element | null {
 function TodoTell(): JSX.Element | null {
   const p = addDialogs.tell.value;
   if (!p) return null;
-  const tag = taskOf(p.task, p.galaxy)?.tag ?? p.task;
+  const tag = taskOf(p.task)?.tag ?? p.task;
   const go = async (): Promise<void> => {
     if (!(await saveDraft(p.id))) return;
     await todoAssign(p.id, p.task);
@@ -116,7 +119,7 @@ function TodoTell(): JSX.Element | null {
       <section class="panel dlg sm" id="pop-tell" role="dialog" aria-label={t('todo.tellTitle', { task: tag })}>
         <header><b>{t('todo.tellTitle', { task: tag })}</b><button class="btn icon sm" type="button" aria-label={t('close')} onClick={() => { addDialogs.tell.value = null; }}><Gl n="close" /></button></header>
         <div class="bd">
-          <DraftFields prefix="tell" />
+          <DraftFields prefix="tell" onSend={() => void go()} hint={t('text.keys.send')} />
           <p class="hint">{t('todo.tellHint')}</p>
           <div class="act">
             <button class="btn primary" type="button" id="tell-go" disabled={!editText.value.trim()} onClick={() => void go()}>{t('todo.tellGo')}</button>
@@ -128,64 +131,15 @@ function TodoTell(): JSX.Element | null {
   );
 }
 
-/** yazi is not on the far machine: how to put it there (a release binary without sudo, or the package manager). */
-function YaziDialog(): JSX.Element | null {
-  const d = yaziDlg.value;
-  if (!d) return null;
-  const st = d.state;
-  const close = (): void => { yaziDlg.value = null; };
-  const binOn = armed.value?.key === 'yazi:binary';
-  const brewOn = armed.value?.key === 'yazi:brew';
-  const brew = st?.managers.find((m) => m.id === 'brew');
-  const pacman = st?.managers.find((m) => m.id === 'pacman');
-  const apt = st?.managers.find((m) => m.id === 'apt');
-  return (
-    <div class="scrim" onMouseDown={(e) => { if (e.target === e.currentTarget && !d.busy) close(); }}>
-      <section class="panel dlg" id="yazi-dlg" role="dialog" aria-label={t('far.yaziTitle')}>
-        <header><b>{t('far.yaziTitle', { g: d.galaxy })}</b><button class="btn icon sm" type="button" aria-label={t('close')} onClick={close}><Gl n="close" /></button></header>
-        <div class="bd">
-          <p class="hint">{t('far.yaziMissing', { os: st?.os ?? '?', arch: st?.arch ?? '?' })}</p>
-          {st && !st.has_file && <p class="hint bad">{t('far.noFile')}</p>}
-          {st?.binary_url && (
-            <div class="info">
-              <b>{t('far.byBinary')}</b>
-              <div class="hint">{t('far.byBinaryHint')} <code>{st.binary_url}</code></div>
-              <div class="act"><button class={`btn primary ${binOn ? 'arm' : ''}`} type="button" id="yazi-binary" disabled={d.busy} onClick={() => installYazi('binary')}>{binOn ? t('galaxy.addConfirm') : t('far.install')}</button></div>
-            </div>
-          )}
-          {brew && (
-            <div class="info"><b>Homebrew</b> <code>{brew.command}</code>
-              <div class="act"><button class={`btn ${brewOn ? 'arm' : ''}`} type="button" id="yazi-brew" disabled={!brew.available || d.busy} onClick={() => installYazi('brew')}>{brewOn ? t('galaxy.addConfirm') : t('far.install')}</button></div>
-              {brew.why_not && <div class="hint">{brew.why_not}</div>}</div>
-          )}
-          {pacman && (
-            <div class="info"><b>pacman</b> <code>{pacman.command}</code>
-              <div class="hint">{t('far.sudoHint')}</div>
-              <div class="act"><button class="btn" type="button" id="yazi-pacman" disabled={!pacman.available || d.busy} onClick={() => installYazi('pacman')}>{t('far.inTerminal')}</button></div></div>
-          )}
-          {apt && <div class="info"><b>apt</b> <div class="hint">{apt.why_not ?? t('far.noApt')}</div></div>}
-          {d.log.length > 0 && <ul class="steps">{d.log.map((l, i) => <li class={i === d.log.length - 1 && d.busy ? 'run' : 'ok'} key={i}><span class="i">{i === d.log.length - 1 && d.busy ? '…' : '✓'}</span><div>{l}</div></li>)}</ul>}
-          {d.err && <p class="hint bad">{d.err}</p>}
-          <div class="act"><button class="btn" type="button" onClick={close}>{t('cancel')}</button></div>
-        </div>
-      </section>
-    </div>
-  );
-}
-
 export function Dialogs(): JSX.Element {
   return (
     <>
-      <YaziDialog />
-      <AddGalaxy />
-      <AddRunner />
       <TodoPopover />
       <TodoTell />
       <AddUniverse />
+      <AddRunner />
       <FirstRun />
       <Coach />
     </>
   );
 }
-
-void galaxyId;

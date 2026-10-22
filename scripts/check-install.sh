@@ -292,7 +292,7 @@ check "first install: Hyprland key written" grep -q '"SUPER + ALT + P", "Herdr P
 check "first install: launcher written" grep -q "^Exec=$H/.local/bin/herdr-planner-open" "$H/.local/share/applications/herdr-planner.desktop"
 check "first install: the no-password note" has "$LAST" 'вход без пароля'
 check "first install: no config without a password" test ! -e "$CFG"
-check "first install: the far galaxy hint" has "$LAST" 'herdr machine add '
+check "first install: no far galaxy hint" sh -c "! grep -q 'herdr machine add' '$LAST'"
 check "first install: the summary has the planner version" has "$LAST" "herdr-planner    $V1"
 check "first install: seven steps" test "$(grep -c '^\[[1-7]/7\] ' "$LAST")" -eq 7
 [ -z "${CHECK_INSTALL_VERBOSE:-}" ] || cat "$LAST"
@@ -369,7 +369,7 @@ check "password: the password itself is not stored" sh -c "! grep -q 'correct ho
 check "password: config is private (600)" [ "$(stat -c %a "$CFG")" = 600 ]
 inst status || fail "status after password"
 check "status: login on, with the address" has "$LAST" 'login    on (me / 0.0.0.0:7117)'
-check "status: the far galaxy hint" has "$LAST" 'herdr machine add '
+check "status: no far galaxy hint" sh -c "! grep -q 'herdr machine add' '$LAST'"
 hash_before=$(cfg_get password_hash)
 inst install --no-herdr --no-plugin --no-service --user other --listen 127.0.0.1 || fail "--user --listen"
 check "flags --user --listen: user and listen changed" [ "$(cfg_get user)" = other ]

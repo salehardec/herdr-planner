@@ -1,19 +1,15 @@
 //! How far a repository's main branch lags behind its origin (plan §4.8).
 //!
 //! Read-only: nothing here fetches or pulls. The board fetches on its own, and `FETCH_HEAD`'s mtime says when.
-//! The same read-only snippet runs here (`sh -c`) and on another machine (one ssh call per machine, over the folders
-//! of its repositories), so both sides read the same facts.
 
-use crate::machines::{self, sh_quote, MachineRef};
 use serde::Serialize;
 use std::collections::BTreeMap;
-use std::process::{Command as StdCommand, Stdio};
+use std::process::Stdio;
 use std::time::Duration;
 use tokio::process::Command;
 use tokio::time::timeout;
 
 const LOCAL_WAIT: Duration = Duration::from_secs(20);
-const REMOTE_WAIT: Duration = Duration::from_secs(25);
 
 /// One repository's main branch against its origin. `behind`/`ahead` count commits; `as_of_ms` is when the
 /// origin was last fetched (`FETCH_HEAD`'s mtime), `tip_ms` the time of the origin's main tip commit.
@@ -35,46 +31,8 @@ pub struct Lag {
     pub note: String,
 }
 
-/// A repository's place on another (or this) machine: its name on the board and its folder.
+/// A repository's place on this machine: its name on the board and its folder.
 pub type Folder = (String, String);
-
-/// The result of comparing two clones of one origin.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-pub enum Cmp {
-    /// Both main branches are the same commit.
-    Same,
-    /// The first clone is behind the second by this many commits.
-    Behind(u32),
-    /// The first clone is ahead of the second by this many commits.
-    Ahead(u32),
-    /// Each has commits the other lacks.
-    Diverged,
-    /// Not computable: a clone never fetched its origin, or the local clone lacks one of the commits. The page
-    /// words this as "впереди или расходится".
-    Unknown,
-}
-
-/// A repository of one galaxy, with its origin as its folder reports it.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct GalaxyRepo {
-    pub galaxy: String,
-    pub repo: String,
-    pub origin: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct RepoRef {
-    pub galaxy: String,
-    pub repo: String,
-}
-
-/// Two clones of one origin.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct Bridge {
-    pub origin: String,
-    pub a: RepoRef,
-    pub b: RepoRef,
-}
 
 /// The read-only snippet. Its arguments are folders; each prints one tab-separated line:
 /// index, origin URL, main branch, local main sha, origin/main sha, ahead, behind, FETCH_HEAD mtime, tip time.
@@ -237,124 +195,11 @@ pub async fn local(repos: &[Folder]) -> BTreeMap<String, Lag> {
     }
 }
 
-/// The lags of the repositories of another machine: one ssh call, the same snippet over the folders there.
-/// `label` names the machine as the planner has it (`machines::resolve`).
-pub async fn remote(
-    cfg: &crate::config::AppConfig,
-    label: &str,
-    folders: &[Folder],
-) -> BTreeMap<String, Lag> {
-    remote_with(cfg, &machines::herdr_bin(), label, folders).await
-}
-
-pub(crate) async fn remote_with(
-    cfg: &crate::config::AppConfig,
-    herdr: &str,
-    label: &str,
-    folders: &[Folder],
-) -> BTreeMap<String, Lag> {
-    if folders.is_empty() {
-        return BTreeMap::new();
-    }
-    let m: MachineRef = match machines::resolve_with(herdr, label).await {
-        Ok(m) => m,
-        Err(e) => return by_folders(None, folders, &e),
-    };
-    let mut unique: Vec<String> = Vec::new();
-    for (_, f) in folders {
-        if !unique.contains(f) {
-            unique.push(f.clone());
-        }
-    }
-    let args: Vec<String> = unique.iter().map(|f| sh_quote(f)).collect();
-    let cmd = format!("sh -c {} sh {}", sh_quote(SNIPPET), args.join(" "));
-    match machines::ssh_ended(cfg, &m, &cmd, REMOTE_WAIT).await {
-        Ok(end) if !end.timed_out && end.error.is_empty() => {
-            by_folders(Some(&end.stdout), folders, "машина не ответила по git")
-        }
-        _ => by_folders(None, folders, "машина не ответила по git"),
-    }
-}
-
-fn is_sha(s: &str) -> bool {
-    (s.len() == 40 || s.len() == 64) && s.chars().all(|c| c.is_ascii_hexdigit())
-}
-
-/// The commits in `range` (`a..b`) of the clone at `root`, when that clone has them all.
-fn rev_count(root: &str, range: &str) -> Option<u32> {
-    let out = StdCommand::new("git")
-        .args(["-C", root, "rev-list", "--count", range])
-        .stdin(Stdio::null())
-        .stderr(Stdio::null())
-        .output()
-        .ok()?;
-    if !out.status.success() {
-        return None;
-    }
-    String::from_utf8_lossy(&out.stdout).trim().parse().ok()
-}
-
-/// How clone `a` stands against clone `b` of one origin. Equal main commits are `Same`; otherwise the commit counts
-/// come from the local clone at `local_root` when it has both commits. Otherwise `Unknown`.
-pub fn compare(a: &Lag, b: &Lag, local_root: Option<&str>) -> Cmp {
-    if !a.known || !b.known || !is_sha(&a.head_sha) || !is_sha(&b.head_sha) {
-        return Cmp::Unknown;
-    }
-    if a.head_sha == b.head_sha {
-        return Cmp::Same;
-    }
-    let Some(root) = local_root else {
-        return Cmp::Unknown;
-    };
-    let only_b = rev_count(root, &format!("{}..{}", a.head_sha, b.head_sha));
-    let only_a = rev_count(root, &format!("{}..{}", b.head_sha, a.head_sha));
-    match (only_a, only_b) {
-        (Some(0), Some(0)) => Cmp::Same,
-        (Some(0), Some(n)) => Cmp::Behind(n),
-        (Some(n), Some(0)) => Cmp::Ahead(n),
-        (Some(_), Some(_)) => Cmp::Diverged,
-        _ => Cmp::Unknown,
-    }
-}
-
-/// Pairs of repositories, of any galaxies, that share an origin (after normalizing). Each pair once.
-pub fn bridges(repos: &[GalaxyRepo]) -> Vec<Bridge> {
-    let mut groups: BTreeMap<String, Vec<&GalaxyRepo>> = BTreeMap::new();
-    for r in repos {
-        let origin = normalize_origin(&r.origin);
-        if !origin.is_empty() {
-            groups.entry(origin).or_default().push(r);
-        }
-    }
-    let mut out = Vec::new();
-    for (origin, members) in groups {
-        for (i, a) in members.iter().enumerate() {
-            for b in &members[i + 1..] {
-                if a.galaxy == b.galaxy && a.repo == b.repo {
-                    continue;
-                }
-                out.push(Bridge {
-                    origin: origin.clone(),
-                    a: RepoRef {
-                        galaxy: a.galaxy.clone(),
-                        repo: a.repo.clone(),
-                    },
-                    b: RepoRef {
-                        galaxy: b.galaxy.clone(),
-                        repo: b.repo.clone(),
-                    },
-                });
-            }
-        }
-    }
-    out
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::AppConfig;
     use std::path::{Path, PathBuf};
+    use std::process::Command as StdCommand;
 
     #[test]
     fn origins_are_one_string_however_they_are_written() {
@@ -444,13 +289,12 @@ mod tests {
         git(dir, &["commit", "-q", "-m", file]);
     }
 
-    /// A bare origin, a seed that pushes three commits, a `local` clone left at the first one (fetched later, so it is
-    /// two behind), and an `other` clone made after all three (up to date).
-    fn scenario(root: &Path) -> (PathBuf, PathBuf, PathBuf) {
+    /// A bare origin, a seed that pushes three commits and a `local` clone left at the first one (fetched later, so it is
+    /// two behind).
+    fn scenario(root: &Path) -> (PathBuf, PathBuf) {
         let origin = root.join("origin.git");
         let seed = root.join("seed");
         let local = root.join("local");
-        let other = root.join("other");
         std::fs::create_dir_all(&seed).unwrap();
         let st = StdCommand::new("git")
             .args(["init", "-q", "--bare", "-b", "main"])
@@ -479,14 +323,13 @@ mod tests {
         commit(&seed, "three");
         git(&seed, &["push", "-q", "origin", "main"]);
         git(&local, &["fetch", "-q", "origin"]);
-        clone(&other);
-        (origin, local, other)
+        (origin, local)
     }
 
     #[tokio::test]
     async fn local_clone_two_behind_after_a_fetch() {
         let dir = tempfile::tempdir().unwrap();
-        let (_origin, local, _other) = scenario(dir.path());
+        let (_origin, local) = scenario(dir.path());
         let lags = local_for(&local).await;
         let lag = &lags["hp"];
         assert!(lag.known, "{lag:?}");
@@ -498,93 +341,5 @@ mod tests {
 
     async fn local_for(root: &Path) -> BTreeMap<String, Lag> {
         local(&[("hp".to_string(), root.display().to_string())]).await
-    }
-
-    #[tokio::test]
-    async fn clones_compare_by_commits_in_the_local_clone() {
-        let dir = tempfile::tempdir().unwrap();
-        let (_origin, local_clone, other) = scenario(dir.path());
-        let behind = local_for(&local_clone).await.remove("hp").unwrap();
-        let up = local_for(&other).await.remove("hp").unwrap();
-        let other_root = other.display().to_string();
-        assert_eq!(compare(&behind, &up, Some(&other_root)), Cmp::Behind(2));
-        assert_eq!(compare(&up, &behind, Some(&other_root)), Cmp::Ahead(2));
-        assert_eq!(compare(&up, &up.clone(), None), Cmp::Same);
-        // Without the commits in the local clone, the answer is not known.
-        assert_eq!(compare(&behind, &up, None), Cmp::Unknown);
-        let never = Lag::default();
-        assert_eq!(compare(&never, &up, Some(&other_root)), Cmp::Unknown);
-    }
-
-    #[tokio::test]
-    async fn remote_reads_the_same_snippet_over_the_one_ssh_call() {
-        let dir = tempfile::tempdir().unwrap();
-        let (_origin, local_clone, _other) = scenario(dir.path());
-        let cfg = machines::test_cfg(dir.path());
-        let ssh = dir.path().join("ssh");
-        // A stand-in for ssh: runs the remote command (the last argument) in a shell here.
-        std::fs::write(
-            &ssh,
-            "#!/bin/sh\nfor a; do last=$a; done\nexec sh -c \"$last\"\n",
-        )
-        .unwrap();
-        make_executable(&ssh);
-        let herdr = dir.path().join("herdr");
-        std::fs::write(
-            &herdr,
-            "#!/bin/sh\necho '[{\"label\":\"vm-a\",\"ssh_target\":\"vm-a\",\"remote_session\":\"default\"}]'\n",
-        )
-        .unwrap();
-        make_executable(&herdr);
-        let cfg = AppConfig {
-            ssh_bin: ssh.display().to_string(),
-            ..cfg
-        };
-        let folders = vec![("hp".to_string(), local_clone.display().to_string())];
-        let lags = remote_with(&cfg, &herdr.display().to_string(), "vm-a", &folders).await;
-        let lag = &lags["hp"];
-        assert!(lag.known, "{lag:?}");
-        assert_eq!(lag.behind, 2);
-        // An unknown machine says so for each repository.
-        let none = remote_with(&cfg, &herdr.display().to_string(), "vm-zz", &folders).await;
-        assert!(!none["hp"].known);
-        assert!(!none["hp"].note.is_empty());
-    }
-
-    fn make_executable(p: &Path) {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(p, std::fs::Permissions::from_mode(0o755)).unwrap();
-        crate::testutil::settle(p);
-    }
-
-    #[test]
-    fn two_clones_of_one_origin_make_one_bridge() {
-        let repos = vec![
-            GalaxyRepo {
-                galaxy: "home".into(),
-                repo: "herdr-planner".into(),
-                origin: "git@github.com:salehardec/herdr-planner.git".into(),
-            },
-            GalaxyRepo {
-                galaxy: "vm-a".into(),
-                repo: "herdr-planner".into(),
-                origin: "https://github.com/salehardec/herdr-planner".into(),
-            },
-            GalaxyRepo {
-                galaxy: "vm-a".into(),
-                repo: "other".into(),
-                origin: "https://github.com/salehardec/other".into(),
-            },
-            GalaxyRepo {
-                galaxy: "home".into(),
-                repo: "nothing".into(),
-                origin: String::new(),
-            },
-        ];
-        let got = bridges(&repos);
-        assert_eq!(got.len(), 1, "{got:?}");
-        assert_eq!(got[0].origin, "github.com/salehardec/herdr-planner");
-        assert_eq!(got[0].a.galaxy, "home");
-        assert_eq!(got[0].b.galaxy, "vm-a");
     }
 }

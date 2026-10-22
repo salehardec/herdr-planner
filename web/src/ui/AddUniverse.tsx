@@ -3,7 +3,7 @@ import type { JSX } from 'preact';
 import { useEffect } from 'preact/hooks';
 import { addDialogs } from '../dialogs';
 import { api, onProgress, post } from '../api';
-import { armed, galaxyId, snap, views } from '../store';
+import { armed, currentView, snap } from '../store';
 import { confirmStep } from '../actions';
 import { navigateTo } from '../nav';
 import { t } from '../i18n';
@@ -45,21 +45,21 @@ const reset = (): void => {
   job.value = null; steps.value = []; result.value = null; failed.value = ''; mode.value = tab.value === 'folder' ? 'folder' : 'clone';
 };
 
-async function complete(galaxy: string): Promise<void> {
+async function complete(): Promise<void> {
   try {
-    const r = await api<{ entries: Entry[] }>(`/api/fs/complete?path=${encodeURIComponent(input.value)}&galaxy=${encodeURIComponent(galaxy)}`);
+    const r = await api<{ entries: Entry[] }>(`/api/fs/complete?path=${encodeURIComponent(input.value)}`);
     entries.value = r.entries ?? [];
     cur.value = 0;
   } catch { entries.value = []; }
 }
 
-async function inspect(galaxy: string): Promise<void> {
+async function inspect(): Promise<void> {
   const text = input.value.trim();
   if (!text) return;
   inspecting.value = true;
   err.value = '';
   try {
-    const r = await post<{ inspect: Inspect }>('/api/universe/inspect', { input: text, galaxy: galaxy || undefined });
+    const r = await post<{ inspect: Inspect }>('/api/universe/inspect', { input: text });
     info.value = r.inspect;
     name.value = r.inspect.board_name || r.inspect.suggested_name;
     key.value = r.inspect.suggested_key;
@@ -73,9 +73,9 @@ async function inspect(galaxy: string): Promise<void> {
 }
 
 /** Opens the dialog on a clean slate (the form is reset here, not after the first paint, so nothing typed is lost). */
-export function openAddUniverse(galaxy: string): void {
+export function openAddUniverse(): void {
   reset();
-  addDialogs.universe.value = { galaxy };
+  addDialogs.universe.value = true;
 }
 
 export function AddUniverse(): JSX.Element | null {
@@ -90,14 +90,12 @@ export function AddUniverse(): JSX.Element | null {
     return () => { off?.(); off = null; };
   }, [!!d]);
   if (!d) return null;
-  const galaxy = d.galaxy;
-  const view = views.value.find((v) => v.id === galaxy);
-  const gname = galaxy === '' ? snap.value?.host ?? '' : galaxy;
+  const gname = snap.value?.host ?? '';
   const i = info.value;
   const k = 'add-universe';
   const on = armed.value?.key === k;
   const busy = job.value !== null && !result.value && !failed.value;
-  const taken = new Set((view?.projects ?? []).map((p) => p.name));
+  const taken = new Set(currentView.value.projects.map((p) => p.name));
   const ready = !!i && !!name.value.trim() && /^[A-Za-z0-9._-]+$/.test(name.value.trim()) && !(i.on_board && mode.value === 'folder');
   const set = (patch: Partial<{ v: string }>): void => void patch;
   void set;
@@ -106,13 +104,13 @@ export function AddUniverse(): JSX.Element | null {
     input.value = v;
     info.value = null;
     window.clearTimeout(timer);
-    if (tab.value === 'folder') timer = window.setTimeout(() => { void complete(galaxy); }, 120);
+    if (tab.value === 'folder') timer = window.setTimeout(() => { void complete(); }, 120);
   };
 
   const pick = (e: Entry): void => {
     input.value = e.path.endsWith('/') ? e.path : e.git ? e.path : e.path + '/';
     entries.value = [];
-    if (e.git) void inspect(galaxy); else void complete(galaxy);
+    if (e.git) void inspect(); else void complete();
   };
 
   const start = (): void => {
@@ -121,7 +119,7 @@ export function AddUniverse(): JSX.Element | null {
       steps.value = []; failed.value = ''; result.value = null;
       try {
         const body: Record<string, unknown> = {
-          mode: mode.value, name: name.value.trim(), key: key.value.trim() || undefined, galaxy: galaxy || undefined, confirm: true,
+          mode: mode.value, name: name.value.trim(), key: key.value.trim() || undefined, confirm: true,
         };
         if (mode.value === 'folder') body.path = i.path ?? input.value.trim(); else { body.url = input.value.trim(); body.dir = dir.value.trim() ? dir.value.trim().replace(/\/[^/]+$/, '') : undefined; }
         const r = await post<{ job: string }>('/api/universe/add', body);
@@ -130,7 +128,7 @@ export function AddUniverse(): JSX.Element | null {
     });
   };
 
-  const close = (): void => { addDialogs.universe.value = null; };
+  const close = (): void => { addDialogs.universe.value = false; };
 
   return (
     <div class="scrim" onMouseDown={(e) => { if (e.target === e.currentTarget && !busy) close(); }}>
@@ -151,10 +149,10 @@ export function AddUniverse(): JSX.Element | null {
                   onKeyDown={(e) => {
                     if (e.key === 'ArrowDown') { e.preventDefault(); cur.value = Math.min(entries.value.length - 1, cur.value + 1); }
                     else if (e.key === 'ArrowUp') { e.preventDefault(); cur.value = Math.max(0, cur.value - 1); }
-                    else if (e.key === 'Tab' && entries.value[cur.value] && tab.value === 'folder') { e.preventDefault(); const en = entries.value[cur.value]; input.value = en.path + '/'; void complete(galaxy); }
-                    else if (e.key === 'Enter') { e.preventDefault(); const en = entries.value[cur.value]; if (en && tab.value === 'folder' && !info.value) pick(en); else void inspect(galaxy); }
+                    else if (e.key === 'Tab' && entries.value[cur.value] && tab.value === 'folder') { e.preventDefault(); const en = entries.value[cur.value]; input.value = en.path + '/'; void complete(); }
+                    else if (e.key === 'Enter') { e.preventDefault(); const en = entries.value[cur.value]; if (en && tab.value === 'folder' && !info.value) pick(en); else void inspect(); }
                   }}
-                  onBlur={() => { if (tab.value === 'address' && input.value.trim() && !info.value) void inspect(galaxy); }}
+                  onBlur={() => { if (tab.value === 'address' && input.value.trim() && !info.value) void inspect(); }}
                 />
               </label>
               {tab.value === 'folder' && entries.value.length > 0 && (
@@ -176,7 +174,7 @@ export function AddUniverse(): JSX.Element | null {
                   <button class="btn" type="button" onClick={close}>{t('cancel')}</button>
                 </div>
               )}
-              {!i && <div class="act"><button class="btn" type="button" id="u-check" disabled={!input.value.trim() || inspecting.value} onClick={() => void inspect(galaxy)}>{t('addu.check')}</button></div>}
+              {!i && <div class="act"><button class="btn" type="button" id="u-check" disabled={!input.value.trim() || inspecting.value} onClick={() => void inspect()}>{t('addu.check')}</button></div>}
             </>
           )}
           {job.value && (
@@ -204,7 +202,7 @@ export function AddUniverse(): JSX.Element | null {
                 </div>
               )}
               <div class="act">
-                {result.value && <button class="btn primary" type="button" id="u-fly" onClick={() => { close(); void navigateTo({ kind: 'universe', galaxy, id: result.value.name }); }}>{t('addu.fly')}</button>}
+                {result.value && <button class="btn primary" type="button" id="u-fly" onClick={() => { close(); void navigateTo({ kind: 'universe', id: result.value.name }); }}>{t('addu.fly')}</button>}
                 {(result.value || failed.value) && <button class="btn" type="button" onClick={close}>{t('close')}</button>}
               </div>
             </>
@@ -262,5 +260,3 @@ function Details(props: { i: Inspect; gname: string; taken: Set<string> }): JSX.
     </div>
   );
 }
-
-void galaxyId;

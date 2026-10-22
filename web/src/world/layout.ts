@@ -10,7 +10,6 @@ export const QUASAR_R = 14;
 export const R_MIN = 140;
 export const QUIET_R0 = 520;
 export const R_BOUND = 760;
-export const R_FAR = 1150;
 export const SLOTS = 3;
 
 export interface PlanetLayout {
@@ -186,15 +185,6 @@ export function planetPosition(
   out.y = u.center.y;
   out.z = u.center.z + Math.sin(a) * p.radius;
   return out;
-}
-
-/** Normalised git origin: no scheme, user or `.git`; `host:path` → `host/path`; lower case. */
-export function normalizeOrigin(url: string): string {
-  let s = (url || '').trim();
-  if (!s) return '';
-  s = s.replace(/^[a-z+]+:\/\//i, '').replace(/^[^@/]+@/, '');
-  s = s.replace(/^([^/:]+):(?!\/\/)/, '$1/').replace(/\.git$/i, '').replace(/\/+$/, '');
-  return s.toLowerCase();
 }
 
 export function liveCount(tasks: Task[]): number {

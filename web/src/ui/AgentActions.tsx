@@ -1,14 +1,15 @@
 import type { JSX } from 'preact';
-import { armed, galaxyId, tellDraft } from '../store';
+import { useRef } from 'preact/hooks';
+import { armed, tellDraft } from '../store';
 import { ACTION_LABEL, boardOk, runTaskAction, tellTask } from '../actions';
 import { t } from '../i18n';
+import { AutoTextarea } from './AutoText';
 import type { Task } from '../types';
 
 /** The buttons of the board's actions for a task, exactly as the Focus shows them. */
-export function TaskActionButtons(props: { task: Task; galaxy?: string }): JSX.Element {
+export function TaskActionButtons(props: { task: Task }): JSX.Element {
   const task = props.task;
-  const galaxy = props.galaxy ?? galaxyId.value;
-  const dis = !boardOk() && galaxy === '';
+  const dis = !boardOk();
   const actions = (task.actions || []).filter((a) => !['tell', 'answer'].includes(a));
   return (
     <>
@@ -19,7 +20,7 @@ export function TaskActionButtons(props: { task: Task; galaxy?: string }): JSX.E
           <button
             key={a} type="button" data-act={a} data-id={task.id} aria-disabled={dis}
             class={`btn ${a === 'approve' ? 'go' : ''} ${a === 'anyway' ? 'danger' : ''} ${on ? 'arm' : ''}`}
-            onClick={() => runTaskAction(a, task, { kind: 'planet', galaxy, id: task.id })}
+            onClick={() => runTaskAction(a, task)}
           >{on ? t('req.confirm', { a: label.toLowerCase() }) : label}</button>
         );
       })}
@@ -28,25 +29,26 @@ export function TaskActionButtons(props: { task: Task; galaxy?: string }): JSX.E
 }
 
 /** The line that returns words to the agent (a refusal, a correction, an answer). */
-export function TellBox(props: { task: Task; galaxy?: string; input?: string }): JSX.Element {
+export function TellBox(props: { task: Task; input?: string }): JSX.Element {
   const task = props.task;
   const id = props.input ?? 'tell';
-  const galaxy = props.galaxy ?? galaxyId.value;
-  const dis = !boardOk() && galaxy === '';
+  const dis = !boardOk();
+  const ref = useRef<HTMLTextAreaElement>(null);
   const submit = async (): Promise<void> => {
-    const el = document.getElementById(id) as HTMLInputElement | null;
+    const el = ref.current;
     if (!el) return;
-    if (await tellTask(task, el.value, galaxy || undefined)) el.value = '';
+    await tellTask(task, el.value);
   };
   return (
     <div class="tell">
-      <input
-        id={id} data-id={task.id} class="field" autocomplete="off" disabled={dis} value={tellDraft.value[task.id] ?? ''}
+      <AutoTextarea
+        id={id} data-id={task.id} class="field" elRef={ref} autocomplete="off" disabled={dis} value={tellDraft.value[task.id] ?? ''}
         placeholder={t('focus.tellPlaceholder', { tag: task.tag })} aria-label={t('focus.tell')}
-        onInput={(e) => { tellDraft.value = { ...tellDraft.value, [task.id]: (e.target as HTMLInputElement).value }; }}
-        onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); void submit(); } }}
+        onInput={(e) => { tellDraft.value = { ...tellDraft.value, [task.id]: (e.target as HTMLTextAreaElement).value }; }}
+        onSend={() => void submit()}
       />
       <button class="btn" type="button" data-act="tell-agent" data-id={task.id} aria-disabled={dis} onClick={() => void submit()}>{t('focus.send')}</button>
+      <div class="keyhint" id={`${id}-hint`}>{t('text.keys.send')}</div>
     </div>
   );
 }

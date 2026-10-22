@@ -30,7 +30,7 @@ describe('requests to the human', () => {
   it('lists the urgent first and puts the Coordinator\'s dialog before them', () => {
     const list = collectRequests({
       tasks: [task({ id: 'a/2', n: 2, status: 'ready' }), task({ id: 'a/1', n: 1, status: 'failed', state: 'error' }), task({ id: 'a/3', n: 3, status: 'working', state: 'working' })],
-      coordinator: { dialog: true, reply: 'May I?' } as never, galaxy: '',
+      coordinator: { dialog: true, reply: 'May I?' } as never,
     });
     expect(list.map((r) => r.id)).toEqual(['coordinator', 'a/1', 'a/2']);
   });

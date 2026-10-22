@@ -8,7 +8,7 @@ use crate::db::{Db, SearchDoc};
 use crate::events::Bus;
 use crate::theme::{self, Theme};
 use crate::usage::{self, Usage};
-use crate::{gitlag, history, machines, subagents, taskmeta};
+use crate::{gitlag, history, subagents, taskmeta};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::process::Stdio;
@@ -92,23 +92,6 @@ pub struct ContextOut {
     pub model: String,
 }
 
-/// A far galaxy as the snapshot carries it: the machine's board plus the lag of its clones.
-#[derive(Debug, Clone, Serialize)]
-pub struct GalaxyOut {
-    #[serde(flatten)]
-    pub g: machines::Galaxy,
-    pub lag: BTreeMap<String, ProjectLag>,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct BridgeOut {
-    pub origin: String,
-    pub a: gitlag::RepoRef,
-    pub b: gitlag::RepoRef,
-    /// «main −2» when one of the two clones is behind its origin; empty when both are level.
-    pub lag: String,
-}
-
 /// One item of the God's own list: an idea that is not on the board yet.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct TodoItem {
@@ -129,7 +112,7 @@ pub struct Snapshot {
     pub at: u64,
     pub seq: u64,
     pub board: BoardStatus,
-    /// This machine's name (the galaxy's label).
+    /// This machine's name.
     pub host: String,
     pub tasks: Vec<Task>,
     pub archived: Vec<Task>,
@@ -145,14 +128,10 @@ pub struct Snapshot {
     pub memory_suggestions: Vec<crate::memory_api::SuggestOut>,
     pub journal: Vec<JournalEntry>,
     pub coordinator: CoordinatorState,
-    /// Other machines of the board: far galaxies.
-    pub galaxies: Vec<serde_json::Value>,
     /// Shipyards: machines the tasks' containers run on.
     pub runners: Vec<crate::runners::RunnerState>,
     /// Whether the docker block is in this machine's agent instructions.
     pub runner_block: crate::runners::BlockState,
-    /// The same project in two galaxies.
-    pub bridges: Vec<BridgeOut>,
     pub theme: Theme,
     pub herdr: HerdrInfo,
     pub auth: AuthInfo,
@@ -216,21 +195,10 @@ pub struct App {
     pub after: Mutex<AfterCache>,
     /// `after`/`delegate` changed a wait: read the waits at the next refresh.
     pub force_after: AtomicBool,
-    /// The other machines of the board, as the last poll left them.
-    pub galaxies: Mutex<Vec<machines::Galaxy>>,
-    /// Their last stored reads, shown until the first poll answers.
-    pub cached: Mutex<Vec<serde_json::Value>>,
     /// Main-branch lag of this machine's clones, by repo name.
-    pub lag_local: Mutex<BTreeMap<String, gitlag::Lag>>,
-    /// The same for the other machines' clones: galaxy label → repo → lag.
-    pub lag_remote: Mutex<BTreeMap<String, BTreeMap<String, gitlag::Lag>>>,
-    /// Labels of the galaxies a connection is being made to.
-    pub connecting: Mutex<Vec<String>>,
-    /// The memory of the far galaxies as last read (for the search).
-    pub far_memory: Mutex<HashMap<String, crate::memory_api::FarMemory>>,
+    pub lag: Mutex<BTreeMap<String, gitlag::Lag>>,
     /// The last read of every shipyard (from `runners.json` and one probe each).
     pub runners: Mutex<Vec<crate::runners::RunnerState>>,
-    /// «Было → стало» plans waiting for the second press, by token.
     pub runner_plans: Mutex<HashMap<String, crate::runners::CleanPlan>>,
     /// `docker system df` answers, cached by runner id.
     pub runner_df: Mutex<HashMap<String, (u64, serde_json::Value)>>,
@@ -300,10 +268,8 @@ impl App {
                 can_compact: false,
                 program: String::new(),
             },
-            galaxies: Vec::new(),
             runners: Vec::new(),
             runner_block: crate::runners::BlockState::default(),
-            bridges: Vec::new(),
             theme,
             herdr: HerdrInfo {
                 running: cfg.herdr_socket.exists(),
@@ -328,16 +294,11 @@ impl App {
             db.chat_save(&chat);
         }
         let journal = load_journal(&db);
-        // The last good reads of the other machines survive a restart; they are not live until a poll says so.
-        let cached: Vec<serde_json::Value> = db
-            .galaxy_all()
-            .into_iter()
-            .filter_map(|(_, json, _, _, _)| serde_json::from_str::<serde_json::Value>(&json).ok())
-            .map(|mut v| {
-                v["ok"] = serde_json::Value::Bool(false);
-                v
-            })
-            .collect();
+        let auth = crate::auth::Auth::new(
+            cfg.auth_required(),
+            cfg.user.clone(),
+            cfg.password_hash.clone(),
+        );
         // The last reads of the shipyards survive a restart too; they are not live until a probe says so.
         let mut runners: Vec<crate::runners::RunnerState> = db
             .runner_all()
@@ -348,7 +309,6 @@ impl App {
                 s
             })
             .collect();
-        // A shipyard taken out of the file (even by hand) leaves the page too.
         if let Ok(file) = crate::runners::load(&cfg.runners_file()) {
             runners.retain(|s| file.get(&s.id).is_some());
         }
@@ -358,11 +318,6 @@ impl App {
             .unwrap_or_default();
         snapshot.runners = runners.clone();
         snapshot.runner_block = runner_block.clone();
-        let auth = crate::auth::Auth::new(
-            cfg.auth_required(),
-            cfg.user.clone(),
-            cfg.password_hash.clone(),
-        );
         Arc::new(Self {
             cfg,
             db,
@@ -377,12 +332,7 @@ impl App {
             action_lock: Mutex::new(()),
             after: Mutex::new(AfterCache::default()),
             force_after: AtomicBool::new(false),
-            galaxies: Mutex::new(Vec::new()),
-            cached: Mutex::new(cached),
-            lag_local: Mutex::new(BTreeMap::new()),
-            lag_remote: Mutex::new(BTreeMap::new()),
-            connecting: Mutex::new(Vec::new()),
-            far_memory: Mutex::new(HashMap::new()),
+            lag: Mutex::new(BTreeMap::new()),
             runners: Mutex::new(runners),
             runner_plans: Mutex::new(HashMap::new()),
             runner_df: Mutex::new(HashMap::new()),
@@ -592,8 +542,42 @@ fn to_project_lag(l: &gitlag::Lag) -> ProjectLag {
         known: l.known,
         as_of_ms: l.as_of_ms,
         note: l.note.clone(),
-        vs: Vec::new(),
     }
+}
+
+/// The page's view of the lag of every clone. No IO: reads what the lag loop stored.
+pub async fn apply_lag(app: &Shared) {
+    let local = app.lag.lock().await.clone();
+    let mut snap = app.snapshot.write().await;
+    for p in snap.projects.iter_mut() {
+        if let Some(l) = local.get(&p.name) {
+            let l = to_project_lag(l);
+            p.origin = l.origin.clone();
+            p.lag = Some(l);
+        }
+    }
+}
+
+/// A line for the journal that is not a task's status (a shipyard's cleaning, a block connected).
+pub async fn journal_note(app: &Shared, id: &str, status: &str, text: &str) {
+    let now = now_ms();
+    let entry = {
+        let mut journal = app.journal.lock().await;
+        journal.seq += 1;
+        let e = JournalEntry {
+            n: journal.seq,
+            t: now,
+            id: id.to_string(),
+            s: status.to_string(),
+            text: text.to_string(),
+        };
+        journal.entries.push_front(e.clone());
+        trim_journal(&mut journal);
+        e
+    };
+    app.db.journal_append(&[entry]);
+    let entries: Vec<JournalEntry> = app.journal.lock().await.entries.iter().cloned().collect();
+    app.snapshot.write().await.journal = entries;
 }
 
 /// A forgotten container is news once: a journal line and a toast for each id the page has not seen before.
@@ -626,149 +610,23 @@ async fn note_forgotten(app: &Shared, states: &[crate::runners::RunnerState]) {
     }
 }
 
-/// The page's view of far galaxies, the lag of every clone and the bridges between the same projects.
-/// No IO: reads what the background loops stored.
-pub async fn rebuild_extras(app: &Shared) {
-    let live = app.galaxies.lock().await.clone();
-    let cached = app.cached.lock().await.clone();
-    let connecting = app.connecting.lock().await.clone();
-    let local = app.lag_local.lock().await.clone();
-    let remote = app.lag_remote.lock().await.clone();
-    let repos = taskmeta::repos(&app.cfg.data_dir);
-    let roots: HashMap<String, String> = repos.iter().map(|r| (r.name.clone(), r.root.clone())).collect();
-    // Which task a container belongs to is decided against every board the snapshot holds (and the cached ones).
-    let (tasks_now, archived_now) = {
+/// Recomputes the containers' classes against this board and puts the shipyards into the snapshot.
+pub async fn rebuild_runners(app: &Shared) {
+    let (tasks, archived) = {
         let s = app.snapshot.read().await;
         (s.tasks.clone(), s.archived.clone())
     };
-    let task_index = crate::runners::TaskIndex::build(&tasks_now, &archived_now, &repos);
-
-    // Comparison of this machine's clones with the others', by origin.
-    let mut vs: BTreeMap<String, Vec<board::LagVs>> = BTreeMap::new();
-    let mut bridges: Vec<BridgeOut> = Vec::new();
-    let mut galaxy_repos: Vec<gitlag::GalaxyRepo> = Vec::new();
-    for (repo, l) in &local {
-        if !l.origin.is_empty() {
-            galaxy_repos.push(gitlag::GalaxyRepo {
-                galaxy: String::new(),
-                repo: repo.clone(),
-                origin: l.origin.clone(),
-            });
-        }
+    let repos = taskmeta::repos(&app.cfg.data_dir);
+    let index = crate::runners::TaskIndex::build(&tasks, &archived, &repos);
+    let mut states = app.runners.lock().await.clone();
+    for st in &mut states {
+        crate::runners::classify(&mut st.containers, &st.protected, &index);
     }
-    for g in &live {
-        if let Some(map) = remote.get(&g.label) {
-            for (repo, l) in map {
-                if !l.origin.is_empty() {
-                    galaxy_repos.push(gitlag::GalaxyRepo {
-                        galaxy: g.label.clone(),
-                        repo: repo.clone(),
-                        origin: l.origin.clone(),
-                    });
-                }
-            }
-        }
-    }
-    for b in gitlag::bridges(&galaxy_repos) {
-        let la = lag_of(&b.a, &local, &remote);
-        let lb = lag_of(&b.b, &local, &remote);
-        let mut text = String::new();
-        if let (Some(la), Some(lb)) = (la, lb) {
-            if la.behind > 0 {
-                text = format!("main −{}", la.behind);
-            } else if lb.behind > 0 {
-                text = format!("{}: main −{}", if b.b.galaxy.is_empty() { &b.a.galaxy } else { &b.b.galaxy }, lb.behind);
-            }
-            // Local clone against the other machine's clone.
-            let (mine, other, other_galaxy) = if b.a.galaxy.is_empty() {
-                (Some((&b.a, la)), Some(lb), b.b.galaxy.clone())
-            } else if b.b.galaxy.is_empty() {
-                (Some((&b.b, lb)), Some(la), b.a.galaxy.clone())
-            } else {
-                (None, None, String::new())
-            };
-            if let (Some((me, mine_lag)), Some(other_lag)) = (mine, other) {
-                let root = roots.get(&me.repo).map(String::as_str);
-                let (state, behind, ahead) = match gitlag::compare(mine_lag, other_lag, root) {
-                    gitlag::Cmp::Same => ("same", 0, 0),
-                    gitlag::Cmp::Behind(n) => ("behind", n, 0),
-                    gitlag::Cmp::Ahead(n) => ("ahead", 0, n),
-                    gitlag::Cmp::Diverged => ("diverged", 0, 0),
-                    gitlag::Cmp::Unknown => ("unknown", 0, 0),
-                };
-                vs.entry(me.repo.clone()).or_default().push(board::LagVs {
-                    galaxy: other_galaxy,
-                    behind,
-                    ahead,
-                    state: state.to_string(),
-                });
-            }
-        }
-        bridges.push(BridgeOut { origin: b.origin, a: b.a, b: b.b, lag: text });
-    }
-
-    let mut out: Vec<serde_json::Value> = Vec::new();
-    for g in &live {
-        let mut lag: BTreeMap<String, ProjectLag> = BTreeMap::new();
-        if let Some(map) = remote.get(&g.label) {
-            for (repo, l) in map {
-                lag.insert(repo.clone(), to_project_lag(l));
-            }
-        }
-        let mut g2 = g.clone();
-        g2.connecting = connecting.contains(&g.label);
-        let mut v = serde_json::to_value(GalaxyOut { g: g2, lag }).unwrap_or(serde_json::Value::Null);
-        if let Some(obj) = v.as_object_mut() {
-            // The machine's own words «bridge» come from the bridges list; nothing else to add here.
-            obj.entry("lag").or_insert(serde_json::json!({}));
-        }
-        out.push(v);
-    }
-    for c in cached {
-        let label = c.get("label").and_then(|x| x.as_str()).unwrap_or("");
-        if !live.iter().any(|g| g.label == label) {
-            out.push(c);
-        }
-    }
-
-    let mut lag_out: BTreeMap<String, ProjectLag> = BTreeMap::new();
-    for (repo, l) in &local {
-        let mut pl = to_project_lag(l);
-        pl.vs = vs.remove(repo).unwrap_or_default();
-        lag_out.insert(repo.clone(), pl);
-    }
-
-    // The containers' classes change with the tasks, so they are recomputed on every snapshot, not only on a probe.
-    let mut runner_states = app.runners.lock().await.clone();
-    for st in &mut runner_states {
-        crate::runners::classify(&mut st.containers, &st.protected, &task_index);
-    }
-    note_forgotten(app, &runner_states).await;
-    let runner_block = app.runner_block.lock().await.clone();
-
+    note_forgotten(app, &states).await;
+    let block = app.runner_block.lock().await.clone();
     let mut snap = app.snapshot.write().await;
-    snap.galaxies = out;
-    snap.runners = runner_states;
-    snap.runner_block = runner_block;
-    snap.bridges = bridges;
-    for p in snap.projects.iter_mut() {
-        if let Some(l) = lag_out.get(&p.name) {
-            p.origin = l.origin.clone();
-            p.lag = Some(l.clone());
-        }
-    }
-}
-
-fn lag_of<'a>(
-    r: &gitlag::RepoRef,
-    local: &'a BTreeMap<String, gitlag::Lag>,
-    remote: &'a BTreeMap<String, BTreeMap<String, gitlag::Lag>>,
-) -> Option<&'a gitlag::Lag> {
-    if r.galaxy.is_empty() {
-        local.get(&r.repo)
-    } else {
-        remote.get(&r.galaxy).and_then(|m| m.get(&r.repo))
-    }
+    snap.runners = states;
+    snap.runner_block = block;
 }
 
 /// Serialises the snapshot for the page's event stream, when somebody listens.
@@ -789,7 +647,8 @@ pub async fn publish(app: &Shared) {
 /// Failed board reads keep the previous tasks and mark them stale.
 pub async fn refresh(app: &Shared) {
     refresh_inner(app).await;
-    rebuild_extras(app).await;
+    apply_lag(app).await;
+    rebuild_runners(app).await;
     publish(app).await;
 }
 
@@ -921,7 +780,7 @@ async fn refresh_inner(app: &Shared) {
     };
 
     let lag_now: BTreeMap<String, ProjectLag> = app
-        .lag_local
+        .lag
         .lock()
         .await
         .iter()
@@ -1164,28 +1023,6 @@ fn update_journal(journal: &mut Journal, tasks: &[Task], now: u64) {
     }
 }
 
-/// A line for the journal that is not a task's status (a shipyard's cleaning, a block connected).
-pub async fn journal_note(app: &Shared, id: &str, status: &str, text: &str) {
-    let now = now_ms();
-    let entry = {
-        let mut journal = app.journal.lock().await;
-        journal.seq += 1;
-        let e = JournalEntry {
-            n: journal.seq,
-            t: now,
-            id: id.to_string(),
-            s: status.to_string(),
-            text: text.to_string(),
-        };
-        journal.entries.push_front(e.clone());
-        trim_journal(&mut journal);
-        e
-    };
-    app.db.journal_append(&[entry]);
-    let entries: Vec<JournalEntry> = app.journal.lock().await.entries.iter().cloned().collect();
-    app.snapshot.write().await.journal = entries;
-}
-
 fn trim_journal(journal: &mut Journal) {
     while journal.entries.len() > JOURNAL_MAX {
         journal.entries.pop_back();
@@ -1340,9 +1177,8 @@ mod tests {
     }
 }
 
-/// The rows of the search index for one galaxy's board (full-text part of the world search).
+/// The rows of the search index for this machine's board (full-text part of the world search).
 fn docs_for(
-    galaxy: &str,
     host: &str,
     tasks: &[Task],
     projects: &[Project],
@@ -1350,10 +1186,9 @@ fn docs_for(
     let mut docs = Vec::new();
     for p in projects {
         docs.push(SearchDoc {
-            key: format!("universe:{galaxy}:{}", p.name),
+            key: format!("universe:{}", p.name),
             kind: "universe".into(),
             id: p.name.clone(),
-            galaxy: galaxy.to_string(),
             path: host.to_string(),
             title: format!("{} {}", p.name, p.key),
             text: format!("{} {}", p.origin, p.root),
@@ -1363,10 +1198,9 @@ fn docs_for(
     }
     for t in tasks {
         docs.push(SearchDoc {
-            key: format!("planet:{galaxy}:{}", t.id),
+            key: format!("planet:{}", t.id),
             kind: "planet".into(),
             id: t.id.clone(),
-            galaxy: galaxy.to_string(),
             path: format!("{host} › {} › {}", t.repo, t.tag),
             title: format!("{} {}", t.tag, t.title),
             text: format!(
@@ -1378,10 +1212,9 @@ fn docs_for(
         });
         for s in &t.subagents {
             docs.push(SearchDoc {
-                key: format!("moon:{galaxy}:{}#{}", t.id, s.id),
+                key: format!("moon:{}#{}", t.id, s.id),
                 kind: "moon".into(),
                 id: format!("{}#{}", t.id, s.id),
-                galaxy: galaxy.to_string(),
                 path: format!("{host} › {} › {} › {}", t.repo, t.tag, s.role),
                 title: format!("{} {}", s.role, s.title),
                 text: format!("{} {}", s.doing, s.result),
@@ -1396,14 +1229,12 @@ fn docs_for(
 /// Brings the search index in line with the snapshot (only what changed is written).
 pub async fn index_snapshot(app: &Shared) {
     let snap = app.snapshot.read().await.clone();
-    let mut sets: Vec<(String, Vec<SearchDoc>)> = Vec::new();
-    let mut home = docs_for("", &snap.host, &snap.tasks, &snap.projects);
+    let mut docs = docs_for(&snap.host, &snap.tasks, &snap.projects);
     for it in &snap.todo {
-        home.push(SearchDoc {
-            key: format!("todo::{}", it.id),
+        docs.push(SearchDoc {
+            key: format!("todo:{}", it.id),
             kind: "todo".into(),
             id: it.id.clone(),
-            galaxy: String::new(),
             path: format!("{} › {}", snap.host, "дела"),
             title: it.text.clone(),
             text: it.to.clone(),
@@ -1411,33 +1242,16 @@ pub async fn index_snapshot(app: &Shared) {
             at: it.at,
         });
     }
-    home.push(SearchDoc {
-        key: "quasar::quasar".into(),
+    docs.push(SearchDoc {
+        key: "quasar:quasar".into(),
         kind: "quasar".into(),
         id: "quasar".into(),
-        galaxy: String::new(),
         path: snap.host.clone(),
         title: "Квазар Координатор Quasar Coordinator".into(),
         text: snap.coordinator.view.status_line.clone(),
         status: snap.coordinator.view.status.clone(),
         at: 0,
     });
-    for r in &snap.runners {
-        home.push(SearchDoc {
-            key: format!("runner::{}", r.id),
-            kind: "runner".into(),
-            id: r.id.clone(),
-            galaxy: String::new(),
-            path: r.target.clone(),
-            title: r.id.clone(),
-            text: std::iter::once(r.target.clone())
-                .chain(r.containers.iter().map(|c| c.name.clone()))
-                .collect::<Vec<_>>()
-                .join(" "),
-            status: if r.ok { "working".into() } else { "failed".into() },
-            at: r.fetched_at_ms,
-        });
-    }
     // Memory (the Galaxy's, every universe's, the Coordinator program's own) and the tasks' closing notes.
     {
         let cfg = app.cfg.clone();
@@ -1448,59 +1262,19 @@ pub async fn index_snapshot(app: &Shared) {
         })
         .await
         .unwrap_or_default();
-        home.extend(mem);
-        home.extend(closing);
-    }
-    sets.push((String::new(), home));
-    let far_memory = app.far_memory.lock().await.clone();
-    for g in app.galaxies.lock().await.iter() {
-        let projects: Vec<Project> = g
-            .projects
-            .iter()
-            .map(|p| Project { name: p.name.clone(), key: p.key.clone(), origin: p.origin.clone().unwrap_or_default(), root: p.folder.clone(), ..Project::default() })
-            .collect();
-        let mut docs = docs_for(&g.label, &g.label, &g.tasks, &projects);
-        docs.push(SearchDoc {
-            key: format!("galaxy:{}:{}", g.label, g.label),
-            kind: "galaxy".into(),
-            id: g.label.clone(),
-            galaxy: g.label.clone(),
-            path: g.target.clone(),
-            title: g.label.clone(),
-            text: format!("{} {}", g.target, g.host),
-            status: if g.ok { "working".into() } else { "failed".into() },
-            at: g.fetched_at_ms,
-        });
-        if let Some(fm) = far_memory.get(&g.label) {
-            docs.extend(crate::memory::docs_of(
-                &g.label,
-                "",
-                &format!("Память › {} (Галактика)", g.label),
-                &fm.galaxy,
-            ));
-            for (repo, entries) in &fm.universes {
-                docs.extend(crate::memory::docs_of(
-                    &g.label,
-                    repo,
-                    &format!("Память › {repo} (вселенная, {})", g.label),
-                    entries,
-                ));
-            }
-        }
-        sets.push((g.label.clone(), docs));
+        docs.extend(mem);
+        docs.extend(closing);
     }
     let db = app.db.clone();
     let _ = tokio::task::spawn_blocking(move || {
         use std::sync::Mutex;
-        static LAST: std::sync::OnceLock<Mutex<HashMap<String, Vec<SearchDoc>>>> = std::sync::OnceLock::new();
-        let last = LAST.get_or_init(|| Mutex::new(HashMap::new()));
-        for (galaxy, docs) in sets {
-            let same = last.lock().map(|m| m.get(&galaxy) == Some(&docs)).unwrap_or(false);
-            if !same {
-                db.search_docs_replace(&galaxy, &docs);
-                if let Ok(mut m) = last.lock() {
-                    m.insert(galaxy, docs);
-                }
+        static LAST: std::sync::OnceLock<Mutex<Vec<SearchDoc>>> = std::sync::OnceLock::new();
+        let last = LAST.get_or_init(|| Mutex::new(Vec::new()));
+        let same = last.lock().map(|m| *m == docs).unwrap_or(false);
+        if !same {
+            db.search_docs_replace(&docs);
+            if let Ok(mut m) = last.lock() {
+                *m = docs;
             }
         }
     })
@@ -1514,8 +1288,7 @@ pub async fn index_chat(app: &Shared) {
     let _ = tokio::task::spawn_blocking(move || history::sync_index(&db, &cfg)).await;
 }
 
-/// Reads how far the clones' main branches are from their origins (read-only git, no fetch),
-/// on this machine and on the others.
+/// Reads how far the clones' main branches are from their origins (read-only git, no fetch).
 pub async fn update_lag(app: &Shared) {
     let repos = taskmeta::repos(&app.cfg.data_dir);
     let folders: Vec<(String, String)> = repos
@@ -1523,27 +1296,7 @@ pub async fn update_lag(app: &Shared) {
         .filter(|r| !r.root.is_empty())
         .map(|r| (r.name.clone(), r.root.clone()))
         .collect();
-    let local = gitlag::local(&folders).await;
-    for (repo, l) in &local {
-        if let Ok(json) = serde_json::to_string(l) {
-            app.db.gitlag_put("", repo, &json, now_ms());
-        }
-    }
-    *app.lag_local.lock().await = local;
-    let galaxies = app.galaxies.lock().await.clone();
-    for g in galaxies.iter().filter(|g| g.ok) {
-        let folders: Vec<(String, String)> = g
-            .projects
-            .iter()
-            .filter(|p| !p.folder.is_empty())
-            .map(|p| (p.name.clone(), p.folder.clone()))
-            .collect();
-        if folders.is_empty() {
-            continue;
-        }
-        let lag = gitlag::remote(&app.cfg, &g.label, &folders).await;
-        app.lag_remote.lock().await.insert(g.label.clone(), lag);
-    }
-    rebuild_extras(app).await;
+    *app.lag.lock().await = gitlag::local(&folders).await;
+    apply_lag(app).await;
     publish(app).await;
 }

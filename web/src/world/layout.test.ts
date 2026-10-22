@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { computeLayout, normalizeOrigin, planetPosition, R_BOUND, universeRadius } from './layout';
+import { computeLayout, planetPosition, R_BOUND, universeRadius } from './layout';
 import { dockPositions } from './docks';
 import type { GalaxyView, Project, Status, Task } from '../types';
 
@@ -21,7 +21,7 @@ function big(universes: number, perUniverse: number): GalaxyView {
     projects.push(proj(name, `/home/u/Projects/${['AI', 'herdr', 'Tern', 'misc'][i % 4]}`, quiet));
     for (let n = 1; n <= perUniverse; n++) tasks.push(task(name, n, quiet ? 'done' : n % 4 === 0 ? 'waiting' : 'working'));
   }
-  return { id: '', label: 'host', home: true, ok: true, tasks, projects, links: [] };
+  return { label: 'host', ok: true, tasks, projects, links: [] };
 }
 
 describe('galaxy layout', () => {
@@ -77,10 +77,8 @@ describe('galaxy layout', () => {
   it('can hide the quiet universes', () => {
     expect(computeLayout(big(9, 2), { showQuiet: false }).universes.every((u) => !u.quiet)).toBe(true);
   });
-});
 
-describe('shipyards', () => {
-  it('sit just outside the Galaxy boundary, apart from each other', () => {
+  it('puts the shipyards just outside the Galaxy boundary, apart from each other', () => {
     const bound = 800;
     const ids = ['yard-a', 'yard-b', 'yard-c', 'yard-d', 'yard-e'];
     const docks = [...dockPositions(ids, bound + 200).values()];
@@ -90,13 +88,5 @@ describe('shipyards', () => {
       for (let j = i + 1; j < docks.length; j++) min = Math.min(min, docks[i].distanceTo(docks[j]));
     }
     expect(min).toBeGreaterThanOrEqual(120);
-  });
-});
-
-describe('origin', () => {
-  it('compares the same repository in any form', () => {
-    const forms = ['https://github.com/Owner/Repo.git', 'git@github.com:owner/repo.git', 'ssh://git@github.com/owner/repo', 'github.com/owner/repo/'];
-    expect(new Set(forms.map(normalizeOrigin)).size).toBe(1);
-    expect(normalizeOrigin('')).toBe('');
   });
 });

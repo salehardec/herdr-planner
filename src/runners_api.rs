@@ -114,7 +114,7 @@ pub async fn runner_ask(State(app): State<Shared>, headers: HeaderMap, Json(body
         list.push(state.clone());
         list.sort_by(|a, b| a.id.cmp(&b.id));
     }
-    app::rebuild_extras(&app).await;
+    app::rebuild_runners(&app).await;
     app::publish(&app).await;
     app::index_snapshot(&app).await;
     Json(json!({"ok": state.ok, "runner": state, "why": state.why})).into_response()
@@ -197,7 +197,7 @@ async fn local_checks(cfg: &AppConfig, target: &str) -> Value {
             let w = ssh::why_not_with(
                 &e,
                 &m,
-                &ssh::CheckHint { test: format!("ssh {target} true"), program: "ssh".into(), board: false },
+                &ssh::CheckHint { test: format!("ssh {target} true"), program: "ssh".into() },
             );
             (false, w.line)
         }
@@ -222,7 +222,7 @@ async fn local_checks(cfg: &AppConfig, target: &str) -> Value {
                 hint = ssh::why_not_with(
                     &e,
                     &m,
-                    &ssh::CheckHint { test: format!("ssh {target} docker version"), program: "docker".into(), board: false },
+                    &ssh::CheckHint { test: format!("ssh {target} docker version"), program: "docker".into() },
                 )
                 .line;
             }
@@ -551,13 +551,12 @@ pub async fn runner_remove(State(app): State<Shared>, headers: HeaderMap, Json(b
 /// `GET /api/runner/connect`: the two instruction settings of this machine, the block as it would be, and whether
 /// it is in.
 pub async fn runner_connect_get(State(app): State<Shared>) -> Response {
-    let place = station::Place::Home;
     let file = match file_of(&app) {
         Ok(f) => f,
         Err(r) => return r,
     };
     let block = runners::block_text(&file);
-    let settings = match station::read_settings(&app.cfg, &place, "").await {
+    let settings = match station::read_settings(&app.cfg, "").await {
         Ok(s) => s,
         Err(e) => return e.into_response(),
     };
@@ -599,7 +598,6 @@ pub async fn runner_connect(State(app): State<Shared>, headers: HeaderMap, Json(
     if body.confirm != Some(true) {
         return fail(400, "подключение к агентам требует подтверждения");
     }
-    let place = station::Place::Home;
     let file = match file_of(&app) {
         Ok(f) => f,
         Err(r) => return r,
@@ -608,7 +606,7 @@ pub async fn runner_connect(State(app): State<Shared>, headers: HeaderMap, Json(
     if block.is_empty() && body.on {
         return fail(409, "в списке нет ни одной верфи");
     }
-    let settings = match station::read_settings(&app.cfg, &place, "").await {
+    let settings = match station::read_settings(&app.cfg, "").await {
         Ok(s) => s,
         Err(e) => return e.into_response(),
     };
@@ -632,10 +630,11 @@ pub async fn runner_connect(State(app): State<Shared>, headers: HeaderMap, Json(
             Some(v) => vec!["set".into(), name.into(), v.clone()],
             None => vec!["unset".into(), name.into()],
         };
-        match station::board_run(&app.cfg, &place, &args, station::BOARD_WAIT).await {
-            Ok(o) if o.ok() => results.push(json!({"setting": name, "was": was, "now": value})),
-            Ok(o) => return fail(422, o.words()),
-            Err(e) => return e.into_response(),
+        let out = station::board_run(&app.cfg, &args, station::BOARD_WAIT).await;
+        if out.ok() {
+            results.push(json!({"setting": name, "was": was, "now": value}));
+        } else {
+            return fail(422, out.words());
         }
     }
     {
@@ -649,7 +648,7 @@ pub async fn runner_connect(State(app): State<Shared>, headers: HeaderMap, Json(
         }
     }
     app::refresh(&app).await;
-    app::rebuild_extras(&app).await;
+    app::rebuild_runners(&app).await;
     app::publish(&app).await;
     Json(json!({"ok": true, "settings": results})).into_response()
 }
@@ -855,7 +854,7 @@ pub async fn runner_clean(State(app): State<Shared>, headers: HeaderMap, Json(bo
         ),
     )
     .await;
-    app::rebuild_extras(&app).await;
+    app::rebuild_runners(&app).await;
     app::publish(&app).await;
     app::index_snapshot(&app).await;
     Json(json!({
@@ -929,19 +928,11 @@ pub async fn runner_terminal(
     let Some(r) = file.get(&body.id).cloned() else {
         return fail(404, "такой верфи нет в списке");
     };
-    let m = MachineRef {
-        label: r.id.clone(),
-        target: r.target.clone(),
-        session: String::new(),
-    };
-    let mut argv = vec![app.cfg.ssh_bin.clone()];
-    match crate::farfiles::ssh_tty_args(&app.cfg, &m, "") {
-        Ok(a) => argv.extend(a),
-        Err(e) => return fail(400, e),
-    }
-    match crate::farfiles::spawn_in_terminal(&argv, crate::farfiles::env_terminal().as_deref()) {
-        Ok(()) => Json(json!({"ok": true, "command": format!("ssh -t {}", m.target)})).into_response(),
-        Err(e) => fail(500, crate::server::clip(e)),
+    let mut cmd = tokio::process::Command::new(&app.cfg.ssh_bin);
+    cmd.arg("-t").arg(&r.target);
+    match cmd.spawn() {
+        Ok(_) => Json(json!({"ok": true, "command": format!("ssh -t {}", r.target)})).into_response(),
+        Err(e) => fail(500, format!("не удалось запустить ssh -t {}: {e}", r.target)),
     }
 }
 

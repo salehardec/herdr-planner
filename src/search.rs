@@ -1,4 +1,4 @@
-//! Search across the planner: the documents of the boards (galaxies, planets,
+//! Search across the planner: the documents of the board (universes, planets,
 //! tasks, ...) and the Coordinator's conversation, in one ranked list.
 //!
 //! Text fields of a [`Hit`] are plain, except `snippet`, which is HTML: the text is
@@ -21,7 +21,6 @@ const MAX_LIMIT: usize = 50;
 pub struct Hit {
     pub kind: String,
     pub id: String,
-    pub galaxy: String,
     pub path: String,
     pub title: String,
     /// HTML, see the module docs.
@@ -59,7 +58,6 @@ fn doc_hit(h: DocHit, terms: &[String]) -> Hit {
     Hit {
         kind: d.kind,
         id: d.id,
-        galaxy: d.galaxy,
         path: d.path,
         title: d.title,
         snippet,
@@ -85,7 +83,6 @@ fn chat_hit(h: ChatHit) -> Hit {
     Hit {
         kind: CHAT_KIND.into(),
         id: h.n.to_string(),
-        galaxy: String::new(),
         path: CHAT_PATH.into(),
         title: first_line,
         snippet,
@@ -227,12 +224,10 @@ mod tests {
     fn query_ranks_documents_and_chat_together() {
         let db = Db::memory().unwrap();
         db.search_docs_replace(
-            "",
             &[crate::db::SearchDoc {
                 key: "APC-7".into(),
                 kind: "planet".into(),
                 id: "APC-7".into(),
-                galaxy: String::new(),
                 path: "alpha › APC".into(),
                 title: "Каталог API".into(),
                 text: "описание: переписать каталог".into(),
@@ -282,7 +277,7 @@ mod tests {
                 ..Default::default()
             })
             .collect();
-        db.search_docs_replace("", &docs);
+        db.search_docs_replace(&docs);
         assert_eq!(query(&db, "задача", 500).len(), MAX_LIMIT);
         assert_eq!(query(&db, "задача", 3).len(), 3);
         assert_eq!(

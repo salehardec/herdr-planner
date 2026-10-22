@@ -1,11 +1,10 @@
 //! The ship («Бортовой компьютер»): the planner's own settings, the same wherever it flies. The folder new
-//! universes are cloned into (live), the login, the address it listens on, and removing a galaxy from herdr.
-//! Settings go to the planner's config file; the galaxies are herdr's (`herdr machine remove`).
+//! universes are cloned into (live), the login and the address it listens on.
+//! Settings go to the planner's config file.
 
 use crate::app::{self, Shared};
 use crate::config::{self, expand_home, listen_is_loopback, AppConfig};
-use crate::machines;
-use crate::server::{client_is_local, clip, error, same_origin};
+use crate::server::{client_is_local, error, same_origin};
 use crate::station::Fail;
 use axum::extract::{ConnectInfo, State};
 use axum::http::HeaderMap;
@@ -15,10 +14,6 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 use std::net::{IpAddr, SocketAddr};
 use std::path::PathBuf;
-use std::process::Stdio;
-use std::time::Duration;
-use tokio::process::Command;
-use tokio::time::timeout;
 
 const MIN_PASSWORD: usize = 8;
 const MAX_PASSWORD: usize = 4096;
@@ -246,80 +241,6 @@ fn new_hash(cfg: &AppConfig, p: &PasswordChange) -> Result<String, Fail> {
     config::hash_password(new).map_err(|_| Fail::new(500, "пароль не удалось сохранить"))
 }
 
-#[derive(Deserialize)]
-pub struct RemoveBody {
-    label: String,
-    confirm: Option<bool>,
-}
-
-/// `POST /api/galaxy/remove`: `herdr machine remove LABEL`, then the galaxy leaves the page.
-pub async fn galaxy_remove(
-    State(app): State<Shared>,
-    headers: HeaderMap,
-    Json(body): Json<RemoveBody>,
-) -> Response {
-    if !same_origin(&headers) {
-        return error(
-            axum::http::StatusCode::FORBIDDEN,
-            "cross-origin request refused",
-        );
-    }
-    if body.confirm != Some(true) {
-        return error(
-            axum::http::StatusCode::BAD_REQUEST,
-            "нужно подтверждение: галактика уйдёт из herdr",
-        );
-    }
-    if !machines::valid_label(&body.label) {
-        return error(axum::http::StatusCode::BAD_REQUEST, "bad machine label");
-    }
-    match remove_machine(&body.label).await {
-        Ok(out) => {
-            app.db.galaxy_remove(&body.label);
-            app.galaxies.lock().await.retain(|g| g.label != body.label);
-            app.cached
-                .lock()
-                .await
-                .retain(|c| c.get("label").and_then(Value::as_str) != Some(body.label.as_str()));
-            app::rebuild_extras(&app).await;
-            app::publish(&app).await;
-            app::refresh(&app).await;
-            Json(json!({"ok": true, "label": body.label, "out": clip(out)})).into_response()
-        }
-        Err(e) => error(axum::http::StatusCode::BAD_GATEWAY, e),
-    }
-}
-
-async fn remove_machine(label: &str) -> Result<String, String> {
-    let bin = machines::herdr_bin();
-    let mut cmd = Command::new(&bin);
-    cmd.args(["machine", "remove", label])
-        .env("NO_COLOR", "1")
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .kill_on_drop(true);
-    match timeout(Duration::from_secs(30), cmd.output()).await {
-        Err(_) => Err(format!("{bin} machine remove: нет ответа за 30 с")),
-        Ok(Err(e)) => Err(format!("{bin}: {e}")),
-        Ok(Ok(out)) => {
-            let stdout = String::from_utf8_lossy(&out.stdout).trim().to_string();
-            let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
-            if out.status.success() {
-                Ok(stdout)
-            } else if stderr.is_empty() {
-                Err(if stdout.is_empty() {
-                    format!("herdr machine remove: код {}", out.status)
-                } else {
-                    stdout
-                })
-            } else {
-                Err(stderr)
-            }
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -364,7 +285,7 @@ mod tests {
 
     #[test]
     fn a_password_is_at_least_eight_letters_and_never_stored_as_typed() {
-        let cfg = machines::test_cfg(std::path::Path::new("/nonexistent-ship-test"));
+        let cfg = crate::testutil::test_cfg(std::path::Path::new("/nonexistent-ship-test"));
         let short = PasswordChange {
             old: None,
             new: Some("1234567".into()),

@@ -1,12 +1,11 @@
 /* The world search on the client: fuzzy (typos, other keyboard layout), grouped by kind,
-   instant. The server adds what the page does not hold (old chat, other machines' descriptions). */
+   instant. The server adds what the page does not hold (the old chat, memory, closing notes). */
 import uFuzzy from '@leeoniya/ufuzzy';
 import type { GalaxyView, SearchHit, Snapshot, TurnData } from '../types';
 
 export interface Doc {
   kind: SearchHit['kind'];
   id: string;
-  galaxy: string;
   path: string;
   title: string;
   text: string;
@@ -32,46 +31,39 @@ export function swapLayout(s: string): string {
 }
 
 export function buildDocs(
-  views: GalaxyView[], snap: Snapshot | null, turns: TurnData[], labels: { quasar: string; todo: string; chat: string },
+  view: GalaxyView, snap: Snapshot | null, turns: TurnData[], labels: { quasar: string; todo: string; chat: string },
 ): Doc[] {
   const docs: Doc[] = [];
   const host = snap?.host ?? '';
-  for (const v of views) {
-    const where = v.home ? host : v.label;
-    if (!v.home) {
-      docs.push({ kind: 'galaxy', id: v.id, galaxy: v.id, path: '', title: v.label, text: v.ok ? '' : 'нет связи', status: v.ok ? 'working' : 'failed' });
-    } else {
-      docs.push({ kind: 'galaxy', id: '', galaxy: '', path: '', title: host, text: 'galaxy галактика', status: 'working' });
-      docs.push({ kind: 'quasar', id: 'quasar', galaxy: '', path: where, title: labels.quasar, text: 'coordinator координатор quasar квазар', status: snap?.coordinator.status ?? '' });
-      for (const m of snap?.coordinator.subagents ?? []) {
-        docs.push({ kind: 'moon', id: `quasar#${m.id}`, galaxy: '', path: `${where} › ${labels.quasar}`, title: m.role, text: `${m.title} ${m.doing}`, status: m.state });
-      }
-    }
-    for (const p of v.projects) {
-      docs.push({ kind: 'universe', id: p.name, galaxy: v.id, path: where, title: `${p.name} ${p.key}`, text: p.origin, status: p.quiet ? 'queued' : 'working' });
-    }
-    for (const t of v.tasks) {
-      docs.push({
-        kind: 'planet', id: t.id, galaxy: v.id, path: `${where} › ${t.repo} › ${t.tag}`, title: `${t.tag} ${t.title}`,
-        text: `${t.description} ${t.msg} ${t.board_label} ${t.app} ${t.worker_agent} ${t.model} ${t.label}`, status: t.status,
-      });
-      for (const s of t.subagents) {
-        docs.push({ kind: 'moon', id: `${t.id}#${s.id}`, galaxy: v.id, path: `${where} › ${t.repo} › ${t.tag}`, title: s.role, text: `${s.title} ${s.doing}`, status: s.state });
-      }
+  docs.push({ kind: 'galaxy', id: '', path: '', title: host, text: 'galaxy галактика', status: 'working' });
+  docs.push({ kind: 'quasar', id: 'quasar', path: host, title: labels.quasar, text: 'coordinator координатор quasar квазар', status: snap?.coordinator.status ?? '' });
+  for (const m of snap?.coordinator.subagents ?? []) {
+    docs.push({ kind: 'moon', id: `quasar#${m.id}`, path: `${host} › ${labels.quasar}`, title: m.role, text: `${m.title} ${m.doing}`, status: m.state });
+  }
+  for (const p of view.projects) {
+    docs.push({ kind: 'universe', id: p.name, path: host, title: `${p.name} ${p.key}`, text: p.origin, status: p.quiet ? 'queued' : 'working' });
+  }
+  for (const t of view.tasks) {
+    docs.push({
+      kind: 'planet', id: t.id, path: `${host} › ${t.repo} › ${t.tag}`, title: `${t.tag} ${t.title}`,
+      text: `${t.description} ${t.msg} ${t.board_label} ${t.app} ${t.worker_agent} ${t.model} ${t.label}`, status: t.status,
+    });
+    for (const s of t.subagents) {
+      docs.push({ kind: 'moon', id: `${t.id}#${s.id}`, path: `${host} › ${t.repo} › ${t.tag}`, title: s.role, text: `${s.title} ${s.doing}`, status: s.state });
     }
   }
   for (const r of snap?.runners ?? []) {
     docs.push({
-      kind: 'runner', id: r.id, galaxy: '', path: r.target, title: r.id,
+      kind: 'runner', id: r.id, path: r.target, title: r.id,
       text: `${r.target} ${r.note} ${r.containers.map((c) => c.name).join(' ')}`,
       status: r.ok ? 'working' : 'failed',
     });
   }
   for (const it of snap?.todo ?? []) {
-    docs.push({ kind: 'todo', id: it.id, galaxy: '', path: `${host} › ${labels.todo}`, title: it.text, text: it.to, status: '' });
+    docs.push({ kind: 'todo', id: it.id, path: `${host} › ${labels.todo}`, title: it.text, text: it.to, status: '' });
   }
   for (const turn of turns) {
-    docs.push({ kind: 'chat', id: String(turn.n), galaxy: '', path: labels.chat, title: turn.q, text: turn.a.slice(0, 400), status: '' });
+    docs.push({ kind: 'chat', id: String(turn.n), path: labels.chat, title: turn.q, text: turn.a.slice(0, 400), status: '' });
   }
   return docs;
 }

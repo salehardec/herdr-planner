@@ -1,4 +1,4 @@
--- Schema version 4. Shipyards («верфи»): the last state of every runner. The source of
+-- Schema version 5. Shipyards («верфи»): the last state of every runner. The source of
 -- truth is settings/runners.json; this table is only what the planner remembers between
 -- polls and restarts.
 CREATE TABLE runners_cache (
