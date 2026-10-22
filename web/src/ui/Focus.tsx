@@ -1,20 +1,20 @@
 import { signal } from '@preact/signals';
 import type { JSX } from 'preact';
-import { useEffect, useRef } from 'preact/hooks';
+import { useEffect } from 'preact/hooks';
 import {
-  armed, currentView, details, galaxies, galaxyId, linkSel, panels, requests, screens, selected, snap, taskOf, tellDraft,
+  currentView, details, galaxies, galaxyId, linkSel, panels, requests, screens, selected, snap, taskOf,
 } from '../store';
 import { api } from '../api';
-import {
-  ACTION_LABEL, boardOk, farScreen, farYazi, openFiles, removeLink, runTaskAction, tellTask, archiveAllDone, fetchScreen,
-} from '../actions';
+import { farScreen, farYazi, openFiles, removeLink, archiveAllDone, fetchScreen } from '../actions';
 import { fetchDetails, navigateTo, getWorld } from '../nav';
+import { closing, loadClosing } from '../closing';
+import { addDialogs } from '../dialogs';
 import { t } from '../i18n';
 import { Gl, Badge } from './Gl';
 import { RichText } from './RichText';
 import { Translatable } from './Translatable';
 import { RequestBlock, Screen } from './Request';
-import { AutoTextarea } from './AutoText';
+import { TaskActionButtons, TellBox } from './AgentActions';
 import { dayTimeOf } from '../util/dates';
 import { duration } from '../util/format';
 import type { Entity, Subagent, Task } from '../types';
@@ -23,42 +23,9 @@ import { SuggestionCard, suggestionsOfTask } from './MemoryPanel';
 import { openRemember } from './memory-api';
 import './focus.css';
 
-const closing = signal<Record<string, { text: string; truncated: boolean; key: string }>>({});
-
-async function loadClosing(task: Task): Promise<void> {
-  const key = `${task.status}|${task.msg}|${task.exited_at}`;
-  if (galaxyId.value !== '' || closing.value[task.id]?.key === key) return;
-  try {
-    const r = await api<{ text: string; truncated: boolean }>('/api/task/closing?id=' + encodeURIComponent(task.id));
-    closing.value = { ...closing.value, [task.id]: { text: r.text, truncated: r.truncated, key } };
-  } catch { /* none */ }
-}
-
 const linkLabel = (l: { from: string; label?: string; kind: string }, galaxy: string): string => l.label || (l.kind === 'far' ? l.from : taskOf(l.from, galaxy)?.tag ?? l.from);
 const remoteLink = (l: { from: string; kind: string }): boolean => l.kind === 'far' && String(l.from).includes(':');
 
-function TellBox(props: { task: Task }): JSX.Element {
-  const task = props.task;
-  const dis = !boardOk() && galaxyId.value === '';
-  const ref = useRef<HTMLTextAreaElement>(null);
-  const submit = async (): Promise<void> => {
-    const el = ref.current;
-    if (!el) return;
-    await tellTask(task, el.value, galaxyId.value || undefined);
-  };
-  return (
-    <div class="tell">
-      <AutoTextarea
-        id="tell" data-id={task.id} class="field" elRef={ref} autocomplete="off" disabled={dis} value={tellDraft.value[task.id] ?? ''}
-        placeholder={t('focus.tellPlaceholder', { tag: task.tag })} aria-label={t('focus.tell')}
-        onInput={(e) => { tellDraft.value = { ...tellDraft.value, [task.id]: (e.target as HTMLTextAreaElement).value }; }}
-        onSend={() => void submit()}
-      />
-      <button class="btn" type="button" data-act="tell-agent" data-id={task.id} aria-disabled={dis} onClick={() => void submit()}>{t('focus.send')}</button>
-      <div class="keyhint" id="tell-hint">{t('text.keys.send')}</div>
-    </div>
-  );
-}
 
 function SubagentRow(props: { task: Task; sa: Subagent }): JSX.Element {
   const sa = props.sa;
@@ -80,14 +47,12 @@ function SubagentRow(props: { task: Task; sa: Subagent }): JSX.Element {
 function TaskFocus(props: { task: Task }): JSX.Element {
   const task = props.task;
   const d = details.value[task.id];
-  const dis = !boardOk() && galaxyId.value === '';
   const home = galaxyId.value === '';
   const local = ['127.0.0.1', '::1', '[::1]', 'localhost'].includes(location.hostname);
   const review = d?.review && typeof d.review === 'object' ? d.review : task.review;
   const checks: string[] = Array.isArray(review?.checks) ? review.checks : [];
   const verdict = review?.tally ? t('focus.reviewTally', { v: review.tally }) : review?.text ? t('focus.review') : '';
   const worktree = d?.worktree || task.worktree || '';
-  const actions = (task.actions || []).filter((a) => !['tell', 'answer'].includes(a));
   const attention = ['waiting', 'failed', 'ready', 'plan'].includes(task.status);
   const deps = currentView.value.links.filter((l) => l.to === task.id);
   const cl = closing.value[task.id];
@@ -125,17 +90,7 @@ function TaskFocus(props: { task: Task }): JSX.Element {
         {task.created > 0 && <><span>{t('focus.created')}</span><b>{dayTimeOf(task.created)}</b></>}
       </div>
       <div class="f-actions">
-        {!attention && actions.map((a) => {
-          const on = armed.value?.key === `${task.id}:${a}`;
-          const label = a === 'approve' && task.status === 'plan' ? t('req.approvePlan') : t(ACTION_LABEL[a] ?? a);
-          return (
-            <button
-              key={a} type="button" data-act={a} data-id={task.id} aria-disabled={dis}
-              class={`btn ${a === 'approve' ? 'go' : ''} ${a === 'anyway' ? 'danger' : ''} ${on ? 'arm' : ''}`}
-              onClick={() => runTaskAction(a, task)}
-            >{on ? t('req.confirm', { a: label.toLowerCase() }) : label}</button>
-          );
-        })}
+        {!attention && <TaskActionButtons task={task} />}
         {home && task.status !== 'queued' && (
           <>
             <button class="btn" type="button" data-act="files" data-id={task.id} onClick={() => void openFiles(task, 'worktree')}><Gl n="folder" />{t('focus.worktreeBtn')}</button>
@@ -156,15 +111,24 @@ function TaskFocus(props: { task: Task }): JSX.Element {
 
       {(task.status === 'done' || cl?.text) && (
         <section class="closing" id="closing">
-          <h3>
-            {t('focus.closing')}
-            {cl?.text && home && (
-              <button class="btn sm mm-tomem always" type="button" data-act="to-memory" title={t('mem.toMemoryTip')}
-                onClick={() => openRemember({ text: cl.text, source: `task ${task.id}`, repo: task.repo })}>
-                <Gl n="memory" />{t('mem.toMemory')}
-              </button>
+          <div class="block-hd">
+            <h3>
+              {t('focus.closing')}
+              {cl?.text && home && (
+                <button class="btn sm mm-tomem always" type="button" data-act="to-memory" title={t('mem.toMemoryTip')}
+                  onClick={() => openRemember({ text: cl.text, source: `task ${task.id}`, repo: task.repo })}>
+                  <Gl n="memory" />{t('mem.toMemory')}
+                </button>
+              )}
+            </h3>
+            {cl?.text && (
+              <button
+                class="btn sm" type="button" data-act="summary-open" data-part="closing" data-id={task.id}
+                aria-label={t('focus.expand')}
+                onClick={() => { addDialogs.summary.value = { task: task.id, galaxy: galaxyId.value, part: 'closing' }; }}
+              ><Gl n="expand" />{t('focus.expand')}</button>
             )}
-          </h3>
+          </div>
           {suggestionsOfTask(task.id).map((s) => <SuggestionCard key={s.task} s={s} compact />)}
           {cl?.text ? (
             <div class="closing-text"><Translatable text={cl.text} /></div>
@@ -183,7 +147,14 @@ function TaskFocus(props: { task: Task }): JSX.Element {
 
       {task.description && (
         <section>
-          <h3>{t('focus.description')}</h3>
+          <div class="block-hd">
+            <h3>{t('focus.description')}</h3>
+            <button
+              class="btn sm" type="button" data-act="summary-open" data-part="description" data-id={task.id}
+              aria-label={t('focus.expand')}
+              onClick={() => { addDialogs.summary.value = { task: task.id, galaxy: galaxyId.value, part: 'description' }; }}
+            ><Gl n="expand" />{t('focus.expand')}</button>
+          </div>
           <div class="desc"><Translatable text={task.description} /></div>
         </section>
       )}
