@@ -12,6 +12,8 @@ import type { RunnerLogData, RunnerLogEntry } from '../types';
 
 /** The filter values are groups of kinds the server accepts (`kind=a,b`). */
 const FILTERS = ['stop', 'restart', 'delete', 'clean,disk', 'auto', 'rules', 'down', 'remove'];
+/** One page of the journal; older rows come by the `n` cursor, not by a bigger limit. */
+const PAGE = 100;
 
 function tagOf(e: RunnerLogEntry): string {
   return e.tag || t('runner.log.noTag');
@@ -29,16 +31,23 @@ function whatText(e: RunnerLogEntry): string {
   const n = d.networks ?? 0;
   const v = d.volumes ?? 0;
   switch (e.kind) {
-    case 'stop': return t('runner.log.stop', { name: e.name, tag: tagOf(e) });
-    case 'restart': return t('runner.log.restart', { name: e.name, tag: tagOf(e) });
-    case 'delete': return t('runner.log.delete', { name: e.name, tag: tagOf(e) });
-    case 'clean': return t('runner.log.clean', { c, n, v });
-    case 'disk': return (d.bytes ?? 0) > 0 ? t('runner.log.disk', { size: memSize(d.bytes ?? 0) }) : t('runner.log.diskNothing');
+    case 'stop': return t(e.ok ? 'runner.log.stop' : 'runner.log.stopFailed', { name: e.name, tag: tagOf(e) });
+    case 'restart': return t(e.ok ? 'runner.log.restart' : 'runner.log.restartFailed', { name: e.name, tag: tagOf(e) });
+    case 'delete': return t(e.ok ? 'runner.log.delete' : 'runner.log.deleteFailed', { name: e.name, tag: tagOf(e) });
+    case 'clean': {
+      const size = (d.bytes ?? 0) > 0 ? t('runner.log.size', { size: memSize(d.bytes ?? 0) }) : '';
+      return [t(e.ok ? 'runner.log.clean' : 'runner.log.cleanFailed', { c, n, v }), size].filter(Boolean).join(' · ');
+    }
+    case 'disk': {
+      const size = (d.bytes ?? 0) > 0 ? memSize(d.bytes ?? 0) : '';
+      if (!e.ok) return size ? t('runner.log.diskFailed', { size }) : t('runner.log.diskFailedNothing');
+      return size ? t('runner.log.disk', { size }) : t('runner.log.diskNothing');
+    }
     case 'auto':
       return d.action === 'switch'
         ? (d.on ? t('runner.log.autoOn', { h: d.hours ?? 0 }) : t('runner.log.autoOff'))
-        : t('runner.log.auto', { c, n, v });
-    case 'rules': return d.on ? t('runner.log.rulesOn') : t('runner.log.rulesOff');
+        : t(e.ok ? 'runner.log.auto' : 'runner.log.autoFailed', { c, n, v });
+    case 'rules': return !e.ok ? t('runner.log.rulesFailed') : d.on ? t('runner.log.rulesOn') : t('runner.log.rulesOff');
     case 'down':
       return e.until
         ? t('runner.log.down', { dur: duration(e.until - e.at, t) })
@@ -79,8 +88,11 @@ export function RunnerLog(props: { runner: string; stamp: string }): JSX.Element
   const [kind, setKind] = useState('');
   const [word, setWord] = useState('');
   const [query, setQuery] = useState('');
-  const [limit, setLimit] = useState(100);
-  const [data, setData] = useState<RunnerLogData | null>(null);
+  // The last row on screen: the next page is «older than this n», so it goes past any page-size limit.
+  const [before, setBefore] = useState(0);
+  const [entries, setEntries] = useState<RunnerLogEntry[]>([]);
+  const [more, setMore] = useState(false);
+  const [keepDays, setKeepDays] = useState(0);
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
 
@@ -88,21 +100,30 @@ export function RunnerLog(props: { runner: string; stamp: string }): JSX.Element
   useEffect(() => {
     const id = setTimeout(() => {
       setQuery(word);
-      setLimit(100);
+      setBefore(0);
+      setEntries([]);
+      setMore(false);
     }, 300);
     return () => clearTimeout(id);
   }, [word]);
 
   useEffect(() => {
     let alive = true;
-    const params = new URLSearchParams({ id: props.runner, limit: String(limit) });
+    const params = new URLSearchParams({ id: props.runner, limit: String(PAGE) });
     if (kind) params.set('kind', kind);
     if (query.trim()) params.set('q', query.trim());
+    if (before > 0) params.set('before', String(before));
     setLoading(true);
     api<RunnerLogData>(`/api/runner/log?${params.toString()}`)
       .then((d) => {
         if (!alive) return;
-        setData(d);
+        setEntries((prev) => {
+          if (before === 0) return d.entries;
+          const seen = new Set(prev.map((x) => x.n));
+          return [...prev, ...d.entries.filter((x) => !seen.has(x.n))];
+        });
+        setMore(d.more);
+        setKeepDays(d.keep_days);
         setError('');
       })
       .catch((e: Error) => {
@@ -112,18 +133,22 @@ export function RunnerLog(props: { runner: string; stamp: string }): JSX.Element
         if (alive) setLoading(false);
       });
     return () => { alive = false; };
-  }, [props.runner, props.stamp, kind, query, limit]);
+  }, [props.runner, props.stamp, kind, query, before]);
 
   const filtered = !!kind || !!query.trim();
-  const entries = data?.entries ?? [];
   return (
     <section class="rf-log" id="rf-log" data-kind={kind} data-rows={entries.length}>
       <h3>{t('runner.log')} <span class="cnt">{entries.length}</span></h3>
-      {data && <p class="hint" id="rf-log-hint">{t('runner.logHint', { days: data.keep_days })}</p>}
+      {keepDays > 0 && <p class="hint" id="rf-log-hint">{t('runner.logHint', { days: keepDays })}</p>}
       <div class="rf-log-tools">
         <select
           class="field" id="rf-log-kind" aria-label={t('runner.log.filter')} value={kind}
-          onChange={(ev) => { setKind((ev.target as HTMLSelectElement).value); setLimit(100); }}
+          onChange={(ev) => {
+            setKind((ev.target as HTMLSelectElement).value);
+            setBefore(0);
+            setEntries([]);
+            setMore(false);
+          }}
         >
           <option value="">{t('runner.log.all')}</option>
           {FILTERS.map((f) => <option key={f} value={f}>{t(`runner.log.kind.${f}`)}</option>)}
@@ -135,7 +160,7 @@ export function RunnerLog(props: { runner: string; stamp: string }): JSX.Element
         />
       </div>
       {error && <p class="hint bad" id="rf-log-error">{t('runner.logFailed', { why: error })}</p>}
-      {loading && !data && <div class="hint" id="rf-log-loading">{t('runner.logLoading')}</div>}
+      {loading && entries.length === 0 && <div class="hint" id="rf-log-loading">{t('runner.logLoading')}</div>}
       {!error && entries.length === 0 && !loading && (
         <div class="hint" id="rf-log-empty">{filtered ? t('runner.logNoMatch') : t('runner.logNone')}</div>
       )}
@@ -162,9 +187,12 @@ export function RunnerLog(props: { runner: string; stamp: string }): JSX.Element
           </tbody>
         </table>
       )}
-      {data?.more && (
+      {more && entries.length > 0 && (
         <div class="act">
-          <button class="btn sm" type="button" id="rf-log-more" onClick={() => setLimit((n) => Math.min(n + 100, 500))}>{t('runner.log.more')}</button>
+          <button
+            class="btn sm" type="button" id="rf-log-more" disabled={loading}
+            onClick={() => setBefore(entries[entries.length - 1].n)}
+          >{t('runner.log.more')}</button>
         </div>
       )}
     </section>

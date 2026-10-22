@@ -50,6 +50,33 @@ pub fn valid_actor(who: &str) -> bool {
     who.is_empty() || who == HUMAN || who == AUTO_ACTOR || who == PLANNER
 }
 
+/// The searchable text of a row: the lower-cased name, tag, task, reason and the scalar values of `data` (arrays and
+/// nested objects too), never the JSON keys. `to_lowercase` is Unicode, so «Верфь» and «верфь» are one word here.
+pub fn hay_of(name: &str, tag: &str, task: &str, why: &str, data: &Value) -> String {
+    let mut parts: Vec<String> = vec![name.to_string(), tag.to_string(), task.to_string(), why.to_string()];
+    collect_strings(data, &mut parts);
+    parts.join("\n").to_lowercase()
+}
+
+fn collect_strings(value: &Value, out: &mut Vec<String>) {
+    match value {
+        Value::String(s) => out.push(s.clone()),
+        Value::Number(n) => out.push(n.to_string()),
+        Value::Bool(b) => out.push(b.to_string()),
+        Value::Array(items) => {
+            for item in items {
+                collect_strings(item, out);
+            }
+        }
+        Value::Object(map) => {
+            for item in map.values() {
+                collect_strings(item, out);
+            }
+        }
+        Value::Null => {}
+    }
+}
+
 /// One row as the page reads it. `n` is the stable order (newest first); `until` is set for a downtime row only.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Entry {
@@ -181,13 +208,16 @@ pub fn auto_switch(at: u64, on: bool, hours: u64) -> Entry {
     }
 }
 
-/// The agents' rule block connected to (or taken out of) this machine's instruction settings.
-pub fn rules(at: u64, on: bool, drop_old: bool, settings: usize) -> Entry {
+/// The agents' rule block connected to (or taken out of) this machine's instruction settings. A write that failed
+/// after the first setting is a row too (`ok` false, `settings` what was written): the page never says «connected»
+/// when the two instruction settings do not both hold the block.
+pub fn rules(at: u64, on: bool, drop_old: bool, settings: usize, ok: bool, why: &str) -> Entry {
     Entry {
         at,
         kind: RULES.to_string(),
         who: HUMAN.to_string(),
-        ok: true,
+        ok,
+        why: why.to_string(),
         data: json!({"on": on, "drop_old": drop_old, "settings": settings}),
         ..Entry::default()
     }
@@ -361,7 +391,7 @@ mod tests {
         db.log_add("vm-r", &action(base - 50, STOP, &container("pg-ALP-3", "ALP-3"), true, ""));
         db.log_add("vm-r", &action(base - 40, DELETE, &container("web-ALP-15", "ALP-15"), false, "already running"));
         db.log_add("vm-r", &auto_run(base - 30, 2, 1, 0, &["ALP-15".into()], 0, ""));
-        db.log_add("vm-r", &rules(base - 20, true, false, 2));
+        db.log_add("vm-r", &rules(base - 20, true, false, 2, true, ""));
         db.log_add("vm-r", &cleaned(base - 10, 1, 0, 1, 1024, &["web-ALP-15".into()], &["ALP-15".into()], 0, ""));
 
         assert_eq!(db.log_page("vm-r", "", "", "", 0, 10).len(), 5);
@@ -426,6 +456,60 @@ mod tests {
         let run = auto_run(20, 1, 0, 2, &["ALP-15".into()], 0, "");
         assert_eq!(run.data["action"], "run");
         assert_eq!(run.who, AUTO_ACTOR);
+    }
+
+    #[test]
+    fn the_search_lower_cases_any_script_and_takes_wildcards_literally() {
+        let db = Db::memory().unwrap();
+        let base = crate::config::now_ms();
+        db.log_add(
+            "vm-r",
+            &Entry {
+                at: base - 30,
+                kind: DOWN.into(),
+                who: PLANNER.into(),
+                why: "Верфь не отвечает".into(),
+                ..Entry::default()
+            },
+        );
+        db.log_add("vm-r", &auto_run(base - 20, 2, 1, 0, &["Том".into()], 0, ""));
+        db.log_add("vm-r", &rules(base - 10, true, false, 2, true, ""));
+
+        assert_eq!(db.log_page("vm-r", "", "", "верфь", 0, 10).len(), 1);
+        assert_eq!(db.log_page("vm-r", "", "", "ВЕРФЬ", 0, 10).len(), 1);
+        assert_eq!(db.log_page("vm-r", "", "", "том", 0, 10).len(), 1);
+        assert_eq!(db.log_page("vm-r", "", "", "ТОМ", 0, 10).len(), 1);
+        assert_eq!(db.log_page("vm-r", "", "", "alp-15", 0, 10).len(), 0);
+        // Wildcards are words, not patterns; keys of `data` are not searchable text.
+        assert!(db.log_page("vm-r", "", "", "_", 0, 10).is_empty());
+        assert!(db.log_page("vm-r", "", "", "%", 0, 10).is_empty());
+        assert!(db.log_page("vm-r", "", "", "settings", 0, 10).is_empty());
+        assert!(db.log_page("vm-r", "", "", "containers", 0, 10).is_empty());
+    }
+
+    #[test]
+    fn the_cursor_reaches_rows_past_the_page_limit() {
+        let db = Db::memory().unwrap();
+        let base = crate::config::now_ms();
+        for i in 0..520 {
+            db.log_add("vm-r", &action(base - i, STOP, &container(&format!("c-{i}"), "ALP-3"), true, ""));
+        }
+        let first = db.log_page("vm-r", "", "", "", 0, 500);
+        assert_eq!(first.len(), 500);
+        assert_eq!(first[499].name, "c-20");
+        let next = db.log_page("vm-r", "", "", "", first[499].n, 500);
+        assert_eq!(next.len(), 20);
+        assert_eq!(next[0].name, "c-19");
+        assert_eq!(next[19].name, "c-0");
+    }
+
+    #[test]
+    fn a_rule_block_that_failed_after_one_setting_is_not_called_connected() {
+        let e = rules(10, true, false, 1, false, "доска не приняла второй параметр");
+        assert_eq!(e.kind, RULES);
+        assert!(!e.ok);
+        assert_eq!(e.data["settings"], 1);
+        assert_eq!(e.why, "доска не приняла второй параметр");
     }
 
     #[test]

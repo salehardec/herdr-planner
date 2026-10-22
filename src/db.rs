@@ -30,6 +30,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("db/migrations/005_runners.sql"),
     include_str!("db/migrations/006_runner_hist.sql"),
     include_str!("db/migrations/007_runner_log.sql"),
+    include_str!("db/migrations/008_runner_log_hay.sql"),
 ];
 
 /// Entries the journal hands out; older ones stay in the table up to [`JOURNAL_KEEP`].
@@ -141,6 +142,7 @@ impl Db {
         )
         .map_err(db_err)?;
         migrate(&mut conn)?;
+        backfill_log_hay(&mut conn).map_err(db_err)?;
         Ok(Db(Arc::new(Mutex::new(conn))))
     }
 
@@ -653,8 +655,8 @@ impl Db {
     pub fn log_add(&self, runner: &str, e: &crate::runners_log::Entry) {
         self.with("log_add", |c| {
             c.execute(
-                "INSERT INTO runner_log (runner, at, kind, who, task, tag, name, ok, why, until, data) \
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+                "INSERT INTO runner_log (runner, at, kind, who, task, tag, name, ok, why, until, data, hay) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
                 params![
                     runner,
                     e.at as i64,
@@ -667,6 +669,7 @@ impl Db {
                     e.why,
                     e.until as i64,
                     log_data(e),
+                    log_hay(e),
                 ],
             )?;
             log_prune_conn(c, crate::runners_log::KEEP_MS)?;
@@ -687,8 +690,8 @@ impl Db {
                 .optional()?;
             if open.is_none() {
                 c.execute(
-                    "INSERT INTO runner_log (runner, at, kind, who, ok, why, data) VALUES (?1, ?2, 'down', ?3, 0, ?4, ?5)",
-                    params![runner, e.at as i64, e.who, e.why, log_data(e)],
+                    "INSERT INTO runner_log (runner, at, kind, who, ok, why, data, hay) VALUES (?1, ?2, 'down', ?3, 0, ?4, ?5, ?6)",
+                    params![runner, e.at as i64, e.who, e.why, log_data(e), log_hay(e)],
                 )?;
             }
             log_prune_conn(c, crate::runners_log::KEEP_MS)?;
@@ -707,8 +710,14 @@ impl Db {
             )?;
             if changed == 0 && since > 0 {
                 c.execute(
-                    "INSERT INTO runner_log (runner, at, kind, who, ok, why, until) VALUES (?1, ?2, 'down', 'planner', 0, ?3, ?4)",
-                    params![runner, since as i64, why, at as i64],
+                    "INSERT INTO runner_log (runner, at, kind, who, ok, why, until, hay) VALUES (?1, ?2, 'down', 'planner', 0, ?3, ?4, ?5)",
+                    params![
+                        runner,
+                        since as i64,
+                        why,
+                        at as i64,
+                        crate::runners_log::hay_of("", "", "", why, &serde_json::Value::Null),
+                    ],
                 )?;
             }
             log_prune_conn(c, crate::runners_log::KEEP_MS)?;
@@ -720,6 +729,7 @@ impl Db {
     /// (empty — both), `q` words found in the container's name, the task, the reason or the kind's own data, `before`
     /// the `n` to continue after (0 — from the newest), `limit` how many to hand back.
     pub fn log_page(&self, runner: &str, kinds: &str, who: &str, q: &str, before: u64, limit: usize) -> Vec<crate::runners_log::Entry> {
+        let needle = q.to_lowercase();
         self.with("log_page", |c| {
             log_prune_conn(c, crate::runners_log::KEEP_MS)?;
             let mut st = c.prepare(
@@ -727,13 +737,12 @@ impl Db {
                  WHERE runner = ?1 \
                    AND (?2 = '' OR instr(',' || ?2 || ',', ',' || kind || ',') > 0) \
                    AND (?3 = '' OR who = ?3) \
-                   AND (?4 = '' OR name LIKE '%' || ?4 || '%' OR tag LIKE '%' || ?4 || '%' \
-                        OR task LIKE '%' || ?4 || '%' OR why LIKE '%' || ?4 || '%' OR data LIKE '%' || ?4 || '%') \
+                   AND (?4 = '' OR instr(hay, ?4) > 0) \
                    AND (?5 = 0 OR n < ?5) \
                  ORDER BY n DESC LIMIT ?6",
             )?;
             let rows = st.query_map(
-                params![runner, kinds, who, q, before as i64, limit as i64],
+                params![runner, kinds, who, needle, before as i64, limit as i64],
                 |r| {
                     let data: String = r.get(10)?;
                     Ok(crate::runners_log::Entry {
@@ -1040,6 +1049,36 @@ fn log_prune_conn(c: &mut Connection, keep_ms: u64) -> rusqlite::Result<()> {
         [cut],
     )?;
     Ok(())
+}
+
+/// The searchable text of a journal row, as it is stored: lower-cased words of the row, the values of `data` included,
+/// its keys not.
+fn log_hay(e: &crate::runners_log::Entry) -> String {
+    crate::runners_log::hay_of(&e.name, &e.tag, &e.task, &e.why, &e.data)
+}
+
+/// Fills `hay` for rows written before the column existed (a database of an earlier build of this feature). Opened once
+/// on every open of the database; rows that already have their text are left alone.
+fn backfill_log_hay(c: &mut Connection) -> rusqlite::Result<()> {
+    let rows: Vec<(i64, String, String, String, String, String)> = {
+        let mut st = c.prepare("SELECT n, name, tag, task, why, data FROM runner_log WHERE hay = ''")?;
+        let it = st.query_map([], |r| {
+            Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?))
+        })?;
+        it.collect::<rusqlite::Result<Vec<_>>>()?
+    };
+    if rows.is_empty() {
+        return Ok(());
+    }
+    let tx = c.transaction()?;
+    for (n, name, tag, task, why, data) in rows {
+        let value = serde_json::from_str(&data).unwrap_or(serde_json::Value::Null);
+        tx.execute(
+            "UPDATE runner_log SET hay = ?1 WHERE n = ?2",
+            params![crate::runners_log::hay_of(&name, &tag, &task, &why, &value), n],
+        )?;
+    }
+    tx.commit()
 }
 
 /// Fingerprint of a turn's content, stored next to it so a sync can tell which turns changed.

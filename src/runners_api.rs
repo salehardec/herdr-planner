@@ -123,7 +123,7 @@ pub async fn runner_log(State(app): State<Shared>, Query(body): Query<LogBody>) 
     let kinds = kinds.join(",");
     let who = body.who.trim();
     if !crate::runners_log::valid_actor(who) {
-        return fail(400, format!("кто: человек или автоуборка, не {who:?}"));
+        return fail(400, format!("кто: человек, автоуборка или планировщик, не {who:?}"));
     }
     let word = body.q.trim();
     if word.chars().count() > 100 {
@@ -902,7 +902,15 @@ pub async fn runner_connect(State(app): State<Shared>, headers: HeaderMap, Json(
             .unwrap_or_default();
         let value = match runners::connect_value(&was, &block, body.on) {
             Ok(v) => v,
-            Err(e) => return fail(422, e),
+            Err(e) => {
+                for r in &file.runners {
+                    app.db.log_add(
+                        &r.id,
+                        &crate::runners_log::rules(now_ms(), body.on, body.drop_old, results.len(), false, &e),
+                    );
+                }
+                return fail(422, e);
+            }
         };
         let value = match value {
             Some(v) if body.on && body.drop_old => {
@@ -918,11 +926,21 @@ pub async fn runner_connect(State(app): State<Shared>, headers: HeaderMap, Json(
         if out.ok() {
             results.push(json!({"setting": name, "was": was, "now": value}));
         } else {
-            return fail(422, out.words());
+            let why = out.words();
+            for r in &file.runners {
+                app.db.log_add(
+                    &r.id,
+                    &crate::runners_log::rules(now_ms(), body.on, body.drop_old, results.len(), false, &why),
+                );
+            }
+            return fail(422, why);
         }
     }
     for r in &file.runners {
-        app.db.log_add(&r.id, &crate::runners_log::rules(now_ms(), body.on, body.drop_old, results.len()));
+        app.db.log_add(
+            &r.id,
+            &crate::runners_log::rules(now_ms(), body.on, body.drop_old, results.len(), true, ""),
+        );
     }
     {
         let mut state = app.runner_block.lock().await;

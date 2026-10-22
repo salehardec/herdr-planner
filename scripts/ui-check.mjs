@@ -4314,6 +4314,7 @@ section('runners', async () => {
   check('the forgotten container leaves the yard; the unsure and the foreign ones stay', await waitFor('plannerSnap().runners[0].containers.every((c) => c.name !== "web-ALP-15") && plannerSnap().runners[0].containers.some((c) => c.name === "x-ALP-99") && plannerSnap().runners[0].containers.some((c) => c.name === "neighbor-db-1") && plannerSnap().runners[0].containers.some((c) => c.name === "buildx_buildkit_x0")', 30000), JSON.stringify((await stateApi())?.runners?.[0]?.containers?.map((c) => c.name)));
   check('the journal keeps a line about it', await waitFor('plannerSnap().journal.some((j) => j.s === "runner")', 8000), JSON.stringify((await stateApi())?.journal?.slice(-2)));
   check('the yard journal keeps the manual cleaning, its counts and the container’s name', await waitApi('/api/runner/log?id=vm-r&kind=clean', (r) => r.ok && r.entries.some((e) => e.data?.containers >= 1 && (e.data.names ?? []).includes('web-ALP-15') && e.who === 'human')), await evalJs('fetch("/api/runner/log?id=vm-r&kind=clean").then((x) => x.json()).then((r) => JSON.stringify(r.entries))'));
+  check('the journal row of the cleaning shows how much it freed', await waitFor('(document.querySelector("#rf-log")?.innerText || "").includes("Убрано вручную") && (document.querySelector("#rf-log")?.innerText || "").includes("≈")', 8000), await text('#rf-log'));
   // The wizard: a second yard, the machine and this machine's way in, the list written, the agents connected.
   await click('#nav [data-nav="addr"]');
   check('«Добавить верфь…» opens the wizard', await waitFor('!!document.querySelector("#addr #r-go")', 5000) && await hasText('#addr', 'Добавить верфь'), await text('#addr'));
@@ -5075,6 +5076,32 @@ section('runners ctl', async () => {
   await evalJs('(() => { const i = document.querySelector("#rf-log-q"); i.value = "no-such-thing"; i.dispatchEvent(new Event("input", { bubbles: true })); return true; })()');
   check('a word that is not there says so', await waitFor('(document.querySelector("#rf-log-empty")?.innerText || "").includes("ничего нет")', 8000), await text('#rf-log'));
   await evalJs('(() => { const i = document.querySelector("#rf-log-q"); i.value = ""; i.dispatchEvent(new Event("input", { bubbles: true })); const s = document.querySelector("#rf-log-kind"); s.value = ""; s.dispatchEvent(new Event("change", { bubbles: true })); return true; })()');
+  // Past one page (PLN-47): 620 rows in the planner's database, then the page's own cursor must reach the old ones —
+  // «Показать ещё» that grows a limit stops at the API's 500, a `before` cursor does not. The last seeded row is the
+  // first one inserted (`pg-ALP-3-0`), so it can only be reached through the cursor.
+  const dbFile = join(fixture, 'state', 'herdr-planner', 'planner.sqlite');
+  const seedAt = Date.now();
+  const seed = [];
+  for (let i = 0; i < 620; i++) {
+    seed.push(`('vm-r', ${seedAt - (1000 + i) * 1000}, 'stop', 'human', 'alpha/3', 'ALP-3', 'pg-ALP-3-${i}', 1, '', 0, '{}', '')`);
+  }
+  seed.push(`('vm-r', ${seedAt}, 'delete', 'human', 'alpha/15', 'ALP-15', 'web-ALP-FAIL', 0, 'container is running', 0, '{}', 'web-alp-fail')`);
+  execFileSync('sqlite3', [dbFile, `PRAGMA busy_timeout=5000; INSERT INTO runner_log (runner, at, kind, who, task, tag, name, ok, why, until, data, hay) VALUES ${seed.join(',')};`]);
+  await post('/api/runner/ask', { id: 'vm-r' });
+  check('the journal starts with one page and offers older rows', await waitFor('document.querySelectorAll("#rf-log tbody tr").length === 100 && !!document.querySelector("#rf-log-more")', 12000), String(await evalJs('document.querySelectorAll("#rf-log tbody tr").length')));
+  for (let i = 0; i < 6; i++) {
+    await waitFor('!document.querySelector("#rf-log-more")?.disabled', 8000);
+    await click('#rf-log-more');
+    const want = i === 5 ? 501 : 100 * (i + 2);
+    check(`journal page ${i + 2} arrives`, await waitFor(`document.querySelectorAll("#rf-log tbody tr").length >= ${want}`, 10000), String(await evalJs('document.querySelectorAll("#rf-log tbody tr").length')));
+  }
+  check('the cursor reaches rows older than 500: the first seeded row is really shown',
+    (await evalJs('document.querySelectorAll("#rf-log tbody tr").length')) > 500
+      && await waitFor('[...document.querySelectorAll("#rf-log tbody tr")].some((r) => r.innerText.includes("pg-ALP-3-0"))', 8000),
+    String(await evalJs('document.querySelectorAll("#rf-log tbody tr").length')));
+  // A failed action must not read as done.
+  await evalJs('(() => { const s = document.querySelector("#rf-log-kind"); s.value = "delete"; s.dispatchEvent(new Event("change", { bubbles: true })); const i = document.querySelector("#rf-log-q"); i.value = "web-ALP-FAIL"; i.dispatchEvent(new Event("input", { bubbles: true })); return true; })()');
+  check('a failed action says it failed in its own headline, not that it was done', await waitFor('(document.querySelector("#rf-log")?.innerText || "").includes("Не удалось удалить контейнер web-ALP-FAIL")', 10000) && await hasText('#rf-log', 'Не вышло: container is running', 5000), await text('#rf-log'));
   check('only these three commands went to the yard (no foreign id)', yardCommands(start).filter((c) => !c.startsWith('docker logs')).length === 3, JSON.stringify(yardCommands(start)));
 
   // A late answer closes only its own card: the answer to job-a's restart comes 3 s late, and job-b's card, opened
