@@ -393,6 +393,49 @@ export interface Runner {
   down_since_ms: number;
 }
 
+/** A row of a shipyard's journal (PLN-47): who did what and when. */
+export interface RunnerLogEntry {
+  n: number;
+  at: number;
+  kind: 'stop' | 'restart' | 'delete' | 'clean' | 'disk' | 'auto' | 'rules' | 'down' | 'remove';
+  who: 'human' | 'auto' | 'planner';
+  task: string;
+  tag: string;
+  name: string;
+  ok: boolean;
+  why: string;
+  /** For a downtime row: when the yard answered again (0 — it is silent now). */
+  until: number;
+  data: {
+    action?: 'run' | 'switch';
+    containers?: number;
+    networks?: number;
+    volumes?: number;
+    bytes?: number;
+    stopped?: number;
+    builders?: number;
+    images?: boolean;
+    cache?: boolean;
+    failed?: number;
+    on?: boolean;
+    hours?: number;
+    drop_old?: boolean;
+    settings?: number;
+    tags?: string[];
+    names?: string[];
+    force?: boolean;
+    warned?: string[];
+  };
+}
+
+export interface RunnerLogData {
+  ok: boolean;
+  at: number;
+  entries: RunnerLogEntry[];
+  more: boolean;
+  keep_days: number;
+}
+
 export interface Snapshot {
   version: string;
   at: number;

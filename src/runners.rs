@@ -1867,6 +1867,8 @@ pub async fn poll_all(app: &Shared) {
         classify(&mut kept.containers, &kept.protected, &index);
         // What the yard did and what its tasks ate (PLN-46): before the read replaces the previous one.
         crate::runners_hist::record(&app.db, prev, &kept, at_ms);
+        // A silence and its end (PLN-47): one row per period the yard did not answer.
+        crate::runners_log::note_read(&app.db, &kept.id, prev, &kept, at_ms);
         if let Ok(json) = serde_json::to_string(&kept) {
             app.db.runner_put(
                 &kept.id,

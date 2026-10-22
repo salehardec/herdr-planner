@@ -30,6 +30,7 @@ mod runners_auto;
 mod runners_ctl;
 mod runners_disk;
 mod runners_hist;
+mod runners_log;
 mod search;
 mod server;
 mod ship;
