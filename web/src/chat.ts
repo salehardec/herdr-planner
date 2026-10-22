@@ -6,6 +6,7 @@ import { chat, snap } from './store';
 import type { TurnData } from './types';
 import { t } from './i18n';
 import { makeShelf, type SavedFile } from './attach';
+import { chatRead, settleRead } from './chat-unread';
 
 /** The files waiting in the message line. */
 const shelf = makeShelf();
@@ -15,7 +16,7 @@ export const removeFile = shelf.remove;
 export const sending = signal(false);
 export const optimistic = signal<{ text: string; at: number; attachments: { id: string; name: string }[] } | null>(null);
 /** Set when a search hit or a key asks the log to show a given turn. */
-export const scrollTo = signal<{ n: number; at: number } | null>(null);
+export const scrollTo = signal<{ n: number; at: number; block?: 'start' | 'center' } | null>(null);
 /** A draft for the message line (a todo item dropped on the chat): the line takes the text once. */
 export const draftRequest = signal<{ text: string; at: number } | null>(null);
 
@@ -41,10 +42,29 @@ export async function loadLatest(): Promise<void> {
       // More than a page arrived since the last look: start again from the end.
       if (have >= 0 && r.turns.length && r.turns[0].n > have + 1) update({ turns: [] });
       merge(r.turns);
+      settleRead();
     }
   } catch { /* the compact tail stays */ } finally {
     update({ loadingLatest: false });
   }
+  await coverRead();
+}
+
+/**
+ * The turns that were read keep the words they were read as, and an answer may have changed since: they have to be loaded to be
+ * checked, though a page that has just started holds only the last few. Loads older turns down to the oldest of them.
+ */
+async function coverRead(): Promise<void> {
+  const rs = chatRead.value;
+  const keys = rs ? Object.keys(rs.seen).map(Number) : [];
+  if (!keys.length) return;
+  const lowest = Math.min(...keys);
+  let got = false;
+  for (let i = 0; i < 20 && chat.value.turns.length && chat.value.turns[0].n > lowest && hasOlder(); i++) {
+    if (!(await loadOlder())) break;
+    got = true;
+  }
+  if (got) settleRead();
 }
 
 /** Older turns, five at a time. Returns true when something was added. */

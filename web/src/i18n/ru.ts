@@ -33,6 +33,7 @@ export const ru: Record<string, string | string[]> = {
   'chat.aria': 'Чат с Координатором', 'chat.button': 'Чат', 'chat.hide': 'Скрыть', 'chat.search': 'поиск по чату',
   'chat.searching': 'ищу…', 'chat.noHits': 'в разговоре этого нет', 'chat.loading': 'Загружаю…', 'chat.older': '↑ Раньше · прокрути вверх или ↑',
   'chat.start': 'начало разговора', 'chat.toLast': '↓ К последним', 'chat.you': 'вы', 'chat.reuse': 'вернуть в строку ввода',
+  'chat.unreadDot': 'Новое сообщение', 'chat.toUnread': 'К непрочитанным', 'chat.unreadN': ['{n} новое', '{n} новых', '{n} новых'],
   'chat.boardNotice': 'уведомление доски', 'chat.more': 'Развернуть ▾', 'chat.less': 'Свернуть ▴', 'chat.sentWaiting': 'отправлено · ждёт Координатора',
   'chat.reading': 'читает доску', 'chat.placeholder': 'Скажи Координатору… · Ctrl+V — картинка',
   'chat.send': 'Отправить', 'chat.attachTitle': 'Прикрепить файл (текст, картинка, звук): Ctrl+V, перетащить или выбрать', 'chat.remove': 'Убрать',
