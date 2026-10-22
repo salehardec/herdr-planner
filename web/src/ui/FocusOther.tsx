@@ -8,6 +8,7 @@ import { Gl } from './Gl';
 import { MemoryPanel } from './MemoryPanel';
 import { CleanCard } from './CleanCard';
 import { DiskCard } from './DiskCard';
+import { ContainerButtons } from './ContainerTools';
 import { RunnerAuto } from './RunnerAuto';
 import { RichText } from './RichText';
 import { toast } from '../toast';
@@ -351,7 +352,7 @@ export function RunnerFocus(props: { entity: Entity }): JSX.Element {
           <tbody>
             {active.map((c) => (
               <tr key={c.id} data-class={c.class}>
-                <td><code>{c.name}</code></td>
+                <td><code>{c.name}</code><div class="ctl-row"><ContainerButtons runner={r.id} c={c} /></div></td>
                 <td>{c.task
                   ? <button class="k" type="button" onClick={() => void navigateTo({ kind: 'planet', id: c.task!.id })}>{c.task.tag}</button>
                   : <span class="hint">{t('runner.unsureShort')}</span>}</td>
@@ -372,7 +373,7 @@ export function RunnerFocus(props: { entity: Entity }): JSX.Element {
           <tbody>
             {[...forgotten, ...unsure].map((c) => (
               <tr key={c.id} class={c.class === 'unsure' ? 'dim' : ''} data-class={c.class}>
-                <td><code>{c.name}</code></td>
+                <td><code>{c.name}</code><div class="ctl-row"><ContainerButtons runner={r.id} c={c} /></div></td>
                 <td>{c.task ? <button class="k" type="button" onClick={() => void navigateTo({ kind: 'planet', id: c.task!.id })}>{c.task.tag}</button> : <span class="hint">{t('runner.unsureShort')}</span>}</td>
                 <td>{c.created_ms ? yardAge(Date.now() - c.created_ms) : '—'}</td>
                 <td>{c.mem_bytes == null ? '—' : `${(c.mem_bytes / (1024 * 1024)).toFixed(0)} MB`}</td>

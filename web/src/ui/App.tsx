@@ -6,6 +6,7 @@ import { Navigator } from './Navigator';
 import { Focus } from './Focus';
 import { AgentSummary } from './AgentSummary';
 import { AgentScreen } from './AgentScreen';
+import { ContainerAct, ContainerLogs } from './ContainerTools';
 import { Chat } from './Chat';
 import { Todo } from './Todo';
 import { Wait } from './Wait';
@@ -20,6 +21,7 @@ import { Cockpit } from './Cockpit';
 import { Station, StationAuto } from './Station';
 import { Ship } from './Ship';
 import { RememberDialog } from './MemoryPanel';
+import { MemoryWindow } from './MemoryWindow';
 import { Gl } from './Gl';
 import { t } from '../i18n';
 import { unreadCount } from './unread';
@@ -53,6 +55,8 @@ export function App(): JSX.Element {
       <Focus />
       <AgentSummary />
       <AgentScreen />
+      <ContainerLogs />
+      <ContainerAct />
       <Todo />
       <Chat />
       <Kanban />
@@ -68,6 +72,7 @@ export function App(): JSX.Element {
       <Dialogs />
       <Station />
       <Ship />
+      <MemoryWindow />
       <RememberDialog />
       <StationAuto />
       <Toasts />
