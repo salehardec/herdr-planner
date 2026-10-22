@@ -114,11 +114,11 @@ job_release() { printf 'x\n' >&9; }
 
 # The Galaxy: sections split in four, each with a fresh board (a section that needs another's state is a bug).
 n=0
-for only in "boot,live,navigator,autopilot,manual,stack,queue,search" \
+for only in "boot,live,navigator,buttons,autopilot,manual,stack,queue,search" \
             "chat,todo" \
             "lag,universes,remote,scale,runners" \
             "station,crew,ship,theme,simple,narrow" \
-            "focus,requests,links,archive,load,limits,memory,layout narrow" \
+            "focus,agent screen,requests,links,archive,load,limits,memory,layout narrow" \
             "layout 1280" "layout 1920,layout 1600" "layout 2560" "layout 1366,layout big"; do
   n=$((n + 1))
   want "ui$n" || continue

@@ -18,6 +18,12 @@ export function timeOf(ms: number): string {
   return `${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
 
+/** HH:MM:SS: for what is refreshed while it is read (a terminal screen). */
+export function clockOf(ms: number): string {
+  if (!ms) return '';
+  return `${timeOf(ms)}:${pad(new Date(ms).getSeconds())}`;
+}
+
 /** HH:MM today, otherwise dd.mm, HH:MM */
 export function dayTimeOf(ms: number, now = Date.now()): string {
   if (!ms) return '';

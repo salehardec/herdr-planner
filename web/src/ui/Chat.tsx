@@ -11,7 +11,7 @@ import {
 import { hasFiles, pastedFiles } from '../attach';
 import { parseOptions } from '../requests';
 import { post, refreshNow, onChatEvent } from '../api';
-import { fetchScreen, sendKey, todoToDraft } from '../actions';
+import { fetchScreen, todoToDraft } from '../actions';
 import { t } from '../i18n';
 import { dayTimeOf, timeOf } from '../util/dates';
 import { Gl } from './Gl';
@@ -21,6 +21,7 @@ import { openRemember } from './memory-api';
 import { dialogOpen } from '../dialogs';
 import { PendingFiles, SavedFiles } from './Attached';
 import { AutoTextarea, fitText } from './AutoText';
+import { KeyButtons } from './Keys';
 import { chatBack, chatWide, setChatWide } from '../chat-wide';
 import { dragTodo } from '../todo-drag';
 import type { TurnData } from '../types';
@@ -318,13 +319,7 @@ export function Chat(): JSX.Element {
         <div class="dialog" id="cdialog">
           <div class="h">{t('chat.dialogTitle')}</div>
           {scr?.error ? <div class="hint">{scr.error}</div> : <pre>{scr?.text || (scr?.busy ? t('chat.reading') : '')}</pre>}
-          <div class="keys">
-            {['up', 'down', 'left', 'right', 'enter', 'esc', '1', '2', '3', 'y', 'n'].map((k) => (
-              <button class="btn sm" type="button" key={k} data-act="keys" data-target="coordinator" data-keys={k} onClick={() => void sendKey('coordinator', k)}>
-                {k === 'enter' ? '↵ Enter' : k === 'esc' ? 'Esc' : k}
-              </button>
-            ))}
-          </div>
+          <KeyButtons target="coordinator" />
           {!s?.herdr.running && <div class="hint">{t('chat.dialogNoHerdr')}</div>}
         </div>
       )}

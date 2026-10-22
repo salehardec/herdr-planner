@@ -132,7 +132,8 @@ export async function fetchScreen(target: string, role = ''): Promise<void> {
 export async function sendKey(target: string, key: string, role = ''): Promise<void> {
   try {
     await sendAction('keys', { target, keys: [key], role });
-    setTimeout(() => { void fetchScreen(target, role); }, 500);
+    // The chat draws the Coordinator's dialog from `screens`; a window over the page reads its own screen.
+    if (screens.value[target]) setTimeout(() => { void fetchScreen(target, role); }, 500);
     toast(t('toast.key', { key }));
   } catch { /* shown */ }
 }
