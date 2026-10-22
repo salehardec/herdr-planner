@@ -204,6 +204,97 @@ export interface Galaxy {
   lag: Record<string, Lag>;
 }
 
+export interface RunnerTaskRef {
+  galaxy: string;
+  id: string;
+  tag: string;
+  status: string;
+  title: string;
+}
+
+export interface RunnerHost {
+  hostname: string;
+  os: string;
+  arch: string;
+  cpus: number;
+  load1: number;
+  load5: number;
+  load15: number;
+  mem_total: number;
+  mem_avail: number;
+  swap_total: number;
+  swap_free: number;
+  disk_root: string;
+  disk_size: number;
+  disk_avail: number;
+  docker_version: string;
+  docker_arch: string;
+  compose_version: string;
+  runtimes: string[];
+  docker_cpus: number;
+  docker_mem: number;
+  docker_containers: number;
+  docker_running: number;
+  docker_images: number;
+  gpu: { index: string; name: string; util_pct: number | null; mem_used_mib: number | null; mem_total_mib: number | null; temp_c: number | null }[];
+}
+
+export interface RunnerContainer {
+  id: string;
+  name: string;
+  image: string;
+  state: string;
+  status: string;
+  created_ms: number;
+  labels: Record<string, string>;
+  ports: string;
+  networks: string;
+  mounts: string;
+  size: string;
+  size_bytes: number;
+  cpu_pct: number | null;
+  mem_bytes: number | null;
+  mem_limit: number | null;
+  pids: number | null;
+  net_io: string;
+  block_io: string;
+  gpu_mem_mib: number | null;
+  task: RunnerTaskRef | null;
+  class: 'active' | 'forgotten' | 'unsure' | 'foreign';
+}
+
+export interface RunnerMirror {
+  galaxy: string;
+  ok: boolean;
+  at: number;
+  why: string;
+}
+
+export interface RunnerBlock {
+  galaxy: string;
+  connected: boolean;
+  stale: boolean;
+  at: number;
+  why: string;
+}
+
+export interface Runner {
+  id: string;
+  target: string;
+  ports_host: string;
+  tags: string[];
+  protected: string[];
+  note: string;
+  ok: boolean;
+  why: Why | null;
+  fetched_at_ms: number;
+  host: RunnerHost;
+  containers: RunnerContainer[];
+  networks: { id: string; name: string; driver: string; labels: Record<string, string> }[];
+  volumes: { name: string; driver: string; labels: Record<string, string> }[];
+  mirrors: RunnerMirror[];
+}
+
 export interface Bridge {
   origin: string;
   a: { galaxy: string; repo: string };
@@ -252,6 +343,8 @@ export interface Snapshot {
   journal: JournalEntry[];
   coordinator: CoordinatorState;
   galaxies: Galaxy[];
+  runners: Runner[];
+  runner_blocks: RunnerBlock[];
   bridges: Bridge[];
   theme: Theme;
   herdr: { running: boolean; socket: string };
@@ -273,7 +366,7 @@ export interface GalaxyView {
 
 export type Level = 'galaxy' | 'nebula' | 'far';
 
-export type EntityKind = 'quasar' | 'galaxy' | 'universe' | 'planet' | 'moon';
+export type EntityKind = 'quasar' | 'galaxy' | 'universe' | 'planet' | 'moon' | 'runner';
 
 /** What is selected. `galaxy` is the machine label; empty for this machine. */
 export interface Entity {
@@ -307,7 +400,7 @@ export interface Request {
 }
 
 export interface SearchHit {
-  kind: 'galaxy' | 'quasar' | 'universe' | 'planet' | 'moon' | 'todo' | 'chat' | 'memory' | 'closing';
+  kind: 'galaxy' | 'quasar' | 'universe' | 'planet' | 'moon' | 'runner' | 'todo' | 'chat' | 'memory' | 'closing';
   id: string;
   galaxy: string;
   path: string;

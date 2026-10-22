@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { buildTree } from './navtree';
-import type { GalaxyView, Project, Task } from '../types';
+import type { GalaxyView, Project, Runner, Task } from '../types';
 
 const day = (d: number, h = 12): number => new Date(2026, 9, d, h).getTime();
 const task = (n: number, created: number, status: Task['status'] = 'working', extra: Partial<Task> = {}): Task => ({
@@ -14,7 +14,7 @@ const view = (tasks: Task[], projects: Project[] = [project('alpha')]): GalaxyVi
 const now = day(20, 15);
 
 const build = (v: GalaxyView, folds: Record<string, boolean> = {}, extra: Partial<Parameters<typeof buildTree>[0]> = {}) =>
-  buildTree({ views: [v], currentGalaxy: '', selected: null, folds, hostLabel: 'host', coordinator: null, attentionWaits: 0, now, ...extra });
+  buildTree({ views: [v], currentGalaxy: '', selected: null, folds, hostLabel: 'host', coordinator: null, attentionWaits: 0, runners: [], now, ...extra });
 
 describe('navigator tree', () => {
   const tasks = [task(1, day(20, 9)), task(2, day(20, 10), 'waiting'), task(3, day(19, 9)), task(4, day(14, 9), 'done'), task(5, day(19, 20))];
@@ -58,9 +58,28 @@ describe('navigator tree', () => {
     expect(rows.filter((r) => r.kind === 'moon').map((r) => r.label)).toEqual(['R-a', 'R-c']);
   });
 
+  it('lists the shipyards in their own group, before «Добавить галактику»', () => {
+    const r = {
+      id: 'vm-r', target: 'me@192.0.2.29', ports_host: '192.0.2.29', tags: [], protected: [], note: '', ok: true,
+      why: null, fetched_at_ms: 1, host: {} as Runner['host'], networks: [], volumes: [], mirrors: [],
+      containers: [
+        { class: 'active' }, { class: 'forgotten' },
+      ] as Runner['containers'],
+    } as Runner;
+    const rows = buildTree({ views: [view(tasks)], currentGalaxy: '', selected: null, folds: {}, hostLabel: 'host', coordinator: null, attentionWaits: 0, runners: [r], now });
+    const group = rows.find((x) => x.kind === 'runners' && x.label === 'Верфи');
+    expect(group?.count).toBe(1);
+    const yard = rows.find((x) => x.kind === 'runner');
+    expect(yard?.entity).toEqual({ kind: 'runner', galaxy: '', id: 'vm-r' });
+    expect(yard?.badge).toBe('1');
+    expect(yard?.sub).toContain('на связи');
+    expect(rows[rows.length - 2].kind).toBe('addRunner');
+    expect(rows[rows.length - 1].kind).toBe('addGalaxy');
+  });
+
   it('lists far galaxies below this one, and a lost one is dimmed with its state', () => {
     const far: GalaxyView = { id: 'vm-b', label: 'vm-b', home: false, ok: false, tasks: [], projects: [], links: [] };
-    const rows = buildTree({ views: [view(tasks), far], currentGalaxy: '', selected: null, folds: {}, hostLabel: 'host', coordinator: null, attentionWaits: 0, now });
+    const rows = buildTree({ views: [view(tasks), far], currentGalaxy: '', selected: null, folds: {}, hostLabel: 'host', coordinator: null, attentionWaits: 0, runners: [], now });
     const galaxies = rows.filter((r) => r.kind === 'galaxy');
     expect(galaxies.map((g) => g.label)).toEqual(['host', 'vm-b']);
     expect(galaxies[1].off).toBe(true);

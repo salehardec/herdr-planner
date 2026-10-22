@@ -37,7 +37,7 @@ const GROUP_ICON: Record<string, string> = {
 };
 const GROUP_LABEL: Record<string, string> = {
   galaxy: 'search.galaxies', quasar: 'search.quasar', universe: 'search.universes', planet: 'search.planets',
-  moon: 'search.moons', todo: 'search.todo', chat: 'search.chat', memory: 'search.memory', closing: 'search.closing',
+  moon: 'search.moons', runner: 'search.runners', todo: 'search.todo', chat: 'search.chat', memory: 'search.memory', closing: 'search.closing',
 };
 
 function onType(q: string): void {

@@ -1,6 +1,6 @@
 import type { JSX } from 'preact';
 import {
-  armed, attention, currentView, galaxies, galaxyId, linkStatus, panels, requests, snap, taskOf,
+  armed, attention, currentView, galaxies, galaxyId, linkStatus, panels, requests, runners, snap, taskOf,
 } from '../store';
 import { archiveAllDone, compactCoordinator, confirmStep, newCoordinator, removeLink, runTaskAction, sendAction } from '../actions';
 import { enterGalaxy, goHome, navigateTo, openRequest } from '../nav';
@@ -15,7 +15,9 @@ import { toast } from '../toast';
 import { STATUS_ORDER } from '../types';
 import type { Entity } from '../types';
 import { signal } from '@preact/signals';
-import { useEffect } from 'preact/hooks';
+import { useEffect, useState } from 'preact/hooks';
+import { duration } from '../util/format';
+import { CleanCard } from './CleanCard';
 import { api, post } from '../api';
 import { hostKind } from '../util/format';
 
@@ -290,6 +292,233 @@ export function GalaxyFocus(props: { entity: Entity }): JSX.Element {
         <button class="btn" type="button" id="galaxy-station" onClick={() => openStation(label)}><Gl n="universe" />{t('menu.stationOf', { g: label })}</button>
       </div>
       <p class="hint">{t('galaxy.sshHint')}</p>
+    </div>
+  );
+}
+
+
+/* ───────── a shipyard (верфь) ───────── */
+
+const GB = 1024 * 1024 * 1024;
+
+function yardGauge(label: string, pct: number, text: string): JSX.Element {
+  return (
+    <div class="rf-g">
+      <span class="kv">{label}</span>
+      <div class="bar"><i class={pct > 80 ? 'hot' : ''} style={`width:${Math.max(0, Math.min(100, pct))}%`} /></div>
+      <span>{text}</span>
+    </div>
+  );
+}
+
+function yardAge(ms: number): string {
+  return duration(Math.max(0, ms), t);
+}
+
+export function RunnerFocus(props: { entity: Entity }): JSX.Element {
+  const r = runners.value.find((x) => x.id === props.entity.id);
+  const [cleanOpen, setCleanOpen] = useState(false);
+  const [editOpen, setEditOpen] = useState(false);
+  const [connectOpen, setConnectOpen] = useState(false);
+  const [warned, setWarned] = useState<string[]>([]);
+  const [tags, setTags] = useState('');
+  const [masks, setMasks] = useState('');
+  const [ports, setPorts] = useState('');
+  const [note, setNote] = useState('');
+  const [makeDefault, setMakeDefault] = useState(false);
+  const [err, setErr] = useState('');
+  const local = ['127.0.0.1', '::1', '[::1]', 'localhost'].includes(location.hostname);
+  if (!r) return <div class="fbody"><h2>{props.entity.id}</h2><p class="hint">{t('runner.gone')}</p></div>;
+  const active = r.containers.filter((c) => c.class === 'active');
+  const unsure = r.containers.filter((c) => c.class === 'unsure');
+  const forgotten = r.containers.filter((c) => c.class === 'forgotten');
+  const foreign = r.containers.filter((c) => c.class === 'foreign');
+  const host = r.host;
+  const cpuPct = host.cpus > 0 ? (host.load1 / host.cpus) * 100 : 0;
+  const memUsed = Math.max(0, host.mem_total - host.mem_avail);
+  const memPct = host.mem_total > 0 ? (memUsed / host.mem_total) * 100 : 0;
+  const diskUsed = Math.max(0, host.disk_size - host.disk_avail);
+  const diskPct = host.disk_size > 0 ? (diskUsed / host.disk_size) * 100 : 0;
+  const blocks = snap.value?.runner_blocks ?? [];
+  const openEdit = (): void => {
+    setTags(r.tags.join(', '));
+    setMasks(r.protected.join(', '));
+    setPorts(r.ports_host);
+    setNote(r.note);
+    setMakeDefault(false);
+    setErr('');
+    setEditOpen(true);
+  };
+  const saveEdit = (): void => {
+    confirmStep(`rset:${r.id}`, async () => {
+      setErr('');
+      try {
+        await post('/api/runner/set', {
+          id: r.id, confirm: true,
+          tags: tags.split(',').map((x) => x.trim()).filter(Boolean),
+          protected: masks.split(',').map((x) => x.trim()).filter(Boolean),
+          ports_host: ports.trim(), note, default: makeDefault || undefined,
+        });
+        toast(t('runner.saved'));
+        setEditOpen(false);
+      } catch (e) {
+        setErr((e as Error).message);
+      }
+    });
+  };
+  const remove = (force: boolean): void => {
+    const key = `rrm:${r.id}:${force ? 'f' : 'n'}`;
+    confirmStep(key, async () => {
+      setErr('');
+      try {
+        const res = await post<{ ok: boolean; warned: string[] }>('/api/runner/remove', { id: r.id, force, confirm: true });
+        if (res.warned?.length) setWarned(res.warned);
+        toast(t('runner.removed', { id: r.id }));
+        if (!force) setWarned([]);
+        void navigateTo({ kind: 'quasar', galaxy: galaxyId.value, id: 'quasar' });
+      } catch (e) {
+        const data = (e as { data?: { active?: string[]; error?: string } }).data;
+        if (data?.active) setWarned(data.active);
+        setErr(data?.error ?? (e as Error).message);
+      }
+    });
+  };
+  const connectAll = (): void => {
+    confirmStep(`rcn:${r.id}`, async () => {
+      setErr('');
+      const labels = ['', ...galaxies.value.map((g) => g.label)];
+      let n = 0;
+      for (const galaxy of labels) {
+        try {
+          await post('/api/runner/connect', { galaxy, on: true, drop_old: true, confirm: true });
+          n += 1;
+        } catch { /* a machine that is away is shown in the rows */ }
+      }
+      toast(t('runner.connectedTo', { n }));
+      setConnectOpen(false);
+    });
+  };
+  const cleanIds = [...forgotten, ...unsure].map((c) => c.id);
+  return (
+    <div class="fbody" data-focus="runner">
+      <div class="fhd">
+        <span class="lbl">{t('runner.title')}</span>
+        <span class={`badge s-${r.ok ? 'working' : 'failed'}`}><Gl n="yard" />{r.ok ? t('runner.online') : t('runner.offline')}</span>
+        {r.tags.map((x) => <span class="chip" key={x}>{x}</span>)}
+      </div>
+      <h2><Gl n="yard" /> {r.id}</h2>
+      <p class="line">{r.target} · {host.os || '—'} · {t('runner.docker', { v: host.docker_version || '—' })}{host.compose_version ? ` · compose ${host.compose_version}` : ''} · {r.ok ? t('runner.readAt', { when: dayTimeOf(r.fetched_at_ms) }) : t('runner.lastRead', { when: dayTimeOf(r.fetched_at_ms) })}</p>
+      {r.note && <p class="hint">{r.note}</p>}
+      {!r.ok && r.why && (
+        <div class="req s-failed"><div class="rh"><Gl n="failed" />{r.why.line}</div><ul class="why">{r.why.detail.map((d, i) => <li key={i}>{d}</li>)}</ul></div>
+      )}
+      <section class="rf-gauges">
+        {yardGauge(t('runner.cpu'), cpuPct, `${host.load1.toFixed(1)} / ${host.cpus || '—'}`)}
+        {yardGauge(t('runner.mem'), memPct, `${(memUsed / GB).toFixed(1)} / ${(host.mem_total / GB).toFixed(1)} GB`)}
+        {yardGauge(t('runner.disk'), diskPct, t('runner.diskFree', { n: Math.round(host.disk_avail / GB) }))}
+        {host.gpu.map((g) => yardGauge(`GPU ${g.name}`, g.mem_total_mib ? ((g.mem_used_mib ?? 0) / g.mem_total_mib) * 100 : 0,
+          `${(((g.mem_used_mib ?? 0) / 1024)).toFixed(1)} / ${(((g.mem_total_mib ?? 0) / 1024)).toFixed(0)} GB`))}
+      </section>
+      <h3>{t('runner.taskContainers')} <span class="cnt">{active.length + unsure.length}</span></h3>
+      {active.length + unsure.length === 0 ? <div class="hint">{t('runner.noContainers')}</div> : (
+        <table class="rft" id="rf-tasks">
+          <thead><tr><th>{t('runner.colContainer')}</th><th>{t('runner.colTask')}</th><th>{t('runner.colLives')}</th><th>CPU</th><th>{t('runner.colMemory')}</th><th>{t('runner.colPorts')}</th></tr></thead>
+          <tbody>
+            {[...active, ...unsure].map((c) => (
+              <tr key={c.id} class={c.class === 'unsure' ? 'dim' : ''} data-class={c.class}>
+                <td><code>{c.name}</code></td>
+                <td>{c.task
+                  ? <button class="k" type="button" onClick={() => void navigateTo({ kind: 'planet', galaxy: c.task!.galaxy, id: c.task!.id })}>{c.task.tag}</button>
+                  : <span class="hint">{t('runner.unsureShort')}</span>}</td>
+                <td>{c.created_ms ? yardAge(Date.now() - c.created_ms) : '—'}</td>
+                <td>{c.cpu_pct == null ? '—' : `${c.cpu_pct.toFixed(1)} %`}</td>
+                <td>{c.mem_bytes == null ? '—' : `${(c.mem_bytes / (1024 * 1024)).toFixed(0)} MB`}{c.gpu_mem_mib ? ` · GPU ${c.gpu_mem_mib} MB` : ''}</td>
+                <td><span class="hint">{c.ports || '—'}</span></td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+      <h3>{t('runner.forgotten')} <span class="cnt">{forgotten.length}</span></h3>
+      <p class="hint">{t('runner.forgottenHint')}</p>
+      {forgotten.length === 0 ? <div class="hint">{t('runner.forgottenNone')}</div> : (
+        <table class="rft" id="rf-forgotten">
+          <thead><tr><th>{t('runner.colContainer')}</th><th>{t('runner.colTask')}</th><th>{t('runner.colLives')}</th><th>{t('runner.colMemory')}</th></tr></thead>
+          <tbody>
+            {forgotten.map((c) => (
+              <tr key={c.id} data-class="forgotten">
+                <td><code>{c.name}</code></td>
+                <td>{c.task ? <button class="k" type="button" onClick={() => void navigateTo({ kind: 'planet', galaxy: c.task!.galaxy, id: c.task!.id })}>{c.task.tag}</button> : '—'}</td>
+                <td>{c.created_ms ? yardAge(Date.now() - c.created_ms) : '—'}</td>
+                <td>{c.mem_bytes == null ? '—' : `${(c.mem_bytes / (1024 * 1024)).toFixed(0)} MB`}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+      {forgotten.length + unsure.length > 0 && !cleanOpen && (
+        <div class="act"><button class="btn danger" type="button" id="rf-clean" onClick={() => setCleanOpen(true)}>{t('runner.cleanOpen')}</button></div>
+      )}
+      {cleanOpen && <CleanCard runner={r.id} ids={cleanIds} onClose={() => setCleanOpen(false)} onDone={() => setCleanOpen(false)} />}
+      <details class="rf-foreign" id="rf-foreign">
+        <summary>{t('runner.foreign', { n: foreign.length })}{foreign.length > 0 ? ` · ${t('runner.foreignHint')}` : ''}</summary>
+        <div class="hint">{foreign.map((c) => c.name).join(' · ')}</div>
+      </details>
+      <h3>{t('runner.copies')}</h3>
+      <div class="hint">
+        {r.mirrors.length === 0 ? t('runner.copiesNone') : r.mirrors.map((m) => `${m.galaxy} ${m.ok ? '✓' : '✗'} ${dayTimeOf(m.at)}${m.why ? ` (${m.why})` : ''}`).join(' · ')}
+      </div>
+      <div class="hint">
+        {t('runner.blocks')}: {blocks.length === 0 ? t('runner.blocksNone') : blocks.map((b) => `${b.galaxy || snap.value?.host || ''} ${b.connected ? (b.stale ? '↻' : '✓') : '—'}`).join(' · ')}
+      </div>
+      <div class="act">
+        <button class="btn" type="button" onClick={() => void post('/api/runner/ask', { id: r.id })}><Gl n="refresh" />{t('runner.refresh')}</button>
+        {local && <button class="btn" type="button" onClick={async () => { try { await post('/api/runner/terminal', { id: r.id }); } catch (e) { toast((e as Error).message, { icon: 'failed' }); } }}><Gl n="screen" />{t('runner.terminal')}</button>}
+        <button class="btn" type="button" onClick={() => void post('/api/runner/df', { id: r.id }).then((v: { rows: Record<string, string>[] }) => toast(v.rows.map((x) => `${x.Type}: ${x.Size} (${x.Reclaimable ?? ''})`).join(' · '))).catch((e: Error) => toast(e.message, { icon: 'failed' }))}>{t('runner.df')}</button>
+      </div>
+      <div class="act">
+        <button class="btn" type="button" onClick={openEdit}>{t('runner.edit')}</button>
+        <button class="btn" type="button" onClick={() => setConnectOpen(!connectOpen)}>{t('runner.connect')}</button>
+        <button class="btn danger" type="button" onClick={() => remove(false)}>{armed.value?.key === `rrm:${r.id}:n` ? t('runner.removeConfirm') : t('runner.remove')}</button>
+      </div>
+      {err && <p class="hint bad">{err}</p>}
+      {warned.length > 0 && (
+        <div class="req s-failed">
+          <div class="rh">{t('runner.removeActive')}</div>
+          <div class="hint">{warned.join(', ')}</div>
+          <button class={`btn danger ${armed.value?.key === `rrm:${r.id}:f` ? 'arm' : ''}`} type="button" onClick={() => remove(true)}>{armed.value?.key === `rrm:${r.id}:f` ? t('runner.removeConfirm') : t('runner.removeAnyway')}</button>
+        </div>
+      )}
+      {editOpen && (
+        <section class="rf-edit" id="rf-edit">
+          <h3>{t('runner.editTitle')}</h3>
+          <label>{t('runner.tags')}<input class="field" value={tags} onInput={(e) => setTags((e.target as HTMLInputElement).value)} /></label>
+          <label>{t('runner.masks')}<input class="field" value={masks} onInput={(e) => setMasks((e.target as HTMLInputElement).value)} /></label>
+          <label>{t('runner.portsHost')}<input class="field" value={ports} onInput={(e) => setPorts((e.target as HTMLInputElement).value)} /></label>
+          <label>{t('runner.note')}<input class="field" value={note} onInput={(e) => setNote((e.target as HTMLInputElement).value)} /></label>
+          <label class="rf-check"><input type="checkbox" checked={makeDefault} onChange={(e) => setMakeDefault((e.target as HTMLInputElement).checked)} />{t('runner.makeDefault')}</label>
+          <div class="act">
+            <button class={`btn primary ${armed.value?.key === `rset:${r.id}` ? 'arm' : ''}`} type="button" id="rf-set" onClick={saveEdit}>{armed.value?.key === `rset:${r.id}` ? t('runner.saveConfirm') : t('runner.save')}</button>
+            <button class="btn" type="button" onClick={() => setEditOpen(false)}>{t('cancel')}</button>
+          </div>
+        </section>
+      )}
+      {connectOpen && (
+        <section class="rf-connect" id="rf-connect">
+          <h3>{t('runner.connectTitle')}</h3>
+          <p class="hint">{t('runner.connectText')}</p>
+          <ul class="steps">
+            {['', ...galaxies.value.map((g) => g.label)].map((label) => {
+              const b = blocks.find((x) => x.galaxy === label);
+              const name = label || snap.value?.host || '';
+              return <li key={label || 'home'} class={b?.connected ? 'w-ok' : 'w-todo'}><span class="i">{b?.connected ? (b.stale ? '↻' : '✓') : '·'}</span><div>{name}{b?.why ? <div class="hint">{b.why}</div> : null}</div></li>;
+            })}
+          </ul>
+          <div class="act">
+            <button class={`btn primary ${armed.value?.key === `rcn:${r.id}` ? 'arm' : ''}`} type="button" id="rf-connect-go" onClick={connectAll}>{armed.value?.key === `rcn:${r.id}` ? t('runner.saveConfirm') : t('runner.connectGo')}</button>
+          </div>
+        </section>
+      )}
     </div>
   );
 }

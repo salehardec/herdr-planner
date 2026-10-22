@@ -229,6 +229,14 @@ await evalJs('planner.goHome(); true');
 await waitFor('plannerDebug().galaxy === "" && world.debug().flight === "idle"', 15000);
 await reset();
 
+// 5b. the shipyard: the state of a runner machine
+await click('#nav [data-nav="run|vm-r"]');
+await waitFor('!!document.querySelector("[data-focus=runner]")', 8000);
+await panels(false, false);
+await sleep(800);
+await shot('shipyard.jpg');
+await reset();
+
 // 6. the station: the crew of the ship
 await menuPick('Станция');
 await waitFor('!!document.querySelector("[data-role=\\"plan\\"] [data-value=\\"plan.agent\\"]")', 10000);

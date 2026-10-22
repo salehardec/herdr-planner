@@ -9,6 +9,7 @@ import { t } from '../i18n';
 import { Gl } from './Gl';
 import { loadModels, modelList } from './Todo';
 import { AddGalaxy } from './AddGalaxy';
+import { AddRunner } from './AddRunner';
 import { AddUniverse } from './AddUniverse';
 import { lightPreset } from './station-api';
 import { SavedFiles } from './Attached';
@@ -177,6 +178,7 @@ export function Dialogs(): JSX.Element {
     <>
       <YaziDialog />
       <AddGalaxy />
+      <AddRunner />
       <TodoPopover />
       <TodoTell />
       <AddUniverse />

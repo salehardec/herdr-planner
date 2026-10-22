@@ -6,6 +6,7 @@ import { signal } from '@preact/signals';
 import type { JSX } from 'preact';
 import { useEffect, useState } from 'preact/hooks';
 import { armed, galaxyId, snap } from '../store';
+import { api, post } from '../api';
 import { confirmStep } from '../actions';
 import { t, tn } from '../i18n';
 import { toast } from '../toast';
@@ -462,6 +463,74 @@ function ErrorBlock({ err, onRetry }: { err: CallError; onRetry: () => void }): 
   );
 }
 
+
+/* ───────── the shipyards' block in this galaxy's instructions ───────── */
+
+interface RunnerSetting { setting: string; connected: boolean; stale: boolean; current: string; block: string; has_old_docker_paragraph: boolean }
+
+function Shipyards(props: { galaxy: string }): JSX.Element {
+  const [rows, setRows] = useState<RunnerSetting[] | null>(null);
+  const [err, setErr] = useState('');
+  const load = async (): Promise<void> => {
+    setErr('');
+    try {
+      const r = await apiGet(props.galaxy);
+      setRows(r);
+    } catch (e) {
+      setRows(null);
+      setErr((e as Error).message);
+    }
+  };
+  useEffect(() => { void load(); }, [props.galaxy]);
+  const key = `sy:${props.galaxy}`;
+  const on = !!rows && rows.some((r) => r.connected);
+  const stale = !!rows && rows.some((r) => r.stale);
+  const go = (): void => {
+    confirmStep(key, async () => {
+      setErr('');
+      try {
+        await post('/api/runner/connect', { galaxy: props.galaxy, on: !on, drop_old: true, confirm: true });
+        toast(t('runner.saved'));
+        await load();
+      } catch (e) {
+        setErr((e as Error).message);
+      }
+    });
+  };
+  if (err) return <section class="st-sec" id="st-yards"><h3>{t('runner.stationTitle')}</h3><p class="hint bad">{err}</p><button class="btn sm" type="button" onClick={() => void load()}>{t('runner.retry')}</button></section>;
+  if (!rows) return <section class="st-sec" id="st-yards"><h3>{t('runner.stationTitle')}</h3><p class="hint">{t('st.loading')}</p></section>;
+  const hasYards = rows.some((r) => r.block.length > 0);
+  return (
+    <section class="st-sec" id="st-yards">
+      <h3>{t('runner.stationTitle')}</h3>
+      <p class="hint">
+        {!hasYards ? t('runner.stationNone') : on ? (stale ? t('runner.stationStale') : t('runner.stationOn')) : t('runner.stationOff')}
+      </p>
+      {hasYards && (
+        <details class="rf-block">
+          <summary>{t('runner.stationPreview')}</summary>
+          <div class="hint">{t('runner.stationWas')}</div>
+          <pre>{rows[0].current || t('runner.stationEmpty')}</pre>
+          <div class="hint">{t('runner.stationNow')}</div>
+          <pre>{rows[0].block}</pre>
+        </details>
+      )}
+      {hasYards && (
+        <div class="act">
+          <button class={`btn ${armed.value?.key === key ? 'arm' : ''}`} type="button" id="st-yards-btn" onClick={go}>
+            {armed.value?.key === key ? t('runner.saveConfirm') : on ? t('runner.stationOffBtn') : t('runner.stationOnBtn')}
+          </button>
+        </div>
+      )}
+    </section>
+  );
+}
+
+async function apiGet(galaxy: string): Promise<RunnerSetting[]> {
+  const data = await api<{ settings: RunnerSetting[] }>(`/api/runner/connect?galaxy=${encodeURIComponent(galaxy)}`);
+  return data.settings;
+}
+
 function StationBody(props: { galaxy: string; wizard: boolean }): JSX.Element {
   const { galaxy, wizard } = props;
   const [data, setData] = useState<StationData | null>(null);
@@ -529,6 +598,7 @@ function StationBody(props: { galaxy: string; wizard: boolean }): JSX.Element {
               <button class="btn" type="button" id="st-all" onClick={() => openStation(galaxy, false)}>{t('st.allSettings')}</button>
             </div>
           )}
+          {!wizard && <Shipyards galaxy={galaxy} />}
           {!wizard && <Board galaxy={galaxy} repo={level === 'repo' ? repo : ''} data={data} reload={reload} />}
         </>
       )}

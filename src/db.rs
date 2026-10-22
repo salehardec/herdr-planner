@@ -27,6 +27,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("db/migrations/001_init.sql"),
     include_str!("db/migrations/002_todo_files.sql"),
     include_str!("db/migrations/003_memory_suggest.sql"),
+    include_str!("db/migrations/004_runners.sql"),
 ];
 
 /// Entries the journal hands out; older ones stay in the table up to [`JOURNAL_KEEP`].
@@ -462,6 +463,77 @@ impl Db {
         self.with("galaxy_all", |c| {
             let mut st =
                 c.prepare("SELECT label, json, fetched_at, ok, why FROM galaxies ORDER BY label")?;
+            let rows = st.query_map([], |r| {
+                Ok((
+                    r.get(0)?,
+                    r.get(1)?,
+                    r.get::<_, i64>(2)? as u64,
+                    r.get(3)?,
+                    r.get(4)?,
+                ))
+            })?;
+            rows.collect()
+        })
+    }
+
+    // ---- shipyards (верфи) ----
+
+    /// Stores what a runner's probe said (`json`), or why it could not be reached.
+    pub fn runner_put(&self, id: &str, json: &str, ok: bool, why: &str) {
+        self.with("runner_put", |c| {
+            c.execute(
+                "INSERT OR REPLACE INTO runners_cache (id, json, fetched_at, ok, why) \
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![id, json, now_ms() as i64, ok, why],
+            )?;
+            Ok(())
+        })
+    }
+
+    /// Forgets a runner that was removed from the list.
+    pub fn runner_remove(&self, id: &str) {
+        self.with("runner_remove", |c| {
+            c.execute("DELETE FROM runners_cache WHERE id = ?1", [id])?;
+            Ok(())
+        })
+    }
+
+    /// `(id, json, fetched_at, ok, why)` for every runner, by id.
+    pub fn runner_all(&self) -> Vec<(String, String, u64, bool, String)> {
+        self.with("runner_all", |c| {
+            let mut st = c.prepare(
+                "SELECT id, json, fetched_at, ok, why FROM runners_cache ORDER BY id",
+            )?;
+            let rows = st.query_map([], |r| {
+                Ok((
+                    r.get(0)?,
+                    r.get(1)?,
+                    r.get::<_, i64>(2)? as u64,
+                    r.get(3)?,
+                    r.get(4)?,
+                ))
+            })?;
+            rows.collect()
+        })
+    }
+
+    /// What the last copy of the shipyard list written to a galaxy was.
+    pub fn mirror_put(&self, galaxy: &str, hash: &str, at: u64, ok: bool, why: &str) {
+        self.with("mirror_put", |c| {
+            c.execute(
+                "INSERT OR REPLACE INTO runner_mirror (galaxy, hash, at, ok, why) \
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![galaxy, hash, at as i64, ok, why],
+            )?;
+            Ok(())
+        })
+    }
+
+    /// `(galaxy, hash, at, ok, why)` for every copy, by galaxy.
+    pub fn mirror_all(&self) -> Vec<(String, String, u64, bool, String)> {
+        self.with("mirror_all", |c| {
+            let mut st =
+                c.prepare("SELECT galaxy, hash, at, ok, why FROM runner_mirror ORDER BY galaxy")?;
             let rows = st.query_map([], |r| {
                 Ok((
                     r.get(0)?,

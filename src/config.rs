@@ -209,6 +209,20 @@ impl AppConfig {
         self.state_dir.join("attachments")
     }
 
+    /// The shipyards («верфи»): one file next to the board's own settings, the same path on every
+    /// machine. `HERDR_PLANNER_RUNNERS` points the checks at another one.
+    pub fn runners_file(&self) -> PathBuf {
+        if let Ok(v) = env::var("HERDR_PLANNER_RUNNERS") {
+            if !v.trim().is_empty() {
+                return expand_home(v.trim());
+            }
+        }
+        self.data_dir
+            .parent()
+            .map(|p| p.join("settings/runners.json"))
+            .unwrap_or_else(|| home().join(".herdr-projects/settings/runners.json"))
+    }
+
     /// The folder new universes are cloned into now: the one the ship set last, else the configured one.
     pub fn projects_dir_now(&self) -> PathBuf {
         LIVE_PROJECTS_DIR

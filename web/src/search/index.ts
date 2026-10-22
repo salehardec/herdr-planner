@@ -13,7 +13,7 @@ export interface Doc {
   status: string;
 }
 
-export const GROUPS: SearchHit['kind'][] = ['galaxy', 'quasar', 'universe', 'planet', 'moon', 'todo', 'memory', 'closing', 'chat'];
+export const GROUPS: SearchHit['kind'][] = ['galaxy', 'quasar', 'universe', 'planet', 'moon', 'runner', 'todo', 'memory', 'closing', 'chat'];
 const PER_GROUP = 5;
 const TOTAL = 28;
 
@@ -59,6 +59,13 @@ export function buildDocs(
         docs.push({ kind: 'moon', id: `${t.id}#${s.id}`, galaxy: v.id, path: `${where} › ${t.repo} › ${t.tag}`, title: s.role, text: `${s.title} ${s.doing}`, status: s.state });
       }
     }
+  }
+  for (const r of snap?.runners ?? []) {
+    docs.push({
+      kind: 'runner', id: r.id, galaxy: '', path: r.target, title: r.id,
+      text: `${r.target} ${r.note} ${r.containers.map((c) => c.name).join(' ')}`,
+      status: r.ok ? 'working' : 'failed',
+    });
   }
   for (const it of snap?.todo ?? []) {
     docs.push({ kind: 'todo', id: it.id, galaxy: '', path: `${host} › ${labels.todo}`, title: it.text, text: it.to, status: '' });

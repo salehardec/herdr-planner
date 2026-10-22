@@ -1,6 +1,6 @@
 /* The navigator's tree: Galaxy → Universe → planets grouped by the day they were made → moons.
    Pure: the component only draws and handles keys. */
-import type { Entity, GalaxyView, Status, Task } from '../types';
+import type { Entity, GalaxyView, Runner, Status, Task } from '../types';
 import { ATTENTION, STATUS_ORDER } from '../types';
 import { groupByDate } from '../util/dates';
 import { t } from '../i18n';
@@ -8,7 +8,7 @@ import { t } from '../i18n';
 export interface NavNode {
   key: string;
   depth: number;
-  kind: 'galaxy' | 'quasar' | 'universe' | 'quiet' | 'group' | 'planet' | 'moon' | 'addUniverse' | 'addGalaxy';
+  kind: 'galaxy' | 'quasar' | 'universe' | 'quiet' | 'group' | 'planet' | 'moon' | 'runner' | 'runners' | 'addUniverse' | 'addGalaxy' | 'addRunner';
   label: string;
   sub?: string;
   badge?: string;
@@ -32,6 +32,7 @@ export interface NavInput {
   hostLabel: string;
   coordinator: { status: string; subagents: { id: string; role: string; state: string; doing: string }[] } | null;
   attentionWaits: number;
+  runners: Runner[];
   now?: number;
 }
 
@@ -144,6 +145,23 @@ export function buildTree(i: NavInput): NavNode[] {
     }
     universeNodes(v, i, 1, out);
     out.push({ key: `addu|${v.id}`, depth: 1, kind: 'addUniverse', label: t('nav.addUniverse', { galaxy: v.home ? (i.hostLabel || v.label) : v.label }), expandable: false, open: false, galaxy: v.id });
+  }
+  const ykey = 'runners';
+  const yopen = isOpen(i.folds, ykey, true);
+  out.push({ key: ykey, depth: 0, kind: 'runners', label: t('nav.runners'), count: i.runners.length, expandable: true, open: yopen });
+  if (yopen) {
+    for (const r of i.runners) {
+      const active = r.containers.filter((c) => c.class === 'active').length;
+      const forgotten = r.containers.filter((c) => c.class === 'forgotten' || c.class === 'unsure').length;
+      out.push({
+        key: `run|${r.id}`, depth: 1, kind: 'runner', label: r.id,
+        sub: r.ok ? t('runner.navLine', { n: active }) : t('galaxy.off'),
+        entity: { kind: 'runner', galaxy: '', id: r.id }, expandable: false, open: false,
+        off: !r.ok, badge: forgotten > 0 ? String(forgotten) : '', galaxy: '',
+        attention: forgotten > 0,
+      });
+    }
+    out.push({ key: 'addr', depth: 1, kind: 'addRunner', label: t('nav.addRunner'), expandable: false, open: false });
   }
   out.push({ key: 'addg', depth: 0, kind: 'addGalaxy', label: t('nav.addGalaxy'), expandable: false, open: false });
   return out;

@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { computeLayout, normalizeOrigin, planetPosition, R_BOUND, universeRadius } from './layout';
+import { dockPositions } from './docks';
+import { hash } from '../util/format';
 import type { GalaxyView, Project, Status, Task } from '../types';
 
 const proj = (name: string, folder: string, quiet = false): Project => ({
@@ -75,6 +77,25 @@ describe('galaxy layout', () => {
 
   it('can hide the quiet universes', () => {
     expect(computeLayout(big(9, 2), { showQuiet: false }).universes.every((u) => !u.quiet)).toBe(true);
+  });
+});
+
+describe('shipyards', () => {
+  it('sit between the Galaxy boundary and the far spirals, apart from each other and from the galaxies', () => {
+    const bound = 800;
+    const ids = ['yard-a', 'yard-b', 'yard-c', 'yard-d', 'yard-e'];
+    const docks = [...dockPositions(ids, bound + 200).values()];
+    const far = ['vm-a', 'vm-b', 'vm-c', 'vm-d', 'vm-e'].map((label, i) => {
+      const a = (hash(label) % 360) / 360 * Math.PI * 2 + i * 0.35;
+      return { x: Math.cos(a) * (bound + 450), z: Math.sin(a) * (bound + 450) };
+    });
+    for (const d of docks) expect(Math.hypot(d.x, d.z)).toBeGreaterThan(R_BOUND);
+    let min = Infinity;
+    for (let i = 0; i < docks.length; i++) {
+      for (let j = i + 1; j < docks.length; j++) min = Math.min(min, docks[i].distanceTo(docks[j]));
+      for (const f of far) min = Math.min(min, Math.hypot(docks[i].x - f.x, docks[i].z - f.z));
+    }
+    expect(min).toBeGreaterThanOrEqual(120);
   });
 });
 

@@ -147,6 +147,10 @@ pub struct Snapshot {
     pub coordinator: CoordinatorState,
     /// Other machines of the board: far galaxies.
     pub galaxies: Vec<serde_json::Value>,
+    /// Shipyards: machines the tasks' containers run on.
+    pub runners: Vec<crate::runners::RunnerState>,
+    /// Whether the docker block is in each galaxy's agent instructions.
+    pub runner_blocks: Vec<crate::runners::BlockState>,
     /// The same project in two galaxies.
     pub bridges: Vec<BridgeOut>,
     pub theme: Theme,
@@ -224,6 +228,14 @@ pub struct App {
     pub connecting: Mutex<Vec<String>>,
     /// The memory of the far galaxies as last read (for the search).
     pub far_memory: Mutex<HashMap<String, crate::memory_api::FarMemory>>,
+    /// The last read of every shipyard (from `runners.json` and one probe each).
+    pub runners: Mutex<Vec<crate::runners::RunnerState>>,
+    /// «Было → стало» plans waiting for the second press, by token.
+    pub runner_plans: Mutex<HashMap<String, crate::runners::CleanPlan>>,
+    /// `docker system df` answers, cached by runner id.
+    pub runner_df: Mutex<HashMap<String, (u64, serde_json::Value)>>,
+    /// Whether the docker block is in each galaxy's instructions (as last synced).
+    pub runner_blocks: Mutex<Vec<crate::runners::BlockState>>,
 }
 
 pub type Shared = Arc<App>;
@@ -259,7 +271,7 @@ impl App {
             Ok(_) => {}
             Err(e) => eprintln!("herdr-planner: import of the old state files: {e}"),
         }
-        let snapshot = Snapshot {
+        let mut snapshot = Snapshot {
             version: VERSION.to_string(),
             at: 0,
             seq: 0,
@@ -289,6 +301,8 @@ impl App {
                 program: String::new(),
             },
             galaxies: Vec::new(),
+            runners: Vec::new(),
+            runner_blocks: Vec::new(),
             bridges: Vec::new(),
             theme,
             herdr: HerdrInfo {
@@ -324,6 +338,33 @@ impl App {
                 v
             })
             .collect();
+        // The last reads of the shipyards survive a restart too; they are not live until a probe says so.
+        let mirrors: Vec<crate::runners::Mirror> = db
+            .mirror_all()
+            .into_iter()
+            .map(|(galaxy, _, at, ok, why)| crate::runners::Mirror {
+                galaxy,
+                ok,
+                at,
+                why,
+            })
+            .collect();
+        let runners: Vec<crate::runners::RunnerState> = db
+            .runner_all()
+            .into_iter()
+            .filter_map(|(_, json, _, _, _)| serde_json::from_str(&json).ok())
+            .map(|mut s: crate::runners::RunnerState| {
+                s.ok = false;
+                s.mirrors = mirrors.clone();
+                s
+            })
+            .collect();
+        let runner_blocks: Vec<crate::runners::BlockState> = db
+            .meta_get("runner_blocks")
+            .and_then(|t| serde_json::from_str(&t).ok())
+            .unwrap_or_default();
+        snapshot.runners = runners.clone();
+        snapshot.runner_blocks = runner_blocks.clone();
         let auth = crate::auth::Auth::new(
             cfg.auth_required(),
             cfg.user.clone(),
@@ -349,6 +390,10 @@ impl App {
             lag_remote: Mutex::new(BTreeMap::new()),
             connecting: Mutex::new(Vec::new()),
             far_memory: Mutex::new(HashMap::new()),
+            runners: Mutex::new(runners),
+            runner_plans: Mutex::new(HashMap::new()),
+            runner_df: Mutex::new(HashMap::new()),
+            runner_blocks: Mutex::new(runner_blocks),
         })
     }
 }
@@ -568,6 +613,12 @@ pub async fn rebuild_extras(app: &Shared) {
     let remote = app.lag_remote.lock().await.clone();
     let repos = taskmeta::repos(&app.cfg.data_dir);
     let roots: HashMap<String, String> = repos.iter().map(|r| (r.name.clone(), r.root.clone())).collect();
+    // Which task a container belongs to is decided against every board the snapshot holds (and the cached ones).
+    let (tasks_now, archived_now) = {
+        let s = app.snapshot.read().await;
+        (s.tasks.clone(), s.archived.clone())
+    };
+    let task_index = crate::runners::TaskIndex::build(&tasks_now, &archived_now, &repos, &live, &cached);
 
     // Comparison of this machine's clones with the others', by origin.
     let mut vs: BTreeMap<String, Vec<board::LagVs>> = BTreeMap::new();
@@ -664,8 +715,29 @@ pub async fn rebuild_extras(app: &Shared) {
         lag_out.insert(repo.clone(), pl);
     }
 
+    // The containers' classes change with the tasks, so they are recomputed on every snapshot, not only on a probe.
+    let mirrors: Vec<crate::runners::Mirror> = app
+        .db
+        .mirror_all()
+        .into_iter()
+        .map(|(galaxy, _, at, ok, why)| crate::runners::Mirror {
+            galaxy,
+            ok,
+            at,
+            why,
+        })
+        .collect();
+    let mut runner_states = app.runners.lock().await.clone();
+    for st in &mut runner_states {
+        crate::runners::classify(&mut st.containers, &st.protected, &task_index);
+        st.mirrors = mirrors.clone();
+    }
+    let runner_blocks = app.runner_blocks.lock().await.clone();
+
     let mut snap = app.snapshot.write().await;
     snap.galaxies = out;
+    snap.runners = runner_states;
+    snap.runner_blocks = runner_blocks;
     snap.bridges = bridges;
     for p in snap.projects.iter_mut() {
         if let Some(l) = lag_out.get(&p.name) {
@@ -1080,6 +1152,28 @@ fn update_journal(journal: &mut Journal, tasks: &[Task], now: u64) {
     }
 }
 
+/// A line for the journal that is not a task's status (a shipyard's cleaning, a block connected).
+pub async fn journal_note(app: &Shared, id: &str, status: &str, text: &str) {
+    let now = now_ms();
+    let entry = {
+        let mut journal = app.journal.lock().await;
+        journal.seq += 1;
+        let e = JournalEntry {
+            n: journal.seq,
+            t: now,
+            id: id.to_string(),
+            s: status.to_string(),
+            text: text.to_string(),
+        };
+        journal.entries.push_front(e.clone());
+        trim_journal(&mut journal);
+        e
+    };
+    app.db.journal_append(&[entry]);
+    let entries: Vec<JournalEntry> = app.journal.lock().await.entries.iter().cloned().collect();
+    app.snapshot.write().await.journal = entries;
+}
+
 fn trim_journal(journal: &mut Journal) {
     while journal.entries.len() > JOURNAL_MAX {
         journal.entries.pop_back();
@@ -1316,6 +1410,22 @@ pub async fn index_snapshot(app: &Shared) {
         status: snap.coordinator.view.status.clone(),
         at: 0,
     });
+    for r in &snap.runners {
+        home.push(SearchDoc {
+            key: format!("runner::{}", r.id),
+            kind: "runner".into(),
+            id: r.id.clone(),
+            galaxy: String::new(),
+            path: r.target.clone(),
+            title: r.id.clone(),
+            text: std::iter::once(r.target.clone())
+                .chain(r.containers.iter().map(|c| c.name.clone()))
+                .collect::<Vec<_>>()
+                .join(" "),
+            status: if r.ok { "working".into() } else { "failed".into() },
+            at: r.fetched_at_ms,
+        });
+    }
     // Memory (the Galaxy's, every universe's, the Coordinator program's own) and the tasks' closing notes.
     {
         let cfg = app.cfg.clone();

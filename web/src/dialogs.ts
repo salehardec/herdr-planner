@@ -8,6 +8,7 @@ import type { SavedFile } from './attach';
 
 export const addDialogs = {
   galaxy: signal(false),
+  runner: signal(false),
   universe: signal<{ galaxy: string } | null>(null),
   firstRun: signal(false),
   popover: signal<{ id: string; repo: string; galaxy?: string } | null>(null),
@@ -39,7 +40,7 @@ export function openNewTask(id: string, repo: string, galaxy: string): void {
 }
 
 export const dialogOpen = (): boolean =>
-  addDialogs.galaxy.value || !!addDialogs.universe.value || addDialogs.firstRun.value || !!addDialogs.popover.value || !!addDialogs.tell.value
+  addDialogs.galaxy.value || addDialogs.runner.value || !!addDialogs.universe.value || addDialogs.firstRun.value || !!addDialogs.popover.value || !!addDialogs.tell.value
   || !!addDialogs.summary.value || !!stationDlg.value || shipDlg.value || !!rememberDlg.value;
 
 export function closeDialogs(): void {
@@ -50,6 +51,7 @@ export function closeDialogs(): void {
   if (stationDlg.value) { closeStation(); return; }
   if (shipDlg.value) { shipDlg.value = false; return; }
   if (addDialogs.universe.value) { addDialogs.universe.value = null; return; }
+  if (addDialogs.runner.value) { addDialogs.runner.value = false; return; }
   if (addDialogs.galaxy.value) { addDialogs.galaxy.value = false; return; }
   if (addDialogs.firstRun.value) { addDialogs.firstRun.value = false; }
 }

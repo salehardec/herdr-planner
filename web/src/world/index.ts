@@ -6,11 +6,12 @@
 
 import {
   NoToneMapping, Color, Group, Mesh, MeshBasicMaterial, PerspectiveCamera, Quaternion, Scene,
-  TorusGeometry, Vector3, WebGLRenderer, HalfFloatType, Line, BufferGeometry, LineDashedMaterial,
+  TorusGeometry, Vector3, WebGLRenderer, HalfFloatType, Line, LineBasicMaterial, BufferGeometry, LineDashedMaterial,
 } from 'three';
 import { BloomEffect, EffectComposer, EffectPass, RenderPass } from 'postprocessing';
 import type { Entity, GalaxyView, Level, Link, Status, Subagent, Usage, CoordinatorState, Bridge } from '../types';
 import { Backdrop, FarGalaxies } from './backdrop';
+import { Docks, type DockEntry } from './docks';
 import { Bodies, type Item } from './bodies';
 import {
   aimedAt, clampPitch, CRUISE_DEFAULT, flightDuration, forwardOf, newRig, newShip, rigFromCamera, rigPosition,
@@ -59,12 +60,17 @@ export interface WorldData {
   showQuiet: boolean;
   bridges: Bridge[];
   filter: Status[] | null;
+  /** The shipyards, as the intergalactic space draws them. */
+  runners: DockEntry[];
+  /** Planets of this galaxy with containers on a yard: the thin threads. */
+  dockLinks: { task: string; runner: string }[];
 }
 
 export type Dest =
   | { kind: 'overview' }
   | { kind: 'entity'; entity: Entity }
   | { kind: 'far'; galaxy: string }
+  | { kind: 'runner'; id: string }
   | { kind: 'pose'; pose: Pose };
 
 /** A camera pose to fly to: where it looks from and at, and what it follows on arrival. */
@@ -195,10 +201,11 @@ export function createWorld(opts: WorldOptions): World {
   const quasar = new Quasar();
   const links = new Links();
   const far = new FarGalaxies();
+  const docks = new Docks();
   const ship = new Ship();
   const warp = new WarpTunnel();
   const fxGroup = new Group();
-  root.add(backdrop.group, nebulae.points, bodies.group, quasar.group, links.group, far.group, fxGroup);
+  root.add(backdrop.group, nebulae.points, bodies.group, quasar.group, links.group, far.group, docks.group, fxGroup);
   camera.add(ship.group, warp.lines);
 
   const selRing = new Mesh(new TorusGeometry(1, 0.06, 6, 40), new MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.9, depthWrite: false }));
@@ -265,6 +272,8 @@ export function createWorld(opts: WorldOptions): World {
   const started = performance.now();
   let projs: Proj[] = [];
   let universeItems: Item[] = [];
+  let dockSig = '';
+  let dockLines: { task: string; runner: string; line: Line }[] = [];
   let quasarItem: Item = mkItem('quasar', 'quasar', '', 'quasar', QUASAR_R * 1.6, 100);
   let scale = 800;
   let warpNow = 0;
@@ -300,6 +309,7 @@ export function createWorld(opts: WorldOptions): World {
     const same = s === sig;
     sig = s;
     if (!same || changedGalaxy) {
+      if (changedGalaxy) dockSig = '';
       const old = new Map<string, Status>();
       for (const [id, v] of prevStatus) old.set(id, v.p.status);
       layout = computeLayout(d.view, { showQuiet: d.showQuiet });
@@ -338,6 +348,12 @@ export function createWorld(opts: WorldOptions): World {
     quasar.setLimits(d.limits);
     quasarItem = Object.assign(quasarItem, { key: `quasar||${galaxyId}`.replace('||', `|${galaxyId}|`), entity: { kind: 'quasar', galaxy: galaxyId, id: 'quasar' } });
     far.build(d.others.map((o) => ({ label: o.id, ok: o.ok })), pal, bound() + 450);
+    const dsig = JSON.stringify([d.runners, d.dockLinks]);
+    if (dsig !== dockSig) {
+      dockSig = dsig;
+      docks.build(d.runners, pal, bound() + 200);
+      buildDockLinks(d.dockLinks);
+    }
     // Bridges: same project (origin) in this galaxy and another one.
     const mine = new Map(d.view.projects.map((p) => [normalizeOrigin(p.origin), p.name]));
     const bridgeItems = d.bridges.flatMap((b) => {
@@ -353,10 +369,44 @@ export function createWorld(opts: WorldOptions): World {
     requestRender();
   }
 
+  /** Thin threads from a planet to the yard where its containers live; no running dash. */
+  function buildDockLinks(pairs: { task: string; runner: string }[]): void {
+    for (const l of dockLines) {
+      docks.group.remove(l.line);
+      l.line.geometry.dispose();
+      (l.line.material as LineBasicMaterial).dispose();
+    }
+    dockLines = [];
+    for (const p of pairs) {
+      const dock = docks.sprites.get(p.runner);
+      if (!dock || !bodies.positionOf(p.task, new Vector3())) continue;
+      const geo = new BufferGeometry().setFromPoints([new Vector3(), new Vector3()]);
+      const line = new Line(geo, new LineBasicMaterial({ color: pal.accent, transparent: true, opacity: 0.28, depthWrite: false }));
+      line.frustumCulled = false;
+      docks.group.add(line);
+      dockLines.push({ task: p.task, runner: p.runner, line });
+    }
+  }
+
+  function updateDockLinks(): void {
+    if (!dockLines.length) return;
+    for (const l of dockLines) {
+      const a = bodies.positionOf(l.task, tmp);
+      const b = docks.sprites.get(l.runner)?.pos;
+      if (!a || !b) { l.line.visible = false; continue; }
+      l.line.visible = true;
+      const attr = l.line.geometry.getAttribute('position') as { setXYZ: (i: number, x: number, y: number, z: number) => void; needsUpdate: boolean };
+      attr.setXYZ(0, a.x, a.y, a.z);
+      attr.setXYZ(1, b.x, b.y, b.z);
+      attr.needsUpdate = true;
+    }
+  }
+
   function setPalette(colors: Record<string, string>, m: 'dark' | 'light'): void {
     const next = makePalette(colors, m);
     const changedMode = next.mode !== pal.mode;
     pal = next;
+    dockSig = '';
     (scene.background as Color).copy(pal.bg);
     quasar.setPalette(pal);
     bodies.setPalette(pal);
@@ -397,6 +447,10 @@ export function createWorld(opts: WorldOptions): World {
         const g = far.sprites.get(e.id);
         return g ? out.copy(g.pos) : null;
       }
+      case 'runner': {
+        const d2 = docks.sprites.get(e.id);
+        return d2 ? out.copy(d2.pos) : null;
+      }
     }
   }
 
@@ -430,6 +484,11 @@ export function createWorld(opts: WorldOptions): World {
       const g = far.sprites.get(d.galaxy);
       const p = g ? g.pos.clone() : new Vector3(bound() + 300, 0, 0);
       out.rig = { focus: p, yaw: Math.atan2(p.x, p.z) + 0.1, pitch: 0.18, dist: 420 };
+      out.follow = null; out.enter = null; out.leave = true;
+    } else if (d.kind === 'runner') {
+      const y = docks.sprites.get(d.id);
+      const p = y ? y.pos.clone() : new Vector3(bound() + 200, 0, 0);
+      out.rig = { focus: p, yaw: Math.atan2(p.x, p.z) + 0.1, pitch: 0.26, dist: 240 };
       out.follow = null; out.enter = null; out.leave = true;
     } else {
       const e = (d as { entity: Entity }).entity;
@@ -509,6 +568,7 @@ export function createWorld(opts: WorldOptions): World {
   function destTarget(d: Dest): Entity | 'overview' | null {
     if (d.kind === 'entity') return d.entity;
     if (d.kind === 'far') return { kind: 'galaxy', galaxy: d.galaxy, id: d.galaxy };
+    if (d.kind === 'runner') return { kind: 'runner', galaxy: '', id: d.id };
     return d.kind === 'overview' ? 'overview' : null;
   }
 
@@ -734,6 +794,12 @@ export function createWorld(opts: WorldOptions): World {
         label: g.label, sub: '', priority: 70, universe: '',
       });
     }
+    for (const [id, y] of docks.sprites) {
+      items.push({
+        key: `runner||${id}`, entity: { kind: 'runner', galaxy: '', id }, pos: y.pos, radius: 60,
+        label: id, sub: '', priority: 60, universe: '',
+      });
+    }
     camera.updateMatrixWorld();
     for (const item of items) {
       tmp.copy(item.pos).applyMatrix4(camera.matrixWorldInverse);
@@ -866,6 +932,16 @@ export function createWorld(opts: WorldOptions): World {
           key: it.key, kind: 'moon', x: p.x, y: p.y, lift: Math.max(8, p.rpx + 6), priority: isSel ? 100 : isHover ? 92 : 25,
           force: isSel || isHover, text: it.label, sub: '', selected: isSel, hovered: isHover,
         });
+      } else if (e.kind === 'runner') {
+        const y = docks.sprites.get(e.id);
+        if (!y) continue;
+        const rr = data?.runners.find((x) => x.id === e.id);
+        cands.push({
+          key: it.key, kind: 'runner', x: p.x, y: p.y, lift: Math.max(22, p.rpx * 0.6 + 12),
+          priority: isSel ? 100 : isHover ? 92 : 60, force: true, text: `⚒ ${e.id}`,
+          sub: y.ok ? '' : t('galaxy.off'), badge: rr?.forgotten ? String(rr.forgotten) : '',
+          off: !y.ok, selected: isSel, hovered: isHover,
+        });
       } else if (e.kind === 'galaxy') {
         const g = far.sprites.get(e.id);
         const other = data?.others.find((o) => o.id === e.id);
@@ -887,6 +963,8 @@ export function createWorld(opts: WorldOptions): World {
 
   function render(): void {
     if (!renderer) return;
+    docks.update(time);
+    updateDockLinks();
     if (composer) composer.render(); else renderer.render(scene, camera);
   }
 
@@ -1174,8 +1252,9 @@ export function createWorld(opts: WorldOptions): World {
         ship: { x: Math.round(shipS.pos.x), y: Math.round(shipS.pos.y), z: Math.round(shipS.pos.z), yaw: shipS.yaw, pitch: shipS.pitch, speed: Math.round(shipS.vel.length()), cruise: Math.round(shipS.cruise), roll: shipS.roll },
         flight: flight ? flight.phase : 'idle', locked, edge: edgeOn, bloom: !!composer, aimed: aimed ? aimed.entity : null,
         far: [...far.sprites.keys()],
-        positionOf: (id: string) => { const p = bodies.positionOf(id); return p ? { x: p.x, y: p.y, z: p.z } : null; },
-        project: (id: string) => { const p = bodies.positionOf(id); return p ? projectPoint(p) : null; },
+        docks: Object.fromEntries([...docks.sprites.entries()].map(([id, y]) => [id, { x: Math.round(y.pos.x), y: Math.round(y.pos.y), z: Math.round(y.pos.z), ok: y.ok }])),
+        positionOf: (id: string) => { const p = bodies.positionOf(id) ?? docks.sprites.get(id)?.pos; return p ? { x: p.x, y: p.y, z: p.z } : null; },
+        project: (id: string) => { const p = bodies.positionOf(id) ?? docks.sprites.get(id)?.pos; return p ? projectPoint(p) : null; },
       };
     },
     connect(from, to) { if (from && to && from !== to) hooks.onConnect(from, to); },

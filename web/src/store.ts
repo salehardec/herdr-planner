@@ -1,7 +1,7 @@
 /* The page's state: signals. The world and the panels both read from here. */
 import { computed, signal } from '@preact/signals';
 import type {
-  Entity, GalaxyView, Galaxy, Level, Request, Snapshot, Status, Task, TurnData,
+  Entity, GalaxyView, Galaxy, Level, Request, Runner, Snapshot, Status, Task, TurnData,
 } from './types';
 import { ATTENTION, STATUS_ORDER } from './types';
 import { collectRequests } from './requests';
@@ -106,6 +106,7 @@ export const homeView = computed<GalaxyView>(() => {
 });
 
 export const galaxies = computed<Galaxy[]>(() => snap.value?.galaxies ?? []);
+export const runners = computed<Runner[]>(() => snap.value?.runners ?? []);
 
 export function viewOfGalaxy(g: Galaxy): GalaxyView {
   const projects = g.projects.map((p) => {

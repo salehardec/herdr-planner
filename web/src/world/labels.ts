@@ -8,7 +8,7 @@ import { scaleK } from '../scale';
 
 export interface LabelCandidate {
   key: string;
-  kind: 'planet' | 'universe' | 'quasar' | 'galaxy' | 'moon' | 'bridge';
+  kind: 'planet' | 'universe' | 'quasar' | 'galaxy' | 'runner' | 'moon' | 'bridge';
   x: number;
   y: number;
   /** Pixels between the point and the label's bottom edge. */

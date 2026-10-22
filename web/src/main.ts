@@ -103,6 +103,15 @@ effect(() => {
     showQuiet: showQuiet.value,
     bridges: s.bridges ?? [],
     filter: filter.value,
+    runners: (s.runners ?? []).map((r) => ({
+      id: r.id, ok: r.ok,
+      load: r.host.cpus > 0 ? Math.min(1, r.host.load1 / r.host.cpus) : 0,
+      containers: r.containers.filter((c) => c.class !== 'foreign').length,
+      forgotten: r.containers.filter((c) => c.class === 'forgotten' || c.class === 'unsure').length,
+    })),
+    dockLinks: [...new Map((s.runners ?? []).flatMap((r) => r.containers
+      .filter((c) => c.task && c.task.galaxy === galaxyId.value && c.class !== 'foreign')
+      .map((c) => [`${c.task!.id}|${r.id}`, { task: c.task!.id, runner: r.id }] as const))).values()],
   });
 });
 

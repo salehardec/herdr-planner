@@ -7,7 +7,7 @@
 use crate::board::{self, Link, Task};
 use crate::config::{now_ms, AppConfig};
 use base64::Engine;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
 use std::process::Stdio;
@@ -38,7 +38,7 @@ pub struct MachineRef {
 }
 
 /// Why a machine did not answer: one line for the page, and what to do about it.
-#[derive(Debug, Clone, Default, PartialEq, Serialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct Why {
     pub line: String,
     pub detail: Vec<String>,

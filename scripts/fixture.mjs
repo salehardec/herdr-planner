@@ -65,7 +65,7 @@ const root = path.resolve(pos[0]);
 fs.rmSync(root, { recursive: true, force: true });
 fs.mkdirSync(root, { recursive: true });
 const dir = fs.realpathSync(root);
-for (const d of ['board', 'bin', 'log', 'state', 'state/herdr-planner', 'cfg', 'cache', 'theme', 'worktrees', 'reports', 'projects', 'origins', 'claude', 'codex', 'omp']) {
+for (const d of ['board', 'bin', 'log', 'state', 'state/herdr-planner', 'cfg', 'cache', 'theme', 'worktrees', 'reports', 'projects', 'origins', 'claude', 'codex', 'omp', 'settings']) {
   fs.mkdirSync(path.join(dir, d), { recursive: true });
 }
 
@@ -1172,6 +1172,89 @@ function sshMain(C, DATA) {
   const inner = unwrapped ? unwrapped[1].split("'\\''").join("'") : remote;
   const host = target.includes('@') ? target.split('@')[1] : target;
   const rec = { argv: args, target, inner: inner.slice(0, 400) };
+  // vm-r: the shipyard. One fixed probe, `docker version` for the reach check, `docker system df`, and the exact-id
+  // removals the planner may ask for. Removed ids and names are remembered in state/runner.json.
+  if (host === DATA.runnerR.host || host === DATA.runnerR.label) {
+    const { fs, path } = C;
+    const stateFile = path.join(C.D, 'state', 'runner.json');
+    const st = C.readJson(stateFile, { ids: [], networks: [], volumes: [] });
+    st.ids = st.ids || []; st.networks = st.networks || []; st.volumes = st.volumes || [];
+    const saveSt = () => fs.writeFileSync(stateFile, JSON.stringify(st));
+    log('ssh.jsonl', { ...rec, runner: DATA.runnerR.label });
+    if (inner.startsWith('docker rm -f -v ')) {
+      const ids = inner.slice('docker rm -f -v '.length).trim().split(/\s+/).filter(Boolean);
+      ids.forEach((id) => st.ids.push(id));
+      saveSt();
+      ids.forEach((id) => console.log(id));
+      return;
+    }
+    if (inner.startsWith('docker network rm ')) {
+      const ids = inner.slice('docker network rm '.length).trim().split(/\s+/).filter(Boolean);
+      ids.forEach((id) => st.networks.push(id));
+      saveSt();
+      ids.forEach((id) => console.log(id));
+      return;
+    }
+    if (inner.startsWith('docker volume rm ')) {
+      const names = inner.slice('docker volume rm '.length).trim().split(/\s+/).filter(Boolean);
+      names.forEach((n) => st.volumes.push(n));
+      saveSt();
+      names.forEach((n) => console.log(n));
+      return;
+    }
+    if (inner.startsWith('docker system df')) {
+      console.log(JSON.stringify({ Type: 'Images', TotalCount: '152', Active: '12', Size: '159.7GB', Reclaimable: '153.1GB (96%)' }));
+      console.log(JSON.stringify({ Type: 'Containers', TotalCount: '5', Active: '3', Size: '1.2GB', Reclaimable: '12MB (1%)' }));
+      console.log(JSON.stringify({ Type: 'Local Volumes', TotalCount: '2', Active: '2', Size: '141GB', Reclaimable: '58GB (41%)' }));
+      console.log(JSON.stringify({ Type: 'Build Cache', TotalCount: '120', Active: '0', Size: '23.5GB', Reclaimable: '23.5GB' }));
+      return;
+    }
+    if (inner.startsWith('docker version')) {
+      console.log('28.3.0');
+      return;
+    }
+    if (inner.includes('herdr-planner-runner 1')) {
+      const R = DATA.runnerR;
+      const gone = new Set(st.ids);
+      const goneNet = new Set(st.networks);
+      const goneVol = new Set(st.volumes);
+      const out = [];
+      const row = (...f) => out.push(f.join('\t'));
+      out.push('herdr-planner-runner 1');
+      row('now', String(Math.floor(Date.now() / 1000)));
+      row('load', '1.20 0.80 0.50 1/100 2');
+      row('cpus', '8');
+      row('arch', 'x86_64');
+      row('host', 'vm-r');
+      row('os', 'Ubuntu 24.04 LTS');
+      row('mem', 'MemTotal:       16777216 kB');
+      row('mem', 'MemAvailable:   12582912 kB');
+      row('mem', 'SwapTotal:       2097152 kB');
+      row('mem', 'SwapFree:        2097152 kB');
+      row('disk', '/var/lib/docker\t500000000000 300000000000');
+      row('docker', '28.3.0 x86_64');
+      row('compose', 'v2.17.3');
+      row('info', '8|17179869184|5|3|40|Ubuntu 24.04 LTS|runc,nvidia,');
+      row('gpu', '0, NVIDIA L4-24Q, 12, 1337, 24576, 45');
+      row('gpuproc', '4242,1337\tdocker-' + 'a'.repeat(64));
+      out.push('== ps');
+      R.containers.filter((c) => !gone.has(c.id)).forEach((c) => out.push(JSON.stringify({
+        ID: c.id, Names: c.name, Image: c.image, State: c.state, Status: c.status, CreatedAt: c.created,
+        Labels: c.labels, Ports: c.ports, Networks: c.networks, Mounts: c.mounts, Size: c.size,
+      })));
+      out.push('== stats');
+      R.containers.filter((c) => !gone.has(c.id)).forEach((c) => out.push(JSON.stringify({
+        ID: c.id.slice(0, 12), CPUPerc: c.cpu, MemUsage: c.mem, PIDs: c.pids, NetIO: '1kB / 2kB', BlockIO: '0B / 0B',
+      })));
+      out.push('== net');
+      R.networks.filter((n) => !goneNet.has(n.id)).forEach((n) => out.push(JSON.stringify({ ID: n.id, Name: n.name, Driver: n.driver, Labels: '' })));
+      out.push('== vol');
+      R.volumes.filter((v) => !goneVol.has(v.name)).forEach((v) => out.push(JSON.stringify({ Name: v.name, Driver: v.driver, Labels: '' })));
+      process.stdout.write(out.join('\n') + '\n');
+      return;
+    }
+    return;
+  }
   if (host === DATA.farC.label) {
     // vm-c: the command runs in the machine's own folder, with that folder as HOME and only its own PATH, so
     // what the probe finds is what the machine has. No login banner: a fresh machine prints none.
@@ -1211,6 +1294,20 @@ function sshMain(C, DATA) {
     if (r.stdout) process.stdout.write(r.stdout);
     if (r.stderr) process.stderr.write(r.stderr);
     process.exit(r.status === null ? 255 : r.status);
+  }
+  // The planner's copies of the shipyard list and the reach check run without a herdr session.
+  if (inner.includes('runners.json.tmp')) {
+    const home = path.join(C.D, 'state', 'vm-a-home');
+    fs.mkdirSync(home, { recursive: true });
+    log('mirror.jsonl', { host: 'vm-a' });
+    const r = require('node:child_process').spawnSync('/bin/sh', ['-c', inner], { env: { HOME: home, PATH: process.env.PATH, LANG: 'C' }, encoding: 'utf8' });
+    if (r.stdout) process.stdout.write(r.stdout);
+    if (r.stderr) process.stderr.write(r.stderr);
+    process.exit(r.status === null ? 255 : r.status);
+  }
+  if (inner.startsWith('command -v docker')) {
+    console.log('28.3.0');
+    return;
   }
   if (!sessionOk) {
     console.error('herdr-projects: no board in the default session on vm-a');
@@ -1298,6 +1395,26 @@ function sshMain(C, DATA) {
   }
   console.error('herdr-projects: unknown remote command ' + cmd);
   process.exit(127);
+}
+
+
+// The docker client on this machine: only `command -v docker` and the reach check ask it anything.
+function dockerMain() {
+  const args = process.argv.slice(2);
+  if (args[0] === 'version') { console.log('28.3.0'); return; }
+  if (args[0] === 'compose') { console.log('v2.17.3'); return; }
+  console.log('28.3.0');
+}
+
+// vm-c's own docker client and ssh: the reach check from that machine to the yard.
+function farDocker() {
+  const args = process.argv.slice(2);
+  if (args[0] === 'version') { console.log('28.3.0'); return; }
+  if (args[0] === 'compose') { console.log('v2.17.3'); return; }
+  console.log('28.3.0');
+}
+function farSsh() {
+  console.log('28.3.0');
 }
 
 // The translator: reads the text between <<< and >>> on stdin; answers «ПЕРЕВОД: » and the first 60 characters.
@@ -1414,6 +1531,51 @@ const VMC = {
 // The home plugin: its commit is the `@<sha>` of `herdr plugin list`. The far machine gets the same commit.
 DATA.farC = VMC;
 DATA.plugin = { name: 'herdr-projects', version: '1.2.4', repo: 'eliasstravik/herdr-projects', ref: '7d8bba7c1f2e3a4b5c6d7e8f9a0b1c2d3e4f5a6b' };
+
+
+// ---------------------------------------------------------------- the shipyard vm-r
+// The planner reads it over ssh with one fixed script and removes forgotten containers by exact id. The target is a
+// documentation address (192.0.2.0/24 is never a real host); the stand-in ssh answers for it.
+const dockerTime = (ms) => {
+  const d = new Date(ms);
+  const p = (n) => String(n).padStart(2, '0');
+  return `${d.getUTCFullYear()}-${p(d.getUTCMonth() + 1)}-${p(d.getUTCDate())} ${p(d.getUTCHours())}:${p(d.getUTCMinutes())}:${p(d.getUTCSeconds())} +0000 UTC`;
+};
+DATA.runnerR = {
+  label: 'vm-r',
+  target: 'me@192.0.2.29',
+  host: '192.0.2.29',
+  ports: '192.0.2.29',
+  containers: [
+    { id: 'a'.repeat(64), name: 'pg-ALP-3', image: 'postgres:16', state: 'running', status: 'Up 1 hour', created: dockerTime(NOW - HOUR), labels: 'herdr.task=ALP-3,herdr.galaxy=orion,com.docker.compose.project=work-3', ports: '0.0.0.0:15432->5432/tcp', networks: 'work-3_default', mounts: 'work-3_pgdata:/var/lib/postgresql/data', size: '28MB', cpu: '0.40%', mem: '96MiB / 1GiB', pids: '7' },
+    { id: 'b'.repeat(64), name: 'web-ALP-15', image: 'nginx:1.27', state: 'exited', status: 'Exited (0) 2 hours ago', created: dockerTime(NOW - 2 * DAY), labels: 'herdr.task=ALP-15,herdr.galaxy=orion', ports: '', networks: 'bridge', mounts: '', size: '12MB', cpu: '0.00%', mem: '0B / 0B', pids: '0' },
+    { id: 'c'.repeat(64), name: 'x-ALP-99', image: 'alpine:3', state: 'exited', status: 'Exited (0) 5 days ago', created: dockerTime(NOW - 5 * DAY), labels: 'herdr.task=ALP-99,herdr.galaxy=orion', ports: '', networks: 'bridge', mounts: '', size: '4MB', cpu: '0.00%', mem: '0B / 0B', pids: '0' },
+    { id: 'd'.repeat(64), name: 'neighbor-db-1', image: 'postgres:15', state: 'running', status: 'Up 3 days', created: dockerTime(NOW - 3 * DAY), labels: 'com.docker.compose.project=neighbor', ports: '5432/tcp', networks: 'neighbor_default', mounts: 'neighbor_data:/var/lib/postgresql/data', size: '1.2GB', cpu: '1.20%', mem: '210MiB / 512MiB', pids: '9' },
+    { id: 'e'.repeat(64), name: 'buildx_buildkit_x0', image: 'moby/buildkit:latest', state: 'running', status: 'Up 2 months', created: dockerTime(NOW - 60 * DAY), labels: '', ports: '', networks: 'host', mounts: '', size: '0B', cpu: '0.10%', mem: '34MiB / 0B', pids: '4' },
+  ],
+  networks: [
+    { id: 'f'.repeat(64), name: 'work-3_default', driver: 'bridge' },
+    { id: '1'.repeat(64), name: 'neighbor_default', driver: 'bridge' },
+    { id: '2'.repeat(64), name: 'bridge', driver: 'bridge' },
+  ],
+  volumes: [
+    { name: 'work-3_pgdata', driver: 'local' },
+    { name: 'neighbor_data', driver: 'local' },
+  ],
+};
+// The planner's own list of shipyards, at the path it reads: <data>/../settings/runners.json.
+write(path.join(dir, 'settings', 'runners.json'), JSON.stringify({
+  version: 1, updated_at_ms: NOW, default: 'vm-r',
+  runners: [{
+    id: 'vm-r', target: DATA.runnerR.target, ports_host: DATA.runnerR.ports,
+    tags: ['docker28', 'gpu', 'x86_64'],
+    protected: ['buildx_*', 'neighbor'],
+    note: '8 ядер, L4 24 ГБ (фикстура)', added_at_ms: NOW, capacity: null,
+  }],
+  assign: {},
+}, null, 1));
+write(path.join(dir, 'state', 'runner.json'), JSON.stringify({ ids: [], networks: [], volumes: [] }));
+DATA.plugin = { name: 'herdr-projects', version: '1.2.4', repo: 'eliasstravik/herdr-projects', ref: '7d8bba7c1f2e3a4b5c6d7e8f9a0b1c2d3e4f5a6b' };
 // What `npm install -g <package>` installs on the far machine: the program's name and its version.
 DATA.packages = {
   '@openai/codex': { name: 'codex', version: '0.5.1' },
@@ -1425,6 +1587,7 @@ DATA.packages = {
 writeBin('herdr-projects', herdrProjectsMain);
 writeBin('herdr', herdrMain);
 writeBin('ssh', sshMain);
+writeBin('docker', dockerMain);
 writeBin('claude', claudeMain);
 writeBin('gh', ghMain);
 writeBin('glab', glabMain);
@@ -1610,6 +1773,8 @@ function buildFarMachine() {
     if (src) fs.symlinkSync(src, path.join(far.bin, name));
   }
   writeFarScript(path.join(far.bin, 'npm'), farNpm);
+  writeFarScript(path.join(far.bin, 'docker'), farDocker);
+  writeFarScript(path.join(far.bin, 'ssh'), farSsh);
   writeFarScript(path.join(far.lib, 'herdr'), farHerdr);
   writeFarScript(path.join(far.lib, 'herdr-projects'), farBoard);
   writeFarScript(path.join(far.lib, 'agent'), farAgent);

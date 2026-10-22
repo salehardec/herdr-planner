@@ -7,6 +7,7 @@ mod api;
 mod app;
 mod attachments;
 mod auth;
+mod blocks;
 mod board;
 mod config;
 mod coordinator;
@@ -21,6 +22,8 @@ mod memory;
 mod memory_api;
 mod memory_guard;
 mod models;
+mod runners;
+mod runners_api;
 mod search;
 mod server;
 mod ship;
@@ -294,6 +297,35 @@ fn spawn_loops(app: Shared) {
             app::publish(&a).await;
             app::index_snapshot(&a).await;
             tokio::time::sleep(Duration::from_secs(30)).await;
+        }
+    });
+    // The shipyards: read every 30 s while somebody watches the page, every 5 min otherwise; the copies of the
+    // list and the agents' docker block are refreshed every 10 min (and by every change made on the page).
+    let a = app.clone();
+    tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_secs(3)).await;
+        let mut copies_at = 0u64;
+        let mut online: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+        loop {
+            let fast = a.bus.subscribers() > 0;
+            runners::poll_all(&a).await;
+            let now_online: std::collections::BTreeSet<String> = a
+                .galaxies
+                .lock()
+                .await
+                .iter()
+                .filter(|g| g.ok)
+                .map(|g| g.label.clone())
+                .collect();
+            let came_back = now_online.difference(&online).next().is_some();
+            online = now_online;
+            let now = config::now_ms();
+            if came_back || now.saturating_sub(copies_at) > 600_000 {
+                copies_at = now;
+                runners::mirror_all(&a).await;
+                runners::sync_blocks(&a).await;
+            }
+            tokio::time::sleep(Duration::from_secs(if fast { 30 } else { 300 })).await;
         }
     });
     let a = app.clone();
