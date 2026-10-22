@@ -2405,7 +2405,7 @@ section('planet states', async () => {
     const b = await evalJs(`world.debug().fxAt('alpha/6', 1.7)`);
     const w = await evalJs(`world.debug().fxAt('alpha/2', 0.2)`);
     check(`${what}: a working planet is a still, bright ring; the planet that waits has its ring and glow`, a.moving === false && a.glow === b.glow && a.aura === b.aura && a.aura > 0.5 && a.glow > 0.3 && w.halo === 1 && w.glow > 0.3, JSON.stringify([a, b, w]));
-    check(`${what}: no animation is left in the page's own styles`, await evalJs(`[...document.querySelectorAll('#win .gl.spin')].every((e) => getComputedStyle(e).animationName === 'none')`));
+    check(`${what}: no animation is left in the page's own styles`, await evalJs(`[...document.querySelectorAll('#win .gl.spin, #win .gl.beat')].every((e) => getComputedStyle(e).animationName === 'none')`));
   };
   await navigate(base + '/?calm&nocoach');
   await frozen('?calm');

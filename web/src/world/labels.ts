@@ -126,7 +126,7 @@ export class Labels {
     }
     const cls = `lb ${c.kind}${c.status ? ` s-${c.status}` : ''}${c.selected ? ' sel' : ''}${c.hovered ? ' hover' : ''}${c.drop ? ' drop' : ''}${c.dim ? ' dim' : ''}${c.full ? ' full' : ''}`;
     const gl = c.kind === 'planet' && c.status
-      ? `<svg class="gl st${c.status === 'working' ? ' spin' : ''}" aria-hidden="true"><use href="#g-${c.status}"/></svg>`
+      ? `<svg class="gl st${c.status === 'working' ? ' spin' : c.status === 'review' ? ' beat' : ''}" aria-hidden="true"><use href="#g-${c.status}"/></svg>`
       : '';
     const html = c.full
       ? `<span class="in">${gl}<b class="k">${esc(c.text)}</b>${c.badge ? `<span class="bd">${esc(c.badge)}</span>` : ''}</span><span class="ttl">${esc(c.sub ?? '')}</span>${c.line ? `<span class="line">${esc(c.line)}</span>` : ''}`

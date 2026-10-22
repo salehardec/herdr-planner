@@ -98,8 +98,6 @@ const lo = await evalJs(labelOverlaps);
 check('the labels are few: at most 24, none on top of another', d.labels > 0 && d.labels <= 24 && lo.shown === d.labels && lo.overlaps === 0, JSON.stringify({ labels: d.labels, ...lo }));
 const upd = await bestUpdate();
 check('the page\'s own work per frame is small (< 24 ms for the update, stretched by the yardstick on a busy machine)', upd.ms < upd.limit, JSON.stringify(upd));
-const fxBound = await evalJs('(() => { const x = world.debug(); return { auras: x.auras, halos: x.halos }; })()');
-check('the ripples of the working planets are bounded (at most 64), the rings too', fxBound.auras <= 64 && fxBound.halos <= 500, JSON.stringify(fxBound));
 check('the particles are bounded (LOD): under 60 000', d.particles < 60000, String(d.particles));
 if (shots) { const r = await send('Page.captureScreenshot', { format: 'png' }); writeFileSync(join(shots, 'scale-overview.png'), Buffer.from(r.result.data, 'base64')); }
 // into a nebula: the cost stays small and the labels stay in order
@@ -110,6 +108,10 @@ await frames(5);
 const inside = await evalJs('(() => { const x = world.debug(); return { level: x.level, labels: x.labels, updateMs: x.updateMs }; })()');
 const lo2 = await evalJs(labelOverlaps);
 const upd2 = await bestUpdate();
+// close to the planets is where the ripples and rings are drawn (the overview draws none): they stay bounded
+await waitFor('world.debug().auras + world.debug().halos > 0', 30000);
+const fxBound = await evalJs('(() => { const x = world.debug(); return { auras: x.auras, halos: x.halos, planets: x.planets }; })()');
+check('inside a nebula the ripples of the working planets are drawn, at most 64, and the rings at most two per planet', fxBound.auras <= 64 && fxBound.halos <= 2 * fxBound.planets && fxBound.auras + fxBound.halos > 0, JSON.stringify(fxBound));
 check('inside a nebula: the labels stay few and apart', inside.level === 'nebula' && inside.labels <= 24 && lo2.overlaps === 0 && upd2.ms < upd2.limit, JSON.stringify({ ...inside, ...lo2, upd: upd2 }));
 // the selected planet's card and the one under the pointer must not sit on other labels either
 await evalJs(`planner.navigateTo({kind:'planet',id:'s05/1'}); true`);

@@ -3,7 +3,7 @@
    hundred planets are a handful of draw calls. */
 
 import {
-  AdditiveBlending, BoxGeometry, BufferAttribute, BufferGeometry, Color, DynamicDrawUsage, Group,
+  AdditiveBlending, NormalBlending, BoxGeometry, BufferAttribute, BufferGeometry, Color, DynamicDrawUsage, Group,
   InstancedBufferAttribute, InstancedMesh, LineBasicMaterial, LineSegments, Matrix4, MeshBasicMaterial,
   Mesh, OctahedronGeometry, Points, PointsMaterial, RingGeometry, Quaternion, ShaderMaterial, SphereGeometry, TetrahedronGeometry,
   TorusGeometry, Vector3, Euler,
@@ -63,6 +63,7 @@ const NEAR = 260;
 /** The ripples of working planets are drawn this close, and for at most this many (a crowd of ripples is noise). */
 const AURA_NEAR = 420;
 const AURA_MAX = 64;
+const HALOS_PER_PLANET = 2;
 
 export interface Item {
   key: string;
@@ -177,7 +178,8 @@ export class Bodies {
     this.planets.frustumCulled = false;
     this.planets.renderOrder = 4;
     const basic = (opacity: number): MeshBasicMaterial => new MeshBasicMaterial({ transparent: true, opacity, depthWrite: false });
-    this.halos = new InstancedMesh(new TorusGeometry(1, 0.07, 6, 32), basic(0.85), cap);
+    // A failed planet takes two of them (a cage), so there is room for two per planet.
+    this.halos = new InstancedMesh(new TorusGeometry(1, 0.07, 6, 32), basic(0.85), cap * HALOS_PER_PLANET);
     this.rings = new InstancedMesh(new TorusGeometry(1, 0.045, 6, 36), basic(0.7), cap);
     // The ripple of a working planet: a flat ring turned to the camera; it fades by its colour (additive).
     this.auras = new InstancedMesh(new RingGeometry(0.93, 1, 48), new MeshBasicMaterial({
@@ -205,17 +207,26 @@ export class Bodies {
     }
     this.group.add(this.planets);
     this.colorsDirty = true;
+    if (this.pal) this.lightAura();
   }
 
   setSimple(v: boolean): void { this.simple = v; }
   setHover(id: string | null): void { if (id !== this.hoverId) { this.hoverId = id; this.colorsDirty = true; } }
   setFilter(f: Status[] | null): void { this.filter = f && f.length ? f : null; this.colorsDirty = true; }
   setFresh(f: Record<string, number>): void { this.fresh = f; }
-  setPalette(p: Palette): void { this.pal = p; this.colorsDirty = true; }
+  setPalette(p: Palette): void { this.pal = p; this.colorsDirty = true; this.lightAura(); }
+
+  /** The ripple adds light on a dark sky; on a light one it must be painted over it, or it shows white. */
+  private lightAura(): void {
+    const mat = this.auras.material as MeshBasicMaterial;
+    const blending = this.pal.mode === 'light' ? NormalBlending : AdditiveBlending;
+    if (mat.blending !== blending) { mat.blending = blending; mat.needsUpdate = true; }
+  }
 
   /** Rebuilds the instances for a layout; moons are kept by id so they can fade out. */
   build(layout: Layout, tasks: Task[], pal: Palette, coordinatorMoons: Subagent[], now: number): void {
     this.pal = pal;
+    this.lightAura();
     this.layout = layout;
     this.tasks = new Map(tasks.map((t) => [t.id, t]));
     this.coordMoons = coordinatorMoons;
@@ -374,7 +385,7 @@ export class Bodies {
       // A steady ring for what waits for the human (one ring) and for what failed (a cage of two); it brightens with the flash.
       if (near && fx.halo > 0 && !dimmed) {
         const rings = p.status === 'failed' ? 2 : 1;
-        for (let k = 0; k < rings; k++) {
+        for (let k = 0; k < rings && halo < this.cap * HALOS_PER_PLANET; k++) {
           _e.set(Math.PI / 2 + 0.25 + k * 1.1, time * 0.5 + rec.phase + k * 1.6, k * 0.8);
           _q.setFromEuler(_e);
           const hs = p.size * (p.status === 'failed' ? 2.25 : 1.95);
@@ -385,10 +396,12 @@ export class Bodies {
         }
       }
       // The ripple of a working planet (and a frozen bright ring when motion is off).
-      if (fx.aura > 0 && !dimmed && aura < AURA_MAX && camPos.distanceToSquared(item.pos) < AURA_NEAR * AURA_NEAR) {
+      if (fx.aura > 0 && !dimmed && aura < Math.min(AURA_MAX, this.cap) && camPos.distanceToSquared(item.pos) < AURA_NEAR * AURA_NEAR) {
         _m.compose(_p, camQuat, _s.setScalar(p.size * fx.auraR));
         this.auras.setMatrixAt(aura, _m);
-        this.auras.setColorAt(aura, _c.copy(this.pal.status[p.status]).multiplyScalar(fx.aura));
+        _c.copy(this.pal.status[p.status]);
+        if (this.pal.mode === 'light') _c.lerp(this.pal.bg, 1 - fx.aura); else _c.multiplyScalar(fx.aura);
+        this.auras.setColorAt(aura, _c);
         aura++;
       }
       // Only a planet with an agent on it has a program ring; a queued or done one has none.

@@ -87,6 +87,8 @@ mark{background:color-mix(in srgb,var(--pl-accent) 38%,transparent);color:inheri
 .win.manual #scene{cursor:crosshair}
 .gl{width:0.8125rem;height:0.8125rem;flex:none;fill:none;stroke:currentColor;stroke-width:1.6;stroke-linecap:round;stroke-linejoin:round}
 .gl.spin{animation:spin 1.1s linear infinite}
+.gl.beat{animation:beat 2.2s ease-in-out infinite}
+@keyframes beat{50%{opacity:.4}}
 @keyframes spin{to{transform:rotate(360deg)}}
 .lbl{font-size:0.625rem;letter-spacing:.1em;text-transform:uppercase;color:var(--pl-faint)}
 .sr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0)}
