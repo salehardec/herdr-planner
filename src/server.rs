@@ -26,6 +26,36 @@ use std::time::{Duration, SystemTime};
 use tokio::process::Command;
 use tokio::time::timeout;
 
+/// The longest text a person can write in a todo or a chat message: a page of a spec or a log,
+/// far past the old one-line limits. Longer texts are refused with a message, never cut by the page.
+const MAX_TEXT_CHARS: usize = 100_000;
+
+/// The same text, in bytes: it goes to `herdr-projects` as one argument, and Linux refuses an
+/// argument longer than 128 KiB (`MAX_ARG_STRLEN`). Room is kept for the attachment paths that
+/// travel in the same argument. A Cyrillic letter is two bytes, so this is about 65 000 of them:
+/// counting only characters would accept a text the process cannot even start with.
+const MAX_ARG_BYTES: usize = 130_000;
+
+/// Why a text cannot be sent to the board, if it cannot: too many characters, or more UTF-8 bytes
+/// than one command-line argument may hold (the message names the real limit, never a cryptic E2BIG).
+fn text_limit_error(text: &str, what: &str) -> Option<String> {
+    if text.chars().count() > MAX_TEXT_CHARS {
+        return Some(format!("{what} длиннее {MAX_TEXT_CHARS} символов"));
+    }
+    bytes_limit_error(text, what)
+}
+
+fn bytes_limit_error(text: &str, what: &str) -> Option<String> {
+    if text.len() <= MAX_ARG_BYTES {
+        return None;
+    }
+    Some(format!(
+        "{what} не помещается в доску: {} байт в UTF-8, а предел — {MAX_ARG_BYTES} байт \
+         (около 65000 русских букв); разбейте текст на части",
+        text.len()
+    ))
+}
+
 /// The built page (Vite): embedded into the binary; a debug build reads the folder.
 #[derive(rust_embed::RustEmbed)]
 #[folder = "$HERDR_PLANNER_DIST"]
@@ -460,19 +490,51 @@ fn valid_repo(repo: &str) -> bool {
             .all(|c| c.is_alphanumeric() || matches!(c, '-' | '_' | '.' | '/'))
 }
 
-/// A God's-list text, made one line; the board's `add` takes it as a title.
+/// A God's-list text with the lines a person wrote; the board's `add` takes it as a title.
 fn todo_text(text: &str) -> Result<String, String> {
-    let t = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    // The line breaks and the indentation a person wrote stay (a nested list, code, a log): only
+    // trailing blanks and the blank lines at the ends go.
+    let normalized = text.replace("\r\n", "\n").replace('\r', "\n");
+    let lines: Vec<&str> = normalized.lines().map(str::trim_end).collect();
+    let start = lines.iter().position(|l| !l.trim().is_empty()).unwrap_or(lines.len());
+    let end = lines.iter().rposition(|l| !l.trim().is_empty()).map_or(start, |i| i + 1);
+    let t = lines[start..end].join("\n");
     if t.is_empty() {
         return Err("пустое дело".into());
     }
-    if t.chars().count() > 400 {
-        return Err("дело длиннее 400 символов".into());
+    if let Some(e) = text_limit_error(&t, "дело") {
+        return Err(e);
     }
-    if t.starts_with('-') {
-        return Err("дело не может начинаться с «-»".into());
-    }
+    // A pasted markdown list starts with «-» and is kept as it is: only the task title of
+    // `todo-create` reaches the board as a bare argument, and it is made safe there.
     Ok(t)
+}
+
+/// A task's title from the first line of a todo: one line, without a list marker, and short enough
+/// for the board's 60 columns in ordinary letters. A wider script may be shortened by the board;
+/// the full text is in `--desc` anyway, so its line breaks are kept.
+fn task_title(text: &str) -> String {
+    let first = text.lines().find(|l| !l.trim().is_empty()).unwrap_or("").trim();
+    // A markdown list item (`- milk`, `* milk`, `- [ ] milk`) is a title in words: the board reads
+    // the first word as a flag when it starts with «-», and the whole text stays in the description.
+    let mut first = first
+        .trim_start_matches(|c: char| matches!(c, '-' | '*' | '+'))
+        .trim_start();
+    for box_ in ["[ ] ", "[x] ", "[X] "] {
+        if let Some(rest) = first.strip_prefix(box_) {
+            first = rest.trim_start();
+            break;
+        }
+    }
+    let mut out: String = first.chars().take(55).collect();
+    if first.chars().count() > 55 {
+        out.push('…');
+    }
+    if out.is_empty() {
+        "Дело".into()
+    } else {
+        out
+    }
 }
 
 fn valid_key(k: &str) -> bool {
@@ -677,8 +739,8 @@ async fn api_chat(
             ),
         );
     }
-    if text.chars().count() > 4000 {
-        return error(StatusCode::BAD_REQUEST, "message is too long");
+    if let Some(e) = text_limit_error(text, "сообщение") {
+        return error(StatusCode::BAD_REQUEST, e);
     }
     if let Some(g) = body.galaxy.as_deref().filter(|g| !g.is_empty()) {
         if !crate::machines::valid_label(g) {
@@ -689,6 +751,9 @@ async fn api_chat(
         }
         if text.is_empty() {
             return error(StatusCode::BAD_REQUEST, "empty message");
+        }
+        if let Some(e) = crate::machines::text_limit_error(text) {
+            return error(StatusCode::BAD_REQUEST, e);
         }
         return match crate::machines::remote_dispatch(&app.cfg, g, "", text, false, None).await {
             Ok(out) => {
@@ -709,6 +774,9 @@ async fn api_chat(
     }
 
     let message = attachments::message(text, &files);
+    if let Some(e) = bytes_limit_error(&message, "сообщение с вложениями") {
+        return error(StatusCode::BAD_REQUEST, e);
+    }
     if let Err(e) = run_board(
         &app.cfg,
         &["coordinator", "tell", "--", &message],
@@ -1081,6 +1149,9 @@ async fn api_action(
             // The files go along as absolute paths on this machine.
             let paths = held_paths(&app.cfg.attachments_dir(), &item.attachments).await;
             let text = attachments::message(&text, &paths);
+            if let Some(e) = bytes_limit_error(&text, "дело с вложениями") {
+                return error(StatusCode::BAD_REQUEST, e);
+            }
             let sent = if item.to == "quasar" {
                 run_board(&app.cfg, &["coordinator", "tell", "--", &text], Duration::from_secs(30)).await
             } else if board::valid_id(&item.to) && item.to.contains('/') {
@@ -1122,12 +1193,23 @@ async fn api_action(
             if !known {
                 return error(StatusCode::BAD_REQUEST, format!("нет такой вселенной: {repo}"));
             }
-            let title = match todo_text(&item.text) {
+            let text = match todo_text(&item.text) {
                 Ok(t) => t,
                 Err(e) => return error(StatusCode::BAD_REQUEST, e),
             };
             let paths = held_paths(&app.cfg.attachments_dir(), &item.attachments).await;
-            let desc = attachments::message("", &paths);
+            // The board's `add` cleans the title (every line break becomes a space) and keeps it as
+            // the description only when it had to shorten it: a multi-line todo is sent as a short
+            // one-line title plus the whole text as `--desc`, which is kept as it is.
+            let title = task_title(&text);
+            let desc = if title == text {
+                attachments::message("", &paths)
+            } else {
+                attachments::message(&text, &paths)
+            };
+            if let Some(e) = bytes_limit_error(&desc, "дело с вложениями") {
+                return error(StatusCode::BAD_REQUEST, e);
+            }
             let mut args: Vec<&str> = vec!["add", title.as_str(), "--repo", repo.as_str()];
             if !desc.is_empty() {
                 args.push("--desc");
@@ -1215,6 +1297,9 @@ async fn api_action(
             let text = body.text.as_deref().unwrap_or("").trim();
             if text.is_empty() {
                 return error(StatusCode::BAD_REQUEST, "empty message");
+            }
+            if let Some(e) = text_limit_error(text, "сообщение") {
+                return error(StatusCode::BAD_REQUEST, e);
             }
             run_board(&app.cfg, &["tell", id, "--", text], Duration::from_secs(60)).await
         }
@@ -1314,6 +1399,9 @@ async fn remote_action(app: &Shared, galaxy: &str, body: &ActionBody) -> Respons
             let text = body.text.as_deref().unwrap_or("").trim().to_string();
             if text.is_empty() {
                 return error(StatusCode::BAD_REQUEST, "empty message");
+            }
+            if let Some(e) = machines::text_limit_error(&text) {
+                return error(StatusCode::BAD_REQUEST, e);
             }
             machines::remote_do(&app.cfg, galaxy, &json!({"id": id, "action": "tell", "text": text})).await
         }
@@ -1516,15 +1604,47 @@ mod tests {
     }
 
     #[test]
-    fn todo_text_is_one_safe_title() {
+    fn todo_text_keeps_lines_and_stays_safe() {
         assert_eq!(
             todo_text("  Починить   кэш \n отчётов ").unwrap(),
-            "Починить кэш отчётов"
+            "  Починить   кэш\n отчётов"
         );
+        assert_eq!(todo_text("first\r\nsecond\rthird").unwrap(), "first\nsecond\nthird");
+        assert_eq!(todo_text("\n  first\n\nsecond  \n\n").unwrap(), "  first\n\nsecond");
         assert!(todo_text("").is_err());
-        assert!(todo_text("   ").is_err());
-        assert!(todo_text("--all").is_err());
-        assert!(todo_text(&"x".repeat(401)).is_err());
+        assert!(todo_text("\n \n").is_err());
+        assert_eq!(todo_text("--all").unwrap(), "--all");
+        assert_eq!(
+            todo_text("- купить молоко\n- позвонить в банк").unwrap(),
+            "- купить молоко\n- позвонить в банк"
+        );
+        assert!(todo_text(&"x".repeat(401)).is_ok());
+        assert!(todo_text(&"x".repeat(MAX_TEXT_CHARS)).is_ok());
+        assert!(todo_text(&"x".repeat(MAX_TEXT_CHARS + 1)).is_err());
+        // A Cyrillic letter is two bytes: the real bound is the command-line argument, not the count.
+        assert!(todo_text(&"ж".repeat(60_000)).is_ok());
+        assert!(text_limit_error(&"ж".repeat(MAX_ARG_BYTES / 2), "дело").is_none());
+        let too_many_bytes = todo_text(&"ж".repeat(MAX_ARG_BYTES / 2 + 1)).unwrap_err();
+        assert!(too_many_bytes.contains("130000"), "{too_many_bytes}");
+        assert!(!too_many_bytes.contains("Argument list"), "{too_many_bytes}");
+        assert_eq!(
+            text_limit_error(&"ж".repeat(60_000), "дело"),
+            None
+        );
+        assert!(text_limit_error(&"x".repeat(MAX_TEXT_CHARS + 1), "сообщение")
+            .unwrap()
+            .contains("100000"));
+        assert!(bytes_limit_error(&"ж".repeat(MAX_ARG_BYTES / 2 + 1), "сообщение")
+            .unwrap()
+            .contains("130000"));
+        assert_eq!(task_title("  Первая строка дела\nвторая строка"), "Первая строка дела");
+        assert_eq!(task_title("- купить молоко\n- позвонить в банк"), "купить молоко");
+        assert_eq!(task_title("- [ ] купить молоко"), "купить молоко");
+        assert_eq!(task_title("---"), "Дело");
+        assert_eq!(task_title("коротко"), "коротко");
+        assert_eq!(task_title(&"ж".repeat(50)), "ж".repeat(50));
+        assert_eq!(task_title(&"ж".repeat(60)), format!("{}…", "ж".repeat(55)));
+        assert!(!task_title(&"x".repeat(50)).starts_with('\n'));
         assert!(valid_todo_id("t1792407710774-1"));
         assert!(!valid_todo_id("../../etc"));
         assert!(!valid_todo_id(""));

@@ -78,9 +78,9 @@ export function RequestActions(props: { task: Task; input?: string; galaxy?: str
   const run = (cmd: string): void => runTaskAction(cmd, task, props.galaxy ? { kind: 'planet', galaxy: props.galaxy, id: task.id } : undefined);
   const draft = (text: string): void => {
     tellDraft.value = { ...tellDraft.value, [task.id]: text };
-    setTimeout(() => { const i = document.getElementById(input) as HTMLInputElement | null; if (i) { i.value = text; i.focus(); i.select(); } }, 30);
+    setTimeout(() => { const i = document.getElementById(input) as HTMLTextAreaElement | null; if (i) { i.value = text; i.focus(); i.select(); } }, 30);
   };
-  const toInput = (): void => { setTimeout(() => (document.getElementById(input) as HTMLInputElement | null)?.focus(), 30); };
+  const toInput = (): void => { setTimeout(() => (document.getElementById(input) as HTMLTextAreaElement | null)?.focus(), 30); };
   return (
     <>
       {type === 'permission' && (

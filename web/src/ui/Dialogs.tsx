@@ -12,6 +12,7 @@ import { AddGalaxy } from './AddGalaxy';
 import { AddUniverse } from './AddUniverse';
 import { lightPreset } from './station-api';
 import { SavedFiles } from './Attached';
+import { AutoTextarea } from './AutoText';
 import { toast } from '../toast';
 import type { SavedFile } from '../attach';
 import { Coach, FirstRun } from './FirstRun';
@@ -36,11 +37,15 @@ async function saveDraft(id: string): Promise<boolean> {
   return !!(await todoUpdate(id, patch));
 }
 
-function DraftFields(props: { prefix: string }): JSX.Element {
+function DraftFields(props: { prefix: string; onSend: () => void; hint: string }): JSX.Element {
   return (
     <>
       <label>{t('todo.popText')}
-        <textarea class="field" id={`${props.prefix}-text`} rows={3} maxLength={400} value={editText.value} onInput={(e) => { editText.value = (e.target as HTMLTextAreaElement).value; }} />
+        <AutoTextarea
+          class="field" id={`${props.prefix}-text`} value={editText.value}
+          onInput={(e) => { editText.value = (e.target as HTMLTextAreaElement).value; }} onSend={props.onSend}
+        />
+        <span class="hint keyhint" id={`${props.prefix}-text-hint`}>{props.hint}</span>
       </label>
       <SavedFiles list={editFiles.value} class="dfiles" onRemove={(id) => { editFiles.value = editFiles.value.filter((a) => a.id !== id); }} />
     </>
@@ -65,7 +70,7 @@ function TodoPopover(): JSX.Element | null {
       <section class="panel dlg sm" id="pop" role="dialog" aria-label={t('todo.popTitle')}>
         <header><b>{t('todo.popTitle')}</b><button class="btn icon sm" type="button" aria-label={t('close')} onClick={() => { addDialogs.popover.value = null; }}><Gl n="close" /></button></header>
         <div class="bd">
-          <DraftFields prefix="pop" />
+          <DraftFields prefix="pop" onSend={() => void go()} hint={t('text.keys.create')} />
           <label>{t('todo.popProject')}
             <select class="field" id="pop-repo" value={p.repo} onChange={(e) => { addDialogs.popover.value = { id: p.id, repo: (e.target as HTMLSelectElement).value, galaxy: p.galaxy }; }}>
               {projects.map((x) => <option value={x.name}>{x.name}</option>)}
@@ -115,7 +120,7 @@ function TodoTell(): JSX.Element | null {
       <section class="panel dlg sm" id="pop-tell" role="dialog" aria-label={t('todo.tellTitle', { task: tag })}>
         <header><b>{t('todo.tellTitle', { task: tag })}</b><button class="btn icon sm" type="button" aria-label={t('close')} onClick={() => { addDialogs.tell.value = null; }}><Gl n="close" /></button></header>
         <div class="bd">
-          <DraftFields prefix="tell" />
+          <DraftFields prefix="tell" onSend={() => void go()} hint={t('text.keys.send')} />
           <p class="hint">{t('todo.tellHint')}</p>
           <div class="act">
             <button class="btn primary" type="button" id="tell-go" disabled={!editText.value.trim()} onClick={() => void go()}>{t('todo.tellGo')}</button>

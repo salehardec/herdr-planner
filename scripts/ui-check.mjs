@@ -115,6 +115,11 @@ const press = async (code, key = code, mods = 0) => {
     console.log(`   the key ${code} did not reach the page; sent again`);
   }
 };
+// Shift+Enter in a text area: a real key with its line break, so the browser inserts it.
+const shiftEnter = async () => {
+  await send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13, modifiers: 8, text: '\r' });
+  await send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13, modifiers: 8 });
+};
 // A key held down: dispatched inside the page (CDP key events are dropped when the headless window loses focus).
 // It is held until `until` (an expression about the page) is true, not for so long: how far a ship gets in a second
 // depends on how many frames the machine drew. Returns whether the condition came before the time was out.
@@ -384,9 +389,15 @@ section('stack', async () => {
   // Action leaves the operator in place: a tell does not fly anywhere.
   await go('alpha/2');
   const cam = (await debug()).camera;
-  await evalJs('document.querySelector("#tell").value = "оставь старую"; document.querySelector("#tell").dispatchEvent(new Event("input", { bubbles: true }));');
-  await click('[data-act="tell-agent"]');
-  check('the message reaches the agent', await waitLog(() => calls().some((c) => c.argv[0] === 'tell' && c.argv[1] === 'alpha/2' && c.argv[3] === 'оставь старую'), 8000), JSON.stringify(lastCall()));
+  check('the reply box is a text area with the same key hint', (await evalJs('document.querySelector("#tell").tagName')) === 'TEXTAREA' && (await text('#tell-hint')).includes('Shift+Enter'), await text('#tell-hint'));
+  await evalJs('(() => { const t = document.querySelector("#tell"); t.value = ""; t.dispatchEvent(new Event("input", { bubbles: true })); t.focus(); })()');
+  await send('Input.insertText', { text: 'оставь старую' });
+  await shiftEnter();
+  await send('Input.insertText', { text: 'ветку' });
+  check('Shift+Enter in the reply box breaks the line without sending', (await evalJs('document.querySelector("#tell").value')) === 'оставь старую\nветку' && !calls().some((c) => c.argv[0] === 'tell' && c.argv[3] === 'оставь старую\nветку'));
+  await press('Enter');
+  check('Enter sends it, the line break kept', await waitLog(() => calls().some((c) => c.argv[0] === 'tell' && c.argv[1] === 'alpha/2' && c.argv[3] === 'оставь старую\nветку'), 8000), JSON.stringify(lastCall()));
+  await sleep(800);
   // not flown away: look once the answer of the server has been handled and the world has drawn a few frames
   await quiet();
   await frames(3);
@@ -499,6 +510,16 @@ section('chat', async () => {
   check('/ opens the chat and focuses the line', await waitFor('document.querySelector("#chat").classList.contains("off") === false && document.activeElement.id === "ask-in"', 5000));
   check('three last turns are shown', await waitFor('document.querySelectorAll("#clog .turn:not(.pending)").length === 3', 6000), await evalJs('document.querySelectorAll("#clog .turn").length'));
   check('the newest question is at the bottom, its answer pending', (await evalJs('(() => { const t = [...document.querySelectorAll("#clog .turn:not(.pending)")]; return t[t.length - 1].innerText; })()')).includes('Вопрос 10'));
+  // The line is a text area too: it wraps, grows, Enter sends, Shift+Enter is a new line.
+  const chatGrow = await evalJs(`(() => {
+    const ta = document.querySelector('#ask-in');
+    const empty = ta.getBoundingClientRect().height;
+    ta.value = 'a\\nb\\nc'; ta.dispatchEvent(new Event('input', { bubbles: true }));
+    const three = ta.getBoundingClientRect().height;
+    ta.value = ''; ta.dispatchEvent(new Event('input', { bubbles: true }));
+    return { tag: ta.tagName, empty, three, wrap: getComputedStyle(ta).whiteSpace, hint: document.querySelector('#ask-hint')?.innerText || '' };
+  })()`);
+  check('the chat line wraps and grows like the todo field, with the same hint', chatGrow.tag === 'TEXTAREA' && chatGrow.three > chatGrow.empty + 8 && chatGrow.wrap === 'pre-wrap' && chatGrow.hint.includes('Shift+Enter'), JSON.stringify(chatGrow));
   check('the text is large and readable: 15px, a measure under 80ch', await waitFor('(() => { const c = getComputedStyle(document.querySelector("#chat")); const w = document.querySelector("#chat").getBoundingClientRect().width; return parseFloat(c.fontSize) >= 15 && w < 80 * 9.6 + 40; })()'));
   check('the Coordinator\'s options (from its words) are buttons under the chat', await waitFor('document.querySelectorAll("#cvariants .btn").length === 2', 8000), await evalJs('document.querySelectorAll("#cvariants .btn").length'));
   check('the memory of the Coordinator: 75 % and yellow', await hasText('#memory-c', '75') && await exists('#memory-c.warn'), await text('#memory-c'));
@@ -528,6 +549,76 @@ section('chat', async () => {
   }, () => calls('coordinator.jsonl').some((c) => c.text === 'Разобрать «Ждёт тебя»'), 8000, '({ buttons: document.querySelector("#cvariants")?.innerText, busy: plannerSnap().coordinator.busy, dialog: !!plannerSnap().coordinator.dialog, pending: !!window.__net.pending })'), JSON.stringify({ variantsBack, buttons: await text('#cvariants'), last: lastCall('coordinator.jsonl') }));
   check('the answer is the Coordinator\'s words, tools left out', !(await text('#clog')).includes('tool_result'));
   await evalJs('document.getElementById("chat-q").value = ""; document.getElementById("chat-q").dispatchEvent(new Event("input", { bubbles: true }))');
+  // A wrapped paragraph is several visual lines: ArrowUp moves the caret there, and only from the first line scrolls the history.
+  const wrapped = await evalJs(`(() => {
+    const ta = document.querySelector('#ask-in'); const log = document.querySelector('#clog');
+    ta.value = 'Слово '.repeat(88); ta.dispatchEvent(new Event('input', { bubbles: true })); ta.focus();
+    ta.setSelectionRange(ta.value.length, ta.value.length);
+    return { lines: ta.getBoundingClientRect().height };
+  })()`);
+  // A taller field shortens the log beside it, and the search's smooth scroll may still be running:
+  // put the log at its end at once and take its place only after a few frames without movement.
+  const beforeUp = await evalJs(`new Promise((done) => {
+    const l = document.querySelector('#clog'); const ta = document.querySelector('#ask-in');
+    l.scrollTop = l.scrollHeight;
+    let last = l.scrollTop; let still = 0;
+    const tick = () => {
+      if (l.scrollTop === last) still++; else { last = l.scrollTop; still = 0; }
+      if (still >= 3) done({ start: ta.selectionStart, top: l.scrollTop }); else requestAnimationFrame(tick);
+    };
+    requestAnimationFrame(tick);
+  })`);
+  await press('ArrowUp');
+  const afterUp = await evalJs('(() => { const ta = document.querySelector("#ask-in"); return { start: ta.selectionStart, top: document.querySelector("#clog").scrollTop }; })()');
+  check('ArrowUp inside a wrapped paragraph moves the caret, not the history', afterUp.start < beforeUp.start && afterUp.top === beforeUp.top && wrapped.lines > 60, JSON.stringify({ wrapped, beforeUp, afterUp }));
+  // The other way: from the start of the paragraph the caret goes down a visual line, the history stays.
+  await evalJs('(() => { const t = document.querySelector("#ask-in"); t.focus(); t.setSelectionRange(0, 0); })()');
+  await frames(1);
+  const beforeDown = await evalJs('(() => { const ta = document.querySelector("#ask-in"); return { start: ta.selectionStart, top: document.querySelector("#clog").scrollTop }; })()');
+  await press('ArrowDown');
+  const afterDown = await evalJs('(() => { const ta = document.querySelector("#ask-in"); return { start: ta.selectionStart, top: document.querySelector("#clog").scrollTop }; })()');
+  check('ArrowDown inside a wrapped paragraph moves the caret down, not the history', afterDown.start > beforeDown.start && Math.abs(afterDown.top - beforeDown.top) < 40, JSON.stringify({ beforeDown, afterDown }));
+  // Three lines made with Shift+Enter: ArrowDown goes from the first to the second.
+  await evalJs(`(() => { const t = document.querySelector('#ask-in'); t.value = 'Первая\\nВторая\\nТретья'; t.dispatchEvent(new Event('input', { bubbles: true })); t.focus(); t.setSelectionRange(0, 0); })()`);
+  const linesBefore = await evalJs(`new Promise((done) => {
+    const l = document.querySelector('#clog'); const ta = document.querySelector('#ask-in');
+    let last = l.scrollTop; let still = 0;
+    const tick = () => {
+      if (l.scrollTop === last) still++; else { last = l.scrollTop; still = 0; }
+      if (still >= 3) done({ start: ta.selectionStart, top: l.scrollTop }); else requestAnimationFrame(tick);
+    };
+    requestAnimationFrame(tick);
+  })`);
+  await press('ArrowDown');
+  const linesAfter = await evalJs('(() => { const ta = document.querySelector("#ask-in"); return { start: ta.selectionStart, top: document.querySelector("#clog").scrollTop }; })()');
+  // A history step is 70 px; a few pixels are the log settling after the field grew.
+  check('ArrowDown moves the caret to the next line of a multi-line message', linesAfter.start > 0 && Math.abs(linesAfter.top - linesBefore.top) < 40, JSON.stringify({ linesBefore, linesAfter }));
+  // A trailing empty line is a line too: ArrowDown from the line above it reaches it.
+  await evalJs(`(() => { const t = document.querySelector('#ask-in'); t.value = 'abcde\\n'; t.dispatchEvent(new Event('input', { bubbles: true })); t.focus(); t.setSelectionRange(5, 5); })()`);
+  const emptyBefore = await evalJs(`new Promise((done) => {
+    const l = document.querySelector('#clog'); const ta = document.querySelector('#ask-in');
+    let last = l.scrollTop; let still = 0;
+    const tick = () => {
+      if (l.scrollTop === last) still++; else { last = l.scrollTop; still = 0; }
+      if (still >= 3) done({ start: ta.selectionStart, top: l.scrollTop }); else requestAnimationFrame(tick);
+    };
+    requestAnimationFrame(tick);
+  })`);
+  await press('ArrowDown');
+  const emptyAfter = await evalJs('(() => { const ta = document.querySelector("#ask-in"); return { start: ta.selectionStart, top: document.querySelector("#clog").scrollTop }; })()');
+  check('ArrowDown reaches a trailing empty line', emptyAfter.start === 6 && Math.abs(emptyAfter.top - emptyBefore.top) < 40, JSON.stringify({ emptyBefore, emptyAfter }));
+  await evalJs('(() => { const t = document.querySelector("#ask-in"); t.value = ""; t.dispatchEvent(new Event("input", { bubbles: true })); })()');
+  // send: Shift+Enter keeps the line, Enter sends both lines
+  await evalJs('(() => { const t = document.querySelector("#ask-in"); t.value = ""; t.dispatchEvent(new Event("input", { bubbles: true })); t.focus(); })()');
+  await send('Input.insertText', { text: 'Вопрос в две строки' });
+  await shiftEnter();
+  await send('Input.insertText', { text: 'и вторая' });
+  check('Shift+Enter in the chat breaks the line without sending', (await evalJs('document.querySelector("#ask-in").value')) === 'Вопрос в две строки\nи вторая' && !calls('coordinator.jsonl').some((c) => c.text === 'Вопрос в две строки\nи вторая'), await evalJs('JSON.stringify(document.querySelector("#ask-in").value)'));
+  await press('Enter');
+  check('Enter sends the multi-line message, its line break kept', await waitLog(() => calls('coordinator.jsonl').some((c) => c.text === 'Вопрос в две строки\nи вторая'), 8000), JSON.stringify(lastCall('coordinator.jsonl')));
+  await waitFor('document.querySelector("#clog").innerText.includes("Вопрос в две строки")', 4000);
+  // One send at a time: a message typed while the previous one is still in flight would be erased by its completion.
+  check('the first message is sent and the line is clear before the next', await waitFor('document.querySelector("#ask-in").value === "" && !document.querySelector("#send").disabled', 10000));
   // send: the option above is still on its way to the Coordinator, give it the turn it needs first
   await quiet();
   const historyCalls = () => evalJs('window.__net.log.filter((u) => u.includes("/api/chat/history?limit=3")).length');
@@ -544,7 +635,8 @@ section('chat', async () => {
   await waitFor(`window.__net.log.filter((u) => u.includes("/api/chat/history?limit=3")).length >= ${historyBefore + 2}`, 10000);
   await quiet();
   check('it stays until the transcript has it', (await text('#clog')).includes('НОВЫЙ ВОПРОС'));
-  // memory buttons: two presses
+  // memory buttons: two presses (the button waits for the Coordinator to be free again)
+  check('Compact is ready after the answer', await waitFor('!document.querySelector("#memory-c #compact").disabled', 8000));
   await click('#memory-c #compact');
   check('Compact arms first (two-step)', await hasText('#memory-c #compact', 'Точно'));
   await secondPress('#memory-c #compact');
@@ -589,6 +681,20 @@ section('chat', async () => {
   const imagePaths = imageTell.text.split('\n').filter((l) => l.startsWith(join(fixture, 'state', 'herdr-planner', 'attachments') + '/'));
   check('the Coordinator message carries both absolute image paths', imageTell.text.includes('вот скриншоты') && imagePaths.length === 2, imageTell.text.replace(/\n/g, ' | '));
   check('the image files exist and are PNG', imagePaths.length === 2 && imagePaths.every((p) => existsSync(p) && readFileSync(p).subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))));
+  // Long texts are the point: a 5 000-character log goes through, and over 100 000 is refused in words.
+  const logText = `ЖУРНАЛ-ДЛИННЫЙ ${'строка лога '.repeat(420)}`.trim();
+  await evalJs('document.querySelector("#ask-in").focus()');
+  await send('Input.insertText', { text: logText });
+  await press('Enter');
+  check('a 5 000-character chat message is sent, not refused', await waitLog(() => calls('coordinator.jsonl').some((c) => c.text === logText), 12000), JSON.stringify(lastCall('coordinator.jsonl')).slice(0, 200));
+  check('the line is clear after the long message', await waitFor('document.querySelector("#ask-in").value === "" && !document.querySelector("#send").disabled', 10000));
+  const tooLong = await evalJs(`fetch('/api/chat', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ text: 'z'.repeat(100001) }) }).then(async (r) => [r.status, (await r.json()).error])`);
+  check('a chat message over 100 000 is refused with a clear message, not cut', tooLong[0] === 400 && tooLong[1].includes('100000'), JSON.stringify(tooLong));
+  // A Cyrillic letter is two bytes: 60 000 of them fit one argument, 70 000 do not. The limit must say so, not fail with E2BIG.
+  const cyrOk = await evalJs(`fetch('/api/chat', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ text: 'ж'.repeat(60000) }) }).then(async (r) => [r.status, (await r.json()).error])`);
+  check('a 60 000-letter Cyrillic message (120 000 bytes) is sent, not refused', cyrOk[0] === 200 && !String(cyrOk[1] || '').includes('Argument list'), JSON.stringify(cyrOk));
+  const cyrTooLong = await evalJs(`fetch('/api/chat', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ text: 'ж'.repeat(70000) }) }).then(async (r) => [r.status, (await r.json()).error])`);
+  check('a Cyrillic message over the byte limit is refused clearly, not a 502', cyrTooLong[0] === 400 && cyrTooLong[1].includes('130000') && !cyrTooLong[1].includes('Argument list'), JSON.stringify(cyrTooLong));
   await press('Escape');
 });
 
@@ -646,7 +752,7 @@ section('todo drawer', async () => {
   check('the search is in the middle of the top, not at the right', Math.abs((q.l + q.r) / 2 - 1500 / 2) < 12 && q.t < 40, JSON.stringify(q));
   check('the drawer is hidden above the screen while closed', (await rectOf('#todo')).b <= 60 && (await evalJs('getComputedStyle(document.querySelector("#todo")).opacity')) === '0');
   await press('KeyT', 't');
-  check('T pulls the drawer down from the top', await waitFor('document.querySelector("#todo").classList.contains("open") && document.querySelector("#todo").getBoundingClientRect().top > 45 && document.querySelector("#todo").getBoundingClientRect().top < 70', 4000), JSON.stringify(await rectOf('#todo')));
+  check('T pulls the drawer down from the top', await waitFor('document.querySelector("#todo").classList.contains("open") && document.querySelector("#todo").getBoundingClientRect().top > 45 && document.querySelector("#todo").getBoundingClientRect().top < 70', 8000), JSON.stringify(await rectOf('#todo')));
   const [, { d }] = await settled({ d: '#todo' }, (x) => x.d.t >= 50 && x.d.t <= 62);
   check('it is a wide strip in the middle, between the navigator and the focus card', d.w >= 520 && d.l >= (await rectOf('#nav')).r && d.r <= (await rectOf('#focus')).l + 1 && Math.abs((d.l + d.r) / 2 - 750) < 40, JSON.stringify(d));
   check('it slid out from under the search bar: below it, not over it', d.t >= (await rectOf('#q')).b, JSON.stringify({ d, q: await rectOf('#q') }));
@@ -700,6 +806,89 @@ section('todo', async () => {
   await waitFor('world.debug().flight === "idle" && plannerDebug().selected === null', 15000);
   await click('#btodo');
   check('the todo button pulls the list out', await waitFor('document.querySelector("#todo").classList.contains("open") && document.querySelectorAll("#todo-list .titem").length === 2', 4000), await todoCount());
+  // The composer is a text area: it wraps by its width, grows with the lines, then scrolls inside.
+  const todoGrow = await evalJs(`(() => {
+    const ta = document.querySelector('#todo-in');
+    const empty = ta.getBoundingClientRect().height;
+    ta.value = 'первая строка\\nвторая строка\\nтретья строка'; ta.dispatchEvent(new Event('input', { bubbles: true }));
+    const three = ta.getBoundingClientRect().height;
+    ta.value = Array.from({ length: 30 }, (_, i) => 'строка ' + i).join('\\n'); ta.dispatchEvent(new Event('input', { bubbles: true }));
+    const many = ta.getBoundingClientRect().height;
+    const scrolls = ta.scrollHeight > ta.clientHeight + 1;
+    const max = parseFloat(getComputedStyle(ta).maxHeight);
+    const wrap = getComputedStyle(ta).whiteSpace;
+    ta.value = 'Слово '.repeat(80); ta.dispatchEvent(new Event('input', { bubbles: true }));
+    const wraps = ta.scrollWidth <= ta.clientWidth + 1;
+    ta.value = ''; ta.dispatchEvent(new Event('input', { bubbles: true }));
+    return { tag: ta.tagName, empty, three, many, max, scrolls, wrap, wraps, back: ta.getBoundingClientRect().height };
+  })()`);
+  check('the todo composer is a text area that grows with its lines and then scrolls inside', todoGrow.tag === 'TEXTAREA' && todoGrow.three > todoGrow.empty + 10 && todoGrow.many <= todoGrow.max + 1 && todoGrow.many > todoGrow.three && todoGrow.scrolls && Math.abs(todoGrow.back - todoGrow.empty) < 2, JSON.stringify(todoGrow));
+  check('its text wraps by the width of the field', todoGrow.wrap === 'pre-wrap' && todoGrow.wraps, JSON.stringify(todoGrow));
+  check('the field says what Enter and Shift+Enter do', (await text('#todo-hint')).includes('Enter') && (await text('#todo-hint')).includes('Shift+Enter'), await text('#todo-hint'));
+  // Shift+Enter is a new line; Enter adds the todo with the break kept (the server keeps it too).
+  await evalJs('document.querySelector("#todo-in").focus()');
+  await send('Input.insertText', { text: 'Дело в две строки' });
+  await shiftEnter();
+  await send('Input.insertText', { text: 'вторая строка' });
+  check('Shift+Enter breaks the line and does not add the todo', (await evalJs('document.querySelector("#todo-in").value')) === 'Дело в две строки\nвторая строка' && (await todoCount()) === 2, await evalJs('JSON.stringify(document.querySelector("#todo-in").value)'));
+  await press('Enter');
+  check('Enter adds it with both lines', await waitFor(`fetch('/api/state').then(r=>r.json()).then(s => s.todo.some(x => x.text === 'Дело в две строки\\nвторая строка'))`, 6000), JSON.stringify(await todoState()));
+  check('the composer waits empty again', (await evalJs('document.querySelector("#todo-in").value')) === '');
+  // A pasted multi-line text keeps every break, and a long todo is three lines with «ещё» in the list.
+  await evalJs('document.querySelector("#todo-in").focus()');
+  await send('Input.insertText', { text: 'Первая\nВторая\nТретья\nЧетвёртая\nПятая\nШестая' });
+  check('a multi-line insert keeps its breaks in the field', (await evalJs('document.querySelector("#todo-in").value')) === 'Первая\nВторая\nТретья\nЧетвёртая\nПятая\nШестая');
+  await press('Enter');
+  const longText = 'Первая\nВторая\nТретья\nЧетвёртая\nПятая\nШестая';
+  check('the server keeps the breaks of the long todo', await waitFor(`fetch('/api/state').then(r=>r.json()).then(s => s.todo.some(x => x.text === ${JSON.stringify(longText)}))`, 6000), JSON.stringify(await todoState()));
+  const longId = await todoIdByText(longText);
+  await waitFor(`!!document.querySelector('#todo-list .titem[data-todo="${longId}"]')`, 4000);
+  // A pasted text is not silently cut: the field keeps every character and the board keeps them too.
+  const bigText = Array.from({ length: 120 }, () => 'Длинное дело про отчёты').join(' ');
+  await evalJs('document.querySelector("#todo-in").focus()');
+  await send('Input.insertText', { text: bigText });
+  check('a long paste is kept whole in the field', (await evalJs('document.querySelector("#todo-in").value.length')) === bigText.length, `${await evalJs('document.querySelector("#todo-in").value.length')} of ${bigText.length}`);
+  await press('Enter');
+  check('and the board keeps the whole long todo', await waitFor(`fetch('/api/state').then(r=>r.json()).then(s => s.todo.some(x => x.text === ${JSON.stringify(bigText)}))`, 8000), JSON.stringify(await todoState()));
+  const tooLongTodo = await evalJs(`fetch('/api/action', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ action: 'todo-add', text: 'x'.repeat(100001) }) }).then(async (r) => [r.status, (await r.json()).error])`);
+  check('a todo over 100 000 is refused with a clear message, not cut', tooLongTodo[0] === 400 && tooLongTodo[1].includes('100000'), JSON.stringify(tooLongTodo));
+  // Cyrillic takes two bytes: a 60 000-letter todo fits the one argument herdr-projects gets; 70 000 is refused in words.
+  const cyrTodo = await post('/api/action', { action: 'todo-add', text: 'ж'.repeat(60000) });
+  check('a 60 000-letter Cyrillic todo (120 000 bytes) is kept', cyrTodo[0] === 200 && (cyrTodo[1].todo || []).some((x) => x.text === 'ж'.repeat(60000)), JSON.stringify(cyrTodo[1]?.error));
+  const cyrTodoId = (cyrTodo[1].todo || []).find((x) => x.text === 'ж'.repeat(60000))?.id;
+  if (cyrTodoId) {
+    await post('/api/action', { action: 'todo-assign', id: cyrTodoId, to: 'quasar' });
+    const cyrSent = await post('/api/action', { action: 'todo-send', id: cyrTodoId });
+    check('and it is sent to the Coordinator, not refused as too long', cyrSent[0] === 200 && calls('coordinator.jsonl').some((c) => c.text === 'ж'.repeat(60000)), JSON.stringify(cyrSent[1]?.error));
+  } else {
+    check('and it is sent to the Coordinator, not refused as too long', false, 'the todo was not added');
+  }
+  const cyrTooLongTodo = await post('/api/action', { action: 'todo-add', text: 'ж'.repeat(70000) });
+  check('a Cyrillic todo over the byte limit is refused clearly, not a 502', cyrTooLongTodo[0] === 400 && String(cyrTooLongTodo[1]?.error).includes('130000'), JSON.stringify(cyrTooLongTodo));
+  const clamp = await evalJs(`(() => { const e = document.querySelector('#todo-list .titem[data-todo="${longId}"] .txt'); return { h: e.clientHeight, full: e.scrollHeight, more: document.querySelector('#todo-list .titem[data-todo="${longId}"] .more')?.innerText || '' }; })()`);
+  check('a long todo is three lines with «ещё», not one clipped line', clamp.h < clamp.full && clamp.h > 30 && clamp.more === 'ещё', JSON.stringify(clamp));
+  await click(`#todo-list .titem[data-todo="${longId}"] .more`);
+  check('«ещё» opens the whole todo', await waitFor(`(() => { const e = document.querySelector('#todo-list .titem[data-todo="${longId}"] .txt'); return e.classList.contains('open') && e.clientHeight >= e.scrollHeight - 1; })()`, 3000) && (await evalJs(`document.querySelector('#todo-list .titem[data-todo="${longId}"] .more')?.innerText`)) === 'свернуть');
+  for (const txt of ['Дело в две строки\nвторая строка', longText, bigText]) {
+    const id = await todoIdByText(txt);
+    if (id) await click(`[data-act="todo-del"][data-todo-id="${id}"]`);
+    await sleep(400);
+  }
+  check('the multiline test items are gone', await waitFor('document.querySelectorAll("#todo-list .titem").length === 2', 4000), await todoCount());
+  // A refused save keeps the editor and the typed words: nothing is silently lost.
+  await clearToasts();
+  const editId = await evalJs('document.querySelector("#todo-list .titem").dataset.todo');
+  await evalJs(`document.querySelector('[data-todo-text="${editId}"]').dispatchEvent(new MouseEvent('dblclick', { bubbles: true })); true`);
+  await evalJs(`(() => { const i = document.querySelector('#todo-list .edit'); i.value = 'x'.repeat(100001); i.dispatchEvent(new Event('input', { bubbles: true })); i.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })); })()`);
+  check('an over-long edit is refused and stays in the editor with its words', await waitFor('document.querySelector("#toasts")?.innerText.includes("дело длиннее 100000")', 5000) && await evalJs('document.querySelector("#todo-list .edit")?.value.length === 100001'), await text('#toasts'));
+  // Leaving the refused editor is not a second attempt: the same text is not sent again.
+  const editRequests = await evalJs('window.__net.log.filter((u) => u.includes("/api/action")).length');
+  await evalJs('document.querySelector("#todo-in").focus(); true');
+  await sleep(500);
+  check('leaving a refused editor does not send it again', (await evalJs('window.__net.log.filter((u) => u.includes("/api/action")).length')) === editRequests);
+  await evalJs('([...document.querySelectorAll("#todo-list .edit")][0])?.focus(); true');
+  await evalJs('document.querySelector("#todo-list .edit")?.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })); true');
+  check('Esc leaves the editor without changing the item', await waitFor('!document.querySelector("#todo-list .edit")', 3000) && (await evalJs(`fetch('/api/state').then(r=>r.json()).then(s => s.todo.find(x => x.id === ${JSON.stringify(editId)})?.text.length < 100)`)));
   await evalJs('(() => { const i = document.querySelector("#todo-in"); i.value = "Проверить деплой"; document.querySelector("#todo-new").requestSubmit(); })()');
   check('a new item is kept on the server', await waitFor('document.querySelectorAll("#todo-list .titem").length === 3', 6000) && (await evalJs(`fetch('/api/state').then(r=>r.json()).then(s => s.todo.some(x => x.text === 'Проверить деплой'))`)));
   // addressing
@@ -722,8 +911,9 @@ section('todo', async () => {
   check('Esc closes the window and the item stays', await waitFor('!document.querySelector("#pop-tell")', 3000) && (await todoCount()) === 2);
   await dragToScene(todoId, pos.x, pos.y);
   await waitFor('!!document.querySelector("#pop-tell")', 5000);
-  await evalJs('(() => { const i = document.querySelector("#tell-text"); i.value = "Добавить тёмную тему (и светлую)"; i.dispatchEvent(new Event("input", { bubbles: true })); })()');
-  await click('#tell-go');
+  check('the correction window is a text area that grows, with the key hint', await evalJs(`(() => { const ta = document.querySelector('#tell-text'); const h0 = ta.getBoundingClientRect().height; ta.value = 'a\\nb\\nc\\nd\\ne'; ta.dispatchEvent(new Event('input', { bubbles: true })); return ta.tagName === 'TEXTAREA' && ta.getBoundingClientRect().height > h0 && document.querySelector('#tell-text-hint')?.innerText.includes('Shift+Enter'); })()`), await text('#tell-text-hint'));
+  await evalJs('(() => { const i = document.querySelector("#tell-text"); i.value = "Добавить тёмную тему (и светлую)"; i.dispatchEvent(new Event("input", { bubbles: true })); i.focus(); })()');
+  await press('Enter');
   check('the corrected words are told to the agent of the task', await waitLog(() => calls().some((c) => c.argv[0] === 'tell' && c.argv[1] === 'alpha/6' && c.argv[3] === 'Добавить тёмную тему (и светлую)'), 10000), JSON.stringify({ last: lastCall() }));
   check('and the item leaves the list', await waitFor('document.querySelectorAll("#todo-list .titem").length === 1', 6000));
   // drag onto the Quasar: told at once
@@ -771,6 +961,30 @@ section('todo', async () => {
   check('an item can be edited', await waitFor(`fetch('/api/state').then(r=>r.json()).then(s => s.todo.some(x => x.text === 'Правка дела'))`, 6000));
   await click(`[data-act="todo-del"][data-todo-id="${last}"]`);
   check('and removed', await waitFor(`fetch('/api/state').then(r=>r.json()).then(s => !s.todo.some(x => x.id === '${last}'))`, 6000));
+  // A multi-line todo becomes a task: a one-line title, and the whole text (with its breaks) as --desc.
+  const mlText = 'Первая строка дела\n  вторая строка\nлог: error 42';
+  const ml = await post('/api/action', { action: 'todo-add', text: mlText });
+  const mlId = (ml[1]?.todo || []).find((x) => x.text === mlText)?.id;
+  const made = mlId ? await post('/api/action', { action: 'todo-create', id: mlId, repo: 'alpha' }) : [0, { error: 'the todo was not added' }];
+  const addCall = calls().filter((c) => c.argv[0] === 'add').at(-1);
+  check('a multi-line todo becomes a task with a one-line title', made[0] === 200 && addCall?.argv[1] === 'Первая строка дела', JSON.stringify({ made, argv: addCall?.argv.slice(0, 4) }));
+  check('and its whole text, line breaks kept, is the description', addCall?.argv.includes('--desc') && addCall.argv[addCall.argv.indexOf('--desc') + 1] === mlText, JSON.stringify(addCall?.argv.slice(-2)));
+  // A pasted markdown list is a todo like any other; only the task title is made safe for the board.
+  const dashText = '- купить молоко\n- позвонить в банк';
+  await evalJs(`(() => { const t = document.querySelector('#todo-in'); t.value = ${JSON.stringify(dashText)}; t.dispatchEvent(new Event('input', { bubbles: true })); t.focus(); })()`);
+  await press('Enter');
+  check('a pasted markdown list becomes a todo', await waitFor(`fetch('/api/state').then(r=>r.json()).then(s => s.todo.some(x => x.text === ${JSON.stringify(dashText)}))`, 6000));
+  const dashId = await evalJs(`fetch('/api/state').then(r=>r.json()).then(s => s.todo.find(x => x.text === ${JSON.stringify(dashText)})?.id)`);
+  const dashTask = dashId ? await post('/api/action', { action: 'todo-create', id: dashId, repo: 'alpha' }) : [0, { error: 'the list was not added' }];
+  const dashCall = calls().filter((c) => c.argv[0] === 'add').at(-1);
+  check('a list becomes a task: the title has no leading dash, the whole list is the description', dashTask[0] === 200 && dashCall?.argv[1] === 'купить молоко' && dashCall.argv[dashCall.argv.indexOf('--desc') + 1] === dashText, JSON.stringify({ made: dashTask, argv: dashCall?.argv.slice(0, 4) }));
+  // The indentation of the first line typed on the page is kept, not trimmed by the page.
+  const indText = '    def f():\n        return 1';
+  await evalJs(`(() => { const t = document.querySelector('#todo-in'); t.value = ${JSON.stringify(indText)}; t.dispatchEvent(new Event('input', { bubbles: true })); t.focus(); })()`);
+  await press('Enter');
+  check('a todo typed on the page keeps the indentation of its first line', await waitFor(`fetch('/api/state').then(r=>r.json()).then(s => s.todo.some(x => x.text === ${JSON.stringify(indText)}))`, 6000));
+  const indId = await evalJs(`fetch('/api/state').then(r=>r.json()).then(s => s.todo.find(x => x.text === ${JSON.stringify(indText)})?.id)`);
+  if (indId) await post('/api/action', { action: 'todo-remove', id: indId });
   await shot('todo.png');
   await resetUi();
 });
@@ -1247,6 +1461,10 @@ section('requests', async () => {
   check('a permission button prepares an editable answer', await waitFor('document.querySelector("#tell")?.value === "Да, разрешаю."', 4000));
   const dash = await post('/api/action', { action: 'tell', id: 'alpha/2', text: '-- hi' });
   check('a message starting with -- is passed as text, not an option', dash[0] === 200 && calls().some((c) => c.argv[0] === 'tell' && c.argv[3] === '-- hi'), JSON.stringify(lastCall()));
+  const tellTooLong = await post('/api/action', { action: 'tell', id: 'alpha/2', text: 'z'.repeat(100001) });
+  check('a reply over 100 000 characters is refused with a clear message', tellTooLong[0] === 400 && String(tellTooLong[1]?.error).includes('100000'), JSON.stringify(tellTooLong));
+  const tellCyrTooLong = await post('/api/action', { action: 'tell', id: 'alpha/2', text: 'ж'.repeat(70000) });
+  check('a reply over the byte limit is refused clearly, not a 502', tellCyrTooLong[0] === 400 && String(tellCyrTooLong[1]?.error).includes('130000'), JSON.stringify(tellCyrTooLong));
   await go('delta/3');
   check('a pick request lists the attempts', await waitFor('document.querySelectorAll("#focus .pick").length === 3', 8000));
   await click('#focus [data-act="pick"][data-letter="B"]');
@@ -1379,6 +1597,11 @@ section('far', async () => {
   await press('Enter');
   check('the chat goes to that machine\'s Coordinator (dispatch)', await waitLog(() => calls('remote.jsonl').some((c) => JSON.stringify(c).includes('привет, vm-a')), 12000), JSON.stringify(calls('remote.jsonl').slice(-1)).slice(0, 300));
   check('and says honestly there is no transcript', await waitFor('(document.querySelector("#clog")?.innerText || "").includes("нет стенограммы") || (document.querySelector("#clog")?.innerText || "").includes("привет")', 5000));
+  // The far path travels base64 in one ssh argument: 25 000 bytes fit, and a bigger text is refused in words.
+  const farLong = await post('/api/chat', { text: 'x'.repeat(25000), galaxy: 'vm-a' });
+  check('a long message to a far galaxy goes through within the ssh limit', farLong[0] === 200, JSON.stringify(farLong));
+  const farTooLong = await post('/api/chat', { text: 'x'.repeat(70000), galaxy: 'vm-a' });
+  check('a message over the far-galaxy limit is a clear 400, not a vague 502', farTooLong[0] === 400 && String(farTooLong[1]?.error).includes('60000'), JSON.stringify(farTooLong));
   // the chat is closed with Esc; if it is still open (a key that went to something else first), once more — and the output says so
   const chatShut = 'document.querySelector("#chat").classList.contains("off") && !document.activeElement?.matches("textarea,input")';
   for (let i = 0; i < 3 && !(await evalJs(chatShut)); i++) {
@@ -1642,7 +1865,7 @@ section('station', async () => {
   await waitFor('!!document.querySelector(\'[data-act="st-edit-plan.agent"]\')', 15000);
   await click('[data-act="st-edit-plan.agent"]');
   await waitFor('!!document.querySelector(\'[id="st-model-plan.agent"]\')', 5000);
-  check('the model field offers the names the program takes', await waitFor('document.querySelectorAll(\'[id="st-models-plan.agent"] option\').length >= 3', 15000), String(await evalJs('document.querySelectorAll(\'[id="st-models-plan.agent"] option\').length')));
+  check('the model field offers the names the program takes', await waitFor('document.querySelectorAll(\'[id="st-models-plan.agent"] option\').length >= 3', 30000), String(await evalJs('document.querySelectorAll(\'[id="st-models-plan.agent"] option\').length')));
   await typeIn('[id="st-model-plan.agent"]', 'claude/claude-haiku-5-5');
   await click('[id="st-next-plan.agent"]');
   await readyCard();
@@ -1804,6 +2027,8 @@ section('ship', async () => {
   // the folder: live, after «было → стало» and two presses
   const dir = join(fixture, 'projects-new');
   await typeIn('#ship-dir', dir);
+  // The page enables «Далее» when its state has the typed folder: a click before that hits a disabled button.
+  await waitFor('!document.querySelector("#ship-dir-save").disabled', 3000);
   await click('#ship-dir-save');
   check('the folder change shows was → now before anything is saved', await waitFor('!!document.querySelector("#ship-change")', 4000) && await hasText('#ship-change', dir), await text('#ship-change'));
   await twoPresses('#ship-confirm');

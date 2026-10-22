@@ -26,6 +26,7 @@ import './focus.css';
 const linkLabel = (l: { from: string; label?: string; kind: string }, galaxy: string): string => l.label || (l.kind === 'far' ? l.from : taskOf(l.from, galaxy)?.tag ?? l.from);
 const remoteLink = (l: { from: string; kind: string }): boolean => l.kind === 'far' && String(l.from).includes(':');
 
+
 function SubagentRow(props: { task: Task; sa: Subagent }): JSX.Element {
   const sa = props.sa;
   const dur = duration(Math.max(0, (sa.state === 'done' ? sa.last_at_ms : Date.now()) - sa.started_at_ms), t);
