@@ -207,7 +207,7 @@ export function Completion(props: {
   const ref = useRef<HTMLDivElement>(null);
   const cur = v?.cur ?? 0;
   useEffect(() => {
-    const el = ref.current?.querySelector<HTMLElement>('.ci.cur');
+    const el = ref.current?.querySelector<HTMLElement>('.cmpl-row.cmpl-cur');
     // The keyboard may walk past the bottom of a long list: the row under it stays in view.
     el?.scrollIntoView({ block: 'nearest' });
   }, [cur, v?.items.length]);
@@ -217,21 +217,21 @@ export function Completion(props: {
     <div class="cmpl" id={props.id} ref={ref} role="listbox" aria-label={t('hint.aria')} onMouseDown={(e) => e.preventDefault()}>
       {groups.map((g) => (
         <Fragment key={g}>
-          <div class="cg" role="presentation"><Gl n={GROUP_ICON[g]} />{t(GROUP_LABEL[g])}</div>
+          <div class="cmpl-group" role="presentation"><Gl n={GROUP_ICON[g]} />{t(GROUP_LABEL[g])}</div>
           {v.items.map((item, i) => (item.group === g ? (
             <div
-              key={`${item.group}|${item.insert}`} class={`ci ${i === v.cur ? 'cur' : ''}`} role="option"
+              key={`${item.group}|${item.insert}`} class={`cmpl-row ${i === v.cur ? 'cmpl-cur' : ''}`} role="option"
               aria-selected={i === v.cur} data-i={i}
               onMouseEnter={() => props.onHover(i)} onClick={() => props.onPick(i)}
             >
-              <span class="ic"><Gl n={item.icon} /></span>
-              <span class="lb">{item.label}</span>
-              {item.hint && <span class="hn">{item.hint.startsWith('cmd.') ? t(item.hint) : item.hint}</span>}
+              <span class="cmpl-ic"><Gl n={item.icon} /></span>
+              <span class="cmpl-name">{item.label}</span>
+              {item.hint && <span class="cmpl-hint">{item.hint.startsWith('cmd.') ? t(item.hint) : item.hint}</span>}
             </div>
           ) : null))}
         </Fragment>
       ))}
-      <div class="cf" role="presentation">{t('hint.keys')}</div>
+      <div class="cmpl-keys" role="presentation">{t('hint.keys')}</div>
     </div>
   );
 }

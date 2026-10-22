@@ -156,14 +156,15 @@ pub fn commands_at(roots: &Roots, program: &str, dir: Option<&Path>) -> Vec<Cmd>
     match program {
         "claude" => {
             builtin(CLAUDE);
-            skills_in(&roots.claude.join("skills"), &mut out, &mut seen);
+            skills_in(&roots.claude.join("skills"), None, &mut out, &mut seen);
             commands_in(&roots.claude.join("commands"), "", 0, &mut out, &mut seen);
-            for plugin in plugin_roots(&roots.claude) {
-                skills_in(&plugin.join("skills"), &mut out, &mut seen);
-                commands_in(&plugin.join("commands"), "", 0, &mut out, &mut seen);
+            for (name, plugin) in plugin_roots(&roots.claude) {
+                // Claude Code calls a plugin's skills and commands under the plugin's own name.
+                skills_in(&plugin.join("skills"), Some(&name), &mut out, &mut seen);
+                commands_in(&plugin.join("commands"), &name, 0, &mut out, &mut seen);
             }
             if let Some(dir) = dir {
-                skills_in(&dir.join(".claude/skills"), &mut out, &mut seen);
+                skills_in(&dir.join(".claude/skills"), None, &mut out, &mut seen);
                 commands_in(&dir.join(".claude/commands"), "", 0, &mut out, &mut seen);
             }
         }
@@ -171,8 +172,8 @@ pub fn commands_at(roots: &Roots, program: &str, dir: Option<&Path>) -> Vec<Cmd>
             builtin(CODEX);
             commands_in(&roots.codex.join("prompts"), "", 0, &mut out, &mut seen);
         }
-        "omp" => skills_in(&roots.omp.join("agent/skills"), &mut out, &mut seen),
-        "pi" => skills_in(&roots.pi.join("agent/skills"), &mut out, &mut seen),
+        "omp" => skills_in(&roots.omp.join("agent/skills"), None, &mut out, &mut seen),
+        "pi" => skills_in(&roots.pi.join("agent/skills"), None, &mut out, &mut seen),
         // A program whose commands are not known here: no hints (the field works as it always did).
         _ => {}
     }
@@ -188,30 +189,32 @@ fn push(out: &mut Vec<Cmd>, seen: &mut HashSet<String>, c: Cmd) {
     }
 }
 
-/// The skills of a folder: one sub-folder per skill, its words in `SKILL.md`.
-fn skills_in(base: &Path, out: &mut Vec<Cmd>, seen: &mut HashSet<String>) {
+/// The skills of a folder: one sub-folder per skill, its words in `SKILL.md`. Skills are often links to a
+/// folder kept elsewhere (`~/.agents/skills`), so the entry's own type is not trusted: the link is followed.
+fn skills_in(base: &Path, ns: Option<&str>, out: &mut Vec<Cmd>, seen: &mut HashSet<String>) {
     let Ok(read) = std::fs::read_dir(base) else { return };
     let mut dirs: Vec<PathBuf> = read
         .flatten()
-        .filter(|e| e.file_type().is_ok_and(|t| t.is_dir()))
         .map(|e| e.path())
+        .filter(|p| std::fs::metadata(p).is_ok_and(|m| m.is_dir()))
         .collect();
     dirs.sort();
     for dir in dirs {
         let folder = dir.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
         let Ok(text) = std::fs::read_to_string(dir.join("SKILL.md")) else { continue };
         let (name, desc) = front_matter(&text);
-        let name = if name.is_empty() { folder } else { name };
-        push(
-            out,
-            seen,
-            Cmd { name: clean_name(&name), desc: clean_desc(&desc), kind: "skill" },
-        );
+        let name = clean_name(&if name.is_empty() { folder } else { name });
+        let name = match ns {
+            Some(p) if !p.is_empty() => format!("{p}:{name}"),
+            _ => name,
+        };
+        push(out, seen, Cmd { name, desc: clean_desc(&desc), kind: "skill" });
     }
 }
 
 /// Custom commands of a folder: every `*.md` under it, its path inside the folder making the name
-/// (`review/security.md` → `review:security`), the description from its front matter.
+/// (`review/security.md` → `review:security`), the description from its front matter. A command that is a
+/// link to a file is read as well.
 fn commands_in(base: &Path, prefix: &str, depth: usize, out: &mut Vec<Cmd>, seen: &mut HashSet<String>) {
     if depth > MAX_CMD_DEPTH {
         return;
@@ -220,11 +223,12 @@ fn commands_in(base: &Path, prefix: &str, depth: usize, out: &mut Vec<Cmd>, seen
     let mut entries: Vec<_> = read.flatten().collect();
     entries.sort_by_key(|e| e.file_name());
     for e in entries {
-        let Ok(kind) = e.file_type() else { continue };
+        let path = e.path();
+        let Ok(kind) = std::fs::metadata(&path) else { continue };
         let name = e.file_name().to_string_lossy().into_owned();
         if kind.is_dir() {
             let next = if prefix.is_empty() { name.clone() } else { format!("{prefix}:{name}") };
-            commands_in(&e.path(), &next, depth + 1, out, seen);
+            commands_in(&path, &next, depth + 1, out, seen);
             continue;
         }
         if !kind.is_file() || !name.ends_with(".md") {
@@ -234,7 +238,7 @@ fn commands_in(base: &Path, prefix: &str, depth: usize, out: &mut Vec<Cmd>, seen
         if stem.is_empty() {
             continue;
         }
-        let Ok(text) = std::fs::read_to_string(e.path()) else { continue };
+        let Ok(text) = std::fs::read_to_string(&path) else { continue };
         let (fm_name, fm_desc) = front_matter(&text);
         let own = if fm_name.is_empty() { stem.to_string() } else { clean_name(&fm_name) };
         let full = if prefix.is_empty() { own } else { format!("{prefix}:{own}") };
@@ -243,55 +247,48 @@ fn commands_in(base: &Path, prefix: &str, depth: usize, out: &mut Vec<Cmd>, seen
     }
 }
 
-/// The folders of the plugins Claude Code has installed, as `plugins/installed_plugins.json` names them
-/// (a marketplace and its plugins). A plugin whose install path is not given is looked for in the
-/// marketplace it came from.
-fn plugin_roots(claude: &Path) -> Vec<PathBuf> {
-    let mut out: Vec<PathBuf> = Vec::new();
+/// The folders of the plugins Claude Code has installed, each with the name it is called by (Claude Code
+/// namespaces a plugin's skills and commands with it: `/superpowers:brainstorm`).
+///
+/// `plugins/installed_plugins.json` has two shapes: newer files map a plugin's id (`name@marketplace`) to
+/// the copies installed for each scope, each with its `installPath`; older ones list a marketplace's
+/// plugins by name. A plugin without an install path is looked for in its marketplace's folder.
+fn plugin_roots(claude: &Path) -> Vec<(String, PathBuf)> {
+    let mut out: Vec<(String, PathBuf)> = Vec::new();
     let file = claude.join("plugins/installed_plugins.json");
     let Ok(text) = std::fs::read_to_string(&file) else { return out };
     let Ok(doc) = serde_json::from_str::<serde_json::Value>(&text) else { return out };
     let Some(plugins) = doc.get("plugins").and_then(|p| p.as_object()) else { return out };
-    for (market, listed) in plugins {
-        let mut entries: Vec<(String, Option<String>)> = Vec::new();
+    for (key, listed) in plugins {
+        // `name@marketplace` (the current file) or a marketplace's name (the older one).
+        let (key_name, key_market) = match key.split_once('@') {
+            Some((name, market)) => (name.to_string(), market.to_string()),
+            None => (key.clone(), String::new()),
+        };
+        let mut entries: Vec<(String, String, Option<String>)> = Vec::new();
         match listed {
             serde_json::Value::Array(items) => {
                 for item in items {
-                    match item {
-                        serde_json::Value::String(name) => entries.push((name.clone(), None)),
-                        serde_json::Value::Object(o) => {
-                            let name = o.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                            let path = o
-                                .get("installPath")
-                                .or_else(|| o.get("install_path"))
-                                .or_else(|| o.get("path"))
-                                .and_then(|v| v.as_str())
-                                .map(str::to_string);
-                            if !name.is_empty() {
-                                entries.push((name, path));
-                            }
-                        }
-                        _ => {}
+                    let serde_json::Value::Object(o) = item else { continue };
+                    match o.get("name").and_then(|v| v.as_str()).filter(|n| !n.is_empty()) {
+                        // An older file: the key is the marketplace, the item names its plugin.
+                        Some(name) => entries.push((name.to_string(), key.clone(), install_path(o))),
+                        // The current file: the key is `name@marketplace`, the item is one installed copy.
+                        None => entries.push((key_name.clone(), key_market.clone(), install_path(o))),
                     }
                 }
             }
             serde_json::Value::Object(map) => {
                 for (name, item) in map {
-                    let path = item
-                        .get("installPath")
-                        .or_else(|| item.get("install_path"))
-                        .or_else(|| item.get("path"))
-                        .and_then(|v| v.as_str())
-                        .map(str::to_string);
-                    entries.push((name.clone(), path));
+                    entries.push((name.clone(), key.clone(), item.as_object().and_then(install_path)));
                 }
             }
             _ => {}
         }
-        for (name, path) in entries {
-            for candidate in plugin_candidates(claude, market, &name, path.as_deref()) {
-                if candidate.is_dir() && !out.contains(&candidate) {
-                    out.push(candidate);
+        for (name, market, path) in entries {
+            for candidate in plugin_candidates(claude, &market, &name, path.as_deref()) {
+                if candidate.is_dir() && !out.iter().any(|(_, p)| *p == candidate) {
+                    out.push((name.clone(), candidate));
                 }
             }
         }
@@ -299,14 +296,26 @@ fn plugin_roots(claude: &Path) -> Vec<PathBuf> {
     out
 }
 
+/// An entry's `installPath` (older files used `install_path` or `path`).
+fn install_path(o: &serde_json::Map<String, serde_json::Value>) -> Option<String> {
+    o.get("installPath")
+        .or_else(|| o.get("install_path"))
+        .or_else(|| o.get("path"))
+        .and_then(|v| v.as_str())
+        .filter(|p| !p.trim().is_empty())
+        .map(str::to_string)
+}
+
 fn plugin_candidates(claude: &Path, market: &str, name: &str, path: Option<&str>) -> Vec<PathBuf> {
     let mut out = Vec::new();
     if let Some(p) = path.filter(|p| !p.trim().is_empty()) {
         out.push(config::expand_home(p));
     }
-    let base = claude.join("plugins/marketplaces").join(market);
-    out.push(base.join("plugins").join(name));
-    out.push(base.join("external_plugins").join(name));
+    if !market.is_empty() && !name.is_empty() {
+        let base = claude.join("plugins/marketplaces").join(market);
+        out.push(base.join("plugins").join(name));
+        out.push(base.join("external_plugins").join(name));
+    }
     out
 }
 
@@ -730,11 +739,33 @@ mod tests {
     }
 
     #[test]
-    fn plugins_leave_their_skills_and_commands() {
+    #[cfg(unix)]
+    fn a_skill_or_a_command_that_is_a_link_is_read_too() {
+        use std::os::unix::fs::symlink;
+        let s = Scratch::new("links");
+        // The skills of this machine live elsewhere and are linked into `~/.claude/skills`.
+        s.write("agents/ui-ux-pro-max/SKILL.md", "---\nname: ui-ux-pro-max\ndescription: Interfaces\n---\n");
+        fs::create_dir_all(s.path().join("claude/skills")).unwrap();
+        symlink(s.path().join("agents/ui-ux-pro-max"), s.path().join("claude/skills/ui-ux-pro-max")).unwrap();
+        // So may a command file, and a whole folder of them.
+        s.write("shared/check.md", "---\ndescription: Check it\n---\n");
+        s.write("shared/review/security.md", "---\ndescription: Look for leaks\n---\n");
+        fs::create_dir_all(s.path().join("claude/commands")).unwrap();
+        symlink(s.path().join("shared/check.md"), s.path().join("claude/commands/check.md")).unwrap();
+        symlink(s.path().join("shared/review"), s.path().join("claude/commands/review")).unwrap();
+        let list = commands_at(&roots_at(&s), "claude", None);
+        assert_eq!(desc_of(&list, "ui-ux-pro-max"), "Interfaces");
+        assert_eq!(desc_of(&list, "check"), "Check it");
+        assert_eq!(desc_of(&list, "review:security"), "Look for leaks");
+    }
+
+    #[test]
+    fn plugins_leave_their_skills_and_commands_under_their_own_name() {
         let s = Scratch::new("plugins");
+        // An older file: a marketplace's plugins by name, one with an install path that is gone.
         s.write(
             "claude/plugins/installed_plugins.json",
-            r#"{"version":2,"plugins":{"official":[{"name":"code-review","installPath":"/nope"},{"name":"commit-commands"}]}}"#,
+            r#"{"version":1,"plugins":{"official":[{"name":"code-review","installPath":"/nope"},{"name":"commit-commands"}]}}"#,
         );
         s.write("claude/plugins/marketplaces/official/plugins/code-review/commands/safety.md", "Review it.\n");
         s.write(
@@ -742,8 +773,37 @@ mod tests {
             "---\nname: commit\ndescription: Commit the work\n---\n",
         );
         let list = commands_at(&roots_at(&s), "claude", None);
-        assert_eq!(desc_of(&list, "safety"), "Review it.");
-        assert_eq!(desc_of(&list, "commit"), "Commit the work");
+        // A plugin's commands and skills are called under the plugin's name, as Claude Code calls them.
+        assert_eq!(desc_of(&list, "code-review:safety"), "Review it.");
+        assert_eq!(desc_of(&list, "commit-commands:commit"), "Commit the work");
+        assert_eq!(list.iter().filter(|c| c.name == "safety" || c.name == "commit").count(), 0);
+    }
+
+    #[test]
+    fn the_current_plugin_file_names_each_plugin_by_its_id() {
+        let s = Scratch::new("pluginsv2");
+        // Claude Code 2.x: the key is `name@marketplace`, the value is one installed copy per scope.
+        s.write(
+            "claude/plugins/installed_plugins.json",
+            r#"{"version":2,"plugins":{"superpowers@claude-plugins-official":[{"scope":"user","installPath":"INSTALL","version":"5.0.0"},{"scope":"project","installPath":"INSTALL"}],"plain@some-market":[{"scope":"user","installPath":"/nope"}]}}"#,
+        );
+        let install = s.path().join("store/superpowers");
+        s.write("store/superpowers/skills/brainstorm/SKILL.md", "---\nname: brainstorm\ndescription: Ideas first\n---\n");
+        s.write("store/superpowers/commands/commit.md", "---\ndescription: Commit the work\n---\n");
+        s.write("store/superpowers/commands/review/security.md", "Check the diff.\n");
+        // The marketplace's folder is the fallback when the install path is not there.
+        s.write("claude/plugins/marketplaces/some-market/plugins/plain/commands/run.md", "Run it.\n");
+        let text = std::fs::read_to_string(s.path().join("claude/plugins/installed_plugins.json"))
+            .unwrap()
+            .replace("INSTALL", &install.display().to_string());
+        s.write("claude/plugins/installed_plugins.json", &text);
+        let list = commands_at(&roots_at(&s), "claude", None);
+        assert_eq!(desc_of(&list, "superpowers:brainstorm"), "Ideas first");
+        assert_eq!(desc_of(&list, "superpowers:commit"), "Commit the work");
+        assert_eq!(desc_of(&list, "superpowers:review:security"), "Check the diff.");
+        assert_eq!(desc_of(&list, "plain:run"), "Run it.");
+        // Both scopes of one copy are one plugin, not two.
+        assert_eq!(list.iter().filter(|c| c.name == "superpowers:commit").count(), 1);
     }
 
     #[test]

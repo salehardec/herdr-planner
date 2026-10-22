@@ -609,6 +609,10 @@ write(path.join(dir, 'board', 'coordinator', 'default', 'state.json'), JSON.stri
 write(path.join(dir, 'claude', 'skills', 'fixture-skill', 'SKILL.md'), '---\nname: fixture-skill\ndescription: Навык фикстуры: проверяет подсказки ввода\n---\n\n# Fixture skill\n');
 write(path.join(dir, 'claude', 'commands', 'fixture-cmd.md'), '---\ndescription: Команда фикстуры\n---\n\nDo the fixture thing.\n');
 write(path.join(chatDir, '.claude', 'commands', 'here-cmd.md'), '---\ndescription: Команда папки Координатора\n---\n\nHere.\n');
+// A skill that is a link, as most of `~/.claude/skills` are on this machine: it must be offered too.
+write(path.join(dir, 'agents', 'ui-ux-pro-max', 'SKILL.md'), '---\nname: ui-ux-pro-max\ndescription: Навык-ссылка фикстуры\n---\n');
+fs.mkdirSync(path.join(dir, 'claude', 'skills'), { recursive: true });
+fs.symlinkSync(path.join(dir, 'agents', 'ui-ux-pro-max'), path.join(dir, 'claude', 'skills', 'ui-ux-pro-max'));
 
 // Memory (Markdown files; the planner indexes them). The Galaxy's own: two entries and no MEMORY.md (the planner makes it).
 const memEntry = (id, title, desc, type, body, extra = '') => `---\nname: ${id}\ntitle: ${title}\ndescription: ${desc}\ntype: ${type}\nadded: 2026-10-19\nsource: chat\n${extra}---\n\n${body}\n`;
