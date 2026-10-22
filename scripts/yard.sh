@@ -9,12 +9,13 @@
 #   scripts/yard.sh test [ключи…]             cargo test
 #   scripts/yard.sh web [--test|--check]      scripts/web-build.sh
 #   scripts/yard.sh section <имена>           one fixture, one server, one browser: only these sections of ui-check
-#                                             («runners todo»), screenshots in $TMPDIR/yard/out
-#   scripts/yard.sh pages [части…]            parts of the page checks (ui2 big auth …; default: all), screenshots too
-#   scripts/yard.sh check                     the whole scripts/run-checks.sh (≈ 6–7 min): what the board runs
+#                                             («runners todo»); the page and the binary are built first, screenshots in
+#                                             $TMPDIR/yard/out
+#   scripts/yard.sh pages [части…]            parts of the page checks (ui2 big auth …; default: all), built first too
+#   scripts/yard.sh check                     the whole scripts/run-checks.sh (≈ 13 мин): what the board runs
 #   scripts/yard.sh quick                     web tests and types, cargo test and build, the installer and the window,
 #                                             without the page (≈ 1–1,5 min): what the board runs again on later turns
-#   scripts/yard.sh fetch                     /work/out (screenshots, the parts' text) → $TMPDIR/yard/out
+#   scripts/yard.sh fetch                     the run's folder (screenshots, the parts' text) → $TMPDIR/yard/out
 #   scripts/yard.sh down                      remove the task's container (the cache volume stays)
 #   scripts/yard.sh status                    the container, the lock, the cache, the image
 #   scripts/yard.sh prune [-y]                old images of this yard; ask before anything else
@@ -40,11 +41,14 @@ SLOTS=${YARD_SLOTS:-2}
 CACHE_MAX_GB=${YARD_CACHE_MAX_GB:-15}
 LOG_DIR=${HERDR_YARD_LOG_DIR:-${TMPDIR:-/tmp}/yard}
 PG=
+# One run of the wrapper, one name inside the container: its progress file and its result folder are its own, so a second
+# run of the same task cannot overwrite them.
+RUN_ID=${YARD_RUN_ID:-$(date +%Y%m%d-%H%M%S)-$$}
 # A progress poller left behind by an interrupted run would keep asking the container every two seconds.
 trap '[ -z "$PG" ] || kill "$PG" 2>/dev/null || true' EXIT
 
 usage() {
-  sed -n '2,29p' "$SELF" | sed 's/^# \{0,1\}//'
+  sed -n '2,30p' "$SELF" | sed 's/^# \{0,1\}//'
 }
 
 say() { printf 'yard: %s\n' "$*"; }
@@ -229,7 +233,7 @@ INNER_EOF
 mirror_progress() {
   [ -n "${HERDR_PROJECTS_PROGRESS:-}" ] || return 0
   tmp="$HERDR_PROJECTS_PROGRESS.new"
-  if $D exec "$NAME" cat /work/out/progress 2>/dev/null >"$tmp"; then
+  if $D exec "$NAME" cat "/work/progress.$RUN_ID" 2>/dev/null >"$tmp"; then
     if [ -s "$tmp" ]; then mv "$tmp" "$HERDR_PROJECTS_PROGRESS"; else rm -f "$tmp"; fi
   else
     rm -f "$tmp"
@@ -257,23 +261,28 @@ run_logged() {
   return "${rc:-1}"
 }
 
-# slot: 1 for a full page run (pages, check), 0 for everything else.
+# slot: 1 for a full page run (pages, check), 0 for everything else; progress: 1 when the command reports «k/N parts».
+# The progress file lives in the container under the run's own name and is passed to the whole exec — the slot loop inside
+# must see it too, or a run waiting for a slot says nothing.
 run_here() {
   slot=$1
   logname=$2
-  shift 2
+  progress=$3
+  shift 3
   log="$LOG_DIR/$(date +%Y%m%d-%H%M%S)-$logname.log"
-  if [ -n "${HERDR_PROJECTS_PROGRESS:-}" ]; then
-    $D exec "$NAME" sh -c 'rm -f /work/out/progress' >/dev/null 2>&1 || true
+  prog=
+  if [ "$progress" = 1 ]; then prog="/work/progress.$RUN_ID"; fi
+  if [ -n "$prog" ] && [ -n "${HERDR_PROJECTS_PROGRESS:-}" ]; then
     progress_loop &
     PG=$!
   fi
   set +e
   if [ "$slot" = 1 ]; then
-    run_logged "$log" "$D" exec -i -w /work/src -e "YARD_SLOTS=$SLOTS" -e YARD_SLOT_USE=1 "$NAME" \
+    run_logged "$log" "$D" exec -i -w /work/src -e "HERDR_PROJECTS_PROGRESS=$prog" \
+      -e "YARD_SLOTS=$SLOTS" -e YARD_SLOT_USE=1 "$NAME" \
       flock /work/.lock sh -c "$INNER" yard "$@"
   else
-    run_logged "$log" "$D" exec -i -w /work/src -e YARD_SLOT_USE=0 "$NAME" \
+    run_logged "$log" "$D" exec -i -w /work/src -e "HERDR_PROJECTS_PROGRESS=$prog" -e YARD_SLOT_USE=0 "$NAME" \
       flock /work/.lock sh -c "$INNER" yard "$@"
   fi
   rc=$?
@@ -284,18 +293,21 @@ run_here() {
     PG=
   fi
   mirror_progress || true
+  if [ -n "$prog" ]; then $D exec "$NAME" rm -f "$prog" >/dev/null 2>&1 || true; fi
   return "$rc"
 }
 
-prepare_out() {
-  $D exec "$NAME" sh -c 'rm -rf /work/out && mkdir -p /work/out' >/dev/null 2>&1 || true
-}
-
+# The pages of a run: the host fetches the run's own folder (/work/out.<run>), which a later run of the same task cannot
+# touch, and the container drops it afterwards.
 fetch_out() {
-  if $D exec "$NAME" sh -c 'test -d /work/out' >/dev/null 2>&1; then
+  run=$1
+  dir="/work/out.$run"
+  if $D exec "$NAME" test -d "$dir" >/dev/null 2>&1; then
     rm -rf "$LOG_DIR/out"
-    $D cp "$NAME:/work/out" "$LOG_DIR/out" >/dev/null &&
+    if $D cp "$NAME:$dir" "$LOG_DIR/out" >/dev/null; then
       say "снимки и тексты частей: $LOG_DIR/out"
+      $D exec "$NAME" rm -rf "$dir" >/dev/null 2>&1 || true
+    fi
   fi
 }
 
@@ -318,32 +330,68 @@ sh scripts/check-open.sh
 QUICK_EOF
 }
 
-page_command() { # slot, logname, then the argv
-  prepare_out
+# A page run under the lock: its own /work/out (a previous run's leftovers are dropped only by the run that holds the
+# lock), the sources' page and binary built when asked, then run-checks writes its screenshots and part texts there.
+page_script() { # build(0|1), run id
+  if [ "$1" = 1 ]; then
+    # shellcheck disable=SC2016  # $rc is for the container's shell, not for this one
+    build='sh scripts/web-build.sh || rc=$?
+if [ "$rc" -eq 0 ]; then cargo build --quiet || rc=$?; fi
+'
+  else
+    build=''
+  fi
+  cat <<PAGE_END
+rc=0
+# Under the lock no other run of this task is going: its own /work/out and every older run's leftovers are safe to drop
+# (a run killed before its pages were fetched leaves them; the next run sweeps them).
+rm -rf /work/out /work/out.* /work/progress.*
+mkdir -p /work/out
+$build
+if [ "\$rc" -eq 0 ]; then sh scripts/run-checks.sh /work/out/shots; rc=\$?; fi
+mv /work/out "/work/out.$2" 2>/dev/null || true
+exit "\$rc"
+PAGE_END
+}
+
+page_command() { # slot, logname, progress, then the argv
   set +e
   run_here "$@"
   rc=$?
   set -e
-  fetch_out || true
+  fetch_out "$RUN_ID" || true
   return "$rc"
 }
 
 # ───────── local mode ─────────
 
+local_cargo() {
+  if cargo --version >/dev/null 2>&1; then cargo "$@"; else mise x rust@stable -- cargo "$@"; fi
+}
+
+# A page run on this machine, like the one on the yard: the page and the binary are built first.
+local_build() {
+  sh scripts/web-build.sh && local_cargo build --quiet
+}
+
 local_work() {
   target="${HERDR_PLANNER_TARGET_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/herdr-planner/target}"
+  CARGO_TARGET_DIR=$target
+  export CARGO_TARGET_DIR
   mkdir -p "$LOG_DIR/out/shots"
   case "$1" in
-    build) shift; exec cargo build "$@" ;;
-    test) shift; exec cargo test "$@" ;;
+    build) shift; local_cargo build "$@" ;;
+    test) shift; local_cargo test "$@" ;;
     web) shift; exec sh scripts/web-build.sh "$@" ;;
     run) shift; exec "$@" ;;
     section)
       names=${2:-}
       [ -n "$names" ] || die 2 "yard: section: назовите секции, например «runners todo»"
+      local_build || exit
       SECTIONS=$names exec sh scripts/run-checks.sh "$LOG_DIR/out/shots" ;;
     pages)
       parts=${2:-}
+      local_build || exit
       PAGE_ONLY=1 SHARDS=$parts exec sh scripts/run-checks.sh "$LOG_DIR/out/shots" ;;
     check) exec sh scripts/run-checks.sh "$LOG_DIR/out/shots" ;;
     quick) HERDR_PLANNER_TARGET_DIR=$target CARGO_TARGET_DIR=$target exec sh -c "$(quick_script)" ;;
@@ -368,6 +416,7 @@ mkdir -p "$LOG_DIR"
 
 if [ "${YARD:-}" = local ]; then
   local_work "$cmd" "$@"
+  exit $?
 fi
 
 TAG=$(task_tag)
@@ -380,30 +429,34 @@ case "$cmd" in
   sync) up; sync_tree; say "рабочая копия в $NAME:/work/in" ;;
   run)
     [ $# -gt 0 ] || die 2 "yard: run: нужна команда, например «sh scripts/run-checks.sh»"
-    up; sync_tree; run_here 0 run "$@" ;;
-  build) up; sync_tree; run_here 0 build cargo build "$@" ;;
-  test) up; sync_tree; run_here 0 test cargo test "$@" ;;
-  web) up; sync_tree; run_here 0 web sh scripts/web-build.sh "$@" ;;
+    up; sync_tree; run_here 0 run 0 "$@" ;;
+  build) up; sync_tree; run_here 0 build 0 cargo build "$@" ;;
+  test) up; sync_tree; run_here 0 test 0 cargo test "$@" ;;
+  web) up; sync_tree; run_here 0 web 0 sh scripts/web-build.sh "$@" ;;
   section)
     names=${1:-}
     [ -n "$names" ] || die 2 "yard: section: назовите секции, например «runners todo»"
     up; sync_tree
-    page_command 0 section env SECTIONS="$names" HERDR_PROJECTS_PROGRESS=/work/out/progress \
-      sh scripts/run-checks.sh /work/out/shots ;;
+    page_command 0 section 1 env SECTIONS="$names" sh -c "$(page_script 1 "$RUN_ID")" ;;
   pages)
     parts=${1:-}
     up; sync_tree
-    page_command 1 pages env PAGE_ONLY=1 SHARDS="$parts" HERDR_PROJECTS_PROGRESS=/work/out/progress \
-      sh scripts/run-checks.sh /work/out/shots ;;
+    page_command 1 pages 1 env PAGE_ONLY=1 SHARDS="$parts" sh -c "$(page_script 1 "$RUN_ID")" ;;
   check)
     up; sync_tree
-    page_command 1 check env HERDR_PROJECTS_PROGRESS=/work/out/progress \
-      sh scripts/run-checks.sh /work/out/shots ;;
+    page_command 1 check 1 env sh -c "$(page_script 0 "$RUN_ID")" ;;
   quick)
     up; sync_tree
-    run_here 0 quick env HERDR_PLANNER_TARGET_DIR=/work/target CARGO_TARGET_DIR=/work/target \
+    run_here 0 quick 0 env HERDR_PLANNER_TARGET_DIR=/work/target CARGO_TARGET_DIR=/work/target \
       sh -c "$(quick_script)" ;;
-  fetch) ensure_yard; fetch_out ;;
+  fetch)
+    ensure_yard
+    run=${1:-}
+    if [ -z "$run" ]; then
+      run=$($D exec "$NAME" sh -c 'ls -1dt /work/out.* 2>/dev/null | head -1' 2>/dev/null | sed 's|^/work/out\.||')
+    fi
+    [ -n "$run" ] || die 1 "yard: fetch: нет ни одного результата прогона"
+    fetch_out "$run" ;;
   down)
     ensure_yard
     if $D container inspect "$NAME" >/dev/null 2>&1; then

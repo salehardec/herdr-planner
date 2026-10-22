@@ -545,12 +545,13 @@ cargo (реестр, git, `target` — пишет только `main`). На PR 
 `scripts/yard.sh`.
 
 ```sh
-scripts/yard.sh check            # весь run-checks.sh, ≈ 6–7 мин: это гоняет доска
+scripts/yard.sh check            # весь run-checks.sh, ≈ 13 мин: это гоняет доска
 scripts/yard.sh quick            # vitest, tsc, cargo test и build, установщик, окно — без страницы, ≈ 1–1,5 мин
 scripts/yard.sh test runners     # узко: cargo test с аргументом
 scripts/yard.sh web --test       # vitest; web --check — tsc; web — собрать страницу
-scripts/yard.sh section runners  # один экран: фикстура, сервер и один браузер; снимки в $TMPDIR/yard/out
-scripts/yard.sh pages ui2 big    # части проверок страницы (как SHARDS); без аргументов — все
+scripts/yard.sh section runners  # один экран: страница и бинарник собираются, затем фикстура, сервер и браузер;
+                                 # снимки в $TMPDIR/yard/out
+scripts/yard.sh pages ui2 big    # части проверок страницы (как SHARDS), тоже со сборкой; без аргументов — все
 scripts/yard.sh down             # убрать контейнер задачи; общий кэш остаётся
 ```
 
@@ -558,8 +559,9 @@ scripts/yard.sh down             # убрать контейнер задачи;
 `~/.herdr-projects/settings/runners.json`. Обёртка собирает образ `herdr-planner-yard:<хеш Dockerfile>` (`scripts/yard/Dockerfile`:
 Rust 1.99, Node 22, закреплённый Chrome for Testing) с меткой `herdr.shared=herdr-planner`, заводит общий том кэша
 `hp-yard-cache` (`/cache`: реестр cargo и npm) и контейнер задачи `yard-<тег>` с меткой `herdr.task=<тег>`. Исходники едут
-`rsync` через `docker exec` (без `.git` и игнорируемого git; содержимое, а не время), команда идёт под замком контейнера —
-два запуска одной задачи ждут друг друга, а не ломают дерево. `CARGO_TARGET_DIR` у каждой задачи свой, в её контейнере:
+`rsync` через `docker exec` (без `.git` и игнорируемого git; содержимое, а не время), команда идёт под замком контейнера:
+два запуска одной задачи ждут друг друга, а не ломают дерево. `section` и `pages` перед показом собирают страницу и
+бинарник (иначе узкий прогон проверял бы старое), `check` собирает всё сам. `CARGO_TARGET_DIR` у каждой задачи свой, в её контейнере:
 общий target cargo судил бы о свежести по mtime и подсунул бы чужую сборку. Полные прогоны страницы берут один из двух
 слотов верфи (`YARD_SLOTS`, по умолчанию два), чтобы задачи не дрались за ядра. Пределы контейнера:
 `--cpus 8 --memory 12g` и `RUN_CHECKS_JOBS=4` (половина ядер). Замер на app-semantics: полная проверка при 8 ЦП и

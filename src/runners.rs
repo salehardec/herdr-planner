@@ -239,7 +239,9 @@ echo '== stats'; docker stats --no-stream --format '{{json .}}'
 echo '== net';   docker network ls --format '{{json .}}'
 echo '== vol';   docker volume ls --format '{{json .}}'
 # The build caches of the board's repositories (scripts/yard.sh labels them herdr.shared=<repo>): images first by their
-# label, then the few labels that `image ls` cannot print.
+# label, then the few labels that `image ls` cannot print. The marker comes before the JSON: parse_probe files the lines
+# under the section they follow, and an image read under '== vol' would be a nameless volume.
+echo '== img'
 img_ids=$(docker image ls -q --filter label=herdr.shared 2>/dev/null)
 [ -z "$img_ids" ] || docker image inspect --format '{{json .}}' $img_ids 2>/dev/null || true"##;
 
@@ -1877,6 +1879,20 @@ mod tests {
         assert_eq!(kept.containers.len(), 1);
         assert_eq!(kept.fetched_at_ms, 7);
         assert_eq!(kept.why.unwrap().line, "не ответила вовремя");
+    }
+
+    #[test]
+    fn the_probe_declares_every_section_its_output_has() {
+        // parse_probe keys on the '== name' markers: JSON printed without its own marker is read as the previous
+        // section's rows (the shared image once came out as a nameless volume, so «Кэш сборок» never saw it).
+        for section in ["ps", "stats", "net", "vol", "img"] {
+            assert!(PROBE_SCRIPT.contains(&format!("== {section}'")), "no '== {section}' marker in the probe");
+        }
+        let images = PROBE_SCRIPT.find("== img'").expect("the image marker");
+        assert!(
+            PROBE_SCRIPT[images..].contains("docker image inspect"),
+            "the image JSON must come after its own marker"
+        );
     }
 
     #[test]

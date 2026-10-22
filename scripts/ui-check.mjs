@@ -2771,6 +2771,9 @@ section('ship', async () => {
   await typeIn('#ship-dir', dir);
   // The page enables «Далее» when its state has the typed folder: a click before that hits a disabled button.
   await waitFor('!document.querySelector("#ship-dir-save").disabled', 3000);
+  // The button is enabled by the render that follows the typing; one more turn lets that render reach the form itself,
+  // so the click is never handled by the previous one (a loaded machine made this happen now and then).
+  await pageTurn();
   await click('#ship-dir-save');
   check('the folder change shows was → now before anything is saved', await waitFor('!!document.querySelector("#ship-change")', 4000) && await hasText('#ship-change', dir), await text('#ship-change'));
   await twoPresses('#ship-confirm');
@@ -4438,6 +4441,18 @@ section('menu card', async () => {
 // window's edge), folded or wide, at every window and scale; the folded chat is as wide as the room allows up to 54 rem (and 40 % of a
 // big window), never over a neighbour. The measuring takes the panels as they are drawn.
 const chatCenter = async (w, h, scales) => {
+  // The panels slide to their places; the chat's width follows where the navigator and the focus card *end up*, so the
+  // measuring waits until their boxes stop moving (a frame taken mid-slide read a narrower navigator and failed by pixels).
+  const stillPanels = async () => {
+    let prev = null;
+    for (let i = 0; i < 40; i++) {
+      const now = JSON.stringify([await rectOf('#chat'), await rectOf('#nav'), await rectOf('#focus')]);
+      if (now === prev) return true;
+      prev = now;
+      await sleep(100);
+    }
+    return false;
+  };
   await resetUi();
   const wideKeys = 'try { localStorage.removeItem("herdr-planner.chatWide"); localStorage.removeItem("herdr-planner.chatWideTodo"); localStorage.removeItem("herdr-planner.navW"); } catch {} true';
   const open = (sel) => evalJs(`(() => { const e = document.querySelector(${JSON.stringify(sel)}); return !!e && !e.classList.contains('off'); })()`);
@@ -4476,11 +4491,13 @@ const chatCenter = async (w, h, scales) => {
           if (wide !== isWide) { await click('#cwide'); await waitFor(`${wide ? '' : '!'}document.querySelector("#win").classList.contains("chat-wide")`, 4000); }
           // the todos beside the wide chat are not part of this: their column is left out of the free space
           if (wide && await exists('#win.todo-open')) await click('#cwide-todo');
-          const [ok, r] = await settled({ chat: '#chat', nav: '#nav', focus: '#focus' }, (x) => {
+          const [ok] = await settled({ chat: '#chat', nav: '#nav', focus: '#focus' }, (x) => {
             if (!x.chat) return false;
             const f = free(x, w);
             return Math.abs((x.chat.l + x.chat.r) / 2 - (f.l + f.r) / 2) <= 3;
           }, 6000);
+          await stillPanels();
+          const r = { chat: await rectOf('#chat'), nav: await rectOf('#nav'), focus: await rectOf('#focus') };
           const f = free(r, w);
           const what = `${at}, ${wide ? 'wide' : 'folded'} chat, navigator ${navOn ? 'open' : 'closed'}, focus ${focusOn ? 'open' : 'closed'}`;
           check(`${what}: the chat is in the middle of the free space (centre ${Math.round((r.chat.l + r.chat.r) / 2)}, space ${Math.round(f.l)}–${Math.round(f.r)}, centre ${Math.round((f.l + f.r) / 2)})`, ok, JSON.stringify({ ...r, f }));

@@ -22,7 +22,14 @@ expect() { # description, pattern, file
   if grep -qE -- "$2" "$3" 2>/dev/null; then ok "$1"; else bad "$1: /$2/ не найдено в $3"; sed -n "1,6p" "$3" 2>/dev/null; fi
 }
 refuse() { # description, pattern, file
-  if grep -qE "$2" "$3" 2>/dev/null; then bad "$1: /$2/ не должно быть в $3"; else ok "$1"; fi
+  if grep -qE -- "$2" "$3" 2>/dev/null; then bad "$1: /$2/ не должно быть в $3"; else ok "$1"; fi
+}
+after() { # description, the line that must come first, the line that must come later, file
+  if awk -v a="$2" -v b="$3" 'index($0, a) { seen = 1 } index($0, b) { if (!seen) exit 1; hit = 1 } END { exit hit ? 0 : 1 }' "$4" 2>/dev/null; then
+    ok "$1"
+  else
+    bad "$1: /$3/ не идёт после /$2/ в $4"
+  fi
 }
 
 cat >"$BIN/docker" <<'EOF'
@@ -61,7 +68,7 @@ case "$1" in
   rm) rm -f "$ST/container"; exit 0 ;;
   exec)
     case "$*" in
-      *"cat /work/out/progress"*) cat "$ST/progress" 2>/dev/null; exit 0 ;;
+      *"cat /work/progress."*) cat "$ST/progress" 2>/dev/null; exit 0 ;;
       *"test -d /work/out"*) [ -d "$ST/out" ] && exit 0 || exit 1 ;;
     esac
     exit "${YARD_STUB_RC:-0}" ;;
@@ -158,22 +165,55 @@ set -e
 expect "тег из HERDR_PROJECTS_ID и ключа репозитория" "run -d --name yard-ALP-7 --label herdr.task=ALP-7" "$ST/docker.log"
 rm -f "$T/home/.herdr-projects/settings/config.json"
 
-# ── the board's progress file and the slots of a full run ──
+# ── the board's progress file, the slots and the run's own folder ──
 fresh
 printf '3/11 parts\n' >"$ST/progress"
-touch "$ST/out"
+mkdir -p "$ST/out"
 HERDR_PROJECTS_PROGRESS="$T/progress"
 yard "$T/pln/PLN-7" pages ui2
 [ "$status" = 0 ] || bad "pages: код $status ($(cat "$T/out"))"
 expect "полный прогон берёт слот" "YARD_SLOT_USE=1" "$ST/docker.log"
 expect "прогресс доски переписан из контейнера" "^3/11 parts$" "$T/progress"
-expect "сначала очищается прошлый /work/out" "rm -rf /work/out && mkdir -p /work/out" "$ST/docker.log"
+expect "путь прогресса прокинут всему exec — семафор тоже его видит" "-e HERDR_PROJECTS_PROGRESS=/work/progress\." "$ST/docker.log"
+refuse "прогресс — свой у каждого прогона, не общий /work/out/progress" "/work/out/progress" "$ST/docker.log"
+expect "страница собирается перед показом части" "sh scripts/web-build.sh" "$ST/docker.log"
+expect "и бинарник тоже" "cargo build --quiet" "$ST/docker.log"
+expect "/work/out готовится внутри команды" "^rm -rf /work/out " "$ST/docker.log"
+expect "и старые папки прогонов убираются там же" "/work/out\\.\\*" "$ST/docker.log"
+after "очистка /work/out идёт только под замком" "flock /work/.lock" "rm -rf /work/out" "$ST/docker.log"
+refuse "нет отдельной очистки /work/out вне замка" "sh -c rm -rf /work/out && mkdir" "$ST/docker.log"
+expect "результат прогона уезжает в свою папку" "mv /work/out \"/work/out\." "$ST/docker.log"
+expect "снимки забираются из своей папки, а не из общей" "cp yard-PLN-7:/work/out\." "$ST/docker.log"
 
 fresh
 HERDR_PROJECTS_PROGRESS="$T/progress2"
 yard "$T/pln/PLN-7" check
 [ "$status" = 0 ] || bad "check: код $status ($(cat "$T/out"))"
 expect "check идёт по всему run-checks.sh со снимками в /work/out" "sh scripts/run-checks.sh /work/out/shots" "$ST/docker.log"
+expect "check тоже готовит /work/out под замком" "^mkdir -p /work/out$" "$ST/docker.log"
+
+fresh
+yard "$T/pln/PLN-7" section runners
+[ "$status" = 0 ] || bad "section: код $status ($(cat "$T/out"))"
+expect "section передаёт секции" "SECTIONS=runners" "$ST/docker.log"
+expect "section собирает страницу и бинарник" "sh scripts/web-build.sh" "$ST/docker.log"
+refuse "section не занимает слот полного прогона" "YARD_SLOT_USE=1" "$ST/docker.log"
+
+# ── a run waiting for a slot says so (the INNER loop, on a rewritten copy of its paths) ──
+fresh
+ROOT=$T/inner
+mkdir -p "$ROOT/work/src" "$ROOT/work/in" "$ROOT/work/out" "$ROOT/cache/slots"
+awk '/^INNER=\$\(cat <<.INNER_EOF.$/ { f = 1; next } /^INNER_EOF$/ { f = 0 } f' scripts/yard.sh |
+  sed "s|/work|$ROOT/work|g; s|/cache|$ROOT/cache|g" >"$T/inner.sh"
+( flock 9; sleep 20 ) 9>"$ROOT/cache/slots/1" &
+HOLD=$!
+sleep 0.5
+set +e
+env HERDR_PROJECTS_PROGRESS="$T/inner-progress" YARD_SLOT_USE=1 YARD_SLOTS=1 timeout 5 sh "$T/inner.sh" yard true >/dev/null 2>&1
+set -e
+kill "$HOLD" 2>/dev/null || true
+wait "$HOLD" 2>/dev/null || true
+expect "ожидающий слот пишет состояние ожидания" '"state":"waiting"' "$T/inner-progress"
 
 # ── down keeps the cache ──
 fresh
