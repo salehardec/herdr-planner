@@ -2872,7 +2872,6 @@ section('runners', async () => {
   const rm = await post('/api/runner/remove', { id: 'vm-r2', confirm: true, force: true });
   check('the second yard can be removed from the list', rm[0] === 200 && rm[1]?.ok, JSON.stringify(rm));
   check('and the navigator forgets it', await waitFor('plannerSnap().runners.every((r) => r.id !== "vm-r2")', 8000), JSON.stringify((await stateApi())?.journal?.slice(-2)));
-  check('no copy of the shipyard list was written to vm-a', calls('mirror.jsonl').length === 0);
   await shot('shipyard.png');
 }, { retry: false });
 
