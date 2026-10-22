@@ -19,6 +19,8 @@ import { dayTimeOf } from '../util/dates';
 import { duration } from '../util/format';
 import type { Entity, Subagent, Task } from '../types';
 import { UniverseFocus, QuasarFocus, GalaxyFocus, ArchiveFocus } from './FocusOther';
+import { SuggestionCard, suggestionsOfTask } from './MemoryPanel';
+import { openRemember } from './memory-api';
 import './focus.css';
 
 const linkLabel = (l: { from: string; label?: string; kind: string }, galaxy: string): string => l.label || (l.kind === 'far' ? l.from : taskOf(l.from, galaxy)?.tag ?? l.from);
@@ -109,7 +111,15 @@ function TaskFocus(props: { task: Task }): JSX.Element {
       {(task.status === 'done' || cl?.text) && (
         <section class="closing" id="closing">
           <div class="block-hd">
-            <h3>{t('focus.closing')}</h3>
+            <h3>
+              {t('focus.closing')}
+              {cl?.text && home && (
+                <button class="btn sm mm-tomem always" type="button" data-act="to-memory" title={t('mem.toMemoryTip')}
+                  onClick={() => openRemember({ text: cl.text, source: `task ${task.id}`, repo: task.repo })}>
+                  <Gl n="memory" />{t('mem.toMemory')}
+                </button>
+              )}
+            </h3>
             {cl?.text && (
               <button
                 class="btn sm" type="button" data-act="summary-open" data-part="closing" data-id={task.id}
@@ -118,6 +128,7 @@ function TaskFocus(props: { task: Task }): JSX.Element {
               ><Gl n="expand" />{t('focus.expand')}</button>
             )}
           </div>
+          {suggestionsOfTask(task.id).map((s) => <SuggestionCard key={s.task} s={s} compact />)}
           {cl?.text ? (
             <div class="closing-text"><Translatable text={cl.text} /></div>
           ) : <div class="hint">{task.status === 'done' ? t('focus.closingNone') : t('focus.closingLoading')}</div>}

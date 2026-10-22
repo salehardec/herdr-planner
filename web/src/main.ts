@@ -139,7 +139,19 @@ function beep(): void {
   } catch { /* no sound device */ }
 }
 
+let seenSuggest: Set<string> | null = null;
+
 onState((s: Snapshot) => {
+  // Lines proposed for a universe's memory after a task was done: say so once (not for what was waiting at the start).
+  const sug = s.memory_suggestions ?? [];
+  if (seenSuggest) {
+    for (const m of sug.filter((x) => !seenSuggest!.has(x.task))) {
+      toast(t('mem.suggestToast', { tag: m.tag, repo: m.repo }), {
+        action: () => { void navigateTo({ kind: 'universe', galaxy: '', id: m.repo }); }, label: t('mem.suggestOpen'),
+      });
+    }
+  }
+  seenSuggest = new Set(sug.map((x) => x.task));
   // Freshly done tasks glow for nine seconds.
   const now = Date.now();
   const next = new Map<string, Status>();

@@ -26,6 +26,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 const MIGRATIONS: &[&str] = &[
     include_str!("db/migrations/001_init.sql"),
     include_str!("db/migrations/002_todo_files.sql"),
+    include_str!("db/migrations/003_memory_suggest.sql"),
 ];
 
 /// Entries the journal hands out; older ones stay in the table up to [`JOURNAL_KEEP`].
@@ -46,6 +47,18 @@ pub struct SearchDoc {
     pub title: String,
     pub text: String,
     pub status: String,
+    pub at: u64,
+}
+
+/// A suggestion for a universe's memory, made when a task was done.
+#[derive(Debug, Clone, Default, PartialEq, Serialize)]
+pub struct SuggestRow {
+    pub task: String,
+    pub repo: String,
+    pub tag: String,
+    /// JSON list of `{kind, text}`.
+    pub lines: String,
+    pub state: String,
     pub at: u64,
 }
 
@@ -518,6 +531,81 @@ impl Db {
         })
     }
 
+    // ---- memory suggestions ----
+
+    /// Reserves the suggestion of `task`; false when it was made (or is being made) already.
+    pub fn suggest_claim(&self, task: &str, repo: &str, tag: &str, at: u64) -> bool {
+        self.with("suggest_claim", |c| {
+            let n = c.execute(
+                "INSERT OR IGNORE INTO memory_suggest (task, repo, tag, state, at) VALUES (?1, ?2, ?3, 'working', ?4)",
+                params![task, repo, tag, at as i64],
+            )?;
+            Ok(n > 0)
+        })
+    }
+
+    pub fn suggest_finish(&self, task: &str, state: &str, lines: &str) {
+        self.with("suggest_finish", |c| {
+            c.execute(
+                "UPDATE memory_suggest SET state = ?2, lines = ?3 WHERE task = ?1",
+                params![task, state, lines],
+            )?;
+            Ok(())
+        })
+    }
+
+    /// Takes a waiting suggestion for saving: true for the one caller that finds it `pending` (a second, concurrent
+    /// accept finds `saving` and gets false).
+    pub fn suggest_take(&self, task: &str) -> bool {
+        self.with("suggest_take", |c| {
+            Ok(c.execute(
+                "UPDATE memory_suggest SET state = 'saving' WHERE task = ?1 AND state = 'pending'",
+                [task],
+            )? > 0)
+        })
+    }
+
+    /// After a restart: a suggestion that was being made is dropped (it can be made again), one that was being saved
+    /// waits again.
+    pub fn suggest_recover(&self) {
+        self.with("suggest_recover", |c| {
+            c.execute("DELETE FROM memory_suggest WHERE state = 'working'", [])?;
+            c.execute("UPDATE memory_suggest SET state = 'pending' WHERE state = 'saving'", [])?;
+            Ok(())
+        })
+    }
+
+    pub fn suggest_set_state(&self, task: &str, state: &str) -> bool {
+        self.with("suggest_set_state", |c| {
+            Ok(c.execute(
+                "UPDATE memory_suggest SET state = ?2 WHERE task = ?1",
+                params![task, state],
+            )? > 0)
+        })
+    }
+
+    pub fn suggest_get(&self, task: &str) -> Option<SuggestRow> {
+        self.with("suggest_get", |c| {
+            c.query_row(
+                "SELECT task, repo, tag, lines, state, at FROM memory_suggest WHERE task = ?1",
+                [task],
+                suggest_row,
+            )
+            .optional()
+        })
+    }
+
+    /// The suggestions that wait for the human, oldest first.
+    pub fn suggest_pending(&self) -> Vec<SuggestRow> {
+        self.with("suggest_pending", |c| {
+            let mut st = c.prepare(
+                "SELECT task, repo, tag, lines, state, at FROM memory_suggest WHERE state = 'pending' ORDER BY at, task",
+            )?;
+            let rows = st.query_map([], suggest_row)?;
+            rows.collect()
+        })
+    }
+
     // ---- search documents ----
 
     /// Makes the index of `galaxy` equal to `docs`: documents of that galaxy that are
@@ -733,6 +821,17 @@ fn migrate(conn: &mut Connection) -> Result<(), String> {
         tx.commit().map_err(db_err)?;
     }
     Ok(())
+}
+
+fn suggest_row(r: &Row) -> rusqlite::Result<SuggestRow> {
+    Ok(SuggestRow {
+        task: r.get(0)?,
+        repo: r.get(1)?,
+        tag: r.get(2)?,
+        lines: r.get(3)?,
+        state: r.get(4)?,
+        at: r.get::<_, i64>(5)? as u64,
+    })
 }
 
 fn journal_row(r: &Row) -> rusqlite::Result<JournalEntry> {
@@ -1286,6 +1385,50 @@ mod tests {
                 & 0o777;
             assert_eq!(d, 0o700);
         }
+    }
+
+    #[test]
+    fn memory_suggestions_are_made_once_and_wait_for_the_human() {
+        let db = Db::memory().unwrap();
+        assert!(db.suggest_claim("a/1", "a", "A-1", 10));
+        assert!(!db.suggest_claim("a/1", "a", "A-1", 11), "once per task, even while it is being made");
+        assert!(db.suggest_pending().is_empty(), "a suggestion being made is not shown yet");
+        db.suggest_finish("a/1", "pending", r#"[{"kind":"decision","text":"x"}]"#);
+        assert!(db.suggest_claim("b/2", "b", "B-2", 20));
+        db.suggest_finish("b/2", "none", "[]");
+        let waiting = db.suggest_pending();
+        assert_eq!(waiting.len(), 1);
+        assert_eq!((waiting[0].task.as_str(), waiting[0].repo.as_str(), waiting[0].tag.as_str()), ("a/1", "a", "A-1"));
+        assert!(waiting[0].lines.contains("decision"));
+        assert!(db.suggest_take("a/1"), "the first accept takes it");
+        assert!(!db.suggest_take("a/1"), "a second, concurrent one does not");
+        assert!(db.suggest_pending().is_empty(), "a suggestion being saved is not offered again");
+        db.suggest_set_state("a/1", "pending");
+        assert_eq!(db.suggest_pending().len(), 1, "a failed save puts it back");
+        assert!(db.suggest_claim("c/3", "c", "C-3", 40));
+        assert!(db.suggest_take("a/1"));
+        db.suggest_recover();
+        assert!(db.suggest_get("c/3").is_none(), "after a restart one that was being made is made again later");
+        assert_eq!(db.suggest_get("a/1").unwrap().state, "pending", "one that was being saved waits again");
+        assert!(db.suggest_set_state("a/1", "done"));
+        assert!(db.suggest_pending().is_empty());
+        assert_eq!(db.suggest_get("a/1").unwrap().state, "done");
+        assert!(!db.suggest_claim("a/1", "a", "A-1", 30), "a kept suggestion is not made again");
+        assert!(!db.suggest_set_state("zzz", "done"));
+        assert!(db.suggest_get("zzz").is_none());
+    }
+
+    #[test]
+    fn an_old_database_gets_the_suggestion_table() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("p.sqlite");
+        {
+            let c = Connection::open(&path).unwrap();
+            c.execute_batch(MIGRATIONS[0]).unwrap();
+            c.execute_batch("PRAGMA user_version = 1").unwrap();
+        }
+        let db = Db::open(&path).unwrap();
+        assert!(db.suggest_claim("a/1", "a", "A-1", 1), "migration 2 ran on the old file");
     }
 
     #[test]

@@ -69,6 +69,11 @@ pub fn claude_args(model: &str) -> Vec<String> {
 }
 
 pub fn claude_args_for(model: &str, to: &str) -> Vec<String> {
+    claude_args_with(model, system_prompt(to))
+}
+
+/// The same call with any fixed system prompt.
+pub fn claude_args_with(model: &str, system: &str) -> Vec<String> {
     [
         "-p",
         "--tools",
@@ -82,7 +87,7 @@ pub fn claude_args_for(model: &str, to: &str) -> Vec<String> {
         "--output-format",
         "text",
         "--system-prompt",
-        system_prompt(to),
+        system,
     ]
     .map(String::from)
     .to_vec()
@@ -95,6 +100,10 @@ pub fn omp_args(model: &str) -> Vec<String> {
 }
 
 pub fn omp_args_for(model: &str, to: &str) -> Vec<String> {
+    omp_args_with(model, system_prompt(to))
+}
+
+pub fn omp_args_with(model: &str, system: &str) -> Vec<String> {
     [
         "-p",
         "--no-tools",
@@ -106,7 +115,7 @@ pub fn omp_args_for(model: &str, to: &str) -> Vec<String> {
         "--model",
         model,
         "--system-prompt",
-        system_prompt(to),
+        system,
     ]
     .map(String::from)
     .to_vec()
@@ -261,15 +270,30 @@ pub(crate) async fn run(
 /// Translates `text` into Russian with the configured translator (`cfg.translator`). The programs are `claude` and
 /// `omp`; `HERDR_PLANNER_CLAUDE` and `HERDR_PLANNER_OMP` name other binaries (for checks).
 pub async fn translate(cfg: &AppConfig, text: &str, to: &str) -> Result<String, String> {
-    let claude = std::env::var("HERDR_PLANNER_CLAUDE")
-        .ok()
-        .filter(|v| !v.is_empty())
-        .unwrap_or_else(|| "claude".to_string());
-    let omp = std::env::var("HERDR_PLANNER_OMP")
-        .ok()
-        .filter(|v| !v.is_empty())
-        .unwrap_or_else(|| "omp".to_string());
+    let (claude, omp) = binaries();
     run(&cfg.translator, &claude, &omp, text, to).await
+}
+
+/// The programs a model call runs: `claude` and `omp`, or the ones `HERDR_PLANNER_CLAUDE` / `HERDR_PLANNER_OMP` name.
+fn binaries() -> (String, String) {
+    let named = |var: &str, default: &str| {
+        std::env::var(var)
+            .ok()
+            .filter(|v| !v.is_empty())
+            .unwrap_or_else(|| default.to_string())
+    };
+    (named("HERDR_PLANNER_CLAUDE", "claude"), named("HERDR_PLANNER_OMP", "omp"))
+}
+
+/// One call of the configured model with a fixed system prompt of ours: no tools, no session, the text on stdin
+/// as data. For short jobs of the planner itself (the memory suggestions); not cached.
+pub async fn ask(cfg: &AppConfig, system: &str, text: &str) -> Result<String, String> {
+    let (claude, omp) = binaries();
+    let (bin, args) = match parse_translator(&cfg.translator)? {
+        Engine::Claude(m) => (claude, claude_args_with(&m, system)),
+        Engine::Omp(m) => (omp, omp_args_with(&m, system)),
+    };
+    spawn(&bin, &args, &wrap(text)).await
 }
 
 #[cfg(test)]

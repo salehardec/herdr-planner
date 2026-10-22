@@ -18,6 +18,8 @@ import { dayTimeOf, timeOf } from '../util/dates';
 import { Gl } from './Gl';
 import { RichText } from './RichText';
 import { Memory } from './FocusOther';
+import { openRemember } from './memory-api';
+import { dialogOpen } from '../dialogs';
 import { PendingFiles, SavedFiles } from './Attached';
 import { chatBack, chatWide, setChatWide } from '../chat-wide';
 import { dragTodo } from '../todo-drag';
@@ -42,6 +44,8 @@ function Turn(props: { turn: TurnData; hit: boolean; onReuse: (q: string) => voi
       <div class="q" data-reuse={tn.n} title={t('chat.reuse')} onClick={() => props.onReuse(tn.q)}>
         <span class="who">{t('chat.you')}</span>
         <span class="txt">{tn.q}</span>
+        <button class="btn sm mm-tomem" type="button" data-act="to-memory" data-who="q" title={t('mem.toMemoryTip')}
+          onClick={(e) => { e.stopPropagation(); openRemember({ text: tn.q, source: 'chat' }); }}><Gl n="memory" />{t('mem.toMemory')}</button>
       </div>
       <div class="meta"><span>{dayTimeOf(tn.at)}</span>{tn.from === 'board' && <span>· {t('chat.boardNotice')}</span>}</div>
       {tn.a && (
@@ -49,6 +53,8 @@ function Turn(props: { turn: TurnData; hit: boolean; onReuse: (q: string) => voi
           <div class="a">
             <span class="who">{t('quasar.short')}</span>
             <RichText class={`txt ${long && !open ? 'clamp' : ''}`} text={tn.a} />
+            <button class="btn sm mm-tomem" type="button" data-act="to-memory" data-who="a" title={t('mem.toMemoryTip')}
+              onClick={() => openRemember({ text: tn.a, source: 'chat' })}><Gl n="memory" />{t('mem.toMemory')}</button>
           </div>
           {long && (
             <button class="more" type="button" data-chat="turn" onClick={() => {
@@ -137,6 +143,8 @@ export function Chat(): JSX.Element {
   const onKey = (e: KeyboardEvent): void => {
     const ta = e.target as HTMLTextAreaElement;
     if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); void submit(e); return; }
+    // A dialog over the chat (the «В память» one) takes Esc: the page's own handler closes it.
+    if (e.key === 'Escape' && dialogOpen()) return;
     if (e.key === 'Escape') { ta.value = ''; draftTodos.value = []; ta.blur(); chatBack(); e.stopPropagation(); return; }
     const log = logRef.current;
     if (!log || !showTurns) return;

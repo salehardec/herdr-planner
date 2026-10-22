@@ -37,6 +37,7 @@ export const SPRITE = `
 <symbol id="g-up" viewBox="0 0 16 16"><path d="m4 10 4-4 4 4"/></symbol>
 <symbol id="g-down" viewBox="0 0 16 16"><path d="m4 6 4 4 4-4"/></symbol>
 <symbol id="g-home" viewBox="0 0 16 16"><path d="M2.4 8 8 2.8 13.6 8M4 7v6h3V9.6h2V13h3V7"/></symbol>
+<symbol id="g-memory" viewBox="0 0 16 16"><path d="M3.8 2.2h8.4a.8.8 0 0 1 .8.8v10.8l-5-2.7-5 2.7V3a.8.8 0 0 1 .8-.8z"/><path d="M5.8 5.4h4.4"/></symbol>
 <symbol id="g-globe" viewBox="0 0 16 16"><circle cx="8" cy="8" r="5.8"/><path d="M2.4 8h11.2M8 2.2c2 2 2 9.6 0 11.6M8 2.2c-2 2-2 9.6 0 11.6"/></symbol>
 <symbol id="g-expand" viewBox="0 0 16 16"><path d="M9.5 2.5h4v4M13.5 2.5 9 7M6.5 13.5h-4v-4M2.5 13.5 7 9"/></symbol>
 <symbol id="g-shrink" viewBox="0 0 16 16"><path d="M13.5 6.5h-4v-4M9.5 6.5l4-4M2.5 9.5h4v4M6.5 9.5l-4 4"/></symbol>
