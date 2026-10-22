@@ -23,6 +23,16 @@ export function logsGate(c: RunnerContainer): string {
   return c.class === 'foreign' ? 'ctl.noForeign' : '';
 }
 
+/** A shell inside the container: the same rule as the server (src/runners_ctl.rs::shell_gate) — a task's container,
+    never a foreign one, a shared cache or an unsure one; only a running container can be entered. */
+export function shellGate(c: RunnerContainer): string {
+  if (c.class === 'foreign') return 'ctl.shellForeign';
+  if (c.class === 'shared') return 'ctl.shellShared';
+  if (c.class === 'unsure') return 'ctl.shellUnsure';
+  if (c.state !== 'running') return 'ctl.shellStopped';
+  return '';
+}
+
 /** Escape sequences of a terminal (colours, cursor) are not shown in a log. */
 export function stripAnsi(s: string): string {
   return s.replace(new RegExp(`${String.fromCharCode(27)}\\[[0-9;?]*[ -/]*[@-~]`, 'g'), '');

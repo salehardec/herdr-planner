@@ -4188,6 +4188,7 @@ section('runners', async () => {
   // The planet's own line: the yard and its containers.
   await go('alpha/3');
   check('the planet names the shipyard and its containers', await waitFor('!!document.querySelector("#rf-task")', 8000) && await hasText('#rf-task', 'vm-r') && await hasText('#rf-task', 'pg-ALP-3'), await text('#rf-task'));
+  check('the planet’s container also gives the way into its port and its Shell', (await evalJs('document.querySelector("#rf-task [data-service=postgres] code")?.textContent')) === 'psql -h 192.0.2.29 -p 15432 -U postgres' && await evalJs('!!document.querySelector("#rf-task [data-ctl=shell]:not([disabled])")'), await text('#rf-task'));
   // The search finds the yard, Enter opens it.
   await press('KeyK', 'k', 2);
   await waitFor('document.activeElement.id === "q"', 4000);
@@ -4198,6 +4199,45 @@ section('runners', async () => {
   // The terminal button asks this machine's terminal to run ssh in it, not a bare child with no tty.
   await click('#rf-terminal');
   check('«Терминал» opens a terminal window with ssh -t', await waitLog(() => calls('terminal.jsonl').some((c) => (c.argv ?? []).includes('-t') && (c.argv ?? []).join(' ').includes('192.0.2.29')), 8000), JSON.stringify(calls('terminal.jsonl').slice(-2)));
+  // A published port of a known image is a way in (PLN-44): postgres gets its psql line, a web port a link.
+  check('a task container’s published postgres port gives the psql line with the yard’s address and port',
+    await waitFor('!!document.querySelector("#rf-tasks tr [data-service=postgres] code")', 8000)
+      && (await evalJs('document.querySelector("#rf-tasks tr [data-service=postgres] code").textContent')) === 'psql -h 192.0.2.29 -p 15432 -U postgres',
+    await text('#rf-tasks'));
+  yardReset({ containers: [
+    {
+      id: '8'.repeat(64), name: 'web-ALP-6', image: 'nginx:1.27', state: 'running', status: 'Up 1 hour',
+      created: new Date(Date.now() - 3_600_000).toISOString().replace('T', ' ').slice(0, 19) + ' +0000 UTC',
+      labels: 'herdr.task=ALP-6', ports: '0.0.0.0:18080->80/tcp', networks: 'work-6_default', mounts: '', size: '8MB', cpu: '0.10%', mem: '10MiB / 2GiB', pids: '3',
+      nano: 2000000000, memLimit: 2147483648,
+    },
+    {
+      id: '9'.repeat(64), name: 'redis-ALP-7', image: 'redis:7', state: 'running', status: 'Up 1 hour',
+      created: new Date(Date.now() - 3_600_000).toISOString().replace('T', ' ').slice(0, 19) + ' +0000 UTC',
+      labels: 'herdr.task=ALP-7', ports: '0.0.0.0:16379->6379/tcp', networks: 'work-7_default', mounts: '', size: '4MB', cpu: '0.10%', mem: '20MiB / 2GiB', pids: '5',
+      nano: 2000000000, memLimit: 2147483648,
+    },
+  ] });
+  await post('/api/runner/ask', { id: 'vm-r' });
+  check('a web port is a link to the yard, a redis port its redis-cli line',
+    await waitFor('!!document.querySelector("#rf-tasks a[data-http=http]") && !!document.querySelector("#rf-tasks [data-service=redis] code")', 15000)
+      && (await evalJs('document.querySelector("#rf-tasks a[data-http=http]").href')) === 'http://192.0.2.29:18080/'
+      && (await evalJs('document.querySelector("#rf-tasks a[data-http=http]").textContent')) === 'http://192.0.2.29:18080'
+      && (await evalJs('document.querySelector("#rf-tasks [data-service=redis] code").textContent')) === 'redis-cli -h 192.0.2.29 -p 16379',
+    await text('#rf-tasks'));
+  // «Shell»: a terminal of this machine that ssh's to the yard and runs docker exec -it by the full id there.
+  const shellBtn = `(() => { const tr = [...document.querySelectorAll("#rf-tasks tbody tr")].find((r) => r.innerText.includes("pg-ALP-3")); const b = tr?.querySelector("[data-ctl=shell]"); if (!b) return false; b.click(); return true; })()`;
+  await evalJs(shellBtn);
+  check('«Shell» opens a terminal with ssh -t and docker exec -it of that container',
+    await waitLog(() => calls('terminal.jsonl').some((c) => (c.argv ?? []).join(' ').includes('docker exec -it ' + 'a'.repeat(64) + " sh -c '")), 8000),
+    JSON.stringify(calls('terminal.jsonl').slice(-2)));
+  check('a stopped container has no Shell: the button is locked with the reason',
+    await evalJs('(() => { const tr = [...document.querySelectorAll("#rf-forgotten tbody tr")].find((r) => r.innerText.includes("web-ALP-15")); const b = tr?.querySelector("[data-ctl=shell]"); return !!b && b.disabled && (b.title || "").includes("не работает"); })()'),
+    await text('#rf-forgotten'));
+  // Put the yard back as the rest of the section knows it.
+  yardReset();
+  await post('/api/runner/ask', { id: 'vm-r' });
+  check('the extra stand containers leave the yard again', await waitFor('plannerSnap().runners[0].containers.every((c) => c.name !== "web-ALP-6" && c.name !== "redis-ALP-7")', 15000), JSON.stringify((await stateApi())?.runners?.[0]?.containers?.map((c) => c.name)));
   // «Было → стало»: the card, the two presses, the exact ids.
   await waitFor('!!document.querySelector("#rf-clean")', 8000);
   await click('#rf-clean');

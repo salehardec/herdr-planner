@@ -179,6 +179,13 @@ The planner works with its own board only. The stand-ins still answer as a board
 - The disk card's yard: four images (two without containers, «2.0GB» reclaimable), a build cache of 2.4 GB, two buildx
   builders (`old`, stopped, state volume 3.1 GB; `x`, running), an orphan builder state `buildx_buildkit_gone0_state`
   (8 GB) and one unused volume of somebody else (`chroma_data`, compose project `chroma`).
+- Published ports: `pg-ALP-3` has `0.0.0.0:15432->5432/tcp` and `pg-AL9-4` `0.0.0.0:15433->5432/tcp` (the page gives
+  their `psql` line); `neighbor-db-1` shows its container port only, so it is not published. The `runners` section
+  adds `web-ALP-6` (nginx, `0.0.0.0:18080->80/tcp` → a link) and `redis-ALP-7` (`0.0.0.0:16379->6379/tcp` → a
+  `redis-cli` line) through `state/runner.json` `extra` and takes them away again.
+- `Shell` (a terminal inside a container): the `xdg-terminal-exec` stand only logs its argv to `terminal.jsonl`, so the
+  ssh stand never runs `docker exec` itself; the `runners` section looks for `ssh -t … docker exec -it <id> sh -c …`
+  there.
 - `log/ssh.jsonl` gets a line with `runner: "vm-r"` for every such call. No copy of the list goes to another machine.
 - The yard's alarms (`src/runners_alert.rs`) are sent to the Coordinator as `coordinator tell`: `log/coordinator.jsonl`
   gets a line whose text starts with «Верфь …». They come one per state (little disk, silence, a fallen container, a

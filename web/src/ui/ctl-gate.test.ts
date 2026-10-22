@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { RunnerContainer } from '../types';
-import { ctlGate, grep, logsGate, stripAnsi } from './ctl-gate';
+import { ctlGate, grep, logsGate, shellGate, stripAnsi } from './ctl-gate';
 
 const c = (over: Partial<RunnerContainer>): RunnerContainer => ({ id: 'a'.repeat(64), name: 'pg', state: 'running', class: 'forgotten', task: { id: 't1', tag: 'X-1', status: 'done', title: '', finished_ms: 0 }, ...over } as RunnerContainer);
 
@@ -24,6 +24,15 @@ describe('ctlGate', () => {
     expect(ctlGate(c({ state: 'running' }), 'delete', '')).toBe('ctl.stopFirst');
     expect(ctlGate(c({ state: 'exited' }), 'delete', '')).toBe('');
     expect(ctlGate(c({ state: 'exited' }), 'restart', '')).toBe('');
+  });
+  it('opens a shell only into a running container of a task', () => {
+    expect(shellGate(c({ class: 'active', state: 'running' }))).toBe('');
+    expect(shellGate(c({ class: 'forgotten', state: 'running' }))).toBe('');
+    expect(shellGate(c({ class: 'active', state: 'exited' }))).toBe('ctl.shellStopped');
+    expect(shellGate(c({ class: 'forgotten', state: 'paused' }))).toBe('ctl.shellStopped');
+    expect(shellGate(c({ class: 'foreign' }))).toBe('ctl.shellForeign');
+    expect(shellGate(c({ class: 'shared' }))).toBe('ctl.shellShared');
+    expect(shellGate(c({ class: 'unsure' }))).toBe('ctl.shellUnsure');
   });
 });
 

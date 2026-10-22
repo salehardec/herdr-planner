@@ -78,8 +78,12 @@ describe('the pages of the login and the cabin', () => {
 });
 
 describe('the Russian dictionary is Russian', () => {
-  // proper names and acronyms that read the same in both languages
-  const SAME = new Set(['lang.ru', 'lang.en', 'ship.tls', 'ship.version', 'load.cpu', 'load.mem', 'load.gpu']);
+  // proper names and acronyms that read the same in both languages; command lines and the name of the Shell
+  // button are the same words in both (PLN-44): a person pastes `psql …` into a terminal, not a translation.
+  const SAME = new Set([
+    'lang.ru', 'lang.en', 'ship.tls', 'ship.version', 'load.cpu', 'load.mem', 'load.gpu',
+    'ctl.shell', 'runner.connect.postgres', 'runner.connect.redis',
+  ]);
   const words = (v: string): boolean => /\p{L}{3,}/u.test(v.replace(/\{\w+\}/g, ''));
   it('no Russian string is English (the buttons «Compact» and «New» stood in English in the Russian page)', () => {
     const bad = Object.keys(ru).filter((k) => !SAME.has(k)).filter((k) => (Array.isArray(ru[k]) ? ru[k] : [ru[k]]).some((v) => /[A-Za-z]{3,}/.test(v.replace(/\{\w+\}/g, '')) && !/[А-Яа-яЁё]/.test(v)));

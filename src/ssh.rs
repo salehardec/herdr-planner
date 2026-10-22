@@ -129,6 +129,21 @@ pub fn tty_args(target: &str) -> Result<Vec<String>, String> {
     Ok(args)
 }
 
+/// The argv that opens a terminal inside one container (PLN-44): `ssh -t [-p port] dest docker exec -it <id> …`.
+/// The shell is bash when the image has it and sh otherwise (`sh -c` picks one and `exec`s it, so the terminal is the
+/// container's own). Only a full docker id may reach the command; the caller checks the container is a task's and is
+/// running. The caller owns the terminal, as with `tty_args`.
+pub fn container_shell_args(target: &str, id: &str) -> Result<Vec<String>, String> {
+    if id.len() != 64 || !id.chars().all(|c| c.is_ascii_hexdigit()) {
+        return Err(format!("недопустимый id контейнера: {id:?}"));
+    }
+    let mut args = tty_args(target)?;
+    args.push(format!(
+        "docker exec -it {id} sh -c 'if command -v bash >/dev/null 2>&1; then exec bash; else exec sh; fi'"
+    ));
+    Ok(args)
+}
+
 fn valid_session(s: &str) -> bool {
     !s.is_empty()
         && s.len() <= 64
@@ -544,6 +559,15 @@ mod tests {
         assert_eq!(args[n - 4], "-p");
         assert_eq!(tty_args("me@192.0.2.29:2222").unwrap().join(" "), "-t -p 2222 me@192.0.2.29");
         assert_eq!(tty_args("vm-r").unwrap().join(" "), "-t vm-r");
+        // A shell goes into the container by its full id: `ssh -t … docker exec -it …`.
+        let id = "a".repeat(64);
+        let shell = container_shell_args("me@192.0.2.29:2222", &id).unwrap();
+        assert_eq!(shell[..4], ["-t", "-p", "2222", "me@192.0.2.29"]);
+        assert!(shell[4].starts_with(&format!("docker exec -it {id} sh -c '")));
+        assert!(shell[4].contains("exec bash") && shell[4].contains("exec sh"));
+        assert!(container_shell_args("vm-r", "a b").is_err());
+        assert!(container_shell_args("vm-r", &"a".repeat(63)).is_err());
+        assert!(container_shell_args("-x", &id).is_err());
         assert_eq!(
             hand_check("me@192.0.2.29:2222", &["-o", "BatchMode=yes"], "true"),
             "ssh -p 2222 -o BatchMode=yes me@192.0.2.29 true"

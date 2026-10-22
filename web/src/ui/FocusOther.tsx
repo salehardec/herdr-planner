@@ -9,7 +9,7 @@ import { Gl } from './Gl';
 import { MemoryPanel } from './MemoryPanel';
 import { CleanCard } from './CleanCard';
 import { DiskCard } from './DiskCard';
-import { ContainerButtons } from './ContainerTools';
+import { ContainerButtons, ContainerPorts } from './ContainerTools';
 import { RunnerAuto } from './RunnerAuto';
 import { RichText } from './RichText';
 import { toast } from '../toast';
@@ -419,7 +419,7 @@ export function RunnerFocus(props: { entity: Entity }): JSX.Element {
                 <td>{c.created_ms ? yardAge(Date.now() - c.created_ms) : '—'}</td>
                 <td>{c.cpu_pct == null ? '—' : `${c.cpu_pct.toFixed(1)} %`}</td>
                 <td>{c.mem_bytes == null ? '—' : `${(c.mem_bytes / (1024 * 1024)).toFixed(0)} MB`}{c.gpu_mem_mib ? ` · GPU ${c.gpu_mem_mib} MB` : ''}</td>
-                <td><span class="hint">{c.ports || '—'}</span></td>
+                <td><ContainerPorts c={c} host={r.ports_host} /></td>
               </tr>
             ))}
           </tbody>
