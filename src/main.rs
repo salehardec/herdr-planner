@@ -17,6 +17,7 @@ mod history;
 mod memory;
 mod memory_api;
 mod memory_guard;
+mod load;
 mod models;
 mod search;
 mod server;
@@ -271,6 +272,7 @@ fn spawn_loops(app: Shared) {
             tokio::time::sleep(Duration::from_millis(3500)).await;
         }
     });
+    tokio::spawn(load::run(app.clone()));
     let a = app.clone();
     tokio::spawn(async move {
         app::index_chat(&a).await;

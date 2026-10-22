@@ -9,6 +9,7 @@ import { t } from '../i18n';
 import { LimitsChip } from './Limits';
 import { Menu } from './Menu';
 import { StationChip } from './StationChip';
+import { LoadBar, LoadPop } from './LoadBar';
 import './top.css';
 
 function Crumbs(): JSX.Element {
@@ -75,7 +76,10 @@ export function Top(): JSX.Element {
   const m = mode.value;
   return (
     <div class="top" id="top" ref={topRef}>
-      <Crumbs />
+      <div class="topl" id="topl">
+        <Crumbs />
+        <LoadBar />
+      </div>
       <Search />
       <div class="right" id="right" ref={rightRef}>
         <StationChip />
@@ -90,6 +94,7 @@ export function Top(): JSX.Element {
         </div>
         <Menu />
       </div>
+      <LoadPop />
     </div>
   );
 }

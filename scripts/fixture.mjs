@@ -5,8 +5,8 @@
 //
 // DIR gets:
 //   bin/        stand-ins on PATH: herdr-projects, herdr, claude (translation), gh, glab,
-//               xdg-terminal-exec.
-//               Each is a node script built from the functions below.
+//               xdg-terminal-exec, nvidia-smi (answers from load/nvidia.csv).
+//               Each is a node script built from the functions below (nvidia-smi is a shell script).
 //   state/      the stand-ins' own world: board.json (rows, waits, meta), coordinator.json,
 //               todo.json (the planner's), the Omarchy usage records.
 //   board/      what the planner reads as the board's files: repos.json, repo-keys.json,
@@ -1219,6 +1219,11 @@ for (const name of ['codex', 'omp']) {
   fs.writeFileSync(p, '#!/bin/sh\necho "' + name + ' stand-in"\n');
   fs.chmodSync(p, 0o755);
 }
+// The video driver: `nvidia-smi` answers from load/nvidia.csv (the lines it would print) and, with no such file, fails the way a machine
+// without a card does. The planner's own reading of the machine can be replaced by load/load.json (HERDR_PLANNER_LOAD_FILE).
+fs.mkdirSync(path.join(dir, 'load'), { recursive: true });
+fs.writeFileSync(path.join(dir, 'bin', 'nvidia-smi'), '#!/bin/sh\nf="$(dirname "$0")/../load/nvidia.csv"\n[ -f "$f" ] && exec cat "$f"\necho "NVIDIA-SMI has failed because it could not communicate with the NVIDIA driver." >&2\nexit 9\n');
+fs.chmodSync(path.join(dir, 'bin', 'nvidia-smi'), 0o755);
 write(path.join(dir, 'theme.name'), 'Fixture Night');
 write(path.join(dir, 'herdr.sock'), '');
 fs.rmSync(path.join(dir, '.seed'), { recursive: true, force: true });
