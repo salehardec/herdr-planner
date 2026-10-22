@@ -36,7 +36,7 @@ export function ChangeCard(props: {
     <div class={`chg mm-chg risk-${p.risk} ${props.error ? 'bad' : ''}`} id="mem-chg" data-risk={p.risk}>
       <div class="chg-h">{t('mem.chg.title')} · <span id="mem-chg-where">{where}</span></div>
       <div class="hint" id="mem-chg-dest">
-        {p.discard ? t('mem.chg.destDiscard') : p.commit ? t('mem.chg.destCommit') : p.level === 'galaxy' ? t('mem.chg.destGalaxy') : p.draft ? t('mem.chg.destDraft') : t('mem.chg.destFile')}
+        {p.discard ? t('mem.chg.destDiscard') : p.send ? t('mem.chg.destSend') : p.level === 'galaxy' ? t('mem.chg.destGalaxy') : p.draft ? t('mem.chg.destDraft') : t('mem.chg.destFile')}
       </div>
       {p.changes.map((c) => (
         <div class="mm-chg-one" key={c.file} data-op={c.op}>

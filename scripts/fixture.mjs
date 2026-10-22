@@ -868,7 +868,7 @@ function herdrProjectsMain(C, DATA) {
     fs.mkdirSync(worktree, { recursive: true });
     save(w);
     publishTask(w, row);
-    console.log(tag(w, id) + ': added');
+    console.log(id + ': added');
     return;
   }
 

@@ -10,9 +10,9 @@ import { toast } from '../toast';
 import { dayTimeOf } from '../util/dates';
 import { Gl } from './Gl';
 import {
-  commitMemory, deleteEntry, discardDraft, dismissSuggestion, keepSuggestion, KINDS, kindLabel, loadMemory, memFocus, memoryOf, previewCommit,
+  deleteEntry, discardDraft, dismissSuggestion, keepSuggestion, KINDS, kindLabel, loadMemory, memFocus, memoryOf, previewSend, sendMemory,
   previewDelete, previewDiscard, previewSave, previewSuggestion, rememberDlg, saveEntry, connectMemory, setSuggest,
-  type Accept, type MemData, type MemEntry, type MemPreview, type MemSuggestion, type SaveBody,
+  type Accept, type MemData, type MemEntry, type MemPreview, type MemSuggestion, type SaveBody, type SentTask, forgetSent,
 } from './memory-api';
 import { ChangeCard } from './MemoryChange';
 import { parseDocId } from './memory-ids';
@@ -26,6 +26,7 @@ function Row(props: {
 }): JSX.Element {
   const { e } = props;
   const gone = e.draft === 'deleted';
+  const frozen = gone || !!e.draft?.startsWith('sent');   // a board task has it: change it after the merge
   const ref = useRef<HTMLDivElement>(null);
   useEffect(() => { if (props.hot) ref.current?.scrollIntoView({ block: 'center' }); }, [props.hot]);
   return (
@@ -34,7 +35,7 @@ function Row(props: {
         <Gl n={props.open ? 'chev' : 'chev-r'} cls="mm-chev" />
         <span class={`mm-kind k-${e.kind || 'note'}`}>{kindLabel(e.kind)}</span>
         <b class="mm-title">{e.title}</b>
-        {e.draft && <span class={`mm-draft d-${e.draft}`} title={t('mem.draftTip')}>{t(`mem.draft.${e.draft}`)}</span>}
+        {e.draft && <span class={`mm-draft d-${e.draft}`} title={t('mem.draftTip')}>{t(`mem.draft.${e.draft}`, { task: e.task ?? '' })}</span>}
         {!props.open && e.description && e.description !== e.title && <span class="mm-desc">{e.description}</span>}
       </button>
       {props.open && (
@@ -49,9 +50,9 @@ function Row(props: {
           </div>
           {props.editable && (
             <div class="row">
-              {!gone && <button class="btn sm" type="button" data-act="mem-edit" onClick={props.onEdit}>{t('mem.edit')}</button>}
-              {!gone && <button class="btn sm danger" type="button" data-act="mem-del" onClick={props.onDelete}>{t('mem.delete')}</button>}
-              {e.draft && props.onDiscard && <button class="btn sm" type="button" data-act="mem-discard" onClick={props.onDiscard}>{t('mem.discard')}</button>}
+              {!frozen && <button class="btn sm" type="button" data-act="mem-edit" onClick={props.onEdit}>{t('mem.edit')}</button>}
+              {!frozen && <button class="btn sm danger" type="button" data-act="mem-del" onClick={props.onDelete}>{t('mem.delete')}</button>}
+              {e.draft && !e.draft.startsWith('sent') && props.onDiscard && <button class="btn sm" type="button" data-act="mem-discard" onClick={props.onDiscard}>{t('mem.discard')}</button>}
             </div>
           )}
         </div>
@@ -286,8 +287,9 @@ function Connect(props: { data: MemData }): JSX.Element | null {
   );
 }
 
-/** The universe's memory that is not in git yet: drafts (kept outside the checkout, so the board can still merge into it)
- *  and files already changed there. The commit is shown as «было → стало» and checked for personal data once more. */
+/** The universe's memory that is not in git yet: drafts (kept outside the checkout, so the board can still merge into it).
+ *  Sending shows «было → стало», checks the text for personal data once more and hands it to a board task: the planner
+ *  never writes or commits into the checkout. The task's id stays on the panel. */
 function Git(props: { repo: string; data: MemData }): JSX.Element | null {
   const g = props.data.git;
   const [busy, setBusy] = useState(false);
@@ -295,11 +297,10 @@ function Git(props: { repo: string; data: MemData }): JSX.Element | null {
   const [err, setErr] = useState('');
   if (!g) return null;
   if (!g.checkout) return <div class="hint" id="mem-git">{t('mem.notGit')}</div>;
-  if (g.dirty.length === 0 && g.drafts === 0) return <div class="hint" id="mem-git">{t('mem.gitClean')}</div>;
   const ask = async (): Promise<void> => {
     setBusy(true);
     setErr('');
-    try { setCard(await previewCommit(props.repo)); } catch (e) { toast(failWords(e), { icon: 'failed' }); }
+    try { setCard(await previewSend(props.repo)); } catch (e) { toast(failWords(e), { icon: 'failed' }); }
     setBusy(false);
   };
   const confirm = async (a: Accept): Promise<void> => {
@@ -307,25 +308,35 @@ function Git(props: { repo: string; data: MemData }): JSX.Element | null {
     setBusy(true);
     setErr('');
     try {
-      const r = await commitMemory(props.repo, card.token, a);
-      toast(t('mem.committed', { h: r.commit }));
+      const r: SentTask = await sendMemory(props.repo, card.token, a);
+      toast(t('mem.sent', { tag: r.task }));
       setCard(null);
     } catch (e) { setErr(failWords(e)); }
     setBusy(false);
   };
+  // What a board task has and the checkout has not yet: kept by the planner, so it survives a reload.
+  const sentNote = g.sent.map((b) => (
+    <div class="hint ok mm-sent" id="mem-sent" key={b.task} data-task={b.id ?? ''}>
+      {t('mem.sentNote', { tag: b.task, n: b.files })}{' '}
+      <button class="btn sm" type="button" data-act="mem-sent-forget" onClick={() => void forgetSent(props.repo, b.task)}>{t('mem.sentForget')}</button>
+    </div>
+  ));
+  if (g.dirty.length === 0 && g.drafts === 0) return <div class="hint" id="mem-git">{g.sent.length === 0 && t('mem.gitClean')}{sentNote}</div>;
   return (
     <div class="mm-git" id="mem-git">
       {g.drafts > 0 && <div class="hint warn" id="mem-drafts">{tn('mem.gitDrafts', g.drafts)}</div>}
       {g.dirty.length > 0 && <div class="hint warn">{tn('mem.gitDirty', g.dirty.length)}</div>}
       {g.dirty.length > 0 && <ul class="mm-files">{g.dirty.map((d) => <li key={d.file}><code>{d.state || 'M'}</code> <code>{d.file}</code></li>)}</ul>}
+      {g.dirty.length > 0 && <div class="hint" id="mem-dirty-own">{t('mem.gitDirtyOwn')}</div>}
       {card ? (
-        <ChangeCard p={card} busy={busy} error={err} onConfirm={(a) => void confirm(a)} onCancel={() => { setCard(null); setErr(''); }} confirmLabel={t('mem.commit')} />
-      ) : (
+        <ChangeCard p={card} busy={busy} error={err} onConfirm={(a) => void confirm(a)} onCancel={() => { setCard(null); setErr(''); }} confirmLabel={t('mem.send')} />
+      ) : g.drafts > 0 && (
         <div class="row">
-          <button class="btn sm" type="button" id="mem-commit" disabled={busy} onClick={() => void ask()}>{t('mem.commit')}</button>
+          <button class="btn sm" type="button" id="mem-send" disabled={busy} onClick={() => void ask()}>{t('mem.send')}</button>
         </div>
       )}
-      <div class="hint">{g.drafts > 0 ? t('mem.commitNoteDrafts') : t('mem.commitNote')}</div>
+      {g.drafts > 0 && <div class="hint">{t('mem.sendNote')}</div>}
+      {sentNote}
     </div>
   );
 }

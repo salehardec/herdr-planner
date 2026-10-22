@@ -1412,7 +1412,8 @@ pub fn parse_percent(line: &str) -> Option<u8> {
     (n <= 100).then_some(n as u8)
 }
 
-/// The board's id of a task it just added (`SRC-1: added` → `SRC-1`).
+/// The board's id of a task it just added: `SRC-1: added` → `SRC-1`, and as the board itself prints it, `src/1: added` →
+/// `src/1` (its commands take either).
 fn added_id(out: &str) -> Option<String> {
     let line = out.lines().find(|l| l.contains(": added"))?;
     let id = line.split(':').next()?.trim();
@@ -1420,7 +1421,9 @@ fn added_id(out: &str) -> Option<String> {
         && id.len() <= 40
         && id
             .chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_');
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '/'))
+        && !id.starts_with('/')
+        && !id.contains("//");
     ok.then(|| id.to_string())
 }
 
@@ -2836,6 +2839,9 @@ exit 1
     #[test]
     fn the_board_task_id_and_the_key_setting_are_read() {
         assert_eq!(added_id("SRC-1: added\n").as_deref(), Some("SRC-1"));
+        assert_eq!(added_id("newrepo/1: added\n").as_deref(), Some("newrepo/1"), "the board's own form");
+        assert_eq!(added_id("../x: added"), None);
+        assert_eq!(added_id("/abs: added"), None);
         assert_eq!(added_id("nothing here"), None);
         let v: Value = serde_json::from_str(
             r#"{"settings":[{"name":"repo.key","value":"PLN"},{"name":"repo.key","value":"PLX"},{"name":"research.only","value":true}]}"#,
