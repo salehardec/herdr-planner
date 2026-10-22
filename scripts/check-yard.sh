@@ -260,6 +260,90 @@ fresh
 yard "$T/pln/PLN-7" prune -y
 expect "prune -y убирает образ не текущего хеша" "image rm herdr-planner-yard:000000000000" "$ST/docker.log"
 
+# ── several yards: the task's or the repository's rule, tags, a busy or silent yard, the next one ──
+cat >"$BIN/ssh" <<'EOF'
+#!/bin/sh
+printf '%s\n' "$*" >>"$ST/ssh.log"
+host=
+for a in "$@"; do
+  case "$a" in vm-r|vm-g) host=$a ;; esac
+done
+[ -n "$host" ] || exit 255
+[ -e "$ST/down-$host" ] && exit 255
+printf '%s 8\n' "$(cat "$ST/load-$host" 2>/dev/null || echo 0.10)"
+EOF
+chmod +x "$BIN/ssh"
+YFILE=$T/home/.herdr-projects/settings/runners.json
+write_yards() {
+  cat >"$YFILE" <<'EOF'
+{
+  "version": 1,
+  "default": "vm-r",
+  "busy_pct": 85,
+  "runners": [
+    { "id": "vm-r", "target": "vm-r", "tags": ["x86_64"] },
+    { "id": "vm-g", "target": "vm-g", "tags": ["gpu", "x86_64"] }
+  ],
+  "assign": {},
+  "need": { "alpha": ["gpu"] },
+  "tasks": {}
+}
+EOF
+}
+write_yards
+printf '{"repos":{"alpha":{"repo":{"key":"ALP"}}}}' >"$T/home/.herdr-projects/settings/config.json"
+rm -f "$ST/down-vm-r" "$ST/down-vm-g"
+printf '0.10' >"$ST/load-vm-r"; printf '0.20' >"$ST/load-vm-g"
+yard_pick() { # TMPDIR, then the arguments
+  tmp=$1
+  shift
+  set +e
+  env PATH="$BIN:$PATH" HOME="$T/home" TMPDIR="$tmp" DOCKER_HOST= HERDR_PROJECTS_ID= HERDR_PROJECTS_TAG= YARD= \
+    YARD_RUNNER="${YARD_RUNNER:-}" HERDR_YARD_LOG_DIR="$T/logs" /bin/sh "$REPO/scripts/yard.sh" "$@" >"$T/out" 2>"$T/err"
+  status=$?
+  set -e
+}
+mkdir -p "$T/pln/ALP-7"
+yard_pick "$T/pln/ALP-7" where
+[ "$status" = 0 ] || bad "where: код $status ($(cat "$T/out"))"
+if [ "$(cat "$T/out")" = "vm-g" ]; then ok "the repository's tags choose the yard that carries them"; else bad "метки репозитория: $(cat "$T/out")"; fi
+# A task's own rule replaces the repository's, tags and all.
+jq '.tasks = {"alpha/7": {"runner": "vm-r"}}' "$YFILE" >"$YFILE.new" && mv "$YFILE.new" "$YFILE"
+yard_pick "$T/pln/ALP-7" where
+if [ "$(cat "$T/out")" = "vm-r" ]; then ok "the task's own yard wins over the repository's tags"; else bad "правило задачи: $(cat "$T/out")"; fi
+# No rule: the default; a busy default gives way to the next one the list allows.
+write_yards
+printf '7.50' >"$ST/load-vm-r"
+yard_pick "$T/pln/PLN-7" where
+if [ "$(cat "$T/out")" = "vm-g" ]; then ok "a busy default yard gives way to the next"; else bad "занятая верфь: $(cat "$T/out")"; fi
+yard_pick "$T/pln/PLN-7" where
+expect "and the busy one was really checked over ssh" "vm-r" "$ST/ssh.log"
+# A list without busy_pct (the real file now) means 85 %, as in the planner, not «never busy».
+jq 'del(.busy_pct) | .runners |= map(del(.busy_pct))' "$YFILE" >"$YFILE.new" && mv "$YFILE.new" "$YFILE"
+printf '7.50' >"$ST/load-vm-r"
+yard_pick "$T/pln/PLN-7" where
+if [ "$(cat "$T/out")" = "vm-g" ]; then ok "a list without busy_pct uses the 85 % threshold"; else bad "порог по умолчанию: $(cat "$T/out")"; fi
+write_yards
+# All busy: the least loaded one is still named.
+printf '7.20' >"$ST/load-vm-g"
+yard_pick "$T/pln/PLN-7" where
+if [ "$(cat "$T/out")" = "vm-g" ]; then ok "all busy: the least loaded is taken"; else bad "все заняты: $(cat "$T/out")"; fi
+expect "and the wrapper says so" "наименее загруженную" "$T/err"
+# A silent yard is skipped; with none answering the wrapper stops with code 3 and local work is not run.
+printf '0.10' >"$ST/load-vm-r"
+: >"$ST/down-vm-g"
+yard_pick "$T/pln/PLN-7" where
+if [ "$status" = 0 ] && [ "$(cat "$T/out")" = "vm-r" ]; then ok "a silent yard is skipped for one that answers"; else bad "молчащая верфь: код $status ($(cat "$T/out"))"; fi
+: >"$ST/down-vm-r"
+yard_pick "$T/pln/PLN-7" where
+[ "$status" = 3 ] || bad "ни одна верфь не отвечает: код $status (ждали 3)"
+expect "and no yard is named" "не отвечает" "$T/err"
+rm -f "$ST/down-vm-r" "$ST/down-vm-g"
+# YARD_RUNNER names one outright.
+YARD_RUNNER=vm-r yard_pick "$T/pln/PLN-7" where
+if [ "$(cat "$T/out")" = "vm-r" ]; then ok "YARD_RUNNER names the yard outright"; else bad "YARD_RUNNER: $(cat "$T/out")"; fi
+YARD_RUNNER=
+
 if command -v shellcheck >/dev/null 2>&1 && shellcheck --version >/dev/null 2>&1; then
   if shellcheck -s sh scripts/yard.sh scripts/check-yard.sh; then ok "shellcheck"; else bad "shellcheck"; fi
 fi

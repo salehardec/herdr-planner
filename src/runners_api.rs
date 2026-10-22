@@ -77,8 +77,15 @@ pub async fn runners_get(State(app): State<Shared>) -> Response {
             "default": file.default_runner().map(|r| r.id.clone()).unwrap_or_default(),
             "updated_at_ms": file.updated_at_ms,
             "runners": file.runners,
+            "busy_pct": file.busy_pct,
+            "assign": file.assign,
+            "need": file.need,
+            "tasks": file.tasks,
         },
         "runners": snap.runners,
+        "picks": snap.runner_picks,
+        "repo_picks": snap.runner_repo_picks,
+        "rules": snap.runner_rules,
         "block": snap.runner_block,
     }))
     .into_response()
@@ -286,6 +293,7 @@ pub async fn runner_probe(State(app): State<Shared>, headers: HeaderMap, Json(bo
         auto: Default::default(),
         alerts: Default::default(),
         limits: None,
+        busy_pct: None,
     };
     let local = local_checks(&app.cfg, &target).await;
     let state = runners::probe(&app.cfg, &r).await;
@@ -413,6 +421,7 @@ pub async fn runner_add(State(app): State<Shared>, headers: HeaderMap, Json(body
         auto: Default::default(),
         alerts: Default::default(),
         limits: None,
+        busy_pct: None,
     };
     if file.runners.is_empty() || body.default {
         file.default = label.clone();
@@ -454,6 +463,12 @@ pub struct SetBody {
     /// The defaults of a task's containers on this yard (PLN-43): `--cpus`, memory in MiB, most containers per task.
     #[serde(default)]
     limits: Option<runners::Limits>,
+    /// Load (load1 over the core count) at which this yard counts as busy, in percent; 0 — never busy (PLN-45).
+    #[serde(default)]
+    busy_pct: Option<u64>,
+    /// Back to the list's own threshold.
+    #[serde(default)]
+    busy_reset: bool,
     confirm: Option<bool>,
 }
 
@@ -495,6 +510,12 @@ pub async fn runner_set(State(app): State<Shared>, headers: HeaderMap, Json(body
         if let Some(l) = body.limits {
             r.limits = Some(l);
         }
+        if let Some(p) = body.busy_pct {
+            r.busy_pct = Some(p);
+        }
+        if body.busy_reset {
+            r.busy_pct = None;
+        }
     }
     if body.default == Some(true) {
         file.default = body.id.clone();
@@ -514,6 +535,10 @@ pub async fn runner_set(State(app): State<Shared>, headers: HeaderMap, Json(body
                 s.note = r.note.clone();
                 s.alert_rules = r.alerts.clone();
                 s.limits = r.effective_limits(Some(&s.host));
+            }
+            // The threshold is a rule, not a read: the page shows it at once (PLN-45).
+            if let Some(r) = file.get(&body.id) {
+                s.busy_pct = r.busy_pct;
             }
             runners::apply_limits(s);
         }
@@ -574,15 +599,135 @@ pub async fn runner_remove(State(app): State<Shared>, headers: HeaderMap, Json(b
     if file.default == body.id {
         file.default = file.runners.first().map(|r| r.id.clone()).unwrap_or_default();
     }
+    // A rule that named this yard cannot stay: it would point at a yard that is gone. The rules of repos and tasks
+    // are cleaned here, and their blocks (when the agents are connected) are rewritten or taken out below.
+    let mut touched_repos: Vec<String> = Vec::new();
+    let mut touched_tasks: Vec<String> = Vec::new();
+    for (repo, id) in &file.assign {
+        if *id == body.id {
+            touched_repos.push(repo.clone());
+        }
+    }
+    file.assign.retain(|_, id| *id != body.id);
+    for (id, rule) in &mut file.tasks {
+        if rule.runner == body.id {
+            rule.runner.clear();
+            touched_tasks.push(id.clone());
+        }
+    }
+    file.tasks.retain(|_, rule| rule.any());
     file.updated_at_ms = now_ms();
     if let Err(e) = runners::save(&app.cfg.runners_file(), &file) {
         return fail(422, e);
+    }
+    if app.runner_block.lock().await.connected {
+        let states = app.runners.lock().await.clone();
+        touched_repos.sort();
+        touched_repos.dedup();
+        for repo in touched_repos {
+            let text = runners::scope_block_text(&file, &states, &repo, None);
+            runners::sync_scope_block(&app, &repo, None, &text).await;
+        }
+        for id in touched_tasks {
+            let repo = crate::board::repo_of(&id).to_string();
+            let text = runners::scope_block_text(&file, &states, &repo, Some(&id));
+            runners::sync_scope_block(&app, &repo, Some(&id), &text).await;
+        }
     }
     app.db.runner_remove(&body.id);
     app.db.meta_set(&crate::runners_alert::meta_key(&body.id), "");
     app.runners.lock().await.retain(|s| s.id != body.id);
     spawn_after_change(app.clone(), false);
     Json(json!({"ok": true, "warned": busy})).into_response()
+}
+
+#[derive(Deserialize)]
+pub struct PickBody {
+    /// `task` or `repo`.
+    scope: String,
+    /// The task's id (`herdr-planner/45`) or the repository's name.
+    id: String,
+    #[serde(default)]
+    runner: String,
+    #[serde(default)]
+    tags: Vec<String>,
+    confirm: Option<bool>,
+}
+
+/// `POST /api/runner/pick`: the yard rule of one task or one repository (PLN-45). An empty rule clears it. The rule's
+/// block goes to the scope's own instructions when the agents are connected.
+pub async fn runner_pick(State(app): State<Shared>, headers: HeaderMap, Json(body): Json<PickBody>) -> Response {
+    if !same_origin(&headers) {
+        return fail(403, "cross-origin request refused");
+    }
+    if body.confirm != Some(true) {
+        return fail(400, "правило верфи требует подтверждения");
+    }
+    let runner = body.runner.trim().to_string();
+    let mut tags: Vec<String> = body
+        .tags
+        .iter()
+        .map(|t| t.trim().to_string())
+        .filter(|t| !t.is_empty())
+        .collect();
+    tags.sort();
+    tags.dedup();
+    for t in &tags {
+        if !runners::valid_tag(t) {
+            return fail(400, format!("метка: буквы, цифры, «-», «_», «.»: {t:?}"));
+        }
+    }
+    let mut file = match file_of(&app) {
+        Ok(f) => f,
+        Err(r) => return r,
+    };
+    if !runner.is_empty() && file.get(&runner).is_none() {
+        return fail(404, "такой верфи нет в списке");
+    }
+    let (repo, task) = match body.scope.as_str() {
+        "task" => {
+            if !runners::valid_task_key(&body.id) {
+                return fail(400, "ключ задачи: repo/n");
+            }
+            let repo = crate::board::repo_of(&body.id).to_string();
+            if runner.is_empty() && tags.is_empty() {
+                file.tasks.remove(&body.id);
+            } else {
+                file.tasks.insert(body.id.clone(), runners::TaskRule { runner: runner.clone(), tags: tags.clone() });
+            }
+            (repo, Some(body.id.clone()))
+        }
+        "repo" => {
+            if !crate::taskmeta::valid_repo(&body.id) {
+                return fail(400, "имя репозитория: одна часть пути");
+            }
+            if runner.is_empty() {
+                file.assign.remove(&body.id);
+            } else {
+                file.assign.insert(body.id.clone(), runner.clone());
+            }
+            if tags.is_empty() {
+                file.need.remove(&body.id);
+            } else {
+                file.need.insert(body.id.clone(), tags.clone());
+            }
+            (body.id.clone(), None)
+        }
+        _ => return fail(400, "scope: task или repo"),
+    };
+    file.updated_at_ms = now_ms();
+    if let Err(e) = runners::save(&app.cfg.runners_file(), &file) {
+        return fail(422, e);
+    }
+    let states = app.runners.lock().await.clone();
+    let pick = file.pick(&states, &repo, task.as_deref());
+    if app.runner_block.lock().await.connected {
+        let text = runners::scope_block_text(&file, &states, &repo, task.as_deref());
+        runners::sync_scope_block(&app, &repo, task.as_deref(), &text).await;
+    }
+    app::rebuild_runners(&app).await;
+    app::publish(&app).await;
+    Json(json!({"ok": true, "pick": pick})).into_response()
 }
 
 /* ───────── the agents' block ───────── */
@@ -702,6 +847,12 @@ pub async fn runner_connect(State(app): State<Shared>, headers: HeaderMap, Json(
         if let Ok(json) = serde_json::to_string(&*state) {
             app.db.meta_set("runner_block", &json);
         }
+    }
+    // The rules of repositories and tasks now get their own blocks too (and lose them on disconnect).
+    if body.on {
+        runners::sync_blocks(&app).await;
+    } else {
+        runners::clear_scope_blocks(&app).await;
     }
     app::refresh(&app).await;
     app::rebuild_runners(&app).await;

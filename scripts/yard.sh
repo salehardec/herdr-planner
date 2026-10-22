@@ -19,10 +19,13 @@
 #   scripts/yard.sh down                      remove the task's container (the cache volume stays)
 #   scripts/yard.sh status                    the container, the lock, the cache, the image
 #   scripts/yard.sh prune [-y]                old images of this yard; ask before anything else
+#   scripts/yard.sh where                     which yard this task would use, and nothing else
 #
-# Where the yard is: $DOCKER_HOST (the agents' rule exports it), else the default runner of
-# ~/.herdr-projects/settings/runners.json, as ssh://<target>. YARD=local runs the same work on this machine, without a
-# container (a way out for the human; an agent whose yard does not answer stops instead, see the board's rule).
+# Where the yard is: $DOCKER_HOST (the agents' rule exports it), else the rule of the task or its repository in
+# ~/.herdr-projects/settings/runners.json (a named yard, or tags like gpu/x86_64), else that list's default. A yard that
+# does not answer, or whose load1 is at its busy threshold, gives way to the next one the rule allows; when all are busy,
+# the least loaded is taken. YARD_RUNNER names one yard outright. YARD=local runs the same work on this machine, without
+# a container (a way out for the human; an agent whose yard does not answer stops instead, see the board's rule).
 #
 # The task's tag: $HERDR_PROJECTS_TAG, else the name of $TMPDIR (…/PLN-49), else $HERDR_PROJECTS_ID with the repository's
 # key from ~/.herdr-projects/settings/config.json, else dev-<user>. The container is yard-<tag>, labelled herdr.task=<tag>;
@@ -104,15 +107,122 @@ sha12() {
   fi
 }
 
-# The yard: $DOCKER_HOST, else the default of the planner's own list of runners.
+# The repository of the task's tag, when the board's settings know its key (`config.json` first, then `repo-keys.json`).
+repo_of_tag() {
+  key=$1
+  [ -n "$key" ] || return 0
+  cfg=$HOME/.herdr-projects/settings/config.json
+  if [ -r "$cfg" ]; then
+    jq -r --arg k "$key" '.repos | to_entries[]? | select((.value.repo.key? // "") == $k) | .key' "$cfg" 2>/dev/null | head -n 1
+    return 0
+  fi
+  keys=$HOME/.herdr-projects/data/repo-keys.json
+  if [ -r "$keys" ]; then
+    jq -r --arg k "$key" '(.had // .) | to_entries[]? | select(.value == $k) | .key' "$keys" 2>/dev/null | head -n 1
+  fi
+}
+
+# The yards the rule allows, in the order they are tried: `id, target, busy %, tags`. The task's own rule replaces the
+# repository's; a named yard comes first, then the default, then the list.
+yard_candidates() { # file, task id, repo, wanted yard (empty — the rule)
+  jq -r --arg task "$2" --arg repo "$3" --arg want "$4" '
+    . as $f
+    | ($f.tasks[$task] // null) as $t
+    | (($t != null) and ((($t.runner // "") != "") or ((($t.tags // []) | length) > 0))) as $tany
+    | (if $tany then ($t.tags // []) else ($f.need[$repo] // []) end) as $need
+    | (if $tany then ($t.runner // "") else ($f.assign[$repo] // "") end) as $pref
+    | reduce ([
+        ($f.runners[] | select(.id == $pref)),
+        ($f.runners[] | select(.id == ($f.default // ""))),
+        $f.runners[]
+      ][]) as $r ([]; if any(.id == $r.id) then . else . + [$r] end)
+    | .[] as $r
+    | select($want == "" or $r.id == $want)
+    | select(($need | length) == 0 or ($need | all(. as $n | (($r.tags // []) | map(ascii_downcase) | index($n | ascii_downcase)) != null)))
+    | [$r.id, $r.target, ($r.busy_pct // $f.busy_pct // 85), (($r.tags // []) | join(","))] | @tsv
+  ' "$1" 2>/dev/null
+}
+
+# `load1 cpus` of a yard over ssh; nothing for a yard that does not answer.
+ssh_load() {
+  t=$1
+  case "$t" in *://*) t=${t#*://} ;; esac
+  port=
+  case "$t" in
+    *:* ) port=${t##*:}; t=${t%:*} ;;
+  esac
+  if [ -n "$port" ]; then
+    ssh -o BatchMode=yes -o ConnectTimeout=5 -p "$port" "$t" 'echo "$(cut -d" " -f1 /proc/loadavg) $(nproc)"' 2>/dev/null
+  else
+    ssh -o BatchMode=yes -o ConnectTimeout=5 "$t" 'echo "$(cut -d" " -f1 /proc/loadavg) $(nproc)"' 2>/dev/null
+  fi
+}
+
+# The yard: $DOCKER_HOST; else the task's (or its repository's) rule from the planner's list of runners; else the default
+# of that list. A yard that does not answer, or is loaded above its threshold, gives way to the next one the rule allows;
+# when every allowed yard is busy, the least loaded is taken rather than a yard the rule does not allow.
 resolve_yard() {
-  if [ -z "${DOCKER_HOST:-}" ]; then
+  if [ -n "${YARD_RUNNER:-}" ] && [ -z "${DOCKER_HOST:-}" ]; then
+    f=$HOME/.herdr-projects/settings/runners.json
+    [ -r "$f" ] || die 3 "yard: YARD_RUNNER=$YARD_RUNNER, а списка верфей нет: $f"
+    command -v jq >/dev/null 2>&1 || die 3 "yard: для выбора верфи нужен jq"
+    target=$(jq -r --arg id "$YARD_RUNNER" '.runners[] | select(.id == $id) | .target' "$f" 2>/dev/null | head -n 1)
+    [ -n "$target" ] || die 3 "yard: верфи $YARD_RUNNER нет в $f"
+    case "$target" in *://*) DOCKER_HOST=$target ;; *) DOCKER_HOST="ssh://$target" ;; esac
+    export DOCKER_HOST
+  elif [ -z "${DOCKER_HOST:-}" ]; then
     f=$HOME/.herdr-projects/settings/runners.json
     target=
     if [ -r "$f" ] && command -v jq >/dev/null 2>&1; then
-      id=$(jq -r '.default // empty' "$f" 2>/dev/null || true)
-      [ -z "$id" ] || target=$(jq -r --arg id "$id" '.runners[] | select(.id == $id) | .target' "$f" 2>/dev/null | head -n 1)
-      [ -n "$target" ] || target=$(jq -r '.runners[0].target // empty' "$f" 2>/dev/null || true)
+      key=${TAG%%-*}
+      n=${TAG##*-}
+      repo=
+      [ "$n" != "$TAG" ] && repo=$(repo_of_tag "$key")
+      task=
+      [ -n "$repo" ] && task="$repo/$n"
+      cands=$(yard_candidates "$f" "$task" "$repo" "${YARD_RUNNER:-}")
+      if [ -z "$cands" ]; then
+        need=$(jq -r --arg task "$task" --arg repo "$repo" '
+          . as $f
+          | ($f.tasks[$task] // null) as $t
+          | (($t != null) and ((($t.runner // "") != "") or ((($t.tags // []) | length) > 0))) as $any
+          | (if $any then ($t.tags // []) else ($f.need[$repo] // []) end) | join(", ")
+        ' "$f" 2>/dev/null || true)
+        die 3 "yard: в $f нет верфи под правило задачи ${task:-$TAG} (нужные метки: ${need:-нет})"
+      fi
+      best=
+      low=
+      low_load=
+      seen=
+      while IFS="$(printf '\t')" read -r id addr pct tags; do
+        [ -n "$id" ] || continue
+        seen="$seen $id${tags:+[$tags]}"
+        probe=$(ssh_load "$addr" || true)
+        [ -n "$probe" ] || continue
+        load1=${probe% *}
+        cpus=${probe##* }
+        if [ -n "$pct" ] && [ "$pct" != 0 ] && [ -n "$cpus" ] && [ "$cpus" != 0 ] &&
+          awk -v l="$load1" -v c="$cpus" -v p="$pct" 'BEGIN { exit !(l * 100 / c >= p) }'; then
+          # Busy: remember the least loaded of the busy ones as the last way out.
+          if [ -z "$low" ] || awk -v a="$load1" -v b="$low_load" 'BEGIN { exit !(a < b) }'; then
+            low=$addr
+            low_load=$load1
+          fi
+          continue
+        fi
+        best=$addr
+        break
+      done <<YARD_LIST
+$cands
+YARD_LIST
+      [ -n "$best" ] || best=$low
+      if [ -z "$best" ]; then
+        die 3 "yard: ни одна подходящая верфь не отвечает (проверены:$seen)"
+      fi
+      target=$best
+      if [ -n "$low" ] && [ "$best" = "$low" ]; then
+        printf 'yard: все подходящие верфи заняты — беру наименее загруженную %s\n' "$best" >&2
+      fi
     fi
     if [ -z "$target" ]; then
       die 3 "yard: верфь не задана: нет DOCKER_HOST и нет верфи по умолчанию в ~/.herdr-projects/settings/runners.json"
@@ -449,6 +559,7 @@ local_work() {
     quick) HERDR_PLANNER_TARGET_DIR=$target CARGO_TARGET_DIR=$target exec sh -c "$(quick_script)" ;;
     fetch) say "YARD=local: снимки и тексты — $LOG_DIR/out" ;;
     down|up|sync|status|prune) say "YARD=local: контейнера нет, всё на этой машине" ;;
+    where) say "YARD=local: верфь не нужна, всё на этой машине" ;;
     *) usage; exit 2 ;;
   esac
 }
@@ -460,7 +571,7 @@ if [ $# -gt 0 ]; then shift; fi
 
 case "$cmd" in
   help|-h|--help) usage; exit 0 ;;
-  build|test|web|run|section|pages|check|quick|fetch|down|up|sync|status|prune) ;;
+  build|test|web|run|section|pages|check|quick|fetch|down|up|sync|status|prune|where) ;;
   *) usage; exit 2 ;;
 esac
 
@@ -477,6 +588,7 @@ IMAGE=$(image_tag)
 resolve_yard
 
 case "$cmd" in
+  where) printf '%s\n' "$YARD_SHOW"; exit 0 ;;
   up) up ;;
   sync) up; sync_tree; say "рабочая копия в $NAME:/work/in" ;;
   run)

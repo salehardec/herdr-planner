@@ -106,6 +106,7 @@ pub fn router(app: Shared) -> Router {
         .route("/api/runner/add", post(crate::runners_api::runner_add))
         .route("/api/runner/set", post(crate::runners_api::runner_set))
         .route("/api/runner/remove", post(crate::runners_api::runner_remove))
+        .route("/api/runner/pick", post(crate::runners_api::runner_pick))
         .route("/api/runner/connect", get(crate::runners_api::runner_connect_get).post(crate::runners_api::runner_connect))
         .route("/api/runner/clean/preview", post(crate::runners_api::clean_preview))
         .route("/api/runner/clean", post(crate::runners_api::runner_clean))

@@ -132,6 +132,12 @@ pub struct Snapshot {
     pub coordinator: CoordinatorState,
     /// Shipyards: machines the tasks' containers run on.
     pub runners: Vec<crate::runners::RunnerState>,
+    /// The yard chosen for every task, by task id (PLN-45).
+    pub runner_picks: std::collections::BTreeMap<String, crate::runners::Pick>,
+    /// The yard chosen for every repository (its own rule, else the default).
+    pub runner_repo_picks: std::collections::BTreeMap<String, crate::runners::Pick>,
+    /// The rules behind those picks, as the page edits them.
+    pub runner_rules: crate::runners::Rules,
     /// Whether the docker block is in this machine's agent instructions.
     pub runner_block: crate::runners::BlockState,
     pub theme: Theme,
@@ -212,6 +218,9 @@ pub struct App {
     pub runner_alerts_lock: Mutex<()>,
     /// Whether the docker block is in this machine's instructions (as last synced).
     pub runner_block: Mutex<crate::runners::BlockState>,
+    /// One rebuild of the shipyards' snapshot at a time: a rebuild that began before a rule was saved must not put its
+    /// older picks over the newer ones (PLN-45).
+    pub runner_rebuild_lock: Mutex<()>,
     /// How loaded this machine is (CPU, memory, video cards); kept fresh while a page is open.
     pub load: RwLock<crate::load::Load>,
     /// A page has just connected: read the load now, not at the next beat.
@@ -281,6 +290,9 @@ impl App {
                 program: String::new(),
             },
             runners: Vec::new(),
+            runner_picks: std::collections::BTreeMap::new(),
+            runner_repo_picks: std::collections::BTreeMap::new(),
+            runner_rules: crate::runners::Rules::default(),
             runner_block: crate::runners::BlockState::default(),
             theme,
             herdr: HerdrInfo {
@@ -353,6 +365,7 @@ impl App {
             runner_auto_try: Mutex::new(HashMap::new()),
             runner_alerts_lock: Mutex::new(()),
             runner_block: Mutex::new(runner_block),
+            runner_rebuild_lock: Mutex::new(()),
             load: RwLock::new(crate::load::Load::default()),
             load_poke: Notify::new(),
         })
@@ -664,6 +677,7 @@ pub async fn rebuild_runners(app: &Shared) {
             st.auto = r.auto.clone();
             st.alert_rules = r.alerts.clone();
             st.limits = r.effective_limits(Some(&st.host));
+            st.busy_pct = r.busy_pct;
         }
         // The marks of the rule (PLN-43) come after the classes and the limits of the list file.
         crate::runners::apply_limits(st);
@@ -673,7 +687,16 @@ pub async fn rebuild_runners(app: &Shared) {
     crate::runners_alert::apply(app, &mut states, now_ms()).await;
     note_forgotten(app, &states).await;
     let block = app.runner_block.lock().await.clone();
+    // Which yard every task gets (PLN-45): after the classes, for the same read the page sees. The rules are read once
+    // more here, at the moment the snapshot is filled, under one lock: a rebuild that started before a rule was saved
+    // must not put its older picks over the newer ones.
+    let _one = app.runner_rebuild_lock.lock().await;
+    let rules_file = crate::runners::load(&app.cfg.runners_file()).unwrap_or_default();
+    let (picks, repo_picks) = crate::runners::picks(&rules_file, &states, &tasks, &archived, &repos);
     let mut snap = app.snapshot.write().await;
+    snap.runner_picks = picks;
+    snap.runner_repo_picks = repo_picks;
+    snap.runner_rules = crate::runners::Rules::of(&rules_file);
     snap.runners = states;
     snap.runner_block = block;
     // «Ждёт тебя» counts the alarms of the yards too: the page's own list is built from the same snapshot.
