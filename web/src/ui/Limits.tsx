@@ -5,6 +5,7 @@ import { dayTimeOf } from '../util/dates';
 import { money } from '../util/format';
 import type { AgentUsage, LimitWindow } from '../types';
 import { Gl } from './Gl';
+import { cardAnchor, closeCard } from './hovercard';
 import './limits.css';
 
 const agents = (): AgentUsage[] => snap.value?.limits?.agents ?? [];
@@ -30,12 +31,12 @@ export function worstLimit(): { agent: AgentUsage; window: LimitWindow } | null 
   return worst;
 }
 
+/** The chip is short: the share left of the window nearest to its end, and the program. Every window of every subscription is in the card. */
 export function LimitsChip(): JSX.Element {
   const worst = worstLimit();
-  const open = panels.limits.value;
   if (!worst) {
     return (
-      <button class="btn limchip" id="hud-limits" type="button" aria-pressed={open} aria-label={t('limits.noneTip')} title={t('limits.noneTip')} onClick={() => { panels.limits.value = !open; }}>
+      <button class="btn limchip" id="hud-limits" type="button" aria-label={t('limits.noneTip')} {...cardAnchor('limits')}>
         <Gl n="limit" /><span class="lim-ag">{t('limits.chip')} <span class="faint">{t('limits.noData')}</span></span><b class="lim-pc nd">—</b>
       </button>
     );
@@ -45,11 +46,8 @@ export function LimitsChip(): JSX.Element {
   const stale = worst.agent.stale ? ` · ${t('limits.stale')}` : '';
   const tip = `${worst.agent.name} · ${worst.window.label}: ${t('limits.left', { n: remaining })}${stale}`;
   return (
-    <button
-      class={`btn limchip${level}`} id="hud-limits" type="button" aria-pressed={open} onClick={() => { panels.limits.value = !open; }}
-      aria-label={tip} title={tip}
-    >
-      <Gl n="limit" /><b class="lim-pc">{remaining}%</b> <span class="lim-ag">{worst.agent.name} · {worst.window.label}</span>
+    <button class={`btn limchip${level}`} id="hud-limits" type="button" aria-label={tip} {...cardAnchor('limits')}>
+      <Gl n="limit" /><b class="lim-pc">{remaining}%</b> <span class="lim-ag">{worst.agent.name}</span>
     </button>
   );
 }
@@ -69,7 +67,7 @@ function Window(props: { w: LimitWindow }): JSX.Element {
   );
 }
 
-function Agent(props: { a: AgentUsage }): JSX.Element {
+export function LimitAgent(props: { a: AgentUsage }): JSX.Element {
   const a = props.a;
   const windows = a.limits ?? [];
   const level = windows.reduce<'ok' | 'warn' | 'crit'>((lv, w) => (w.severity === 'crit' || lv === 'crit' ? 'crit' : w.severity === 'warn' || lv === 'warn' ? 'warn' : 'ok'), 'ok');
@@ -99,7 +97,19 @@ export function LimitsPop(): JSX.Element | null {
   return (
     <div class="panel pop limits" role="dialog" aria-label={t('limits.title')}>
       <div class="lim-pop-head"><b>{t('limits.title')}</b><span>{t('limits.sub')}</span><span class="grow" /><button class="btn icon sm" type="button" aria-label={t('close')} onClick={() => { panels.limits.value = false; }}><Gl n="close" /></button></div>
-      <div class="lim-list">{list.length ? list.map((a) => <Agent key={a.id} a={a} />) : <div class="none">{t('limits.omarchyNone')}</div>}</div>
+      <div class="lim-list">{list.length ? list.map((a) => <LimitAgent key={a.id} a={a} />) : <div class="none">{t('limits.omarchyNone')}</div>}</div>
+    </div>
+  );
+}
+
+/** The card under the chip: all the windows of all the subscriptions at once, and the way to the panel. */
+export function LimitsCard(): JSX.Element {
+  const list = agents();
+  return (
+    <div class="lim-card" id="limits-card">
+      <div class="lim-pop-head"><b>{t('limits.cardTitle')}</b><span>{t('limits.sub')}</span></div>
+      <div class="lim-list">{list.length ? list.map((a) => <LimitAgent key={a.id} a={a} />) : <div class="none">{t('limits.omarchyNone')}</div>}</div>
+      <div class="lim-more"><button type="button" class="ld-go" id="limits-more" onClick={() => { closeCard(); panels.limits.value = true; }}>{t('limits.title')}</button></div>
     </div>
   );
 }

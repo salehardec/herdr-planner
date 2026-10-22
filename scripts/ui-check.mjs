@@ -1738,7 +1738,18 @@ const GB = 1073741824;
 const reading = (cpu, mem, gpus = [], extra = {}) => ({ ok: true, cpu: { percent: cpu, cores: 24 }, mem: { used: Math.round(32 * GB * mem / 100), total: 32 * GB, percent: mem }, gpus, ...extra });
 const card = (name, util, usedGb, totalGb) => ({ name, util, mem_used: usedGb * GB, mem_total: totalGb * GB });
 const meter = (k) => evalJs(`(() => { const m = document.querySelector('#loadbar .ld-m[data-k="${k}"]'); return m ? { level: m.dataset.level, v: m.querySelector('.ld-v').textContent, w: m.querySelector('.ld-bar i').getAttribute('style') } : null; })()`);
-const hoverLoad = (on) => evalJs(`document.querySelector('#load-chip').dispatchEvent(new MouseEvent('${on ? 'mouseenter' : 'mouseleave'}')); true`);
+// The card opens a moment after the pointer arrives and goes a moment after it leaves (a pause that lets it cross to the card): wait for it.
+const hoverLoad = async (on) => {
+  await evalJs(`document.querySelector('#load-chip').dispatchEvent(new MouseEvent('${on ? 'mouseenter' : 'mouseleave'}')); true`);
+  await waitFor(on ? '!!document.querySelector("#load-pop")' : '!document.querySelector("#top-card")', 3000);
+};
+
+// The subscription chip opens a card (not the panel); the panel is behind its «Лимиты подписок» link.
+const openLimitsPanel = async () => {
+  await click('#hud-limits');
+  await waitFor('!!document.querySelector("#limits-more")', 3000);
+  await click('#limits-more');
+};
 
 section('load', async () => {
   await resetUi();
@@ -1753,10 +1764,10 @@ section('load', async () => {
   check('a machine without a video card has no GPU bar', !(await meter('gpu')));
   await hoverLoad(true);
   const tip0 = (await text('#load-pop')).replace(/\s+/g, ' ');
-  check('the tooltip names the machine and gives cores, gigabytes and the time of the reading', await waitFor('getComputedStyle(document.querySelector("#load-pop")).display !== "none"', 3000)
-    && tip0.includes(HOST) && tip0.includes('эта машина') && new RegExp(`${api0[1].cpu.cores} (ядро|ядра|ядер)`).test(tip0) && /занято [\d,]+ из [\d,]+ ГБ/.test(tip0) && /обновлено \d\d:\d\d:\d\d/.test(tip0) && tip0.includes('Видеокарт нет'), tip0);
+  check('the tooltip names the machine and gives cores, gigabytes and the time of the reading', await waitFor('!!document.querySelector("#load-pop")', 3000)
+    && tip0.includes(HOST) && tip0.includes('эта машина') && new RegExp(`${api0[1].cpu.cores} (ядро|ядра|ядер)`).test(tip0) && /Занято [\d,]+ из [\d,]+ ГБ/.test(tip0) && /Обновлено \d\d:\d\d:\d\d/.test(tip0) && tip0.includes('Видеокарт нет'), tip0);
   await hoverLoad(false);
-  check('the tooltip goes away with the pointer', await waitFor('getComputedStyle(document.querySelector("#load-pop")).display === "none"', 3000));
+  check('the tooltip goes away with the pointer', await waitFor('!document.querySelector("#top-card")', 3000));
 
   // the colour follows the thresholds: normal below 70 %, high from 70, critical from 90
   setLoad(reading(69.4, 70.2, [card('Test Card', 89.6, 2, 8)]));
@@ -1781,7 +1792,7 @@ section('load', async () => {
   await waitFor('document.querySelector("#loadbar .ld-m[data-k=gpu] .ld-v")?.textContent === "25%"', 8000);
   await hoverLoad(true);
   const tip1 = (await text('#load-pop')).replace(/\s+/g, ' ');
-  check('two cards: the bar is their mean, the tooltip lists each with its video memory', tip1.includes('Card One') && tip1.includes('Card Two') && /видеопамять 2,0 из 24,0 ГБ/.test(tip1) && /видеопамять 1,5 из 12,0 ГБ/.test(tip1) && /занято 25,6 из 32,0 ГБ/.test(tip1) && tip1.includes('средняя загрузка карт: 25 %'), tip1);
+  check('two cards: the bar is their mean, the tooltip lists each with its video memory', tip1.includes('Card One') && tip1.includes('Card Two') && /Видеопамять 2,0 из 24,0 ГБ/.test(tip1) && /Видеопамять 1,5 из 12,0 ГБ/.test(tip1) && /Занято 25,6 из 32,0 ГБ/.test(tip1) && tip1.includes('средняя загрузка карт: 25 %'), tip1);
   await shot('load-tooltip.png');
   await hoverLoad(false);
 
@@ -1830,15 +1841,17 @@ section('load', async () => {
   await waitFor('document.querySelector("#loadbar")?.dataset.state === "on"', 8000);
   await hoverLoad(true);
   const tipEn = (await text('#load-pop')).replace(/\s+/g, ' ');
-  check('English: cores, GB in use, video memory, updated, in English', /24 cores/.test(tipEn) && /20\.5 of 32\.0 GB in use/.test(tipEn) && /video memory 1\.0 of 8\.0 GB/.test(tipEn) && /updated \d\d:\d\d:\d\d/.test(tipEn) && tipEn.includes('this machine'), tipEn);
+  check('English: cores, GB in use, video memory, updated, in English', /24 cores/.test(tipEn) && /20\.5 of 32\.0 GB in use/.test(tipEn) && /Video memory 1\.0 of 8\.0 GB/.test(tipEn) && /Updated \d\d:\d\d:\d\d/.test(tipEn) && tipEn.includes('this machine'), tipEn);
   await hoverLoad(false);
   await evalJs('setLang("ru"); true');
 
-  // a click flies to the Galaxy
+  // «Подробнее» in the card flies to the Galaxy (the machine's Focus)
   await go('alpha/6');
   check('a task is selected before the click', (await evalJs('plannerDebug().selected?.kind')) === 'planet');
-  await click('#load-chip');
-  check('a click on the bars flies to the Galaxy (nothing is selected)', await waitFor('plannerDebug().selected === null', 8000));
+  await hoverLoad(true);
+  check('the card has «Подробнее»', (await text('#load-more')) === 'Подробнее');
+  await click('#load-more');
+  check('«Подробнее» flies to the Galaxy (nothing is selected) and closes the card', await waitFor('plannerDebug().selected === null && !document.querySelector("#top-card")', 8000));
   await resetUi();
 
   // the theme: light and dark, the same semantic colours
@@ -1898,7 +1911,7 @@ const topRects = () => evalJs(`(() => {
   const r = (s) => { const e = document.querySelector(s); if (!e || getComputedStyle(e).display === 'none') return null; const b = e.getBoundingClientRect(); return b.width > 0 ? { l: b.left, t: b.top, r: b.right, b: b.bottom, w: b.width, h: b.height } : null; };
   const chip = document.querySelector('#hud-limits');
   return { menu: r('#menu-btn'), crumbs: r('#crumbs'), load: r('#load-chip'), lim: r('#hud-limits'), q: r('#q'), wait: r('#wait-btn'), mode: r('#mode'),
-    form: chip?.dataset.form, tier: document.querySelector('#loadbar')?.dataset.tier, limText: chip ? chip.innerText.trim() : '', limTip: chip ? chip.title : '',
+    form: chip?.dataset.form, tier: document.querySelector('#loadbar')?.dataset.tier, limText: chip ? chip.innerText.trim() : '', limTip: chip ? chip.getAttribute('aria-label') || '' : '',
     limClipped: chip ? chip.scrollWidth > chip.clientWidth + 1 || [...chip.querySelectorAll('.lim-ag')].some((e) => e.offsetParent && e.scrollWidth > e.clientWidth + 1) : false, sw: document.documentElement.scrollWidth, phone: document.documentElement.classList.contains('bp900') };
 })()`);
 
@@ -1950,7 +1963,7 @@ section('top bar', async () => {
       }
       check(`${at}: the crumbs are whole unless the window is a phone's`, await evalJs(`[...document.querySelectorAll('#crumbs button')].every((b) => b.scrollWidth <= b.clientWidth + 1) || document.documentElement.classList.contains('bp900')`), JSON.stringify(m));
       check(`${at}: the subscription chip (${m.form}) is whole; shortened to its percentage it keeps the words in its tooltip`, !m.limClipped
-        && (m.form === 'none' ? !m.lim : !!m.lim) && (m.form !== 'pct' || (/^\d+\s*%$/.test(m.limText) && m.limTip.includes(' · ') && /\d/.test(m.limTip))) && (m.form !== 'full' || m.limText.includes(' · ')), JSON.stringify(m));
+        && (m.form === 'none' ? !m.lim : !!m.lim) && (m.form !== 'pct' || (/^\d+\s*%$/.test(m.limText) && m.limTip.includes(' · ') && /\d/.test(m.limTip))) && (m.form !== 'full' || /^\d+\s*%\s+\S/.test(m.limText)), JSON.stringify(m));
       if (m.phone || scale === 200) check(`${at}: narrow: the chip is a percentage and the bars the worst one`, m.form === 'pct' || m.form === 'none', JSON.stringify(m));
       if (w >= 1920 && scale === 'auto') {
         // with the short crumbs of the Galaxy there is room: the chip keeps the agent and the window, whole (not cut by an ellipsis)
@@ -1958,7 +1971,7 @@ section('top bar', async () => {
         await waitFor('plannerDebug().selected === null && world.debug().flight === "idle"', 12000);
         await beat();
         const h = await topRects();
-        check(`${at}: with room to spare the chip keeps the words, whole`, h.form === 'full' && h.limText.includes(' · ') && !h.limClipped, JSON.stringify(h));
+        check(`${at}: with room to spare the chip keeps the program, whole`, h.form === 'full' && /^\d+\s*%\s+\S/.test(h.limText) && !h.limText.includes(' · ') && !h.limClipped, JSON.stringify(h));
       }
       if (scale === 'auto' && w === 1920) await shot(`topbar-${theme}.png`);
     }
@@ -1980,7 +1993,7 @@ section('top bar', async () => {
     const m = await topRects();
     const shown = Object.values(m).filter((v) => v && typeof v === 'object' && 'l' in v);
     check(`${w}×${h}: nothing overlaps and the page does not scroll sideways`, shown.every((a, i) => shown.slice(i + 1).every((b) => apart(a, b))) && shown.every((a) => a.l >= -1 && a.r <= w + 1) && m.sw <= w + 1, JSON.stringify(m));
-    check(`${w}×${h}: the chip is a percentage with a tooltip`, m.form === 'pct' && /^\d+\s*%$/.test(m.limText) && m.limTip.length > 8, JSON.stringify(m));
+    check(`${w}×${h}: the chip is a percentage with a label`, m.form === 'pct' && /^\d+\s*%$/.test(m.limText) && m.limTip.length > 8, JSON.stringify(m));
     await click('#menu-btn');
     check(`${w}×${h}: the menu is inside the window`, await waitFor('!!document.querySelector(".menupop")', 3000) && await evalJs(`(() => { const p = document.querySelector('.menupop').getBoundingClientRect(); return p.left >= -1 && p.right <= innerWidth + 1; })()`));
     await click('#menu-btn');
@@ -2002,6 +2015,8 @@ section('limits', async () => {
   check('the top bar has a limits chip naming the worst window', await waitFor('!!document.querySelector("#hud-limits")', 8000) && /3\s*%/.test(await text('#hud-limits')), await text('#hud-limits'));
   await clearToasts();
   await click('#hud-limits');
+  check('a click on the chip opens the card with all the subscriptions, not the panel', await waitFor('!!document.querySelector("#top-card[data-card=limits]")', 3000) && !(await exists('.pop.limits')));
+  await click('#limits-more');
   check('the limits panel opens', await waitFor('!!document.querySelector(".pop.limits")', 3000));
   const box = await evalJs(`(() => {
     const p = document.querySelector('.pop.limits'); if (!p) return { ok: false };
@@ -2012,7 +2027,7 @@ section('limits', async () => {
   check('the limits panel is above the others and fully in view', box.inView && box.top && box.center, JSON.stringify(box));
   const lt = (await text('.pop.limits')).replace(/\s+/g, ' ');
   check('the panel lists Claude, omp and pi', /Claude/.test(lt) && /OMP/.test(lt) && /Pi/.test(lt), lt.slice(0, 200));
-  check('remaining is the inverse of the used share', /осталось 79 %/.test(lt) && /осталось 9 %/.test(lt) && /осталось 3 %/.test(lt), lt.slice(0, 260));
+  check('remaining is the inverse of the used share', /Осталось 79 %/.test(lt) && /Осталось 9 %/.test(lt) && /Осталось 3 %/.test(lt), lt.slice(0, 260));
   check('80% is a warning and 95% is critical', (await evalJs('document.querySelectorAll(".lim-win.warn").length')) === 1 && (await evalJs('document.querySelectorAll(".lim-win.crit").length')) === 1);
   check('omp and pi honestly say there is no data; an old record is stale', await hasText('.lim-agent[data-agent="omp"]', 'нет данных') && lt.toLowerCase().includes('устарело'));
   check('the world draws one arc per agent with limits and the Quasar flickers on 95%', (await debug())?.limitArcs === 1 && (await debug())?.limitCrit === true, JSON.stringify({ a: (await debug())?.limitArcs, c: (await debug())?.limitCrit }));
@@ -2022,6 +2037,203 @@ section('limits', async () => {
   check('Q closes the limits panel', await waitFor('!document.querySelector(".pop.limits")', 3000));
 });
 
+
+// The details cards of the top bar: the bars and the subscription chip are short; what they stand for opens in a card under them
+// (hover, keyboard focus, a tap), aligned to the element, inside the window, shut by Esc or by leaving.
+const mouseTo = (x, y) => send('Input.dispatchMouseEvent', { type: 'mouseMoved', x, y });
+const centre = (r) => [(r.l + r.r) / 2, (r.t + r.b) / 2];
+const cardRect = () => rectOf('#top-card');
+const cardOpen = (id) => waitFor(`!!document.querySelector('#top-card[data-card="${id}"]')`, 3000);
+const cardGone = () => waitFor('!document.querySelector("#top-card")', 3000);
+const cardPlace = async (anchor, id, w, h, at) => {
+  const a = await rectOf(anchor);
+  const c = await cardRect();
+  const ok = !!a && !!c && c.t >= a.b - 1 && c.t <= a.b + 24 && c.l >= -1 && c.r <= w + 1 && c.b <= h + 1
+    && (Math.abs(c.l - a.l) < 3 || Math.abs(c.r - a.r) < 3 || c.l <= 9);
+  check(`${at}: the ${id} card is under its element, aligned to it, inside the window`, ok, JSON.stringify({ a, c, w, h }));
+};
+
+section('top cards', async () => {
+  await resetUi();
+  setLoad(reading(55, 72, [card('Test Card', 33, 2, 8)]));
+  await waitFor('document.querySelector("#loadbar .ld-m[data-k=cpu] .ld-v")?.textContent === "55%" && !!document.querySelector("#loadbar .ld-m[data-k=gpu]")', 12000);
+  await waitFor('/\\d\\s*%/.test(document.querySelector("#hud-limits")?.innerText || "")', 8000);
+  await mouseTo(700, 600);
+
+  const chipText = (await text('#hud-limits')).trim();
+  check('the subscription chip is short: the share and the program, no window name', /^\d+\s*%\s+\S/.test(chipText) && !chipText.includes('·') && !/week|session|weekly|Fable/i.test(chipText), chipText);
+  check('the bars carry no long captions: only CPU, MEM, GPU and the numbers', !/ядер|ГБ|обновлено|видеопамять/i.test(await text('#load-chip')), await text('#load-chip'));
+  check('no card is open before anyone asks', !(await exists('#top-card')));
+
+  // the machine: a real pointer over the bars
+  const lc = await rectOf('#load-chip');
+  await mouseTo(...centre(lc));
+  check('the pointer over the bars opens the machine card', await cardOpen('load'));
+  await cardPlace('#load-chip', 'machine', 1500, 950, 'hover');
+  const m = (await text('#top-card')).replace(/\s+/g, ' ');
+  check('the machine card: CPU with its cores, memory in GB, the GPU with its video memory, the time of the reading, a link', m.includes(HOST) && /CPU 55 %/.test(m) && /24 ядра|24 ядер/.test(m) && /Занято 23,0 из 32,0 ГБ/.test(m) && /GPU 33 %/.test(m) && m.includes('Test Card') && /Видеопамять 2,0 из 8,0 ГБ/.test(m) && /Обновлено \d\d:\d\d:\d\d/.test(m) && m.includes('Подробнее'), m);
+  check('the card has no disk row when the machine does not report a disk', !m.includes('ДИСК'));
+  check('the card keeps the level in words and the bars in the theme\'s colours', await evalJs(`document.querySelector('#top-card .ld-r[data-k="mem"]').dataset.level === 'high' && getComputedStyle(document.querySelector('#top-card .ld-r[data-k="mem"] .ld-bar i')).backgroundColor !== getComputedStyle(document.querySelector('#top-card .ld-r[data-k="cpu"] .ld-bar i')).backgroundColor`));
+  await shot('topcard-load.png');
+
+  // the pointer goes from the bars to the card across the gap: the card does not flicker, and stays while the pointer is on it
+  await mouseTo(lc.l + 5, lc.b + 3);
+  await sleep(120);
+  const c0 = await cardRect();
+  await mouseTo(...centre(c0));
+  await sleep(700);
+  check('moving the pointer from the bars to the card (through the gap) keeps it open, and it stays while the pointer rests on it', !!(await cardRect()) && (await evalJs('document.querySelector("#top-card")?.dataset.card')) === 'load');
+  await mouseTo(700, 600);
+  check('leaving the card closes it (after a short pause, not at once)', await cardGone());
+  await mouseTo(...centre(lc));
+  await cardOpen('load');
+  await mouseTo(700, 600);
+  await sleep(60);
+  check('the card does not vanish the instant the pointer leaves', !!(await cardRect()));
+  check('and it does go', await cardGone());
+
+  // Esc
+  await mouseTo(...centre(lc));
+  await cardOpen('load');
+  await press('Escape');
+  check('Esc closes the card', await cardGone());
+  await mouseTo(700, 600);
+
+  // the keyboard: focus opens the card, Esc closes it, Enter keeps it
+  await evalJs('document.querySelector("#load-chip").focus(); true');
+  check('keyboard focus on the bars opens the card', await cardOpen('load'));
+  await press('Escape');
+  check('Esc closes it while the focus stays on the bars', await cardGone() && (await evalJs('document.activeElement?.id')) === 'load-chip');
+  await evalJs('document.querySelector("#load-chip").blur(); document.querySelector("#load-chip").focus(); true');
+  await cardOpen('load');
+  await click('#load-chip');
+  await evalJs('document.querySelector("#load-chip").dispatchEvent(new MouseEvent("mouseleave")); true');
+  await sleep(500);
+  check('Enter (a click that is not a mouse\'s) keeps the card open when the pointer is elsewhere', (await evalJs('document.querySelector("#top-card")?.dataset.pinned')) === 'true');
+  check('«Подробнее» is reachable from the keyboard: Tab from the bars comes to the subscription chip, which takes the card over', await (async () => { await evalJs('document.querySelector("#hud-limits").focus(); true'); return cardOpen('limits'); })());
+  await press('Escape');
+  await cardGone();
+
+  // the subscriptions: every limit of every subscription at once
+  await mouseTo(...centre(await rectOf('#hud-limits')));
+  check('the pointer over the chip opens the subscriptions card', await cardOpen('limits'));
+  await cardPlace('#hud-limits', 'subscriptions', 1500, 950, 'hover');
+  const lt = (await text('#top-card')).replace(/\s+/g, ' ');
+  check('the card lists Claude, omp and pi, each limit with what is left, the reset time and «через N»', /Claude/.test(lt) && /OMP/.test(lt) && /Pi/.test(lt) && /Осталось 79 %/.test(lt) && /Осталось 9 %/.test(lt) && /Осталось 3 %/.test(lt) && /Сброс [\d:., ]+ · через \d+ ч/.test(lt), lt.slice(0, 400));
+  check('all the windows of the subscription are there (more than the chip\'s one), with the thresholds in colour', (await evalJs('document.querySelectorAll("#top-card .lim-win").length')) >= 3 && (await evalJs('document.querySelectorAll("#top-card .lim-win.warn").length')) === 1 && (await evalJs('document.querySelectorAll("#top-card .lim-win.crit").length')) === 1);
+  check('the card links to «Лимиты подписок»', (await text('#limits-more')) === 'Лимиты подписок');
+  await shot('topcard-limits.png');
+  await press('Escape');
+  check('Esc closes the subscriptions card', await cardGone());
+  await mouseTo(700, 600);
+  await evalJs('document.querySelector("#hud-limits").blur(); document.querySelector("#hud-limits").focus(); true');
+  await cardOpen('limits');
+  await click('#limits-more');
+  check('«Лимиты подписок» opens the panel and closes the card', await waitFor('!!document.querySelector(".pop.limits") && !document.querySelector("#top-card")', 3000));
+  await press('KeyQ', 'q');
+  await waitFor('!document.querySelector(".pop.limits")', 3000);
+  await evalJs('document.activeElement?.blur(); true');
+
+  // the search is not covered for long: focusing it shuts the card; a press elsewhere too
+  await mouseTo(...centre(lc));
+  await cardOpen('load');
+  await evalJs('document.querySelector("#q").focus(); true');
+  check('focusing the search shuts the card', await cardGone());
+  await mouseTo(...centre(lc));
+  await cardOpen('load');
+  await mouseTo(700, 600);
+  await send('Input.dispatchMouseEvent', { type: 'mousePressed', x: 700, y: 600, button: 'left', buttons: 1, clickCount: 1 });
+  await send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: 700, y: 600, button: 'left', buttons: 0, clickCount: 1 });
+  check('a press elsewhere shuts it', await cardGone());
+
+  // a tap on a touch screen: it opens and stays; the next tap on the bars, or one elsewhere, closes it
+  await send('Emulation.setTouchEmulationEnabled', { enabled: true, maxTouchPoints: 1 });
+  const tap = async (x, y) => {
+    await send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x, y }] });
+    await send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+  };
+  const [tx, ty] = centre(await rectOf('#hud-limits'));
+  await tap(tx, ty);
+  check('a tap on the chip opens the subscriptions card and keeps it', await cardOpen('limits') && (await evalJs('document.querySelector("#top-card")?.dataset.pinned')) === 'true');
+  await sleep(500);
+  check('it stays (a finger has no hover to keep it)', !!(await cardRect()));
+  await tap(700, 600);
+  check('a tap elsewhere closes it', await cardGone());
+  await tap(...centre(await rectOf('#load-chip')));
+  check('a tap on the bars opens the machine card', await cardOpen('load'));
+  await tap(...centre(await rectOf('#load-chip')));
+  check('a second tap on the bars closes it', await cardGone());
+  await send('Emulation.setTouchEmulationEnabled', { enabled: false });
+  await mouseTo(700, 600);
+
+  // English: the labels start with a capital
+  await evalJs('setLang("en"); true');
+  await evalJs('document.querySelector("#hud-limits").focus(); true');
+  await cardOpen('limits');
+  const le = (await text('#top-card')).replace(/\s+/g, ' ');
+  check('English: the subscriptions card, with capitals and «in N h»', /Subscriptions/.test(le) && /Resets [\d:., ]+ · in \d+ h/.test(le) && /\d+ % left/.test(le) && le.includes('Subscription limits'), le.slice(0, 300));
+  await evalJs('document.querySelector("#load-chip").focus(); true');
+  await cardOpen('load');
+  const me = (await text('#top-card')).replace(/\s+/g, ' ');
+  check('English: the machine card', /24 cores/.test(me) && /Video memory 2\.0 of 8\.0 GB/.test(me) && /Updated \d\d:\d\d:\d\d/.test(me) && me.includes('Details'), me);
+  await press('Escape');
+  await evalJs('setLang("ru"); document.activeElement?.blur(); true');
+
+  // the room: both cards stay inside the window at every width and scale, and the page does not grow sideways
+  const runs = [[1280, 720, 'auto'], [1920, 1080, 'auto'], [2560, 1440, 'auto'], [1280, 720, 150], [1920, 1080, 200], [2560, 1440, 200], [1280, 720, 200], [430, 900, 'auto'], [360, 780, 'auto']];
+  for (const [w, h, scale] of runs) {
+    await send('Emulation.setDeviceMetricsOverride', { width: w, height: h, screenWidth: w, screenHeight: h, deviceScaleFactor: 1, mobile: false });
+    await evalJs(`try { localStorage.setItem('herdr-planner.uiScale', ${JSON.stringify(String(scale))}); } catch {} true`);
+    await navigate(base + '/?noauto&nocoach&bloom=0');
+    await resized();
+    await go('alpha/6');
+    setLoad(reading(55, 72, [card('Test Card', 33, 2, 8), card('Second Card', 5, 1, 24)]));
+    await waitFor('document.querySelector("#loadbar")?.dataset.state === "on" && document.querySelector("#loadbar")?.getAttribute("data-tier") !== null && /55/.test(document.querySelector("#load-chip")?.getAttribute("aria-label") || "")', 8000);
+    await waitFor('/\\d\\s*%/.test(document.querySelector("#hud-limits")?.innerText || "")', 8000);
+    await beat();
+    const at = `${w}×${h}${scale === 'auto' ? '' : ` at ${scale} %`}`;
+    for (const [id, sel] of [['machine', '#load-chip'], ['subscriptions', '#hud-limits']]) {
+      if (!(await rectOf(sel)) || (await evalJs(`document.querySelector(${JSON.stringify(sel)}).offsetWidth`)) === 0) continue;
+      await evalJs(`document.querySelector(${JSON.stringify(sel)}).focus(); true`);
+      if (!(await cardOpen(id === 'machine' ? 'load' : 'limits'))) { check(`${at}: the ${id} card opens`, false); continue; }
+      await beat();
+      await cardPlace(sel, id, w, h, at);
+      const c = await evalJs(`(() => { const e = document.querySelector('#top-card'); return { scrollsOut: e.scrollWidth > e.clientWidth + 1, sw: document.documentElement.scrollWidth }; })()`);
+      check(`${at}: the ${id} card does not scroll sideways, the page does not grow`, !c.scrollsOut && c.sw <= w + 1, JSON.stringify(c));
+      if (id === 'machine' && w === 1920 && scale === 'auto') await shot('topcard-1920.png');
+      if (id === 'subscriptions' && w === 360) await shot('topcard-phone.png');
+      await press('Escape');
+      await cardGone();
+    }
+    await evalJs('document.activeElement?.blur(); true');
+  }
+  await send('Emulation.setDeviceMetricsOverride', { width: 1500, height: 950, deviceScaleFactor: 1, mobile: false });
+  await evalJs('try { localStorage.removeItem("herdr-planner.uiScale"); } catch {} true');
+
+  // the light theme: the card is readable and drawn in the theme's own colours
+  const colors = join(fixture, 'theme', 'colors.toml');
+  const dark = readFileSync(colors, 'utf8');
+  await navigate(base + '/?noauto&nocoach&bloom=0');
+  await waitFor('document.querySelector("#loadbar")?.dataset.state === "on"', 8000);
+  await evalJs('document.querySelector("#load-chip").focus(); true');
+  await cardOpen('load');
+  const look = () => evalJs(`(() => { const f = getComputedStyle(document.querySelector('#top-card')); const t = getComputedStyle(document.querySelector('#top-card .ld-rd')); return { bg: f.backgroundColor, ink: t.color }; })()`);
+  const inDark = await look();
+  writeFileSync(colors, dark.replace('mode = "dark"', 'mode = "light"').replace('background = "#1a120c"', 'background = "#f9f1e8"').replace('foreground = "#ecded6"', 'foreground = "#372b1f"'));
+  check('a light theme is on', await waitFor('document.documentElement.dataset.mode === "light"', 20000));
+  await evalJs('document.querySelector("#load-chip").blur(); document.querySelector("#load-chip").focus(); true');
+  await cardOpen('load');
+  await beat();
+  const inLight = await look();
+  check('in the light theme the card and its text change with the theme', inLight.bg !== inDark.bg && inLight.ink !== inDark.ink, JSON.stringify({ inDark, inLight }));
+  await shot('topcard-light.png');
+  await press('Escape');
+  writeFileSync(colors, dark);
+  await waitFor('document.documentElement.dataset.mode === "dark"', 20000);
+  loadGone();
+  await evalJs('document.activeElement?.blur(); true');
+  await navigate(base + '/?noauto&nocoach&bloom=0');
+}, { retry: true });
 
 section('lag', async () => {
   await resetUi();
@@ -2642,7 +2854,7 @@ const layoutRun = async (w, h, dsf, scale = 'auto') => {
   await panel('the focus card', '#focus:not(.off)', async () => { if (await exists('#focus.off')) await press('KeyF', 'f'); });
   await panel('the queue «Ждёт тебя»', '#drawer-wait.open', async () => { await click('#wait-btn'); });
   await panel('the journal', '#drawer-log.open', async () => { await press('KeyJ', 'j'); });
-  await panel('the limits', '.pop.limits', async () => { await click('#hud-limits'); });
+  await panel('the limits', '.pop.limits', openLimitsPanel);
   await panel('the keys help', '#help', async () => { await press('Slash', '?', 8); });
   await panel('the todos', '#todo.open', async () => { await click('#btodo'); });
   await panel('the chat', '#chat:not(.off)', async () => { await click('#bchat'); }, async () => {
@@ -2854,9 +3066,9 @@ section('narrow', async () => {
   check('panels start closed on a narrow screen', await evalJs('document.querySelector("#nav").classList.contains("off") || document.querySelector("#nav").getBoundingClientRect().left < 0 || true'));
   await go('alpha/6');
   await clearToasts();
-  await click('#hud-limits');
+  await openLimitsPanel();
   check('the limits panel opens on a narrow screen and is above the focus', await waitFor('!!document.querySelector(".pop.limits")', 3000) && await evalJs(`(() => { const p = document.querySelector('.pop.limits'); const r = p.getBoundingClientRect(); const h = document.elementFromPoint(r.left + r.width / 2, r.top + 10); return !!h && p.contains(h) && r.left >= 0 && r.right <= innerWidth + 1; })()`));
-  await click('#hud-limits');
+  await press('KeyQ', 'q');
   check('the page body never scrolls sideways at phone width', await waitFor('document.documentElement.scrollWidth <= innerWidth + 1', 5000));
   await shot('narrow.png');
   // the drawer of todos at phone width: under the two rows of the top bar, the chat apart below, nothing sideways

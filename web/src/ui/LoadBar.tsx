@@ -4,12 +4,11 @@ import { useEffect, useRef } from 'preact/hooks';
 import { live, loadInfo, loadRecv, snap } from '../store';
 import { t, tn, locale } from '../i18n';
 import { goHome } from '../nav';
+import { cardAnchor, closeCard } from './hovercard';
 import { rootPx } from '../scale';
 import { gb, levelOf, meters, monFit, pct, staleLoad, worstMeter, type LoadLevel, type Meter } from '../util/load';
 import './loadbar.css';
 
-/** The bars and their tooltip are two pieces of the top bar: the tooltip stands outside the bars' box (which clips by its width). */
-const shown = signal(false);
 /** What time it is for the bars: they go grey when a reading is too old. */
 const now = signal(Date.now());
 
@@ -101,12 +100,7 @@ export function LoadBar(): JSX.Element | null {
   const level: LoadLevel | 'off' = worst ? worst.level : 'off';
   return (
     <div class="loadbar" id="loadbar" ref={box} data-tier="sum" data-state={st} data-level={level}>
-      <button
-        type="button" class="ld" id="load-chip" aria-label={summaryText(ms, st)} aria-describedby="load-pop"
-        onMouseEnter={() => { shown.value = true; }} onMouseLeave={() => { shown.value = false; }}
-        onFocus={() => { shown.value = true; }} onBlur={() => { shown.value = false; }}
-        onClick={(e) => { (e.currentTarget as HTMLElement).blur(); shown.value = false; void goHome(); }}
-      >
+      <button type="button" class="ld" id="load-chip" aria-label={summaryText(ms, st)} {...cardAnchor('load')}>
         <span class="ld-host">{hostName()}</span>
         {shape.map((k) => {
           const m = ms.find((x) => x.key === k);
@@ -141,8 +135,9 @@ function Row(props: { k: string; m: Meter | null; detail: string; sub?: string }
   );
 }
 
-/** The tooltip: exact numbers (cores, gigabytes, video memory, every card) and when they were read. */
-export function LoadPop(): JSX.Element | null {
+/** The card under the bars: exact numbers (cores, gigabytes, video memory of every card, the disk when it is reported), when they were read,
+ *  and the way to the machine's Focus. */
+export function LoadCard(): JSX.Element | null {
   const l = loadInfo.value;
   const st = state();
   if (st === 'na') return null;
@@ -151,8 +146,10 @@ export function LoadPop(): JSX.Element | null {
   const on = l && st === 'on';
   const ms = on ? meters(l) : [];
   const by = (k: Meter['key']): Meter | null => ms.find((x) => x.key === k) ?? null;
+  const disk = on && l.disk && l.disk.total > 0 ? l.disk : null;
+  const diskMeter: Meter | null = disk ? { key: 'cpu', percent: pct(disk.percent), level: levelOf(pct(disk.percent)) } : null;
   return (
-    <div class={`ld-pop panel${shown.value ? ' open' : ''}`} id="load-pop" role="tooltip" data-state={st}>
+    <div class="ld-pop" id="load-pop" data-state={st}>
       <div class="ld-ph"><b>{host}</b><span>{t('load.own')}</span></div>
       {st !== 'on' && (
         <div class="ld-off">{st === 'wait' ? t('load.waiting', { host }) : t('load.offline', { host })}{l && !l.ok && l.error ? <span class="ld-err">{l.error}</span> : null}</div>
@@ -165,9 +162,10 @@ export function LoadPop(): JSX.Element | null {
         return <Row key={i} k="gpu" m={own} detail={t('load.vram', { used: gb(g.mem_used, loc), total: gb(g.mem_total, loc) })} sub={g.name} />;
       })}
       {on && l.gpus.length > 1 && <div class="ld-note">{t('load.gpuMean', { n: by('gpu')?.percent ?? 0 })}</div>}
+      {disk && <Row k="disk" m={diskMeter} detail={t('load.memOf', { used: gb(disk.used, loc), total: gb(disk.total, loc) })} />}
       <div class="ld-ft">
-        {l && l.at > 0 ? t('load.updated', { at: clock(l.at), n: Math.max(1, Math.round((l.every_ms || 3000) / 1000)) }) : t('load.noTime')}
-        <span class="ld-go">{t('load.click')}</span>
+        <span>{l && l.at > 0 ? t('load.updated', { at: clock(l.at), n: Math.max(1, Math.round((l.every_ms || 3000) / 1000)) }) : t('load.noTime')}</span>
+        <button type="button" class="ld-go" id="load-more" onClick={() => { closeCard(); void goHome(); }}>{t('load.more')}</button>
       </div>
     </div>
   );
