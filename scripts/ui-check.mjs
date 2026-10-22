@@ -2768,14 +2768,19 @@ section('ship', async () => {
 
   // the folder: live, after «было → стало» and two presses
   const dir = join(fixture, 'projects-new');
-  await typeIn('#ship-dir', dir);
-  // The page enables «Далее» when its state has the typed folder: a click before that hits a disabled button.
-  await waitFor('!document.querySelector("#ship-dir-save").disabled', 3000);
-  // The button is enabled by the render that follows the typing; one more turn lets that render reach the form itself,
-  // so the click is never handled by the previous one (a loaded machine made this happen now and then).
-  await pageTurn();
-  await click('#ship-dir-save');
-  check('the folder change shows was → now before anything is saved', await waitFor('!!document.querySelector("#ship-change")', 4000) && await hasText('#ship-change', dir), await text('#ship-change'));
+  // The page enables «Далее» when its state has the typed folder: a click before that hits a disabled button. The
+  // typing itself is a synthetic event, and now and then it was lost (the button stayed disabled); a human would type
+  // it again, and so does this. Opening the card changes nothing until its second press, so trying twice is safe.
+  let card = false;
+  for (let go = 1; go <= 3 && !card; go++) {
+    await typeIn('#ship-dir', dir);
+    if (!(await waitFor('!document.querySelector("#ship-dir-save").disabled', 3000))) continue;
+    await pageTurn();
+    await click('#ship-dir-save');
+    card = await waitFor('!!document.querySelector("#ship-change")', 4000);
+  }
+  const folderLook = await evalJs('JSON.stringify({v:document.querySelector("#ship-dir")?.value,d:document.querySelector("#ship-dir-save")?.disabled,card:!!document.querySelector("#ship-change")})');
+  check('the folder change shows was → now before anything is saved', card && await hasText('#ship-change', dir), `${folderLook} ${await text('#ship-change')}`);
   await twoPresses('#ship-confirm');
   check('the new folder takes effect at once, in the page’s state too', await waitFor(`plannerSnap().server.projects_dir === ${JSON.stringify(dir)}`, 8000), await evalJs('plannerSnap().server.projects_dir'));
 
