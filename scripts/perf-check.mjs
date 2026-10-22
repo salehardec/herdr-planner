@@ -98,6 +98,8 @@ const lo = await evalJs(labelOverlaps);
 check('the labels are few: at most 24, none on top of another', d.labels > 0 && d.labels <= 24 && lo.shown === d.labels && lo.overlaps === 0, JSON.stringify({ labels: d.labels, ...lo }));
 const upd = await bestUpdate();
 check('the page\'s own work per frame is small (< 24 ms for the update, stretched by the yardstick on a busy machine)', upd.ms < upd.limit, JSON.stringify(upd));
+const fxBound = await evalJs('(() => { const x = world.debug(); return { auras: x.auras, halos: x.halos }; })()');
+check('the ripples of the working planets are bounded (at most 64), the rings too', fxBound.auras <= 64 && fxBound.halos <= 500, JSON.stringify(fxBound));
 check('the particles are bounded (LOD): under 60 000', d.particles < 60000, String(d.particles));
 if (shots) { const r = await send('Page.captureScreenshot', { format: 'png' }); writeFileSync(join(shots, 'scale-overview.png'), Buffer.from(r.result.data, 'base64')); }
 // into a nebula: the cost stays small and the labels stay in order

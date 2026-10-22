@@ -2358,6 +2358,68 @@ for (const { w, h, scales, dsf, name } of LAYOUT_RUNS) {
   }, { retry: true });
 }
 
+// The state of a task reads at a glance: running ones pulse, queued ones are still, what waits for the human
+// flashes, a failure has a frame of its own; the label carries the glyph; the legend names them all.
+section('planet states', async () => {
+  await navigate(base + '/?noauto&nocoach&bloom=0');
+  const kinds = await evalJs('world.debug().fxKinds');
+  check('every state has its own kind of signal', kinds['alpha/6'] === 'work' && kinds['alpha/7'] === 'work' && kinds['alpha/2'] === 'ask' && kinds['alpha/3'] === 'ask' && kinds['alpha/4'] === 'ask' && kinds['alpha/8'] === 'fail' && kinds['alpha/9'] === 'sleep' && kinds['alpha/10'] === 'sleep' && kinds['alpha/13'] === 'done', JSON.stringify(kinds));
+  // the numbers over one breath of a working planet, one of a queued one
+  const sample = (id) => evalJs(`(() => { const xs = []; for (let i = 0; i < 40; i++) xs.push(world.debug().fxAt(${JSON.stringify(id)}, i * 0.1)); return xs.map((x) => ({ glow: x.glow, aura: x.aura, halo: x.halo, dim: x.dim, moving: x.moving, breathe: x.breathe })); })()`);
+  const spread = (xs) => Math.max(...xs) - Math.min(...xs);
+  const work = await sample('alpha/6');
+  const review = await sample('alpha/7');
+  const queued = await sample('alpha/9');
+  const ask = await sample('alpha/2');
+  const fail = await sample('alpha/8');
+  const done = await sample('alpha/13');
+  check('a working planet breathes and sends a ripple (a reviewer too)', [work, review].every((f) => spread(f.map((x) => x.glow)) > 0.3 && Math.max(...f.map((x) => x.aura)) > 0.4 && f.every((x) => x.moving)), JSON.stringify([work[0], work[11]]));
+  check('a queued planet is still and dim: no change in time, no ripple, no ring', spread(queued.map((x) => x.glow)) === 0 && queued.every((x) => !x.moving && x.aura === 0 && x.halo === 0 && x.dim < 1), JSON.stringify(queued[0]));
+  check('what waits for the human flashes with a ring of its own', spread(ask.map((x) => x.glow)) > 0.5 && ask.every((x) => x.halo > 0 && x.aura === 0), JSON.stringify(ask[0]));
+  check('a failed planet keeps a steady ring and flashes only rarely', fail.every((x) => x.halo >= 0.8) && fail.filter((x) => x.glow > 0.5).length <= 4, JSON.stringify(fail[0]));
+  check('a done planet is the dimmest', done.every((x) => x.dim < queued[0].dim && x.glow === 0), JSON.stringify(done[0]));
+  // the page really changes the glow of a working planet from frame to frame, and never that of a queued one
+  const live = await evalJs(`new Promise((done) => { const seen = { w: new Set(), q: new Set() }; let k = 0; const out = () => done({ w: seen.w.size, q: seen.q.size, frames: k }); setTimeout(out, 15000); const f = () => { const d = world.debug(); const t = performance.now() / 1000; seen.w.add(d.fxAt('alpha/6', t).glowNow); seen.q.add(d.fxAt('alpha/9', t).glowNow); if (++k >= 8 && seen.w.size > 1) out(); else requestAnimationFrame(f); }; requestAnimationFrame(f); })`);
+  check('in the page the working planet animates and the queued one does not', live.w > 1 && live.q === 1, JSON.stringify(live));
+  // up close: the ripple and the ring are drawn
+  await go('alpha/6');
+  await waitFor('world.debug().auras >= 1', 8000);
+  const near = await debug();
+  check('close to a working planet its ripple is drawn; the rings of what waits are drawn too', near.auras >= 1 && near.halos >= 1, JSON.stringify({ auras: near.auras, halos: near.halos }));
+  // the chip of a task carries the glyph of its state
+  await evalJs(`planner.navigateTo({kind:'universe',id:'alpha'}); true`);
+  await waitFor('world.debug().flight === "idle" && world.debug().level === "nebula"', 20000);
+  await waitFor('document.querySelectorAll("#labels .lb.planet svg.st").length >= 3', 8000);
+  const chips = await evalJs(`[...document.querySelectorAll('#labels .lb.planet')].filter((e) => e.style.display !== 'none').map((e) => ({ s: (e.className.match(/s-(\\w+)/) || [])[1], g: e.querySelector('svg.st use')?.getAttribute('href') }))`);
+  check('each task chip has the glyph of its status (colour is not the only sign)', chips.length >= 3 && chips.every((c) => c.g === '#g-' + c.s) && new Set(chips.map((c) => c.s)).size >= 3, JSON.stringify(chips));
+  await shot('planet-states.png');
+  // the legend
+  await press('Slash', '?', 8);
+  check('the legend names every state with its glyph and its signal', await waitFor('document.querySelectorAll("#legend .lg-row").length === 8', 4000) && await evalJs('[...document.querySelectorAll("#legend .lg-row")].every((r) => r.querySelector("svg use") && r.querySelector(".lg-d").innerText.length > 20)'), await text('#legend'));
+  await shot('legend.png');
+  await press('Escape'); await beat();
+  // no motion: ?calm and the system setting both freeze it, and the signals stay
+  const frozen = async (what) => {
+    check(`${what}: the world is simple`, await waitFor('world.debug().simple === true', 8000));
+    const a = await evalJs(`world.debug().fxAt('alpha/6', 0.3)`);
+    const b = await evalJs(`world.debug().fxAt('alpha/6', 1.7)`);
+    const w = await evalJs(`world.debug().fxAt('alpha/2', 0.2)`);
+    check(`${what}: a working planet is a still, bright ring; the planet that waits has its ring and glow`, a.moving === false && a.glow === b.glow && a.aura === b.aura && a.aura > 0.5 && a.glow > 0.3 && w.halo === 1 && w.glow > 0.3, JSON.stringify([a, b, w]));
+    check(`${what}: no animation is left in the page's own styles`, await evalJs(`[...document.querySelectorAll('#win .gl.spin')].every((e) => getComputedStyle(e).animationName === 'none')`));
+  };
+  await navigate(base + '/?calm&nocoach');
+  await frozen('?calm');
+  await navigate('about:blank');
+  await send('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-reduced-motion', value: 'reduce' }] });
+  try {
+    await navigate(base + '/?nocoach&bloom=0');
+    await frozen('prefers-reduced-motion');
+  } finally {
+    await send('Emulation.setEmulatedMedia', { features: [] });
+  }
+  await navigate(base + '/?noauto&nocoach&bloom=0');
+}, { retry: true });
+
 // The settings dialog on a phone-sized window (the dialog is narrower than the container query's width): the rows are columns, the names whole.
 section('layout narrow', async () => {
   for (const [w, h, dsf, stacked] of [[430, 900, 2, true], [700, 900, 1, false]]) {

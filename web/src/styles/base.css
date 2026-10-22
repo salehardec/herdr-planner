@@ -141,6 +141,7 @@ input.field:focus,textarea.field:focus,select.field:focus{border-color:var(--pl-
 .lb .line{display:block;color:var(--pl-faint);font-size:0.6562rem;max-width:14.375rem;overflow:hidden;text-overflow:ellipsis}
 .lb.planet{border-color:var(--s-line)}
 .lb.planet .k{color:var(--s-ink)}
+.lb .gl.st{width:0.75rem;height:0.75rem;color:var(--s-ink,var(--pl-dim))}
 .lb.quasar{border-color:color-mix(in srgb,var(--c-accent) 55%,var(--pl-line));background:var(--pl-panel-solid);font-weight:700;font-size:0.7812rem}
 .lb.universe{background:color-mix(in srgb,var(--pl-bg) 66%,transparent)}
 .lb.universe .k{color:var(--pl-title)}
