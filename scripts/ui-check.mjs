@@ -2906,6 +2906,18 @@ const quasarOf = async () => {
   await evalJs(`planner.navigateTo({kind:'quasar',id:'quasar'})`);
   await waitFor('world.debug().flight === "idle"', 15000);
 };
+// The memory list is in a window over the page: open it from the panel's button (the panel stays behind it), Esc closes it.
+const openMem = async () => {
+  if (await exists('#mem-window')) return;
+  await waitFor('!!document.querySelector("#mem-open")', 10000);
+  await click('#mem-open');
+  await waitFor('!!document.querySelector("#mem-window #mem-list")', 8000);
+};
+const closeMem = async () => {
+  if (!(await exists('#mem-window'))) return;
+  await press('Escape');
+  await waitFor('!document.querySelector("#mem-window")', 5000);
+};
 const universeOf = async (id) => {
   await evalJs(`planner.navigateTo({kind:'universe',id:${JSON.stringify(id)}})`);
   await waitFor('world.debug().flight === "idle"', 15000);
@@ -2915,7 +2927,9 @@ section('memory galaxy', async () => {
   await resetUi();
   await evalJs('planner.goHome()');
   await quasarOf();
-  check('the Quasar has a memory panel with the Galaxy files', await waitFor('document.querySelectorAll("#mem-galaxy-list [data-mem]").length === 2', 30000), await text('#mem-galaxy'));
+  check('the Quasar has a memory panel that counts the Galaxy files, with a button for the list', await waitFor('document.querySelector("#mem-galaxy-count")?.innerText === "2" && !!document.querySelector("#mem-open")', 30000) && !(await exists('#mem-galaxy [data-mem]')), await text('#mem-galaxy'));
+  await openMem();
+  check('the button opens the list in a window with the Galaxy files', await waitFor('document.querySelectorAll("#mem-window #mem-list [data-mem]").length === 2', 10000), await text('#mem-window'));
   check('the panel counts them and shows the folder', (await text('#mem-galaxy-count')) === '2' && (await text('#mem-galaxy .mm-dir')).includes('memory/galaxy'), await text('#mem-galaxy .mm-dir'));
   check('the planner made MEMORY.md, the table of contents, from the files', await waitLog(() => readFile(join(memDir, 'MEMORY.md')).includes('(gitlab-bez-pr.md)') && readFile(join(memDir, 'MEMORY.md')).includes('(deshevaya-model.md)'), 10000), readFile(join(memDir, 'MEMORY.md')));
   // The board's own files are the board's: the planner writes none of them (the board makes them from settings)
@@ -2931,7 +2945,12 @@ section('memory galaxy', async () => {
   const conn = await text('#mem-connect');
   check('the panel says the Coordinator is not connected yet, and for what the change is', conn.includes('не подключена') && conn.includes('coordinator.instructions'), conn);
   check('the planner has written none of the board\'s files (AGENTS.md, CLAUDE.md, the machine\'s and a project\'s)', boardFilesUntouched());
-  check('the Coordinator program\'s own memory is shown, read only', await exists('[data-foreign="claude"] [data-mem="user-answers-short"]') && !(await exists('[data-foreign="claude"] [data-act="mem-edit"]')) && !(await exists('[data-foreign="claude"] [data-act="mem-del"]')));
+  await click('#mem-lv-claude');
+  await waitFor('!!document.querySelector("#mem-window[data-level=foreign] [data-mem=user-answers-short]")', 6000);
+  await click('#mem-window [data-mem="user-answers-short"] .mm-line');
+  check('the Coordinator program\'s own memory is a tab of the window, read only', await exists('#mem-window[data-level="foreign"] [data-mem="user-answers-short"]') && !(await exists('#mem-window [data-act="mem-edit"]')) && !(await exists('#mem-window [data-act="mem-del"]')) && !(await exists('#mem-window #mem-add')));
+  await click('#mem-lv-galaxy');
+  await waitFor('document.querySelectorAll("#mem-window #mem-list [data-mem]").length === 2', 6000);
   await shot('memory-galaxy.png');
 
   // add: a form, a Markdown file with a header, the index
@@ -2945,7 +2964,7 @@ section('memory galaxy', async () => {
   check('and writes nothing until the human confirms', !existsSync(join(memDir, 'porty-postgres.md')));
   await sayYes();
   check('a new entry is a Markdown file with a header', await waitLog(() => { const t = readFile(join(memDir, 'porty-postgres.md')); return t.includes('title: Порты Postgres') && t.includes('type: pitfall') && t.includes('5433') && t.startsWith('---\n'); }, 8000), readFile(join(memDir, 'porty-postgres.md')));
-  check('it is in the list and the index', await waitFor('!!document.querySelector(\'#mem-galaxy-list [data-mem="porty-postgres"]\')', 6000) && readFile(join(memDir, 'MEMORY.md')).includes('(porty-postgres.md)'));
+  check('it is in the list and the index', await waitFor('!!document.querySelector(\'#mem-list [data-mem="porty-postgres"]\')', 6000) && readFile(join(memDir, 'MEMORY.md')).includes('(porty-postgres.md)'));
   // edit: the id stays
   await click('[data-mem="porty-postgres"] .mm-line');
   await click('[data-mem="porty-postgres"] [data-act="mem-edit"]');
@@ -2964,13 +2983,13 @@ section('memory galaxy', async () => {
   check('the yes removes the file and the index line', await waitLog(() => !existsSync(join(memDir, 'porty-postgres.md')) && !readFile(join(memDir, 'MEMORY.md')).includes('porty-postgres'), 8000));
   // an agent adds a file by hand (no planner): it appears, and the index follows
   writeFileSync(join(memDir, 'ruchnaya-zapis.md'), '---\nname: ruchnaya-zapis\ntitle: Ручная запись\ndescription: добавил агент\ntype: rule\n---\n\nФайл положен руками, без планировщика.\n');
-  check('a file put there by hand shows up and gets into the index', await waitFor('!!document.querySelector(\'#mem-galaxy-list [data-mem="ruchnaya-zapis"]\')', 15000) && await waitLog(() => readFile(join(memDir, 'MEMORY.md')).includes('(ruchnaya-zapis.md)'), 15000));
+  check('a file put there by hand shows up and gets into the index', await waitFor('!!document.querySelector(\'#mem-list [data-mem="ruchnaya-zapis"]\')', 15000) && await waitLog(() => readFile(join(memDir, 'MEMORY.md')).includes('(ruchnaya-zapis.md)'), 15000));
   unlinkSync(join(memDir, 'ruchnaya-zapis.md'));
 
   // entries put in by hand under any name can be edited and deleted from the page
   writeFileSync(join(memDir, 'GitLab.md'), '# GitLab\n\nРучная заметка про GitLab.\n');
   writeFileSync(join(memDir, 'Порты БД.md'), '---\ntitle: Порты БД\ntype: reference\n---\n\nPostgres 5433.\n');
-  check('files with names that are not slugs are listed', await waitFor('!!document.querySelector(\'#mem-galaxy-list [data-mem="GitLab"]\') && !!document.querySelector(\'#mem-galaxy-list [data-mem="Порты БД"]\')', 15000));
+  check('files with names that are not slugs are listed', await waitFor('!!document.querySelector(\'#mem-list [data-mem="GitLab"]\') && !!document.querySelector(\'#mem-list [data-mem="Порты БД"]\')', 15000));
   await click('[data-mem="GitLab"] .mm-line');
   await click('[data-mem="GitLab"] [data-act="mem-edit"]');
   await waitFor('!!document.querySelector("#mem-form")', 3000);
@@ -2989,6 +3008,7 @@ section('memory galaxy', async () => {
   await waitCard();
   await sayYes();
   check('the rest too', await waitLog(() => !existsSync(join(memDir, 'GitLab.md')), 8000));
+  await closeMem();
   // connect: the board's setting coordinator.instructions, «было → стало», two presses, the board's own set
   const setsBefore = setCalls('coordinator.instructions').length;
   await click('#mem-connect-toggle');
@@ -3138,12 +3158,16 @@ section('memory connect', async () => {
 section('memory universe', async () => {
   await resetUi();
   await universeOf('alpha');
-  check('a universe has its own memory panel: the files of docs/memory/', await waitFor('!!document.querySelector(\'#mem-universe-list [data-mem="merge-squash"]\')', 10000) && (await text('#mem-universe .mm-dir')).includes('docs/memory'), await text('#mem-universe'));
+  check('a universe has its own memory panel: the folder docs/memory/ and the count', await waitFor('document.querySelector("#mem-universe-count")?.innerText !== "0" && !!document.querySelector("#mem-universe .mm-dir")', 10000) && (await text('#mem-universe .mm-dir')).includes('docs/memory') && !(await exists('#mem-universe [data-mem]')), await text('#mem-universe'));
+  await openMem();
+  check('and its files in the window: the files of docs/memory/', await waitFor('!!document.querySelector(\'#mem-window #mem-list [data-mem="merge-squash"]\')', 10000), await text('#mem-window'));
   check('the panel says the files are not in git, and lists them', await waitFor('(document.querySelector("#mem-git")?.innerText || "").includes("не в git")', 6000) && (await text('#mem-git')).includes('merge-squash.md'), await text('#mem-git'));
   await shot('memory-universe.png');
   // docs: a git folder with no memory yet. Add one: a draft outside the checkout, then commit just that.
+  await closeMem();
   await universeOf('docs');
-  check('a universe without memory says so', await waitFor('(document.querySelector("#mem-universe")?.innerText || "").includes("Пока пусто")', 8000), await text('#mem-universe'));
+  await openMem();
+  check('a universe without memory says so', await waitFor('(document.querySelector("#mem-window")?.innerText || "").includes("Пока пусто")', 8000), await text('#mem-window'));
   check('and its git state is clean', (await text('#mem-git')).includes('закоммичено'), await text('#mem-git'));
   check('the checkout is clean to begin with', gitStatus(docsRepo) === '', gitStatus(docsRepo));
   await click('#mem-add');
@@ -3157,7 +3181,7 @@ section('memory universe', async () => {
   await sayYes();
   check('the entry is a draft kept by the planner', await waitLog(() => filesIn(draftsOf('docs')).length === 1 && readFile(join(draftsOf('docs'), filesIn(draftsOf('docs'))[0])).includes('type: decision'), 8000), filesIn(draftsOf('docs')).join(','));
   check('the checkout stays clean: `git status` is empty and docs/memory is not even there (the board can still merge into it)', gitStatus(docsRepo) === '' && !existsSync(join(docsRepo, 'docs')), gitStatus(docsRepo));
-  check('the list shows it as a draft, and the page says drafts wait for a commit', await waitFor('!!document.querySelector(\'#mem-universe-list [data-mem="testy-bez-seti"][data-draft="new"]\')', 8000) && await waitFor('(document.querySelector("#mem-drafts")?.innerText || "").includes("черновик")', 8000), await text('#mem-git'));
+  check('the list shows it as a draft, and the page says drafts wait for a commit', await waitFor('!!document.querySelector(\'#mem-list [data-mem="testy-bez-seti"][data-draft="new"]\')', 8000) && await waitFor('(document.querySelector("#mem-drafts")?.innerText || "").includes("черновик")', 8000), await text('#mem-git'));
   await shot('memory-draft.png');
   writeFileSync(join(docsRepo, 'OTHER.txt'), 'staged elsewhere\n');
   execFileSync('git', ['-C', docsRepo, 'add', 'OTHER.txt']);
@@ -3177,19 +3201,188 @@ section('memory universe', async () => {
   check('the checkout is not touched: same git status, same HEAD, no new commit, no docs folder', gitStatus(docsRepo) === status0 && status0 === 'A  OTHER.txt\n' && headOf(docsRepo) === head0 && commitsOf(docsRepo) === '1' && !existsSync(join(docsRepo, 'docs')), gitStatus(docsRepo));
   check('the drafts are handed over and gone', await waitLog(() => filesIn(draftsOf('docs')).length === 0, 8000));
   check('the page shows the id of the task made, and the board has it', await waitFor('!!document.querySelector("#mem-sent")', 8000) && /[A-Z]+-\d+/.test(await text('#mem-sent')) && (await evalJs('fetch("/api/state").then((r) => r.json()).then((s) => s.tasks.some((t) => t.id === document.querySelector("#mem-sent").dataset.task && t.title.startsWith("Запомнить")))')), await text('#mem-sent'));
-  check('the sent entry stays on the panel, marked as waiting for the task\'s merge', await waitFor('document.querySelector(\'#mem-universe-list [data-mem="testy-bez-seti"]\')?.dataset.draft === "sent" && (document.querySelector(\'#mem-universe-list [data-mem="testy-bez-seti"] .mm-draft\')?.innerText || "").toLowerCase().includes("слияни")', 8000), await text('#mem-universe-list'));
-  check('and the panel does not claim that everything is committed: nothing is in git yet', !(await text('#mem-git')).includes('закоммичено') && !(await text('#mem-universe')).includes('Пока пусто'), await text('#mem-git'));
+  check('the sent entry stays on the panel, marked as waiting for the task\'s merge', await waitFor('document.querySelector(\'#mem-list [data-mem="testy-bez-seti"]\')?.dataset.draft === "sent" && (document.querySelector(\'#mem-list [data-mem="testy-bez-seti"] .mm-draft\')?.innerText || "").toLowerCase().includes("слияни")', 8000), await text('#mem-list'));
+  check('and the panel does not claim that everything is committed: nothing is in git yet', !(await text('#mem-git')).includes('закоммичено') && !(await text('#mem-window')).includes('Пока пусто'), await text('#mem-git'));
   await shot('memory-sent.png');
   await navigate(base + '/?noauto&nocoach&bloom=0');
   await universeOf('docs');
-  check('after a reload the note and the task id are still there', await waitFor('!!document.querySelector("#mem-sent") && /[A-Z]+-\\d+/.test(document.querySelector("#mem-sent").innerText) && !!document.querySelector(\'#mem-universe-list [data-mem="testy-bez-seti"][data-draft="sent"]\')', 12000), await text('#mem-git'));
+  await openMem();
+  check('after a reload the note and the task id are still there', await waitFor('!!document.querySelector("#mem-sent") && /[A-Z]+-\\d+/.test(document.querySelector("#mem-sent").innerText) && !!document.querySelector(\'#mem-list [data-mem="testy-bez-seti"][data-draft="sent"]\')', 12000), await text('#mem-git'));
   await click('#mem-sent [data-act="mem-sent-forget"]');
   check('«Забыть пометку» drops the note (the memory itself is untouched); only then it is just clean', await waitFor('!document.querySelector("#mem-sent") && (document.querySelector("#mem-git")?.innerText || "").includes("закоммичено")', 8000) && gitStatus(docsRepo) === status0, await text('#mem-git'));
   execFileSync('git', ['-C', docsRepo, 'reset', '--quiet', '--', 'OTHER.txt']);
   rmSync(join(docsRepo, 'OTHER.txt'), { force: true });
   // a folder that is not a git repository
+  await closeMem();
   await universeOf('delta');
-  check('a folder without git says so', await waitFor('(document.querySelector("#mem-git")?.innerText || "").includes("не в git-репозитории")', 8000), await text('#mem-universe'));
+  await openMem();
+  check('a folder without git says so', await waitFor('(document.querySelector("#mem-git")?.innerText || "").includes("не в git-репозитории")', 8000), await text('#mem-window'));
+  await resetUi();
+});
+
+// The memory in a window over the page: a summary in the narrow column, the list in the window, and a long title next to the
+// «ждёт слияния» badge keeps its width (it once broke into one letter per line).
+section('memory window', async () => {
+  await resetUi();
+  const LONG = 'Автоуборка верфи по умолчанию выключена; удаление без подтверждения человека';   // 80 characters is the most a title takes
+  const rem = () => evalJs('parseFloat(getComputedStyle(document.documentElement).fontSize)');
+  // How the row of an entry lies: its title's width and height (in lines), whether the badge sits on the title, what sticks out.
+  const rowOf = (id) => evalJs(`(() => {
+    const row = document.querySelector('#mem-list [data-mem="${id}"]'); if (!row) return null;
+    const px = parseFloat(getComputedStyle(document.documentElement).fontSize);
+    const title = row.querySelector('.mm-title'); const badge = row.querySelector('.mm-draft'); const tr = title.getBoundingClientRect();
+    const br = badge ? badge.getBoundingClientRect() : null;
+    const lh = parseFloat(getComputedStyle(title).lineHeight) || 1;
+    const over = br ? !(br.left >= tr.right - 1 || br.right <= tr.left + 1 || br.top >= tr.bottom - 1 || br.bottom <= tr.top + 1) : false;
+    const sc = document.querySelector('.mmw-scroll');
+    return { px, titleW: tr.width, titleRem: tr.width / px, lines: Math.round(tr.height / lh), over, badgeW: br ? br.width / px : 0, sideways: sc.scrollWidth > sc.clientWidth + 1 };
+  })()`);
+  await quasarOf();
+  check('the Galaxy panel has a button that opens the window, and no list of its own', await waitFor('!!document.querySelector("#mem-galaxy #mem-open")', 20000) && !(await exists('#mem-galaxy .mm-list')));
+  check('the summary says how many entries there are, and has a search', (await text('#mem-stat-all')).length > 0 && await exists('#mem-galaxy #mem-filter'), await text('#mem-summary'));
+  await shot('memory-summary.png');
+  // the search of the summary opens the window with its words
+  await typeIn('#mem-filter', 'gitlab');
+  await evalJs('document.querySelector("#mem-filter").dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true })); true');
+  check('Enter in the summary\'s search opens the window with that search', await waitFor('!!document.querySelector("#mem-window")', 5000) && (await evalJs('document.querySelector("#mem-search").value')) === 'gitlab', await text('#mem-window'));
+  check('the window is over the page: a dimmed background, a title, «Свернуть», and the Galaxy level', await exists('#mem-window-scrim') && (await text('#mem-window header')).includes('Свернуть') && (await evalJs('document.querySelector("#mem-window").dataset.level')) === 'galaxy');
+  check('the search filters the list', await waitFor('document.querySelectorAll("#mem-list [data-mem]").length === 1', 5000) && (await text('#mem-shown')).includes('Показано 1 из'), await text('#mem-shown'));
+  await click('#mem-f-clear');
+  check('«Сбросить» brings the whole list back', await waitFor('document.querySelectorAll("#mem-list [data-mem]").length === Number(document.querySelector("#mem-window-count").innerText) && !document.querySelector("#mem-f-clear")', 5000));
+  // the type filter
+  const kinds = await evalJs('[...document.querySelectorAll("#mem-list [data-mem] .mm-kind")].map((e) => e.className.match(/k-(\\w+)/)[1])');
+  const oneKind = kinds[0];
+  await typeIn('#mem-f-kind', oneKind);
+  check('the filter by kind keeps only that kind', await waitFor(`[...document.querySelectorAll("#mem-list [data-mem] .mm-kind")].every((e) => e.classList.contains("k-${oneKind}")) && document.querySelectorAll("#mem-list [data-mem]").length >= 1`, 5000), JSON.stringify(kinds));
+  await typeIn('#mem-f-kind', 'reference');
+  check('and a kind with no entries says nothing matched', await waitFor('!!document.querySelector("#mem-nomatch")', 5000) && (await text('#mem-nomatch')).includes('Ничего не подошло'), await text('#mem-list'));
+  await click('#mem-f-clear');
+  check('the filter by state is for a universe: not offered for the Galaxy', !(await exists('#mem-f-state')));
+  // every kind of the model is there, named with a capital
+  check('the kinds in the filter are named from the dictionary', (await evalJs('[...document.querySelectorAll("#mem-f-kind option")].map((o) => o.textContent).join("|")')) === 'Любой вид|Правило|Предпочтение|Решение|Соглашение|Грабли|Ссылка');
+  // the three ways out: Esc, a click on the background, «Свернуть»
+  await press('Escape');
+  check('Esc closes the window', await waitFor('!document.querySelector("#mem-window")', 4000));
+  await click('#mem-open');
+  await waitFor('!!document.querySelector("#mem-window")', 4000);
+  await evalJs('(() => { const s = document.querySelector("#mem-window-scrim"); s.dispatchEvent(new MouseEvent("mousedown", { bubbles: true })); return true; })()');
+  check('a click on the background closes it', await waitFor('!document.querySelector("#mem-window")', 4000));
+  await click('#mem-open');
+  await waitFor('!!document.querySelector("#mem-window")', 4000);
+  await click('#mem-window header [data-act="memory-close"]');
+  check('«Свернуть» closes it', await waitFor('!document.querySelector("#mem-window")', 4000));
+
+  // a universe: its own window; the level can be switched inside
+  await universeOf('docs');
+  await openMem();
+  check('a universe\'s button opens its level, with the universe chosen', (await evalJs('document.querySelector("#mem-window").dataset.level')) === 'universe' && (await evalJs('document.querySelector("#mem-lv-repo").value')) === 'docs' && await exists('#mem-f-state'));
+  await typeIn('#mem-lv-repo', 'alpha');
+  check('the universe can be changed in the window', await waitFor('document.querySelector("#mem-window .mm-dir")?.innerText.includes("alpha") || !!document.querySelector("#mem-list [data-mem=merge-squash]")', 8000) && (await evalJs('document.querySelector("#mem-window header b").innerText')).includes('alpha'), await text('#mem-window header'));
+  await click('#mem-lv-claude');
+  check('the program\'s own memory is a level too: read only, no add button', await waitFor('document.querySelector("#mem-window").dataset.level === "foreign"', 5000) && !(await exists('#mem-add')) && (await text('#mem-window')).includes('Только чтение'), await text('#mem-window'));
+  await click('#mem-lv-galaxy');
+  check('and the Galaxy again', await waitFor('document.querySelector("#mem-window").dataset.level === "galaxy" && !!document.querySelector("#mem-add")', 5000));
+  await closeMem();
+
+  // an entry with a long title, sent to the repository by a task: the badge «ждёт слияния · PLN-N»
+  await universeOf('docs');
+  await openMem();
+  await click('#mem-add');
+  await waitFor('!!document.querySelector("#mem-form")', 3000);
+  await typeIn('#mem-title', LONG);
+  await typeIn('#mem-kind', 'convention');
+  await typeIn('#mem-desc', 'Описание записи тоже длинное: оно режется одной строкой и не ломает список, сколько бы слов в нём ни было.');
+  await typeIn('#mem-body', 'Верфь убирает забытое сама, только если человек включил это в настройках.\n\nВторой абзац длинного текста с подряд идущими словами, который должен переноситься по словам внутри окна и не вылезать за его края никогда.');
+  await click('#mem-save');
+  await waitCard();
+  await sayYes();
+  const longId = await evalJs(`(() => { const r = [...document.querySelectorAll('#mem-list [data-mem]')].find((e) => e.querySelector('.mm-title')?.title === ${JSON.stringify(LONG)}); return r?.dataset.mem || ''; })()`);
+  check('the new entry is a draft in the window', await waitFor(`document.querySelector('#mem-list [data-mem="${longId}"]')?.dataset.draft === "new"`, 8000) && longId !== '', longId);
+  // the filter by state: written / draft / waiting
+  await typeIn('#mem-f-state', 'draft');
+  check('the filter «Черновик» shows the draft', await waitFor(`!!document.querySelector('#mem-list [data-mem="${longId}"]') && [...document.querySelectorAll('#mem-list [data-mem]')].every((e) => e.dataset.draft)`, 5000));
+  await typeIn('#mem-f-state', 'saved');
+  check('the filter «Записано» hides it', await waitFor(`!document.querySelector('#mem-list [data-mem="${longId}"]')`, 5000) && (await evalJs('document.querySelectorAll("#mem-list [data-mem]").length')) >= 0);
+  await typeIn('#mem-f-state', 'waiting');
+  check('the filter «Ждёт слияния» shows none yet', await waitFor('!!document.querySelector("#mem-nomatch")', 5000));
+  await typeIn('#mem-f-state', '');
+  // the summary counts it
+  check('the summary in the column counts the draft', await waitFor('(document.querySelector("#mem-stat-drafts")?.innerText || "").includes("Черновиков: 1")', 8000), await text('#mem-summary'));
+  // delete: the card first, cancel keeps it
+  await click(`#mem-list [data-mem="${longId}"] .mm-line`);
+  await click(`#mem-list [data-mem="${longId}"] [data-act="mem-del"]`);
+  check('deleting asks with was → will be, and Cancel keeps the entry', await waitCard() && (await text('#mem-chg .mm-now')).includes('удалена'), await text('#mem-chg'));
+  await click('#mem-chg-cancel');
+  check('nothing was deleted', await waitFor('!document.querySelector("#mem-chg")', 4000) && await exists(`#mem-list [data-mem="${longId}"]`));
+  await click(`#mem-list [data-mem="${longId}"] .mm-line`);
+  // send by a task
+  await click('#mem-send');
+  await waitCard();
+  await sayYes();
+  check('sent: the entry waits for the merge, with the badge of the task', await waitFor(`document.querySelector('#mem-list [data-mem="${longId}"]')?.dataset.draft === "sent" && (document.querySelector('#mem-list [data-mem="${longId}"] .mm-draft')?.textContent || '').startsWith('Ждёт слияния · ')`, 10000), await text('#mem-list'));
+  check('the summary counts what waits for the merge', await waitFor('(document.querySelector("#mem-stat-waiting")?.innerText || "").includes("Ждёт слияния: 1")', 8000), await text('#mem-summary'));
+  await typeIn('#mem-f-state', 'waiting');
+  check('the filter «Ждёт слияния» shows it', await waitFor(`!!document.querySelector('#mem-list [data-mem="${longId}"]') && document.querySelectorAll('#mem-list [data-mem]').length === 1`, 5000));
+  await typeIn('#mem-f-state', '');
+  const labels = await evalJs('[...document.querySelectorAll("#mem-window .btn, #mem-window #mem-f-kind option, #mem-window #mem-f-state option")].map((e) => e.innerText || e.textContent).filter((x) => x.trim()).filter((x) => x.trim()[0] !== x.trim()[0].toUpperCase())');
+  check('the labels of the window start with a capital', labels.length === 0, JSON.stringify(labels));
+  // the layout: the title keeps its width beside the badge, a long word does not break it, nothing sticks out
+  const judge = async (at, w = 1500, h = 950) => {
+    await waitFor(`!!document.querySelector('#mem-list [data-mem="${longId}"] .mm-draft')`, 10000);
+    await evalJs(AUDIT);
+    await beat();
+    const m = await rowOf(longId);
+    const bad = await layoutProblems('#mem-window');
+    check(`${at}: the long title keeps ${m.titleRem.toFixed(1)} rem beside the badge (at least 10), at most 3 lines, never on the badge`, m.titleRem >= 10 && m.lines <= 3 && !m.over, JSON.stringify(m));
+    check(`${at}: nothing wider than its box in the window, and no sideways scroll`, bad.length === 0 && !m.sideways, bad.join('; '));
+    const [inside, r] = await settled({ p: '#mem-window' }, (x) => x.p && x.p.l >= -1 && x.p.r <= w + 1 && x.p.t >= -1 && x.p.b <= h + 1, 4000);
+    check(`${at}: the window is inside the screen`, inside, JSON.stringify(r.p));
+    // opened: the whole text wraps by words
+    const opened = await evalJs(`(() => { const row = document.querySelector('#mem-list [data-mem="${longId}"]'); if (!row.classList.contains('open')) row.querySelector('.mm-line').click(); return true; })()`);
+    await waitFor(`document.querySelector('#mem-list [data-mem="${longId}"]').classList.contains('open')`, 3000);
+    const body = await evalJs(`(() => { const b = document.querySelector('#mem-list [data-mem="${longId}"] .mm-body'); const r = b.getBoundingClientRect(); const px = parseFloat(getComputedStyle(document.documentElement).fontSize); return { w: r.width / px, over: b.scrollWidth > b.clientWidth + 1 }; })()`);
+    check(`${at}: the full text is wide (${body.w.toFixed(1)} rem) and wraps by words`, body.w >= 14 && !body.over && opened, JSON.stringify(body));
+  };
+  await judge('1500×950');
+  await shot('memory-window.png');
+  for (const [w, h, scale] of [[1280, 720, 100], [1280, 720, 200], [1920, 1080, 100], [1920, 1080, 150], [2560, 1440, 100], [2560, 1440, 200]]) {
+    await send('Emulation.setDeviceMetricsOverride', { width: w, height: h, screenWidth: w, screenHeight: h, deviceScaleFactor: 1, mobile: false });
+    await waitFor(`innerWidth === ${w}`, 5000);
+    await evalJs(`try { localStorage.setItem('herdr-planner.uiScale', '${scale}'); } catch {} true`);
+    await navigate(base + '/?noauto&nocoach&bloom=0');
+    await waitFor('window.world && world.debug().planets > 0', 20000);
+    await resized();
+    await universeOf('docs');
+    await openMem();
+    await judge(`${w}×${h} at ${scale} %`, w, h);
+    if (w === 1920 && scale === 100) await shot('memory-window-1920.png');
+  }
+  // the light theme
+  const colors = join(fixture, 'theme', 'colors.toml');
+  const darkTheme = readFileSync(colors, 'utf8');
+  writeFileSync(colors, darkTheme.replace('mode = "dark"', 'mode = "light"').replace('background = "#1a120c"', 'background = "#f9f1e8"').replace('foreground = "#ecded6"', 'foreground = "#372b1f"'));
+  check('the light theme is on', await waitFor('document.documentElement.dataset.mode === "light"', 20000));
+  await judge('light theme', 2560, 1440);
+  await shot('memory-window-light.png');
+  writeFileSync(colors, darkTheme);
+  await waitFor('document.documentElement.dataset.mode === "dark"', 20000);
+  // the badge is the link to the task: a click closes the window and goes to the task
+  await evalJs('try { localStorage.removeItem("herdr-planner.uiScale"); } catch {} true');
+  await send('Emulation.setDeviceMetricsOverride', { width: 1500, height: 950, deviceScaleFactor: 1, mobile: false });
+  await waitFor('innerWidth === 1500', 5000);
+  await navigate(base + '/?noauto&nocoach&bloom=0');
+  await universeOf('docs');
+  await openMem();
+  await waitFor(`!!document.querySelector('#mem-list [data-mem="${longId}"] .mm-task')`, 10000);
+  const taskId = await evalJs(`document.querySelector('#mem-list [data-mem="${longId}"] .mm-task').dataset.task`);
+  check('the badge of a waiting entry is a link to its task', /\//.test(taskId) && (await text(`#mem-list [data-mem="${longId}"] .mm-task`)).includes('·'), taskId);
+  await click(`#mem-list [data-mem="${longId}"] .mm-task`);
+  check('a click closes the window and opens the task', await waitFor('!document.querySelector("#mem-window")', 4000) && await waitFor(`(window.plannerDebug && plannerDebug().selected?.id) === ${JSON.stringify(taskId)}`, 15000), JSON.stringify((await pd())?.selected));
+  // clean up as «memory universe» does: forget the note, the memory itself stays untouched
+  await universeOf('docs');
+  await openMem();
+  await click('#mem-sent [data-act="mem-sent-forget"]');
+  await waitFor('!document.querySelector("#mem-sent")', 8000);
   await resetUi();
 });
 
@@ -3207,7 +3400,7 @@ section('memory find', async () => {
   check('the space search finds a universe\'s memory entry, in its own group', await waitFor('!!document.querySelector(\'#sres .srow[data-kind="memory"][data-id="alpha|merge-squash"]\')', 6000), await text('#sres'));
   check('the group is named «Память» and the path says where it lives', (await text('#sres')).includes('Память') && (await text('#sres .srow[data-kind="memory"] .path')).includes('alpha'), await text('#sres'));
   await click('#sres .srow[data-kind="memory"]');
-  check('a click flies to the universe and opens that entry', await waitFor('document.querySelector(\'#mem-universe [data-mem="merge-squash"]\')?.classList.contains("open")', 12000) && (await pd())?.selected?.id === 'alpha', JSON.stringify((await pd())?.selected));
+  check('a click flies to the universe and opens that entry', await waitFor('document.querySelector(\'#mem-window[data-level="universe"] [data-mem="merge-squash"]\')?.classList.contains("open")', 12000) && (await pd())?.selected?.id === 'alpha', JSON.stringify((await pd())?.selected));
   await resetUi();
   await evalJs('planner.goOverview()');
   await sleep(300);
@@ -3221,7 +3414,7 @@ section('memory find', async () => {
   await query('коротко');
   check('the memory the Coordinator\'s program keeps is searched (read only)', await waitFor('!!document.querySelector(\'#sres .srow[data-kind="memory"][data-id="@claude|user-answers-short"]\')', 6000), await text('#sres'));
   await click('#sres .srow[data-kind="memory"]');
-  check('and opens on the Quasar, in the program\'s own block', await waitFor('document.querySelector(\'[data-foreign="claude"] [data-mem="user-answers-short"]\')?.classList.contains("open")', 12000));
+  check('and opens in the window, on the program\'s own tab', await waitFor('document.querySelector(\'#mem-window[data-level="foreign"] [data-mem="user-answers-short"]\')?.classList.contains("open")', 12000));
   await resetUi();
 });
 
@@ -3380,6 +3573,7 @@ section('memory guard', async () => {
   // 5. on the page: the card for a public repository, anonymise, and «в память Галактики»
   const alphaStatus = gitStatus(alphaRoot);
   await universeOf('alpha');
+  await openMem();
   await waitFor('!!document.querySelector("#mem-add")', 10000);
   await click('#mem-add');
   await waitFor('!!document.querySelector("#mem-form")', 3000);
@@ -3398,7 +3592,7 @@ section('memory guard', async () => {
   check('the anonymised draft is written, the original text is nowhere', await waitLog(() => filesIn(draftsOf('alpha')).some((f) => readFile(join(draftsOf('alpha'), f)).includes('<ip>')) && !filesIn(draftsOf('alpha')).some((f) => readFile(join(draftsOf('alpha'), f)).includes('203.0.113.7')), 8000));
   await waitFor('!document.querySelector("#mem-form")', 5000);
   // «Отбросить черновик» shows the card too (the draft → nothing), and drops it only after the yes
-  await waitFor('!!document.querySelector(\'#mem-universe-list [data-mem="stend"] .mm-line\')', 8000);
+  await waitFor('!!document.querySelector(\'#mem-list [data-mem="stend"] .mm-line\')', 8000);
   await click('[data-mem="stend"] .mm-line');
   await click('[data-mem="stend"] [data-act="mem-discard"]');
   check('discarding a draft shows the card and keeps the draft until the yes', await waitCard() && (await text('#mem-chg-dest')).includes('отброшен') && (await text('#mem-chg .mm-was')).includes('<ip>') && (await text('#mem-chg .mm-now')).includes('удалена') && filesIn(draftsOf('alpha')).some((f) => readFile(join(draftsOf('alpha'), f)).includes('<ip>')), await text('#mem-chg'));

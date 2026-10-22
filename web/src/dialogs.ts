@@ -2,7 +2,7 @@
    the ship's computer. The arrival notice is not modal: it closes with its own buttons, not with Esc. */
 import { signal } from '@preact/signals';
 import { closeStation, shipDlg, stationDlg } from './ui/station-api';
-import { rememberDlg } from './ui/memory-api';
+import { memoryWin, rememberDlg } from './ui/memory-api';
 import { snap } from './store';
 import type { SavedFile } from './attach';
 
@@ -42,10 +42,11 @@ export function openNewTask(id: string, repo: string): void {
 
 export const dialogOpen = (): boolean =>
   addDialogs.universe.value || addDialogs.runner.value || addDialogs.firstRun.value || !!addDialogs.popover.value || !!addDialogs.tell.value
-  || !!addDialogs.summary.value || !!addDialogs.screen.value || !!stationDlg.value || shipDlg.value || !!rememberDlg.value;
+  || !!addDialogs.summary.value || !!addDialogs.screen.value || !!stationDlg.value || shipDlg.value || !!rememberDlg.value || !!memoryWin.value;
 
 export function closeDialogs(): void {
   if (addDialogs.screen.value) { addDialogs.screen.value = null; return; }
+  if (memoryWin.value) { memoryWin.value = null; return; }
   if (addDialogs.summary.value) { addDialogs.summary.value = null; return; }
   if (rememberDlg.value) { rememberDlg.value = null; return; }
   if (addDialogs.popover.value) { addDialogs.popover.value = null; return; }

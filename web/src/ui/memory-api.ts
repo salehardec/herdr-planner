@@ -205,8 +205,17 @@ export const keepSuggestion = (task: string, lines: Line[], token: string, a: Ac
 
 export const dismissSuggestion = (task: string): Promise<unknown> => post('/api/memory/suggestion', { task, action: 'dismiss' });
 
-/** An entry to show: the search found it. The panel opens it and scrolls to it. */
-export const memFocus = signal<{ repo: string; id: string } | null>(null);
+/** The memory window over the page: the list of one level (`repo` empty: the Galaxy; `program`: the memory another program
+ *  keeps, read only), with the search the human typed in the panel and the entry to open. */
+export interface MemoryWin { repo: string; program?: string; q?: string; open?: string }
+export const memoryWin = signal<MemoryWin | null>(null);
+export function openMemory(w: MemoryWin): void {
+  memoryWin.value = w;
+}
+
+/** Where an entry stands: written (in the files / in git), a draft the planner keeps, or sent and waiting for a task's merge. */
+export type EntryState = 'saved' | 'draft' | 'waiting';
+export const stateOf = (e: MemEntry): EntryState => (!e.draft ? 'saved' : e.draft.startsWith('sent') ? 'waiting' : 'draft');
 
 /** The «В память» dialog: what to remember (the human edits it) and where it came from. */
 export interface RememberInit {

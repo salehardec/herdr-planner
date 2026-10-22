@@ -11,19 +11,26 @@
 .mm-row{border-top:1px solid var(--pl-line);min-width:0}
 .mm-row:first-child{border-top:0}
 .mm-row.hot{outline:2px solid var(--pl-accent);outline-offset:-2px}
-.mm-line{display:flex;gap:7px;align-items:baseline;width:100%;text-align:left;padding:6px 8px;background:none;border:0;color:var(--pl-text);cursor:pointer;min-width:0;font:inherit}
+/* One line of the list: the button that opens the entry (kind, title, a line of its gist) and, beside it, the state badge.
+   The badge never sits inside the title's column: when the row is narrow it drops to its own line, and the title keeps a
+   readable width (it breaks between words, never between letters). */
+.mm-head{display:flex;flex-wrap:wrap;align-items:flex-start;gap:0.125rem 0.5rem;padding-right:0.625rem}
+.mm-line{display:flex;gap:0.5rem;align-items:flex-start;flex:1 1 18rem;min-width:0;text-align:left;padding:0.4375rem 0.5rem 0.4375rem 0.625rem;background:none;border:0;color:var(--pl-text);cursor:pointer;font:inherit}
 .mm-line:hover{background:var(--pl-raised)}
-.mm-chev{width:11px;height:11px;flex:none;align-self:center;color:var(--pl-faint)}
-.mm-title{color:var(--pl-title);font-weight:600;font-size:12.5px;flex:0 1 auto;min-width:0;overflow-wrap:anywhere}
-.mm-desc{color:var(--pl-faint);font-size:11.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1 1 0;min-width:0}
-.mm-kind{flex:none;font-size:10px;letter-spacing:.04em;text-transform:uppercase;color:var(--pl-dim);border:1px solid var(--pl-line);border-radius:9px;padding:0 6px;white-space:nowrap}
+.mm-chev{width:0.6875rem;height:0.6875rem;flex:none;margin-top:0.25rem;color:var(--pl-faint)}
+.mm-kind{flex:none;margin-top:0.0625rem}
+.mm-text{display:grid;gap:0.125rem;flex:1 1 0;min-width:0}
+.mm-title{color:var(--pl-title);font-weight:600;font-size:0.8125rem;line-height:1.4;min-width:0;overflow-wrap:break-word;display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;overflow:hidden}
+.mm-row.open .mm-title{-webkit-line-clamp:unset;display:block;overflow:visible}
+.mm-desc{color:var(--pl-faint);font-size:0.75rem;line-height:1.4;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
+.mm-kind{font-size:0.625rem;letter-spacing:.04em;text-transform:uppercase;color:var(--pl-dim);border:1px solid var(--pl-line);border-radius:0.5625rem;padding:0 0.375rem;white-space:nowrap}
 .mm-kind.k-rule{color:var(--pl-accent-ink);border-color:var(--pl-accent)}
 .mm-kind.k-pitfall{color:var(--c-yellow);border-color:var(--c-yellow)}
 .mm-kind.k-decision{color:var(--c-cyan,var(--pl-dim))}
-.mm-more{display:grid;gap:6px;padding:2px 10px 9px 26px;min-width:0}
-.mm-lead{color:var(--pl-text);font-size:12.5px;font-weight:500}
-.mm-body{white-space:pre-wrap;word-break:break-word;color:var(--pl-dim);font-size:12.5px;line-height:1.55}
-.mm-meta{display:flex;flex-wrap:wrap;gap:2px 10px;font-size:10.5px;color:var(--pl-faint)}
+.mm-more{display:grid;gap:0.375rem;padding:0.125rem 0.75rem 0.625rem 1.75rem;min-width:0}
+.mm-lead{color:var(--pl-text);font-size:0.8125rem;font-weight:500;overflow-wrap:break-word}
+.mm-body{white-space:pre-wrap;overflow-wrap:break-word;color:var(--pl-dim);font-size:0.8125rem;line-height:1.55}
+.mm-meta{display:flex;flex-wrap:wrap;gap:2px 0.625rem;font-size:0.6875rem;color:var(--pl-faint)}
 .mm-meta code{color:var(--pl-faint)}
 .mm-form{display:grid;gap:7px;padding:9px 10px;border-top:1px solid var(--pl-line);background:color-mix(in srgb,var(--pl-accent) 5%,var(--pl-tile))}
 .mm>.mm-form,.mm-list+.mm-form{border:1px dashed var(--pl-line);border-radius:7px}
@@ -77,7 +84,39 @@
 .mm-found ul{margin:0;padding:0;list-style:none;display:grid;gap:2px}
 .mm-found code{word-break:break-all;color:var(--pl-title)}
 .mm-fk{font-size:10px;text-transform:uppercase;letter-spacing:.04em;color:var(--pl-dim);margin-right:4px}
-/* drafts in the list */
-.mm-draft{flex:none;font-size:10px;letter-spacing:.04em;text-transform:uppercase;border:1px dashed var(--c-yellow);color:var(--c-yellow);border-radius:9px;padding:0 6px;white-space:nowrap}
+/* drafts in the list: the badge is one line, cut with an ellipsis (the whole text is in its tooltip) rather than squeezing the title */
+.mm-draft{flex:none;max-width:100%;overflow:hidden;text-overflow:ellipsis;font-size:0.625rem;letter-spacing:.04em;text-transform:uppercase;border:1px dashed var(--c-yellow);color:var(--c-yellow);background:none;border-radius:0.5625rem;padding:0 0.4375rem;margin-top:0.4375rem;white-space:nowrap;font-family:inherit;line-height:1.5}
 .mm-draft.d-sent,.mm-draft.d-sentdel{border-style:solid}
+button.mm-draft{cursor:pointer}
+button.mm-draft:hover,button.mm-draft:focus-visible{background:color-mix(in srgb,var(--c-yellow) 14%,transparent);text-decoration:underline}
 .mm-row.d-deleted .mm-title,.mm-row.d-deleted .mm-desc{text-decoration:line-through;opacity:.6}
+
+/* The summary in the Focus column: counts, a search, the button for the window. */
+.mm-sum{display:grid;gap:0.5rem;padding:0.625rem;border:1px solid var(--pl-line);border-radius:7px;background:var(--pl-tile)}
+.mm-stats{display:flex;flex-wrap:wrap;gap:0.25rem 0.75rem;font-size:0.75rem;color:var(--pl-dim)}
+.mm-stat{min-width:0;overflow-wrap:break-word}
+.mm-stat.warn{color:var(--c-yellow)}
+
+/* The memory window: a wide column over the Galaxy; the bar with the levels and filters stays, the list scrolls. */
+.scrim.memory-scrim{place-items:center;padding:1.5rem;z-index:60}
+.memory-win{position:relative;width:min(62rem,calc(100vw - 6rem));height:min(46rem,calc(100vh - 5rem));max-width:calc(100vw - 3rem);max-height:calc(100vh - 3rem);overflow:hidden;display:flex;flex-direction:column;background:var(--pl-panel-solid);box-shadow:0 1.5rem 4rem rgba(0,0,0,.45)}
+.memory-win>header{flex:none;gap:0.625rem}
+.memory-win>header .sh-title{display:flex;align-items:center;gap:0.4375rem;min-width:0;flex-wrap:wrap}
+.memory-win>header .sh-title b{font-size:0.8125rem;text-transform:none;letter-spacing:0;overflow-wrap:break-word;min-width:0}
+.memory-win>header .sh-title .gl{width:0.8125rem;height:0.8125rem}
+.memory-win>header .sh-buttons{display:flex;align-items:center;gap:0.375rem;flex:none}
+.mmw-bar{flex:none;display:grid;gap:0.5rem;padding:0.625rem 1rem;border-bottom:1px solid var(--pl-line)}
+.mmw-filters{display:flex;flex-wrap:wrap;gap:0.375rem 0.5rem;align-items:center}
+.mmw-filters #mem-search{flex:1 1 14rem;min-width:min(14rem,100%);width:auto}
+.mmw-filters select.field{flex:0 1 11rem;width:auto;min-width:0}
+.mmw-count{margin:0;white-space:nowrap;margin-left:auto}
+.mmw-scroll{flex:1;min-height:0;overflow:auto;scrollbar-width:thin;padding:0.75rem 1rem 1rem}
+.mmw-body{display:grid;gap:0.5rem;align-content:start;min-width:0;max-width:56rem;margin:0 auto}
+.mmw-body .hint{font-size:0.75rem;margin:0}
+.mmw-body .hint.bad{color:var(--pl-danger)}
+.mmw-body .hint.warn{color:var(--c-yellow)}
+.mmw-body .mm-git{display:grid;gap:0.3125rem}
+.mmw-body .mm-sent{overflow-wrap:break-word}
+:root.bp900 .scrim.memory-scrim{padding:0.75rem}
+:root.bp900 .memory-win{width:calc(100vw - 1.5rem);height:calc(100vh - 1.5rem);max-width:none;max-height:none}
+:root.bp900 .mmw-count{margin-left:0}
