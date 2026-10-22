@@ -320,7 +320,7 @@ export interface Snapshot {
   theme: Theme;
   herdr: { running: boolean; socket: string };
   auth: { required: boolean; user: string };
-  server: { listen: string; port: number; local_only: boolean; tls: boolean; projects_dir: string };
+  server: { listen: string; port: number; local_only: boolean; tls: boolean; projects_dir: string; attachments_dir: string };
 }
 
 /** This machine's board as the world draws it. */

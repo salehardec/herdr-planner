@@ -115,7 +115,7 @@ job_release() { printf 'x\n' >&9; }
 # The Galaxy: sections split in four, each with a fresh board (a section that needs another's state is a bug).
 n=0
 for only in "boot,live,navigator,buttons,autopilot,manual,stack,queue,search" \
-            "chat,todo" \
+            "chat,todo,hints" \
             "lag,universes,framing,remote,scale,runners,menu card" \
             "station,crew,ship,theme,simple,planet states,narrow,top cards" \
             "focus,agent screen,requests,links,archive,load,top bar,limits,memory,layout narrow" \

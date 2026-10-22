@@ -4,6 +4,7 @@ import { armed, tellDraft } from '../store';
 import { ACTION_LABEL, boardOk, runTaskAction, tellTask } from '../actions';
 import { t } from '../i18n';
 import { AutoTextarea } from './AutoText';
+import { Completion, useComplete } from './Complete';
 import type { Task } from '../types';
 
 /** The buttons of the board's actions for a task, exactly as the Focus shows them. */
@@ -34,17 +35,30 @@ export function TellBox(props: { task: Task; input?: string; onSent?: () => void
   const id = props.input ?? 'tell';
   const dis = !boardOk();
   const ref = useRef<HTMLTextAreaElement>(null);
+  // The words go to THIS task's agent: its own program's commands, and its own folder's `.claude`.
+  const comp = useComplete({ program: task.app || task.worker_agent.split('/')[0], dir: task.worktree || '' });
   const submit = async (): Promise<void> => {
     const el = ref.current;
     if (!el) return;
+    comp.close();
     if (await tellTask(task, el.value)) props.onSent?.();
   };
   return (
     <div class="tell">
+      <Completion
+        view={comp.view.value} id={`${id}-complete`} onHover={comp.hover}
+        onPick={(i) => { const el = ref.current; if (el) comp.pick(i, el); }}
+      />
       <AutoTextarea
         id={id} data-id={task.id} class="field" elRef={ref} autocomplete="off" disabled={dis} value={tellDraft.value[task.id] ?? ''}
         placeholder={t('focus.tellPlaceholder', { tag: task.tag })} aria-label={t('focus.tell')}
-        onInput={(e) => { tellDraft.value = { ...tellDraft.value, [task.id]: (e.target as HTMLTextAreaElement).value }; }}
+        aria-controls={`${id}-complete`} aria-expanded={!!comp.view.value}
+        onInput={(e) => {
+          tellDraft.value = { ...tellDraft.value, [task.id]: (e.target as HTMLTextAreaElement).value };
+          comp.update(e.target as HTMLTextAreaElement);
+        }}
+        onClick={() => { const el = ref.current; if (el) comp.update(el); }}
+        onKeyDown={(e) => { const el = ref.current; if (el && comp.key(e, el)) return; }}
         onSend={() => void submit()}
       />
       <button class="btn" type="button" data-act="tell-agent" data-id={task.id} aria-disabled={dis} onClick={() => void submit()}>{t('focus.send')}</button>
