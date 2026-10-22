@@ -110,6 +110,7 @@ function TaskFocus(props: { task: Task }): JSX.Element {
             <div class="row" key={c.id}>
               <button class="k" type="button" onClick={() => void navigateTo({ kind: 'runner', id: r.id })}>{r.id}</button>
               <span class="hint">{c.name} · {c.created_ms ? duration(Date.now() - c.created_ms, t) : '—'}</span>
+              {c.no_limits && <span class="chip hot" data-nolimit="1" title={t('runner.noLimitHint')}>{t('runner.noLimitMark')}</span>}
               <ContainerButtons runner={r.id} c={c} scope={task.id} />
             </div>
           ))}
