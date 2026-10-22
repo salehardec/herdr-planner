@@ -833,6 +833,9 @@ section('hints', async () => {
       return !h || n.right <= h.getBoundingClientRect().left + 1;
     });
   })()`));
+  const widths = await evalJs('[...document.querySelectorAll("#ask-complete .cmpl-name")].map((n) => ({ t: n.innerText, cw: n.clientWidth, sw: n.scrollWidth }))');
+  const cut = widths.filter((w) => w.sw > w.cw + 1);
+  check('no name is cut with an ellipsis: every command reads as a whole', cut.length === 0 && widths.length > 10 && widths.every((w) => w.cw > 8) && (await rows()).every((r) => r.label.startsWith('/')), JSON.stringify({ cut, sample: widths.slice(0, 6) }));
   const [listBox, taBox] = [await rectOf('#ask-complete'), await rectOf('#ask-in')];
   check('the list sits right above the line, inside the chat', listBox.b <= taBox.t + 4 && taBox.t - listBox.b < 24 && listBox.t > 0 && listBox.w > 100, JSON.stringify({ listBox, taBox }));
   const shown = await evalJs(`(() => {
@@ -860,6 +863,8 @@ section('hints', async () => {
   // @: the tasks, the universes, the files — with the id, the folder and the full path.
   await line('@ALP-2');
   check('@ searches the tasks of the board', await waitFor('[...document.querySelectorAll("#ask-complete .cmpl-group")].some((e) => e.innerText.trim().toLowerCase() === "задачи")', 4000) && (await rows()).some((r) => r.label === 'ALP-2'), JSON.stringify(await rows()));
+  const cutTask = await evalJs('[...document.querySelectorAll("#ask-complete .cmpl-name")].filter((n) => n.scrollWidth > n.clientWidth + 1).map((n) => n.innerText)');
+  check('a task id is named as a whole', cutTask.length === 0, JSON.stringify(cutTask));
   await press('Enter');
   check('a task goes in as its id', await waitFor('document.querySelector("#ask-in").value === "ALP-2"', 3000), await evalJs('document.querySelector("#ask-in").value'));
   await line('@READM');
@@ -879,6 +884,9 @@ section('hints', async () => {
       return nb.top >= rb.top - 1 && nb.bottom <= rb.bottom + 1 && nb.left >= rb.left - 1 && getComputedStyle(n).position !== 'absolute';
     });
   })()`), await evalJs('document.querySelector("#ask-complete")?.innerText'));
+  const atWidths = await evalJs('[...document.querySelectorAll("#ask-complete .cmpl-name")].map((n) => ({ t: n.innerText, cw: n.clientWidth, sw: n.scrollWidth }))');
+  const cutAt = atWidths.filter((w) => w.sw > w.cw + 1);
+  check('a universe is named as a whole, not «al…»', cutAt.length === 0 && atWidths.some((w) => w.t === 'alpha' && w.cw > 8) && (await rows()).some((r) => r.label === 'alpha'), JSON.stringify({ cutAt, shown: atWidths }));
   await shot('hints-mentions.png');
   await press('Enter');
   check('a universe goes in as the folder of its repository', (await evalJs('document.querySelector("#ask-in").value')) === alphaRoot, JSON.stringify({ got: await evalJs('document.querySelector("#ask-in").value'), alphaRoot }));
@@ -891,6 +899,8 @@ section('hints', async () => {
   await evalJs('(() => { const el = document.querySelector("#tell"); el.focus(); el.value = "/"; el.setSelectionRange(1, 1); el.dispatchEvent(new Event("input", { bubbles: true })); return true; })()');
   check('a slash there shows the commands of the task agent\'s program', await waitFor('!!document.querySelector("#tell-complete")', 10000) && (await evalJs('[...document.querySelectorAll("#tell-complete .cmpl-group")].map((e) => e.innerText.trim().toLowerCase())')).includes('команды программы'), await evalJs('document.querySelector("#tell-complete")?.innerText'));
   await shot('hints-tell.png');
+  const cutTell = await evalJs('[...document.querySelectorAll("#tell-complete .cmpl-name")].filter((n) => n.scrollWidth > n.clientWidth + 1).map((n) => n.innerText)');
+  check('no command name is cut there either', cutTell.length === 0, JSON.stringify(cutTell));
   check('the list of the reply field is whole: not clipped by the panel', await evalJs(`(() => {
     const l = document.querySelector('#tell-complete').getBoundingClientRect();
     const f = document.querySelector('#focus').getBoundingClientRect();

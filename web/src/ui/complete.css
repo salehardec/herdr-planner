@@ -4,11 +4,13 @@
 .cmpl{position:absolute;left:0;right:0;bottom:calc(100% + 0.25rem);max-height:15rem;overflow-y:auto;overscroll-behavior:contain;z-index:6;background:var(--pl-panel-solid);border:1px solid var(--pl-line);border-radius:0.375rem;box-shadow:0 0.5rem 1.5rem rgba(0,0,0,.35);padding:0.25rem;font-size:0.8125rem;line-height:1.35;scrollbar-width:thin}
 .cmpl .cmpl-group{display:flex;align-items:center;gap:0.3125rem;padding:0.3125rem 0.375rem 0.125rem;color:var(--pl-faint);font-size:0.6562rem;letter-spacing:.06em;text-transform:uppercase}
 .cmpl .cmpl-group svg{width:0.75rem;height:0.75rem}
-.cmpl .cmpl-row{display:grid;grid-template-columns:auto auto minmax(0,1fr);gap:0 0.5rem;align-items:baseline;padding:0.1875rem 0.375rem;border-radius:0.25rem;cursor:pointer}
-.cmpl .cmpl-row .cmpl-ic{color:var(--pl-dim);display:inline-flex;align-self:center}
+/* The row is a line of its own: the icon, then the name at its full width, then the words beside it. Only the
+   words give way when the line is long — a name cut to «/co…» names nothing. */
+.cmpl .cmpl-row{display:flex;align-items:baseline;gap:0.5rem;padding:0.1875rem 0.375rem;border-radius:0.25rem;cursor:pointer}
+.cmpl .cmpl-row .cmpl-ic{color:var(--pl-dim);display:inline-flex;align-self:center;flex:none}
 .cmpl .cmpl-row .cmpl-ic svg{width:0.8125rem;height:0.8125rem}
-.cmpl .cmpl-row .cmpl-name{color:var(--pl-title);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:60%}
-.cmpl .cmpl-row .cmpl-hint{color:var(--pl-faint);font-size:0.75rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;direction:ltr}
+.cmpl .cmpl-row .cmpl-name{color:var(--pl-title);white-space:nowrap;flex:none}
+.cmpl .cmpl-row .cmpl-hint{color:var(--pl-faint);font-size:0.75rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;direction:ltr;flex:1 1 0;min-width:0}
 .cmpl .cmpl-row.cmpl-cur{background:var(--pl-hover)}
 .cmpl .cmpl-row.cmpl-cur .cmpl-name{color:var(--pl-accent-ink)}
 .cmpl .cmpl-row.cmpl-cur .cmpl-ic{color:var(--pl-accent-ink)}
