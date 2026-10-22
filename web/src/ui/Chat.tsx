@@ -13,6 +13,7 @@ import { parseOptions } from '../requests';
 import { post, refreshNow, onChatEvent } from '../api';
 import { fetchScreen, todoToDraft } from '../actions';
 import { t, tn } from '../i18n';
+import { sigOf } from '../chat-read';
 import { markRead, SEE_MS, unreadCount, unreadTurns, windowActive } from '../chat-unread';
 import { dayTimeOf, timeOf } from '../util/dates';
 import { Gl } from './Gl';
@@ -84,8 +85,11 @@ function Turn(props: { turn: TurnData; hit: boolean; unread: boolean; onReuse: (
   const open = wide.value.has(tn.n);
   return (
     <div class={`turn ${tn.from} ${props.hit ? 'hit' : ''}`} data-n={tn.n}>
-      <div class="q" data-reuse={tn.n} title={t('chat.reuse')} onClick={() => props.onReuse(tn.q)}>
-        <span class="who">{t('chat.you')}</span>
+      <div class="q" data-reuse={tn.n} title={t('chat.reuse')} onClick={() => props.onReuse(tn.q)} data-unread={props.unread && !tn.a ? tn.n : undefined} data-sig={0}>
+        <span class="who">
+          {t('chat.you')}
+          {tn.from === 'board' && !tn.a && <i class={`udot ${props.unread ? 'on' : ''}`} role={props.unread ? 'img' : undefined} aria-label={props.unread ? t('chat.unreadDot') : undefined} title={props.unread ? t('chat.unreadDot') : undefined} />}
+        </span>
         <span class="txt">{tn.q}</span>
         <button class="btn sm mm-tomem" type="button" data-act="to-memory" data-who="q" title={t('mem.toMemoryTip')}
           onClick={(e) => { e.stopPropagation(); openRemember({ text: tn.q, source: 'chat' }); }}><Gl n="memory" />{t('mem.toMemory')}</button>
@@ -93,7 +97,7 @@ function Turn(props: { turn: TurnData; hit: boolean; unread: boolean; onReuse: (
       <div class="meta"><span>{dayTimeOf(tn.at)}</span>{tn.from === 'board' && <span>· {t('chat.boardNotice')}</span>}</div>
       {tn.a && (
         <>
-          <div class="a" data-unread={props.unread ? tn.n : undefined}>
+          <div class="a" data-unread={props.unread ? tn.n : undefined} data-sig={sigOf(tn.a)}>
             <span class="who">
               {t('quasar.short')}
               <i class={`udot ${props.unread ? 'on' : ''}`} role={props.unread ? 'img' : undefined} aria-label={props.unread ? t('chat.unreadDot') : undefined} title={props.unread ? t('chat.unreadDot') : undefined} />
@@ -142,7 +146,8 @@ export function Chat(): JSX.Element {
   const options = dialog || busy ? [] : parseOptions(lastReply);
   const scr = screens.value.coordinator;
   const unread = unreadTurns.value;
-  const unreadKey = unread.join(',');
+  // With the words they were read as: an answer that changes (an interim line, then the real one) is news again.
+  const unreadKey = unread.map((n) => `${n}:${sigOf(c.turns.find((x) => x.n === n)?.a ?? '')}`).join(',');
   const active = windowActive.value;
   // The commands of the program that reads these words: the Coordinator's own.
   const comp = useComplete({ program: coord?.program ?? '', dir: '' });
@@ -186,9 +191,10 @@ export function Chat(): JSX.Element {
     const io = new IntersectionObserver((entries) => {
       for (const e of entries) {
         const n = Number((e.target as HTMLElement).dataset.unread);
+        const sig = Number((e.target as HTMLElement).dataset.sig);
         const timer = timers.get(n);
         if (seen(e)) {
-          if (timer === undefined) timers.set(n, window.setTimeout(() => { timers.delete(n); markRead([n]); }, SEE_MS));
+          if (timer === undefined) timers.set(n, window.setTimeout(() => { timers.delete(n); markRead([[n, sig]]); }, SEE_MS));
         } else if (timer !== undefined) { window.clearTimeout(timer); timers.delete(n); }
       }
     }, { root: log, threshold: Array.from({ length: 21 }, (_, i) => i / 20) });
@@ -215,12 +221,16 @@ export function Chat(): JSX.Element {
     scrollTo.value = { n: first, at: Date.now(), block: 'start' };
   };
 
-  // Opening the chat shows what is new in it.
+  // Opening the chat shows what is new in it. A chat that is open from the start (the wide one is restored open) waits for the history.
+  const jumped = useRef(false);
+  const ready = c.available !== null;
   useEffect(() => {
-    if (!open) return;
+    if (!open) { jumped.current = false; return; }
+    if (!ready || jumped.current) return;
+    jumped.current = true;
     const id = requestAnimationFrame(() => { void toUnread(true); });
     return () => cancelAnimationFrame(id);
-  }, [open]);
+  }, [open, ready]);
 
   const older = async (): Promise<void> => {
     stuck.value = false;

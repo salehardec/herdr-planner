@@ -14,7 +14,7 @@ export const SEE_MS = 900;
 function load(): ReadState | null {
   try {
     const v = JSON.parse(localStorage.getItem(READ_KEY) || 'null');
-    if (v && typeof v.base === 'number' && Array.isArray(v.seen)) return { base: v.base, seen: v.seen.filter((n: unknown) => typeof n === 'number') };
+    if (v && typeof v.base === 'number' && v.seen && typeof v.seen === 'object' && !Array.isArray(v.seen)) return { base: v.base, seen: v.seen };
   } catch { /* nothing stored, or private mode */ }
   return null;
 }
@@ -39,10 +39,11 @@ export function settleRead(): void {
   if (next !== chatRead.value) { chatRead.value = next; save(next); }
 }
 
-export function markRead(ns: number[]): void {
+/** Marks turns as read, each as the words that were in view (turn, signature). */
+export function markRead(marks: [number, number][]): void {
   const rs = chatRead.value;
-  if (!rs || !ns.length) return;
-  const next = withRead(rs, ns);
+  if (!rs || !marks.length) return;
+  const next = withRead(rs, marks, chat.peek().total);
   chatRead.value = next;
   save(next);
 }
