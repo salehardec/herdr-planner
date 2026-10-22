@@ -1,7 +1,7 @@
 import type { JSX } from 'preact';
 import { signal } from '@preact/signals';
 import { useEffect, useRef } from 'preact/hooks';
-import { live, loadInfo, loadRecv, snap } from '../store';
+import { live, loadInfo, loadRecv, panels, snap } from '../store';
 import { t, tn, locale } from '../i18n';
 import { goHome } from '../nav';
 import { cardAnchor, closeCard } from './hovercard';
@@ -165,7 +165,7 @@ export function LoadCard(): JSX.Element | null {
       {disk && <Row k="disk" m={diskMeter} detail={t('load.memOf', { used: gb(disk.used, loc), total: gb(disk.total, loc) })} />}
       <div class="ld-ft">
         <span>{l && l.at > 0 ? t('load.updated', { at: clock(l.at), n: Math.max(1, Math.round((l.every_ms || 3000) / 1000)) }) : t('load.noTime')}</span>
-        <button type="button" class="ld-go" id="load-more" onClick={() => { closeCard(); void goHome(); }}>{t('load.more')}</button>
+        <button type="button" class="ld-go" id="load-more" onClick={() => { closeCard(); panels.focus.value = true; void goHome(); }}>{t('load.more')}</button>
       </div>
     </div>
   );

@@ -1851,7 +1851,7 @@ section('load', async () => {
   await hoverLoad(true);
   check('the card has «Подробнее»', (await text('#load-more')) === 'Подробнее');
   await click('#load-more');
-  check('«Подробнее» flies to the Galaxy (nothing is selected) and closes the card', await waitFor('plannerDebug().selected === null && !document.querySelector("#top-card")', 8000));
+  check('«Подробнее» flies to the Galaxy (nothing is selected), opens its Focus and closes the card', await waitFor('plannerDebug().selected === null && !document.querySelector("#top-card") && !!document.querySelector("#focus:not(.off)")', 8000));
   await resetUi();
 
   // the theme: light and dark, the same semantic colours
@@ -2077,10 +2077,8 @@ section('top cards', async () => {
   await shot('topcard-load.png');
 
   // the pointer goes from the bars to the card across the gap: the card does not flicker, and stays while the pointer is on it
-  await mouseTo(lc.l + 5, lc.b + 3);
-  await sleep(120);
-  const c0 = await cardRect();
-  await mouseTo(...centre(c0));
+  // (the two events in one turn of the page: a slow machine must not stretch the pause the card allows for the crossing)
+  await evalJs(`(() => { document.querySelector('#load-chip').dispatchEvent(new MouseEvent('mouseleave')); setTimeout(() => document.querySelector('#top-card')?.dispatchEvent(new MouseEvent('mouseenter')), 60); return true; })()`);
   await sleep(700);
   check('moving the pointer from the bars to the card (through the gap) keeps it open, and it stays while the pointer rests on it', !!(await cardRect()) && (await evalJs('document.querySelector("#top-card")?.dataset.card')) === 'load');
   await mouseTo(700, 600);
@@ -2110,9 +2108,22 @@ section('top cards', async () => {
   await evalJs('document.querySelector("#load-chip").dispatchEvent(new MouseEvent("mouseleave")); true');
   await sleep(500);
   check('Enter (a click that is not a mouse\'s) keeps the card open when the pointer is elsewhere', (await evalJs('document.querySelector("#top-card")?.dataset.pinned')) === 'true');
-  check('«Подробнее» is reachable from the keyboard: Tab from the bars comes to the subscription chip, which takes the card over', await (async () => { await evalJs('document.querySelector("#hud-limits").focus(); true'); return cardOpen('limits'); })());
   await press('Escape');
   await cardGone();
+  // a real Tab: from the bars into their card's link, from the link back to the bars (the card closed), then on to the chip
+  await evalJs('document.querySelector("#load-chip").blur(); document.querySelector("#load-chip").focus(); true');
+  await cardOpen('load');
+  await press('Tab');
+  check('Tab from the bars lands on «Подробнее» in their card, and the card stays', await waitFor('document.activeElement?.id === "load-more"', 3000) && !!(await cardRect()));
+  await press('Tab');
+  check('Tab on «Подробнее» goes back to the bars and closes the card', await waitFor('document.activeElement?.id === "load-chip"', 3000) && await cardGone());
+  await press('Tab');
+  check('and the next Tab goes on to the subscription chip, whose card opens', await waitFor('document.activeElement?.id === "hud-limits"', 3000) && await cardOpen('limits'));
+  await press('Tab');
+  check('Tab from the chip lands on «Лимиты подписок»', await waitFor('document.activeElement?.id === "limits-more"', 3000));
+  await press('Escape');
+  check('Esc on the link closes the card and gives the focus back to the chip', await cardGone() && (await evalJs('document.activeElement?.id')) === 'hud-limits');
+  await evalJs('document.activeElement?.blur(); true');
 
   // the subscriptions: every limit of every subscription at once
   await mouseTo(...centre(await rectOf('#hud-limits')));
@@ -2198,6 +2209,13 @@ section('top cards', async () => {
       if (!(await cardOpen(id === 'machine' ? 'load' : 'limits'))) { check(`${at}: the ${id} card opens`, false); continue; }
       await beat();
       await cardPlace(sel, id, w, h, at);
+      // nothing lies over the card (the Focus panel and the other panels are open here): every point of it hits the card, and so does its link
+      const over = await evalJs(`(() => { const c = document.querySelector('#top-card'); const r = c.getBoundingClientRect(); const bad = [];
+        const hit = (x, y) => { const e = document.elementFromPoint(x, y); return !!e && c.contains(e); };
+        for (let i = 1; i <= 4; i++) for (let j = 1; j <= 4; j++) { const x = r.left + r.width * i / 5; const y = r.top + r.height * j / 5; if (!hit(x, y)) bad.push([Math.round(x), Math.round(y)]); }
+        const l = c.querySelector('button.ld-go').getBoundingClientRect(); const lk = hit(l.left + l.width / 2, l.top + l.height / 2);
+        return { bad: bad.length, link: lk, focusOpen: !!document.querySelector('#focus:not(.off)') }; })()`);
+      check(`${at}: the ${id} card is above the panels: all of it can be seen and its link clicked`, over.bad === 0 && over.link, JSON.stringify(over));
       const c = await evalJs(`(() => { const e = document.querySelector('#top-card'); return { scrollsOut: e.scrollWidth > e.clientWidth + 1, sw: document.documentElement.scrollWidth }; })()`);
       check(`${at}: the ${id} card does not scroll sideways, the page does not grow`, !c.scrollsOut && c.sw <= w + 1, JSON.stringify(c));
       if (id === 'machine' && w === 1920 && scale === 'auto') await shot('topcard-1920.png');

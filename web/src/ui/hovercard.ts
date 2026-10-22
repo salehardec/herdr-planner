@@ -16,9 +16,21 @@ let closeTimer = 0;
 
 const clear = (): void => { window.clearTimeout(openTimer); window.clearTimeout(closeTimer); };
 
-export function closeCard(): void {
+/** Set while the focus is handed back to an element on purpose: that focus must not open its card again. */
+let muted = false;
+
+/** Closes the card; `back` hands the focus back to the element it belongs to when it was inside the card. */
+export function closeCard(back = false): void {
   clear();
-  if (card.value) card.value = null;
+  const c = card.value;
+  if (!c) return;
+  const inCard = !!document.getElementById('top-card')?.contains(document.activeElement);
+  card.value = null;
+  if (back && inCard) {
+    muted = true;
+    anchorOf(c.id)?.focus();
+    muted = false;
+  }
 }
 
 function show(id: CardId, delay: number): void {
@@ -34,6 +46,8 @@ function later(): void {
   window.clearTimeout(openTimer);
   window.clearTimeout(closeTimer);
   if (!card.value || card.value.pinned) return;
+  // the focus is on the card's link (the keyboard): the card stays
+  if (document.getElementById('top-card')?.contains(document.activeElement)) return;
   closeTimer = window.setTimeout(() => { if (card.value && !card.value.pinned) card.value = null; }, CLOSE_MS);
 }
 
@@ -45,15 +59,30 @@ function pick(id: CardId, e: MouseEvent): void {
 }
 
 /** What an element of the top bar needs to own a card. */
-export const cardAnchor = (id: CardId): Pick<JSX.HTMLAttributes<HTMLButtonElement>, 'aria-haspopup' | 'aria-expanded' | 'aria-controls' | 'onMouseEnter' | 'onMouseLeave' | 'onFocus' | 'onClick'> => ({
+export const cardAnchor = (id: CardId): Pick<JSX.HTMLAttributes<HTMLButtonElement>, 'aria-haspopup' | 'aria-expanded' | 'aria-controls' | 'onMouseEnter' | 'onMouseLeave' | 'onFocus' | 'onClick' | 'onKeyDown'> => ({
   'aria-haspopup': 'dialog',
   'aria-expanded': card.value?.id === id,
   'aria-controls': 'top-card',
   onMouseEnter: () => show(id, OPEN_MS),
   onMouseLeave: later,
-  onFocus: () => show(id, 0),
+  onFocus: () => { if (!muted) show(id, 0); },
   onClick: (e: MouseEvent) => pick(id, e),
+  onKeyDown: (e: KeyboardEvent) => {
+    // Tab from the element goes into its open card (its link), which the DOM order would skip
+    if (e.key !== 'Tab' || e.shiftKey || card.value?.id !== id) return;
+    const link = document.querySelector<HTMLElement>('#top-card button, #top-card a');
+    if (!link) return;
+    e.preventDefault();
+    link.focus();
+  },
 });
+
+/** Tab or Shift+Tab on the card's link leaves the card: back to its element, with the card closed (the next Tab goes on from there). */
+export const cardKeys = {
+  onKeyDown: (e: KeyboardEvent) => {
+    if (e.key === 'Tab') { e.preventDefault(); closeCard(true); }
+  },
+};
 
 /** The card's own pointer events: being over it keeps it. */
 export const cardSelf = {

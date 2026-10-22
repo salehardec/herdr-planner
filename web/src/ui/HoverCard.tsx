@@ -1,6 +1,6 @@
 import type { JSX } from 'preact';
 import { useLayoutEffect, useRef } from 'preact/hooks';
-import { card, cardSelf, anchorOf, closeCard } from './hovercard';
+import { card, cardSelf, cardKeys, anchorOf, closeCard } from './hovercard';
 import { LoadCard } from './LoadBar';
 import { LimitsCard } from './Limits';
 import { lang, t } from '../i18n';
@@ -41,7 +41,7 @@ export function HoverCard(): JSX.Element | null {
   });
   if (!c) return null;
   return (
-    <div class="panel topcard" id="top-card" ref={ref} role="dialog" aria-label={c.id === 'load' ? t('load.short') : t('limits.title')} data-card={c.id} data-pinned={c.pinned ? 'true' : undefined} {...cardSelf}>
+    <div class="panel topcard" id="top-card" ref={ref} role="dialog" aria-label={c.id === 'load' ? t('load.short') : t('limits.title')} data-card={c.id} data-pinned={c.pinned ? 'true' : undefined} {...cardSelf} {...cardKeys}>
       {c.id === 'load' ? <LoadCard /> : <LimitsCard />}
     </div>
   );

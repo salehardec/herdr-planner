@@ -1,6 +1,7 @@
 import type { JSX } from 'preact';
 import { mode, panels, simple, linkMode } from '../store';
 import { Top } from './Top';
+import { HoverCard } from './HoverCard';
 import { Navigator } from './Navigator';
 import { Focus } from './Focus';
 import { AgentSummary } from './AgentSummary';
@@ -45,6 +46,7 @@ export function App(): JSX.Element {
     <>
       <Cockpit />
       <Top />
+      <HoverCard />
       <Navigator />
       <Wait />
       <Log />

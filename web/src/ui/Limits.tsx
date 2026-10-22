@@ -12,7 +12,6 @@ const agents = (): AgentUsage[] => snap.value?.limits?.agents ?? [];
 
 function untilText(ms: number): string {
   const left = Number(ms) - Date.now();
-  if (left <= 0) return t('limits.resetPassed');
   if (left < 3600000) return t('limits.inMin', { n: Math.max(1, Math.round(left / 60000)) });
   if (left < 86400000) return t('limits.inHours', { n: Math.round(left / 3600000) });
   return t('limits.inDays', { n: Math.round(left / 86400000) });
@@ -44,7 +43,7 @@ export function LimitsChip(): JSX.Element {
   const remaining = Math.max(0, 100 - Math.round(worst.window.percent * 100));
   const level = worst.window.severity === 'crit' ? ' lim-crit' : worst.window.severity === 'warn' ? ' lim-warn' : '';
   const stale = worst.agent.stale ? ` · ${t('limits.stale')}` : '';
-  const tip = `${worst.agent.name} · ${worst.window.label}: ${t('limits.left', { n: remaining })}${stale}`;
+  const tip = `${worst.agent.name} · ${worst.window.label}: ${t('limits.left', { n: remaining }).toLocaleLowerCase(locale())}${stale}`;
   return (
     <button class={`btn limchip${level}`} id="hud-limits" type="button" aria-label={tip} {...cardAnchor('limits')}>
       <Gl n="limit" /><b class="lim-pc">{remaining}%</b> <span class="lim-ag">{worst.agent.name}</span>
@@ -57,7 +56,7 @@ function Window(props: { w: LimitWindow }): JSX.Element {
   const used = Math.max(0, Math.min(100, Math.round(Number(w.percent || 0) * 100)));
   const remaining = 100 - used;
   const sev = w.severity === 'crit' ? 'crit' : w.severity === 'warn' ? 'warn' : 'ok';
-  const reset = w.resets_at_ms ? t('limits.reset', { at: dayTimeOf(w.resets_at_ms), left: untilText(w.resets_at_ms) }) : t('limits.noReset');
+  const reset = !w.resets_at_ms ? t('limits.noReset') : w.resets_at_ms <= Date.now() ? t('limits.resetPassed') : t('limits.reset', { at: dayTimeOf(w.resets_at_ms), left: untilText(w.resets_at_ms) });
   return (
     <div class={`lim-win ${sev}`}>
       <div class="lim-t"><span class="lim-label">{w.label}</span><b>{t('limits.left', { n: remaining })}</b></div>

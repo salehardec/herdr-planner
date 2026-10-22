@@ -125,7 +125,7 @@ export function installKeys(): void {
     }
     if (e.key === 'Escape') {
       // the details card of the top bar goes first: one Esc, one thing
-      if (card.value) { e.preventDefault(); closeCard(); return; }
+      if (card.value) { e.preventDefault(); closeCard(true); return; }
       const inTodo = !!(target as HTMLElement | null)?.closest?.('#todo');
       if (typing(target) && (target as HTMLElement).id !== 'q' && (target as HTMLElement).id !== 'ask-in') (target as HTMLElement).blur();
       if (locked.value) return;
