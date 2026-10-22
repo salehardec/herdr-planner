@@ -324,10 +324,11 @@ section('navigator', async () => {
 section('buttons', async () => {
   await resetUi();
   // Every visible button of the interface: its label starts with a capital letter. A value (the
-  // machine's host in the crumbs, a program's name in a picker) is not a label, so those are left
-  // out; a label that starts with an arrow or a digit has no first letter to capitalise.
+  // machine's host in the crumbs, a program's name in a picker, the load reading «orion CPU 92%…»)
+  // is not a label, so those are left out; a label that starts with an arrow or a digit has no
+  // first letter to capitalise.
   const smallLabels = () => evalJs(`(() => {
-    const skip = '#crumbs, [data-prog], .prog';
+    const skip = '#crumbs, [data-prog], .prog, #load-chip';
     const bad = [];
     for (const b of document.querySelectorAll('button')) {
       const r = b.getBoundingClientRect();
