@@ -28,6 +28,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("db/migrations/003_memory_suggest.sql"),
     include_str!("db/migrations/004_no_far_galaxies.sql"),
     include_str!("db/migrations/005_runners.sql"),
+    include_str!("db/migrations/006_runner_hist.sql"),
 ];
 
 /// Entries the journal hands out; older ones stay in the table up to [`JOURNAL_KEEP`].
@@ -481,6 +482,135 @@ impl Db {
                 ))
             })?;
             rows.collect()
+        })
+    }
+
+    // ---- what the shipyards did (PLN-46) ----
+
+    /// A sample of a yard's load: `step` is the row width in seconds, `at` its start; `None` — not known.
+    pub fn hist_put(&self, runner: &str, step: u64, at: u64, cpu: Option<f64>, mem: Option<f64>, disk: Option<f64>) {
+        self.with("hist_put", |c| {
+            c.execute(
+                "INSERT OR REPLACE INTO runner_hist (runner, step, at, cpu, mem, disk) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                params![runner, step as i64, at as i64, cpu, mem, disk],
+            )?;
+            Ok(())
+        })
+    }
+
+    /// `(step, at, cpu, mem, disk)` of a yard, oldest first, from `since` on.
+    pub fn hist_rows(&self, runner: &str, since: u64) -> Vec<(u64, u64, Option<f64>, Option<f64>, Option<f64>)> {
+        self.with("hist_rows", |c| {
+            let mut st = c.prepare(
+                "SELECT step, at, cpu, mem, disk FROM runner_hist WHERE runner = ?1 AND at >= ?2 ORDER BY at",
+            )?;
+            let rows = st.query_map(params![runner, since as i64], |r| {
+                Ok((
+                    r.get::<_, i64>(0)? as u64,
+                    r.get::<_, i64>(1)? as u64,
+                    r.get(2)?,
+                    r.get(3)?,
+                    r.get(4)?,
+                ))
+            })?;
+            rows.collect()
+        })
+    }
+
+    /// Narrows the minute samples older than `cut` into `step`-wide rows (the mean of the minutes) and drops them; then
+    /// forgets the samples older than `keep`. `cut` must be a multiple of `step`: a wide row is folded once, whole.
+    pub fn hist_fold(&self, runner: &str, cut: u64, step: u64, keep: u64) {
+        self.with("hist_fold", |c| {
+            let tx = c.transaction()?;
+            tx.execute(
+                "INSERT OR REPLACE INTO runner_hist (runner, step, at, cpu, mem, disk) \
+                 SELECT ?1, ?3, (at / ?3) * ?3, avg(cpu), avg(mem), avg(disk) \
+                 FROM runner_hist WHERE runner = ?1 AND step = 60 AND at < ?2 GROUP BY (at / ?3) * ?3",
+                params![runner, cut as i64, step as i64],
+            )?;
+            tx.execute(
+                "DELETE FROM runner_hist WHERE runner = ?1 AND step = 60 AND at < ?2",
+                params![runner, cut as i64],
+            )?;
+            tx.execute(
+                "DELETE FROM runner_hist WHERE runner = ?1 AND at < ?2",
+                params![runner, keep as i64],
+            )?;
+            tx.commit()?;
+            Ok(())
+        })
+    }
+
+    /// Every yard that has a history row, so a yard taken out of the list can take its rows with it.
+    pub fn hist_runners(&self) -> Vec<String> {
+        self.with("hist_runners", |c| {
+            let mut st = c.prepare("SELECT runner FROM runner_hist UNION SELECT runner FROM task_usage")?;
+            let rows = st.query_map([], |r| r.get(0))?;
+            rows.collect()
+        })
+    }
+
+    /// Forgets a yard's whole history (the yard is gone from the list).
+    pub fn hist_remove(&self, runner: &str) {
+        self.with("hist_remove", |c| {
+            c.execute("DELETE FROM runner_hist WHERE runner = ?1", [runner])?;
+            Ok(())
+        })
+    }
+
+    /// Adds what the containers of `tag` ate at one read: CPU seconds, and the memory they held at once. The first
+    /// and the last moments are kept; a peak is the highest one seen.
+    pub fn usage_add(&self, runner: &str, tag: &str, task: &str, cpu_sec: f64, mem: u64, at_ms: u64) {
+        self.with("usage_add", |c| {
+            c.execute(
+                "INSERT INTO task_usage (runner, tag, task, cpu_sec, mem_peak, first_ms, last_ms) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6) \
+                 ON CONFLICT(runner, tag) DO UPDATE SET \
+                   task = CASE WHEN excluded.task <> '' THEN excluded.task ELSE task END, \
+                   cpu_sec = cpu_sec + excluded.cpu_sec, \
+                   mem_peak = MAX(mem_peak, excluded.mem_peak), \
+                   first_ms = MIN(CASE WHEN first_ms = 0 THEN excluded.first_ms ELSE first_ms END, excluded.first_ms), \
+                   last_ms = MAX(last_ms, excluded.last_ms)",
+                params![runner, tag, task, cpu_sec, mem as i64, at_ms as i64],
+            )?;
+            Ok(())
+        })
+    }
+
+    /// `(tag, task, cpu_sec, mem_peak, first_ms, last_ms)` of a yard's tasks, the most CPU-hungry first.
+    pub fn usage_rows(&self, runner: &str) -> Vec<(String, String, f64, u64, u64, u64)> {
+        self.with("usage_rows", |c| {
+            let mut st = c.prepare(
+                "SELECT tag, task, cpu_sec, mem_peak, first_ms, last_ms FROM task_usage WHERE runner = ?1 \
+                 ORDER BY cpu_sec DESC, tag",
+            )?;
+            let rows = st.query_map([runner], |r| {
+                Ok((
+                    r.get(0)?,
+                    r.get(1)?,
+                    r.get(2)?,
+                    r.get::<_, i64>(3)? as u64,
+                    r.get::<_, i64>(4)? as u64,
+                    r.get::<_, i64>(5)? as u64,
+                ))
+            })?;
+            rows.collect()
+        })
+    }
+
+    /// Forgets a yard's task usage (the yard is gone from the list).
+    pub fn usage_remove(&self, runner: &str) {
+        self.with("usage_remove", |c| {
+            c.execute("DELETE FROM task_usage WHERE runner = ?1", [runner])?;
+            Ok(())
+        })
+    }
+
+    /// Forgets the task rows nobody has seen since `before_ms` (a finished task's usage is kept a while, not for ever).
+    pub fn usage_prune(&self, before_ms: u64) {
+        self.with("usage_prune", |c| {
+            c.execute("DELETE FROM task_usage WHERE last_ms < ?1", [before_ms as i64])?;
+            Ok(())
         })
     }
 

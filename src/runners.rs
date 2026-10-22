@@ -1845,11 +1845,27 @@ pub async fn poll_all(app: &Shared) {
     let calls = file.runners.iter().map(|r| probe(&app.cfg, r));
     let states = futures_util::future::join_all(calls).await;
     let mut old = app.runners.lock().await.clone();
-    // A runner taken out of the file leaves the state too (its cache row is dropped by the page's own remove call).
+    // A runner taken out of the file leaves the state too (its cache row is dropped by the page's own remove call);
+    // what it did over the days goes with it, also when the row outlived a restart.
+    for id in app.db.hist_runners().into_iter().filter(|id| file.get(id).is_none()) {
+        app.db.hist_remove(&id);
+        app.db.usage_remove(&id);
+    }
     old.retain(|s| file.get(&s.id).is_some());
+    // The tasks of this board, for the classes: the usage rows name the task by them (PLN-46), and a saved read already
+    // knows its tasks before the first rebuild after a restart.
+    let index = {
+        let snap = app.snapshot.read().await;
+        let repos = crate::taskmeta::repos(&app.cfg.data_dir);
+        TaskIndex::build(&snap.tasks, &snap.archived, &repos)
+    };
     let mut fresh: Vec<RunnerState> = Vec::new();
     for state in states {
-        let kept = keep_last(old.iter().find(|s| s.id == state.id), state);
+        let prev = old.iter().find(|s| s.id == state.id);
+        let mut kept = keep_last(prev, state);
+        classify(&mut kept.containers, &kept.protected, &index);
+        // What the yard did and what its tasks ate (PLN-46): before the read replaces the previous one.
+        crate::runners_hist::record(&app.db, prev, &kept);
         if let Ok(json) = serde_json::to_string(&kept) {
             app.db.runner_put(
                 &kept.id,

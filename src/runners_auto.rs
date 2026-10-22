@@ -184,6 +184,7 @@ async fn ran(app: &Shared, m: &MachineRef, cmd: &str) -> Result<(), String> {
 async fn reread(app: &Shared, r: &Runner, prev: &RunnerState) -> RunnerState {
     let fresh = runners::probe(&app.cfg, r).await;
     let kept = runners::keep_last(Some(prev), fresh);
+    crate::runners_hist::record(&app.db, Some(prev), &kept);
     if let Ok(json) = serde_json::to_string(&kept) {
         app.db.runner_put(&kept.id, &json, kept.ok, kept.why.as_ref().map(|w| w.line.as_str()).unwrap_or(""));
     }

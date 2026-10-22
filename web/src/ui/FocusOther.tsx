@@ -1,5 +1,5 @@
 import type { JSX } from 'preact';
-import { armed, currentView, panels, requests, runners, snap } from '../store';
+import { armed, currentView, panels, requests, runners, snap, taskOf } from '../store';
 import { archiveAllDone, compactCoordinator, confirmStep, newCoordinator, runTaskAction, sendAction } from '../actions';
 import { navigateTo, openRequest } from '../nav';
 import { t, tn } from '../i18n';
@@ -11,6 +11,8 @@ import { CleanCard } from './CleanCard';
 import { DiskCard } from './DiskCard';
 import { ContainerButtons, ContainerPorts } from './ContainerTools';
 import { RunnerAuto } from './RunnerAuto';
+import { Spark, sparkStats } from './Spark';
+import { DAY_MS, HOURS_MS, cpuTime, hist, histError, loadHistory, memSize, yardUsage } from './usage-api';
 import { RichText } from './RichText';
 import { toast } from '../toast';
 import { STATUS_ORDER } from '../types';
@@ -251,6 +253,53 @@ function yardAge(ms: number): string {
   return duration(Math.max(0, ms), t);
 }
 
+/** What the yard did over the hours and the day (PLN-46): three lines, a switch of the window, and the numbers. */
+function YardHistory(props: { r: { id: string }; cpu: number; mem: number; disk: number }): JSX.Element {
+  const [win, setWin] = useState<'hours' | 'day'>('hours');
+  const data = hist.value;
+  const points = data?.runners?.[props.r.id]?.points ?? [];
+  // The samples are stamped in seconds; the page works in milliseconds.
+  const to = data?.at ?? Date.now();
+  const from = to - (win === 'hours' ? HOURS_MS : DAY_MS);
+  const samples = points.map((p) => ({ at: p.at * 1000, cpu: p.cpu, mem: p.mem, disk: p.disk }));
+  const live = { cpu: props.cpu, mem: props.mem, disk: props.disk };
+  const row = (key: 'cpu' | 'mem' | 'disk', label: string): JSX.Element => {
+    const pts = samples.map((p) => ({ at: p.at, v: p[key] }));
+    const { shown, peak } = sparkStats(pts, from);
+    return (
+      <div class="rf-spark" data-metric={key}>
+        <span class="kv">{label}</span>
+        <Spark points={shown} from={from} to={to} label={t('runner.histNow', { v: Math.round(live[key]) })} cls={key} id={`rf-spark-${key}`} />
+        <span class="num">
+          {t('runner.histNow', { v: Math.round(live[key]) })}
+          {shown.length > 0 ? ` · ${t('runner.histPeak', { v: Math.round(peak) })}` : ''}
+        </span>
+      </div>
+    );
+  };
+  const visible = samples.some((p) => p.at >= from && (p.cpu != null || p.mem != null || p.disk != null));
+  return (
+    <section class="rf-hist" id="rf-hist" data-window={win}>
+      <div class="rf-hist-hd">
+        <h3>{t('runner.hist')}</h3>
+        <div class="seg" role="group" aria-label={t('runner.hist')}>
+          <button class={`btn sm ${win === 'hours' ? 'on' : ''}`} type="button" data-hist-window="hours" aria-pressed={win === 'hours'} onClick={() => setWin('hours')}>{t('runner.histHours')}</button>
+          <button class={`btn sm ${win === 'day' ? 'on' : ''}`} type="button" data-hist-window="day" aria-pressed={win === 'day'} onClick={() => setWin('day')}>{t('runner.histDay')}</button>
+        </div>
+      </div>
+      {histError.value && <div class="hint bad" id="rf-hist-error">{t('runner.histFailed', { e: histError.value })}</div>}
+      {!visible ? <div class="hint" id="rf-hist-empty">{t('runner.histEmpty')}</div> : (
+        <div class="rf-sparks">
+          {row('cpu', t('runner.histCpu'))}
+          {row('mem', t('runner.histMem'))}
+          {row('disk', t('runner.histDisk'))}
+        </div>
+      )}
+      <p class="hint">{t('runner.histHint')}</p>
+    </section>
+  );
+}
+
 export function RunnerFocus(props: { entity: Entity }): JSX.Element {
   const r = runners.value.find((x) => x.id === props.entity.id);
   const [cleanOpen, setCleanOpen] = useState(false);
@@ -270,6 +319,9 @@ export function RunnerFocus(props: { entity: Entity }): JSX.Element {
   const [busyPct, setBusyPct] = useState('');
   const [makeDefault, setMakeDefault] = useState(false);
   const [err, setErr] = useState('');
+  // The history is read again whenever a yard has been read (PLN-46); the calls are shared by every Focus.
+  const stamp = runners.value.map((x) => x.fetched_at_ms).join(',');
+  useEffect(() => { void loadHistory(); }, [stamp]);
   const local = ['127.0.0.1', '::1', '[::1]', 'localhost'].includes(location.hostname);
   if (!r) return <div class="fbody"><h2>{props.entity.id}</h2><p class="hint">{t('runner.gone')}</p></div>;
   const active = r.containers.filter((c) => c.class === 'active');
@@ -283,6 +335,7 @@ export function RunnerFocus(props: { entity: Entity }): JSX.Element {
   const memPct = host.mem_total > 0 ? (memUsed / host.mem_total) * 100 : 0;
   const diskUsed = Math.max(0, host.disk_size - host.disk_avail);
   const diskPct = host.disk_size > 0 ? (diskUsed / host.disk_size) * 100 : 0;
+  const usage = yardUsage(hist.value?.runners?.[r.id]?.tasks ?? [], r.id);
   const block = snap.value?.runner_block;
   const openEdit = (): void => {
     setTags(r.tags.join(', '));
@@ -398,6 +451,7 @@ export function RunnerFocus(props: { entity: Entity }): JSX.Element {
           ? t('runner.busyLineOff')
           : t('runner.busyLine', { pct: r.busy_pct ?? snap.value?.runner_rules?.busy_pct ?? 85 })}
       </p>
+      <YardHistory r={r} cpu={cpuPct} mem={memPct} disk={diskPct} />
       {r.alerts.length > 0 && (
         <section class="rf-alerts" id="rf-alerts">
           <h3>{t('runner.alerts')} <span class="cnt">{r.alerts.length}</span></h3>
@@ -431,6 +485,25 @@ export function RunnerFocus(props: { entity: Entity }): JSX.Element {
                 <td>{c.cpu_pct == null ? '—' : `${c.cpu_pct.toFixed(1)} %`}</td>
                 <td>{c.mem_bytes == null ? '—' : `${(c.mem_bytes / (1024 * 1024)).toFixed(0)} MB`}{c.gpu_mem_mib ? ` · GPU ${c.gpu_mem_mib} MB` : ''}</td>
                 <td><ContainerPorts c={c} host={r.ports_host} /></td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+      <h3>{t('runner.usageTitle')} <span class="cnt">{usage.length}</span></h3>
+      <p class="hint">{t('runner.usageHint')}</p>
+      {usage.length === 0 ? <div class="hint" id="rf-usage">{t('runner.usageNone')}</div> : (
+        <table class="rft" id="rf-usage">
+          <thead><tr><th>{t('runner.usageTag')}</th><th>{t('runner.usageCpu')}</th><th>{t('runner.usageMem')}</th><th>{t('runner.usageSince')}</th></tr></thead>
+          <tbody>
+            {usage.map((u) => (
+              <tr key={u.tag} data-usage={u.tag}>
+                <td>{u.task
+                  ? <button class="k" type="button" onClick={() => void navigateTo({ kind: 'planet', id: u.task })}>{taskOf(u.task)?.tag ?? u.tag}</button>
+                  : <span>{u.tag}</span>}</td>
+                <td>{cpuTime(u.cpu_sec)}</td>
+                <td>{memSize(u.mem_peak)}</td>
+                <td class="rf-use-since">{u.first_ms ? dayTimeOf(u.first_ms) : '—'}</td>
               </tr>
             ))}
           </tbody>

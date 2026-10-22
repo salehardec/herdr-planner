@@ -29,6 +29,7 @@ mod runners_api;
 mod runners_auto;
 mod runners_ctl;
 mod runners_disk;
+mod runners_hist;
 mod search;
 mod server;
 mod ship;

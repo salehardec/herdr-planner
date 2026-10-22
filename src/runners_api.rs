@@ -91,6 +91,26 @@ pub async fn runners_get(State(app): State<Shared>) -> Response {
     .into_response()
 }
 
+/// `GET /api/runners/history`: the load of every yard over the last hours and the day, and what its tasks ate (PLN-46).
+pub async fn runners_history(State(app): State<Shared>) -> Response {
+    let now = now_ms();
+    let ids: Vec<String> = {
+        let snap = app.snapshot.read().await;
+        snap.runners.iter().map(|r| r.id.clone()).collect()
+    };
+    let runners = crate::runners_hist::history(&app.db, &ids, now);
+    Json(json!({
+        "ok": true,
+        "at": now,
+        "runners": runners,
+        "fine_step": crate::runners_hist::FINE_STEP,
+        "coarse_step": crate::runners_hist::COARSE_STEP,
+        "fine_keep_sec": crate::runners_hist::FINE_KEEP_SEC,
+        "keep_sec": crate::runners_hist::KEEP_SEC,
+    }))
+    .into_response()
+}
+
 #[derive(Deserialize)]
 pub struct AskBody {
     id: String,
@@ -116,6 +136,8 @@ pub async fn runner_ask(State(app): State<Shared>, headers: HeaderMap, Json(body
         let mut kept = runners::keep_last(prev.as_ref(), fresh);
         let snap = app.snapshot.read().await.clone();
         classify_now(&app, &snap, &mut kept);
+        // The classes are set: the usage rows can name the board task (PLN-46).
+        crate::runners_hist::record(&app.db, prev.as_ref(), &kept);
         kept
     };
     if let Ok(json) = serde_json::to_string(&state) {
@@ -635,6 +657,8 @@ pub async fn runner_remove(State(app): State<Shared>, headers: HeaderMap, Json(b
         }
     }
     app.db.runner_remove(&body.id);
+    app.db.hist_remove(&body.id);
+    app.db.usage_remove(&body.id);
     app.db.meta_set(&crate::runners_alert::meta_key(&body.id), "");
     app.runners.lock().await.retain(|s| s.id != body.id);
     spawn_after_change(app.clone(), false);
@@ -924,6 +948,7 @@ async fn reprobe(app: &Shared, r: &Runner, prev: &RunnerState) -> RunnerState {
         let snap = app.snapshot.read().await.clone();
         classify_now(app, &snap, &mut after);
     }
+    crate::runners_hist::record(&app.db, Some(prev), &after);
     if let Ok(json) = serde_json::to_string(&after) {
         app.db.runner_put(
             &after.id,
@@ -1216,6 +1241,7 @@ pub async fn disk_clean(State(app): State<Shared>, headers: HeaderMap, Json(body
     // Read the yard again for the page, then count anew for «стало».
     let fresh_state = runners::probe(&app.cfg, &r).await;
     let kept = runners::keep_last(Some(&state), fresh_state);
+    crate::runners_hist::record(&app.db, Some(&state), &kept);
     if let Ok(json) = serde_json::to_string(&kept) {
         app.db.runner_put(&kept.id, &json, kept.ok, kept.why.as_ref().map(|w| w.line.as_str()).unwrap_or(""));
     }
