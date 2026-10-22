@@ -405,7 +405,14 @@ struct ScreenQuery {
     role: Option<String>,
 }
 
+/// A terminal screen is read deeper than a dialog: the window over the page scrolls through it.
+const SCREEN_LINES: &str = "120";
+/// How much of a terminal screen the page receives: a long log is cut once, with a mark, not per redraw.
+const SCREEN_MAX_CHARS: usize = 16_000;
+
 /// The text an agent shows in its own terminal, through `herdr agent read`.
+/// The colours come as ANSI when herdr has them; the plain text is always there for the callers
+/// that draw no colours (the Coordinator's dialog in the chat).
 /// Without herdr the planner says so; it never pretends to see the dialog.
 async fn api_coordinator_screen(
     State(app): State<Shared>,
@@ -426,27 +433,35 @@ async fn api_coordinator_screen(
         }))
         .into_response();
     }
-    match run_herdr(
-        &[
-            "agent", "read", &name, "--source", "visible", "--lines", "40", "--format", "text",
-        ],
-        Duration::from_secs(8),
-    )
-    .await
-    {
-        Ok(out) => Json(json!({
-            "ok": true,
-            "running": true,
-            "target": name,
-            "text": clip(out),
-        }))
-        .into_response(),
-        Err(e) => (
-            StatusCode::BAD_GATEWAY,
-            Json(json!({"ok": false, "running": true, "target": name, "error": e})),
-        )
-            .into_response(),
-    }
+    let read = |format: &'static str| {
+        [
+            "agent", "read", &name, "--source", "visible", "--lines", SCREEN_LINES, "--format",
+            format,
+        ]
+    };
+    // Older herdr versions know no `ansi` format: the screen is still shown, without colours.
+    let (out, colored) = match run_herdr_colored(&read("ansi"), Duration::from_secs(8)).await {
+        Ok(out) => (out, true),
+        Err(_) => match run_herdr(&read("text"), Duration::from_secs(8)).await {
+            Ok(out) => (out, false),
+            Err(e) => {
+                return (
+                    StatusCode::BAD_GATEWAY,
+                    Json(json!({"ok": false, "running": true, "target": name, "error": e})),
+                )
+                    .into_response()
+            }
+        },
+    };
+    let text = strip_ansi(&out);
+    Json(json!({
+        "ok": true,
+        "running": true,
+        "target": name,
+        "text": clip_to(text, SCREEN_MAX_CHARS),
+        "ansi": if colored { clip_to(out, SCREEN_MAX_CHARS) } else { String::new() },
+    }))
+    .into_response()
 }
 
 /// `sw-coordinator` for the Coordinator, `sw-<repo>-<n>` for a task's agent.
@@ -548,13 +563,27 @@ fn valid_key(k: &str) -> bool {
 
 /// Runs the herdr CLI (`HERDR_BIN` overrides the binary name for checks).
 async fn run_herdr(args: &[&str], wait: Duration) -> Result<String, String> {
+    run_herdr_with(args, wait, false).await
+}
+
+/// The same CLI, with the colours herdr would use in a terminal (`NO_COLOR` is not set).
+async fn run_herdr_colored(args: &[&str], wait: Duration) -> Result<String, String> {
+    run_herdr_with(args, wait, true).await
+}
+
+async fn run_herdr_with(args: &[&str], wait: Duration, color: bool) -> Result<String, String> {
     let bin = std::env::var("HERDR_BIN")
         .ok()
         .filter(|v| !v.is_empty())
         .unwrap_or_else(|| "herdr".to_string());
     let mut cmd = Command::new(&bin);
-    cmd.args(args)
-        .env("NO_COLOR", "1")
+    cmd.args(args);
+    if color {
+        cmd.env_remove("NO_COLOR");
+    } else {
+        cmd.env("NO_COLOR", "1");
+    }
+    cmd
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -1413,12 +1442,61 @@ pub(crate) fn error(status: StatusCode, message: impl Into<String>) -> Response 
 }
 
 pub(crate) fn clip(s: String) -> String {
-    const MAX: usize = 4000;
-    if s.chars().count() <= MAX {
+    clip_to(s, 4000)
+}
+
+fn clip_to(s: String, max: usize) -> String {
+    if s.chars().count() <= max {
         return s;
     }
-    let mut out: String = s.chars().take(MAX).collect();
+    let mut out: String = s.chars().take(max).collect();
     out.push('…');
+    out
+}
+
+/// The text without its escape sequences: `herdr agent read --format ansi` colours the screen for a
+/// terminal, and the plain text is what a caller without colours draws. A sequence cut by the length
+/// limit is dropped too.
+fn strip_ansi(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut chars = s.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c != '\u{1b}' {
+            out.push(c);
+            continue;
+        }
+        match chars.peek().copied() {
+            // CSI: ESC [ … final byte in @…~
+            Some('[') => {
+                chars.next();
+                for c in chars.by_ref() {
+                    if ('@'..='~').contains(&c) {
+                        break;
+                    }
+                }
+            }
+            // OSC: ESC ] … BEL or ESC \
+            Some(']') => {
+                chars.next();
+                while let Some(c) = chars.next() {
+                    if c == '\u{7}' {
+                        break;
+                    }
+                    if c == '\u{1b}' {
+                        if chars.peek() == Some(&'\\') {
+                            chars.next();
+                        }
+                        break;
+                    }
+                }
+            }
+            // Any other two-byte escape.
+            Some(_) => {
+                chars.next();
+            }
+            None => {}
+        }
+    }
     out
 }
 
@@ -1516,6 +1594,21 @@ mod tests {
         assert!(valid_repo("herdr-planner"));
         assert!(valid_repo("vm-str:ela/3") == false);
         assert!(!valid_repo(""));
+    }
+
+    #[test]
+    fn a_terminal_screen_keeps_its_words_and_loses_its_escape_sequences() {
+        assert_eq!(
+            strip_ansi("\u{1b}[1;36m❯\u{1b}[0m May I continue?\n  \u{1b}[33m1.\u{1b}[0m Yes"),
+            "❯ May I continue?\n  1. Yes"
+        );
+        // cursor moves and a window title are not text
+        assert_eq!(strip_ansi("a\u{1b}[2Kb\u{1b}]0;title\u{7}c"), "abc");
+        assert_eq!(strip_ansi("plain text"), "plain text");
+        // a sequence cut by the screen limit is not drawn as text
+        assert_eq!(strip_ansi("line\u{1b}[38;5;"), "line");
+        assert_eq!(clip_to("abcdef".into(), 3), "abc…");
+        assert_eq!(clip_to("abc".into(), 3), "abc");
     }
 
     #[test]

@@ -993,7 +993,13 @@ function herdrMain(C, DATA) {
     log('herdr.jsonl', { argv: process.argv.slice(2) });
     const name = rest[0];
     if (!namesOf(world()).includes(name)) { console.error('no such agent: ' + name); process.exit(1); }
-    console.log(fs.existsSync(join('state', 'dialog.txt')) ? fs.readFileSync(join('state', 'dialog.txt'), 'utf8') : '❯ May I continue?\n  1. Yes\n  2. No');
+    const dialog = fs.existsSync(join('state', 'dialog.txt')) ? fs.readFileSync(join('state', 'dialog.txt'), 'utf8') : '❯ May I continue?\n  1. Yes\n  2. No';
+    // A terminal screen, as `--format ansi` gives it: the prompt bright, the choices yellow.
+    if (rest.includes('ansi')) {
+      console.log(dialog.split('\n').map((line, i) => `\x1b[${i === 0 ? '1;36' : '33'}m${line}\x1b[0m`).join('\n'));
+      return;
+    }
+    console.log(dialog);
     return;
   }
   if (cmd === 'agent' && sub === 'send-keys') {
