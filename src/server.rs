@@ -82,13 +82,7 @@ pub fn router(app: Shared) -> Router {
         .route("/api/translate", post(api::translate_api))
         .route("/api/subagent", get(api::subagent_api))
         .route("/api/task/closing", get(api::closing_api))
-        .route("/api/galaxy/ask", post(api::galaxy_ask))
-        .route("/api/galaxy/add", post(api::galaxy_add))
-        .route("/api/galaxy/probe", post(crate::galaxy_setup::probe))
-        .route("/api/galaxy/step", post(crate::galaxy_setup::step))
-        .route("/api/galaxy/projects", get(crate::galaxy_setup::projects))
         .route("/api/fs/complete", get(api::fs_complete))
-        .route("/api/far/files", post(api::far_files))
         .route("/api/universe/inspect", post(api::universe_inspect))
         .route("/api/universe/add", post(api::universe_add))
         .route("/api/universe/info", get(api::universe_info))
@@ -107,7 +101,6 @@ pub fn router(app: Shared) -> Router {
         .route("/api/station/set", post(station::station_set))
         .route("/api/station/light", post(station::station_light))
         .route("/api/ship", get(ship::ship_get).post(ship::ship_post))
-        .route("/api/galaxy/remove", post(ship::galaxy_remove))
         .route("/api/logout", post(api_logout))
         .route_layer(middleware::from_fn_with_state(
             app.clone(),
@@ -633,9 +626,6 @@ async fn api_chat_history(State(app): State<Shared>, Query(q): Query<HistoryQuer
 struct ChatBody {
     #[serde(default)]
     text: String,
-    /// The machine whose Coordinator is written to; absent or empty: this one.
-    #[serde(default)]
-    galaxy: Option<String>,
     #[serde(default)]
     attachments: Vec<AttachmentRef>,
 }
@@ -742,28 +732,6 @@ async fn api_chat(
     if let Some(e) = text_limit_error(text, "сообщение") {
         return error(StatusCode::BAD_REQUEST, e);
     }
-    if let Some(g) = body.galaxy.as_deref().filter(|g| !g.is_empty()) {
-        if !crate::machines::valid_label(g) {
-            return error(StatusCode::BAD_REQUEST, "bad machine label");
-        }
-        if !body.attachments.is_empty() {
-            return error(StatusCode::BAD_REQUEST, "вложения в далёкую галактику не передаются");
-        }
-        if text.is_empty() {
-            return error(StatusCode::BAD_REQUEST, "empty message");
-        }
-        if let Some(e) = crate::machines::text_limit_error(text) {
-            return error(StatusCode::BAD_REQUEST, e);
-        }
-        return match crate::machines::remote_dispatch(&app.cfg, g, "", text, false, None).await {
-            Ok(out) => {
-                let _ = api::ask_galaxy(&app, g).await;
-                Json(json!({"ok": true, "out": clip(out)})).into_response()
-            }
-            Err(e) => error(StatusCode::BAD_GATEWAY, e),
-        };
-    }
-
     let dir = app.cfg.attachments_dir();
     let (stored, files) = match resolve_attachments(&dir, &body.attachments).await {
         Ok(r) => r,
@@ -938,8 +906,6 @@ struct ActionBody {
     target: Option<String>,
     /// `reviewer` asks for `<agent>-r`; the worker is the default.
     role: Option<String>,
-    /// The machine the action is for; empty or absent means this one.
-    galaxy: Option<String>,
     /// The worker agent for a new task: `claude/claude-sonnet-5-5`.
     agent: Option<String>,
     /// Uploaded files a todo item holds (todo-add; todo-update replaces the set).
@@ -979,10 +945,6 @@ async fn api_action(
         if let Err(e) = task_id(&body) {
             return error(StatusCode::BAD_REQUEST, e);
         }
-    }
-    if let Some(galaxy) = body.galaxy.as_deref().filter(|g| !g.is_empty()) {
-        let _guard = app.action_lock.lock().await;
-        return remote_action(&app, galaxy, &body).await;
     }
     let _guard = app.action_lock.lock().await;
     let result = match body.action.as_str() {
@@ -1342,103 +1304,6 @@ async fn todo_reply(app: &Shared) -> Response {
     let reply = todo_json(app).await;
     app::publish(app).await;
     Json(reply).into_response()
-}
-
-/// An action on a task of another machine: the board's own `remote do` over SSH, and `after` in its shell.
-/// Everything that needs this machine's herdr (screens, keys, files) is refused honestly.
-async fn remote_action(app: &Shared, galaxy: &str, body: &ActionBody) -> Response {
-    use crate::machines;
-    if !machines::valid_label(galaxy) {
-        return error(StatusCode::BAD_REQUEST, "bad machine label");
-    }
-    match body.action.as_str() {
-        // The Coordinator of that machine is written to, as a person would: its words are the command.
-        "coordinator-compact" => {
-            if body.confirm != Some(true) {
-                return error(StatusCode::BAD_REQUEST, "compacting needs an explicit confirmation");
-            }
-            return match machines::remote_dispatch(&app.cfg, galaxy, "", "/compact", false, None).await {
-                Ok(out) => Json(json!({"ok": true, "out": clip(out)})).into_response(),
-                Err(e) => error(StatusCode::BAD_GATEWAY, e),
-            };
-        }
-        "suggest-update" => {
-            let repo = body.repo.as_deref().unwrap_or("").trim().to_string();
-            if !valid_repo(&repo) {
-                return error(StatusCode::BAD_REQUEST, "bad universe name");
-            }
-            let about = {
-                let list = app.galaxies.lock().await;
-                list.iter().find(|g| g.label == galaxy).and_then(|g| g.tasks.iter().find(|t| t.repo == repo).map(|t| t.id.clone()))
-            };
-            let folder = {
-                let list = app.galaxies.lock().await;
-                list.iter().find(|g| g.label == galaxy).and_then(|g| g.projects.iter().find(|p| p.name == repo).map(|p| p.folder.clone())).unwrap_or_default()
-            };
-            let behind = body.n.unwrap_or(0);
-            let text = format!("Обнови главную ветку в {folder} из origin (git pull --ff-only): отстаёт на {behind} коммитов");
-            return match machines::remote_dispatch(&app.cfg, galaxy, "", &text, false, about.as_deref()).await {
-                Ok(out) => Json(json!({"ok": true, "out": clip(out)})).into_response(),
-                Err(e) => error(StatusCode::BAD_GATEWAY, e),
-            };
-        }
-        _ => {}
-    }
-    let id = match task_id(body) {
-        Ok(id) => id.to_string(),
-        Err(e) => return error(StatusCode::BAD_REQUEST, e),
-    };
-    let result: Result<String, String> = match body.action.as_str() {
-        "approve" | "anyway" => {
-            if body.confirm != Some(true) {
-                return error(StatusCode::BAD_REQUEST, "approval needs an explicit confirmation");
-            }
-            machines::remote_do(&app.cfg, galaxy, &json!({"id": id, "action": "approve", "anyway": body.action == "anyway"})).await
-        }
-        "tell" => {
-            let text = body.text.as_deref().unwrap_or("").trim().to_string();
-            if text.is_empty() {
-                return error(StatusCode::BAD_REQUEST, "empty message");
-            }
-            if let Some(e) = machines::text_limit_error(&text) {
-                return error(StatusCode::BAD_REQUEST, e);
-            }
-            machines::remote_do(&app.cfg, galaxy, &json!({"id": id, "action": "tell", "text": text})).await
-        }
-        "pick" => {
-            let letter = body.letter.as_deref().unwrap_or("");
-            if !board::valid_letter(letter) {
-                return error(StatusCode::BAD_REQUEST, "bad attempt letter");
-            }
-            machines::remote_do(&app.cfg, galaxy, &json!({"id": id, "action": "pick", "letter": letter})).await
-        }
-        "retry" | "review" | "stop" | "fix" | "finish" | "archive" | "restore" => {
-            machines::remote_do(&app.cfg, galaxy, &json!({"id": id, "action": body.action})).await
-        }
-        "delegate" => machines::remote_do(&app.cfg, galaxy, &json!({"id": id, "action": "delegate", "now": true})).await,
-        "after" => {
-            let Some(refs) = body.after.clone() else {
-                return error(StatusCode::BAD_REQUEST, "after needs the list of tasks; an empty list clears the wait");
-            };
-            if let Some(bad) = refs.iter().find(|r| !board::valid_ref(r)) {
-                return error(StatusCode::BAD_REQUEST, format!("bad task reference: {bad}"));
-            }
-            machines::remote_after(&app.cfg, galaxy, &id, &refs).await.map(|tags| tags.join(", "))
-        }
-        other => {
-            return error(
-                StatusCode::BAD_REQUEST,
-                format!("«{other}» в далёкой галактике недоступно: экран агента, клавиши и файлы живут на той машине"),
-            )
-        }
-    };
-    match result {
-        Ok(out) => {
-            let _ = api::ask_galaxy(app, galaxy).await;
-            Json(json!({"ok": true, "out": clip(out)})).into_response()
-        }
-        Err(e) => error(StatusCode::BAD_GATEWAY, e),
-    }
 }
 
 fn task_id(body: &ActionBody) -> Result<&str, String> {

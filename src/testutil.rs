@@ -5,9 +5,30 @@
 //! script hands the child a copy of that write handle until the child's own `exec`. The script then cannot be
 //! run for a moment, the fake program "does not exist", and the test fails now and then.
 
+use crate::config::AppConfig;
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::time::{Duration, Instant};
+
+/// A configuration for the unit tests: everything under `dir`, nothing read from the user's own files.
+pub(crate) fn test_cfg(dir: &Path) -> AppConfig {
+    AppConfig {
+        listen: "127.0.0.1".into(),
+        port: 0,
+        data_dir: dir.join("data"),
+        data_named: true,
+        config_file: dir.join("config.toml"),
+        state_dir: dir.join("state"),
+        herdr_projects: "herdr-projects".into(),
+        herdr_socket: dir.join("herdr.sock"),
+        user: "herdr".into(),
+        password_hash: String::new(),
+        tls_cert: None,
+        tls_key: None,
+        translator: "claude/claude-haiku-5-5".into(),
+        projects_dir: dir.join("Projects"),
+    }
+}
 
 /// Writes `body` to `path` as an executable script, and returns once no process holds it open for writing.
 pub fn write_exec(path: &Path, body: impl AsRef<[u8]>) {
