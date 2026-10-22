@@ -16,8 +16,10 @@ export interface MemEntry {
   added: string;
   source: string;
   at: number;
-  /** A universe's draft (outside the checkout, not in git yet): `new`, `changed`, `deleted`; empty for a committed entry. */
+  /** A universe's draft (outside the checkout, not in git yet): `new`, `changed`, `deleted`; `sent` / `sentdel`: a board task
+   *  has it and has not merged it yet (`task` says which); empty for a committed entry. */
   draft?: string;
+  task?: string;
 }
 
 /** The memory block in the board's `coordinator.instructions`. */
@@ -51,7 +53,7 @@ export interface MemData {
   foreign?: { program: string; label: string; dir: string; entries: MemEntry[] }[];
   connect?: MemConnect;
   settings?: { suggest: boolean };
-  git?: { checkout: boolean; dirty: { state: string; file: string }[]; drafts: number };
+  git?: { checkout: boolean; dirty: { state: string; file: string }[]; drafts: number; sent: { task: string; id: string | null; title: string; files: number }[] };
   suggestions?: MemSuggestion[];
   note?: string;
 }
@@ -120,8 +122,8 @@ export interface MemPreview {
   repo: string;
   /** The entries go to the universe's drafts (outside the checkout), not to files. */
   draft: boolean;
-  /** This is a commit of the drafts, not a change of an entry. */
-  commit?: boolean;
+  /** This is the sending of the drafts to the repository by a board task, not a change of an entry. */
+  send?: boolean;
   /** This throws a draft away. */
   discard?: boolean;
   changes: MemChange[];
@@ -165,10 +167,19 @@ export const discardDraft = async (repo: string, id: string, token: string): Pro
   void loadMemory(repo);
 };
 
-export const previewCommit = (repo: string): Promise<MemPreview> => post<MemPreview>('/api/memory/commit', { repo });
+export const previewSend = (repo: string): Promise<MemPreview> => post<MemPreview>('/api/memory/send', { repo });
 
-export const commitMemory = async (repo: string, token: string, a: Accept = {}): Promise<{ commit: string; message: string; files: number }> => {
-  const r = await post<{ commit: string; message: string; files: number }>('/api/memory/commit', { repo, ...gate(token, a) });
+export const forgetSent = async (repo: string, task: string): Promise<void> => {
+  await post('/api/memory/sent/forget', { repo, task });
+  void loadMemory(repo);
+};
+
+/** The board task that was made for a send: its tag (`PLN-35`), id (`herdr-planner/35`) and title. */
+export interface SentTask { task: string; id: string | null; title: string; files: number }
+
+/** Hands the drafts to a board task (it has its own working copy; the checkout is not touched). */
+export const sendMemory = async (repo: string, token: string, a: Accept = {}): Promise<SentTask> => {
+  const r = await post<SentTask>('/api/memory/send', { repo, ...gate(token, a) });
   void loadMemory(repo);
   return r;
 };
