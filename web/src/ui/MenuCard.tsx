@@ -31,6 +31,8 @@ interface Props {
   onAnswered?: () => void;
   /** Set when the card is shown again after the screen lost its menu: the answer already given. */
   answered?: { label: string; at: number };
+  /** Changes when the same question comes again: the card starts over. */
+  epoch?: number;
   /** Called with the label of the choice once the answer has gone. */
   onDone?: (label: string) => void;
   /** The terminal's screen for the person who wants to see it (the fallback): shown under the card on demand. */
@@ -45,7 +47,7 @@ interface Done {
 
 /** A new question (or the next of several) is a new card: it starts again, whatever the last one had ticked or typed. */
 export function MenuCard(props: Props): JSX.Element {
-  return <MenuCardBody key={props.menu.sig} {...props} />;
+  return <MenuCardBody key={`${props.menu.sig}#${props.epoch ?? 0}`} {...props} />;
 }
 
 function MenuCardBody(props: Props): JSX.Element {
@@ -240,19 +242,29 @@ export function MenuSlot(props: SlotProps): JSX.Element | null {
   const key = `${props.target}|${props.role ?? ''}`;
   const rec = answeredCards.value[key];
   const [, tick] = useState(0);
-  const fresh = !!rec && Date.now() - rec.at < GRACE_MS;
+  // Once the screen has had no menu after an answer, a menu that comes back is a new question, even if it reads the same
+  // (Claude Code asks «make this edit?» twice in a row): its card starts fresh and the old answer is retired.
+  const gone = useRef(false);
+  const gen = useRef(0);
+  const retired = useRef(0);
+  const { menu, fallback, ...rest } = props;
+  if (!menu) gone.current = true;
+  else if (gone.current) {
+    gone.current = false;
+    if (rec && rec.menu.sig === menu.sig) { gen.current++; retired.current = rec.at; }
+  }
+  const live = !!rec && rec.at !== retired.current && Date.now() - rec.at < GRACE_MS;
   useEffect(() => {
     if (!rec) return;
     const id = window.setTimeout(() => tick((n) => n + 1), Math.max(0, rec.at + GRACE_MS - Date.now()) + 50);
     return () => window.clearTimeout(id);
   }, [rec]);
-  const { menu, fallback, ...rest } = props;
-  const shown = menu ?? (fresh ? rec.menu : null);
+  const shown = menu ?? (live ? rec.menu : null);
   if (!shown) return <>{fallback ?? null}</>;
-  const mine = rec && rec.menu.sig === shown.sig && fresh ? { label: rec.label, at: rec.at } : undefined;
+  const mine = live && rec.menu.sig === shown.sig ? { label: rec.label, at: rec.at } : undefined;
   return (
     <MenuCard
-      {...rest} menu={shown} answered={mine}
+      {...rest} menu={shown} answered={mine} epoch={gen.current}
       onDone={(label) => { answeredCards.value = { ...answeredCards.value, [key]: { menu: shown, label, at: Date.now() } }; }}
     />
   );

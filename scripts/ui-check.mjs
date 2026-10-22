@@ -3506,6 +3506,22 @@ section('menu card', async () => {
   check('after a while the card makes way for the raw screen', await waitFor(`!document.querySelector(${JSON.stringify(menuCard())}) && !!document.querySelector('#cdialog')`, 14000), await cardState());
   setScreen(OMP_SINGLE);
   await waitFor(`!!document.querySelector(${JSON.stringify(menuCard())})`, 10000);
+  // the same question asked again right after an answer (Claude Code: two edits of one file): a new card, not the old answer
+  writeFileSync(join(fixture, 'state', 'after-enter.txt'), '● Принято, работаю дальше…');
+  const net1 = await evalJs('window.__net.log.filter((u) => u.includes("/api/coordinator/screen")).length');
+  await click(menuCard() + ' [data-menu-opt="1"]');
+  await waitLog(() => (existsSync(join(fixture, 'state', 'dialog.txt')) ? readFileSync(join(fixture, 'state', 'dialog.txt'), 'utf8') : '').includes('Принято'), 10000);
+  await waitFor(`window.__net.log.filter((u) => u.includes("/api/coordinator/screen")).length >= ${net1 + 2} && document.querySelector(${JSON.stringify(menuCard())})?.dataset.state === 'answered'`, 10000);
+  setScreen(OMP_SINGLE);
+  check('the same question again within the grace time is a new card, open, not locked with the old answer', await waitFor(`document.querySelector(${JSON.stringify(menuCard())})?.dataset.state === 'open' && !document.querySelector(${JSON.stringify(menuCard() + ' [data-menu-status="done"]')})`, 10000), `${await cardState()} ${await text(menuCard() + ' .menu-status')}`);
+  const k9 = calls('keys.jsonl').length;
+  await click(menuCard() + ' [data-menu-opt="0"]');
+  check('and it can be answered', await waitLog(() => keysSince(k9, 'sw-coordinator').length >= 1, 10000), JSON.stringify(keysSince(k9)));
+  setScreen('Готово.');
+  check('the retired answer is not shown again when the menu goes', await waitFor(`!document.querySelector(${JSON.stringify(menuCard())}) || document.querySelector(${JSON.stringify(menuCard())})?.dataset.state === 'answered'`, 5000));
+  await waitFor(`!document.querySelector(${JSON.stringify(menuCard())})`, 14000);
+  setScreen(OMP_SINGLE);
+  await waitFor(`!!document.querySelector(${JSON.stringify(menuCard())})`, 10000);
   // answered in the terminal: the screen has no menu any more, the card goes
   setScreen('● Работаю над задачей…\n\n❯ \n  ⏵⏵ accept edits on');
   check('an answer given in the terminal closes the card', await waitFor(`!document.querySelector(${JSON.stringify(menuCard())})`, 10000));
