@@ -197,7 +197,7 @@ async fn local_checks(cfg: &AppConfig, target: &str) -> Value {
             let w = ssh::why_not_with(
                 &e,
                 &m,
-                &ssh::CheckHint { test: format!("ssh {target} true"), program: "ssh".into() },
+                &ssh::CheckHint { test: ssh::hand_check(target, &[], "true"), program: "ssh".into() },
             );
             (false, w.line)
         }
@@ -222,7 +222,7 @@ async fn local_checks(cfg: &AppConfig, target: &str) -> Value {
                 hint = ssh::why_not_with(
                     &e,
                     &m,
-                    &ssh::CheckHint { test: format!("ssh {target} docker version"), program: "docker".into() },
+                    &ssh::CheckHint { test: ssh::hand_check(target, &[], "docker version"), program: "docker".into() },
                 )
                 .line;
             }

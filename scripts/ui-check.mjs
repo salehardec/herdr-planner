@@ -2874,6 +2874,45 @@ section('runners', async () => {
   await resetUi();
   await menuPick('Станция');
   check('the Station has the shipyards card for the agents', await waitFor('!!document.querySelector("#st-yards details pre")', 20000) && await hasText('#st-yards', 'на месте') && (await evalJs('document.querySelector("#st-yards details pre")?.textContent.includes("herdr-planner:runners")')), await text('#st-yards'));
+  // The card previews what its button will do: connected now, the button disconnects and «Станет» has no block; the
+  // drop-old tick has nothing to do here. (It was once keyed off the current state, showing the opposite.)
+  const stationNext = (name) => `(document.querySelector('#st-yards pre[data-next="${name}"]')?.textContent ?? "")`;
+  check('connected: the button will disconnect, «Станет» has no block and no drop tick',
+    await hasText('#st-yards-btn', 'Отключить')
+      && !(await evalJs('!!document.querySelector("#st-yards-drop")'))
+      && !(await evalJs(`${stationNext('worker.instructions')}.includes("herdr-planner:runners")`)),
+    await text('#st-yards'));
+  // A machine that is not connected, whose instructions hold an old docker line and two rules of the human.
+  const HUMAN = 'Docker-контейнеры: export DOCKER_HOST=ssh://old-yard, порты на 192.0.2.29.\nПроверки: браузер закрывай сразу после них.\nКоммиты подписывай по-русски.';
+  for (const name of ['worker.instructions', 'reviewer.instructions']) {
+    execFileSync(join(fixture, 'bin', 'herdr-projects'), ['set', name, HUMAN]);
+  }
+  await press('Escape');
+  await waitFor('!document.querySelector("#station")', 4000);
+  await menuPick('Станция');
+  check('not connected: the button will connect and «Станет» is the block over the human text',
+    await waitFor(`!!document.querySelector("#st-yards-btn") && ${stationNext('worker.instructions')}.includes("herdr-planner:runners") && ${stationNext('worker.instructions')}.includes("Проверки")`, 20000)
+      && await hasText('#st-yards-btn', 'Подключить')
+      && await evalJs('!!document.querySelector("#st-yards-drop")'),
+    await text('#st-yards'));
+  await evalJs('document.querySelector("#st-yards-drop").click()');
+  check('ticking it previews dropping only the old docker line, the human rules stay',
+    await waitFor(`${stationNext('worker.instructions')}.includes("Проверки") && ${stationNext('worker.instructions')}.includes("Коммиты") && !${stationNext('worker.instructions')}.includes("old-yard")`, 5000),
+    await evalJs(stationNext('worker.instructions')));
+  await twoPresses('#st-yards-btn');
+  const homeValue = (name) => {
+    try {
+      const d = JSON.parse(readFileSync(join(fixture, 'state', 'board-settings.json'), 'utf8'));
+      const v = d?.['']?.[name];
+      return typeof v === 'string' ? v : v?.value ?? '';
+    } catch { return ''; }
+  };
+  check('pressing it wrote the block and kept the human rules',
+    await waitLog(() => {
+      const v = homeValue('worker.instructions');
+      return v.includes('herdr-planner:runners') && v.includes('Проверки') && v.includes('Коммиты') && !v.includes('old-yard');
+    }, 15000),
+    homeValue('worker.instructions'));
   await press('Escape');
   await waitFor('!document.querySelector("#station")', 4000);
   // Clean up after the section: the second yard is removed; its containers never existed on the machine.

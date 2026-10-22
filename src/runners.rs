@@ -898,7 +898,10 @@ fn why(end: &ssh::Ended, m: &MachineRef) -> Why {
         end,
         m,
         &CheckHint {
-            test: format!("Проверить с этой машины: ssh {} docker version", m.target),
+            test: format!(
+                "Проверить с этой машины: {}",
+                ssh::hand_check(&m.target, &[], "docker version")
+            ),
             program: "docker".into(),
         },
     )
@@ -1259,11 +1262,12 @@ pub fn block_text(file: &RunnersFile) -> String {
         }
     };
     let def_target = ssh::normalize_target(&def.target);
+    let check = ssh::hand_check(&def.target, &["-o", "BatchMode=yes"], "true");
     let mut s = String::from(BLOCK_BEGIN);
     s.push('\n');
     s.push_str(&format!(
-        "Docker-контейнеры (базы, стенды, заглушки, прокси и т.п.) не запускай на этой машине: используй верфь {} — export DOCKER_HOST=ssh://{} (вход по SSH-ключу уже настроен; проверка: ssh -o BatchMode=yes {} true). Порты контейнеров открываются на {}, не на localhost.\n",
-        def.id, def_target, def_target, host_of(def)
+        "Docker-контейнеры (базы, стенды, заглушки, прокси и т.п.) не запускай на этой машине: используй верфь {} — export DOCKER_HOST=ssh://{} (вход по SSH-ключу уже настроен; проверка: {}). Порты контейнеров открываются на {}, не на localhost.\n",
+        def.id, def_target, check, host_of(def)
     ));
     s.push_str("Каждому контейнеру, сети и тому давай имя с id своей задачи (например pg-PLN-26) и метку --label herdr.task=PLN-26; для docker compose — имя проекта с id задачи (docker compose -p pln-26 …) и та же метка в labels каждого сервиса; после себя всегда останавливай и удаляй их (docker rm -f -v, docker network rm, docker volume rm, docker compose -p pln-26 down -v), даже если работа прервалась.\n");
     let masks = file.protected_all();
@@ -1761,6 +1765,40 @@ mod tests {
         assert!(on.starts_with("Мои правила.") && on.contains(BLOCK_BEGIN));
         assert_eq!(connect_value(&on, &block, false).unwrap().as_deref(), Some("Мои правила."));
         assert!(has_old_docker_paragraph("Мои правила.\n\nСтавьте DOCKER_HOST=ssh://x сюда.\n"));
+    }
+
+    #[test]
+    fn a_block_and_a_hint_with_a_port_give_ssh_a_working_command() {
+        let file = RunnersFile {
+            default: "vm-r".into(),
+            runners: vec![Runner {
+                id: "vm-r".into(),
+                target: "me@192.0.2.29:2222".into(),
+                ports_host: "192.0.2.29".into(),
+                tags: vec![],
+                protected: vec![],
+                note: String::new(),
+                added_at_ms: 0,
+                capacity: None,
+            }],
+            ..RunnersFile::default()
+        };
+        let block = block_text(&file);
+        assert!(block.contains("DOCKER_HOST=ssh://me@192.0.2.29:2222"), "{block}");
+        assert!(block.contains("ssh -p 2222 -o BatchMode=yes me@192.0.2.29 true"), "{block}");
+        assert!(!block.contains("BatchMode=yes me@192.0.2.29:2222"), "{block}");
+        assert!(block.contains("открываются на 192.0.2.29"), "{block}");
+        let m = MachineRef {
+            label: "vm-r".into(),
+            target: "me@192.0.2.29:2222".into(),
+            session: String::new(),
+        };
+        let end = ssh::Ended { code: Some(1), stdout: "x".into(), ..Default::default() };
+        let w = why(&end, &m);
+        assert_eq!(
+            w.detail.last().unwrap(),
+            "Проверить с этой машины: ssh -p 2222 me@192.0.2.29 docker version"
+        );
     }
 
     #[test]

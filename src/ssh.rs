@@ -93,6 +93,27 @@ pub fn normalize_target(raw: &str) -> String {
     }
 }
 
+/// A hand-check command line a person can paste: `ssh [-p port] [options] dest [remote command]`. Options go before
+/// the destination (after it ssh would take them as the remote command), and a port is never left in the host name.
+pub fn hand_check(target: &str, options: &[&str], remote: &str) -> String {
+    let t = split_target(target);
+    let mut s = String::from("ssh");
+    if let Some(p) = t.port {
+        s.push_str(&format!(" -p {p}"));
+    }
+    for o in options {
+        s.push(' ');
+        s.push_str(o);
+    }
+    s.push(' ');
+    s.push_str(&t.dest);
+    if !remote.is_empty() {
+        s.push(' ');
+        s.push_str(remote);
+    }
+    s
+}
+
 /// The argv that opens a terminal on the yard: `ssh -t [-p port] dest`. The caller owns the terminal.
 pub fn tty_args(target: &str) -> Result<Vec<String>, String> {
     if !valid_target(target) {
@@ -523,6 +544,14 @@ mod tests {
         assert_eq!(args[n - 4], "-p");
         assert_eq!(tty_args("me@192.0.2.29:2222").unwrap().join(" "), "-t -p 2222 me@192.0.2.29");
         assert_eq!(tty_args("vm-r").unwrap().join(" "), "-t vm-r");
+        assert_eq!(
+            hand_check("me@192.0.2.29:2222", &["-o", "BatchMode=yes"], "true"),
+            "ssh -p 2222 -o BatchMode=yes me@192.0.2.29 true"
+        );
+        assert_eq!(
+            hand_check("vm-r", &[], "docker version"),
+            "ssh vm-r docker version"
+        );
     }
 
     #[test]

@@ -474,14 +474,18 @@ function Shipyards(): JSX.Element {
   useEffect(() => { void load(); }, []);
   const key = 'sy:home';
   const on = !!rows && rows.some((r) => r.connected);
+  // The card previews what the button will do, not what is in place now: «Подключить» writes the block, «Отключить»
+  // takes it out. Everything below (the «Станет» text, the drop-old tick, drop_old) keys off the same action.
+  const willConnect = !on;
   const stale = !!rows && rows.some((r) => r.stale);
   const go = (): void => {
     confirmStep(key, async () => {
       setErr('');
       try {
         // Dropping the old hand-written docker lines is a separate, explicit choice; never a side effect of connecting.
-        await post('/api/runner/connect', { on: !on, drop_old: on ? false : drop, confirm: true });
+        await post('/api/runner/connect', { on: willConnect, drop_old: willConnect ? drop : false, confirm: true });
         toast(t('runner.saved'));
+        setDrop(false);
         await load();
       } catch (e) {
         setErr((e as Error).message);
@@ -505,12 +509,12 @@ function Shipyards(): JSX.Element {
               <div class="hint">{r.setting} · {t('runner.stationWas')}</div>
               <pre>{r.current || t('runner.stationEmpty')}</pre>
               <div class="hint">{t('runner.stationNow')}</div>
-              <pre data-next={r.setting}>{(on ? (drop ? r.next_on_dropped : r.next_on) : r.next_off) || t('runner.stationEmpty')}</pre>
+              <pre data-next={r.setting}>{(willConnect ? (drop ? r.next_on_dropped : r.next_on) : r.next_off) || t('runner.stationEmpty')}</pre>
             </div>
           ))}
         </details>
       )}
-      {hasYards && on && rows.some((r) => r.has_old_docker_paragraph) && (
+      {hasYards && willConnect && rows.some((r) => r.has_old_docker_paragraph) && (
         <label class="rf-check"><input type="checkbox" id="st-yards-drop" checked={drop} onChange={(e) => setDrop((e.target as HTMLInputElement).checked)} />{t('runner.dropOld')}</label>
       )}
       {hasYards && (
