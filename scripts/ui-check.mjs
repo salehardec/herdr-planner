@@ -3,8 +3,8 @@
 // No dependencies (Node 22+ has WebSocket). With the server running on the fixture:
 //   FIXTURE=DIR node scripts/ui-check.mjs http://127.0.0.1:7117 [screenshot-dir]
 // `scripts/run-checks.sh` starts the server on the world of scripts/fixture.mjs.
-// The fixture's logs (DIR/log/*.jsonl) are the witness for every board command, every
-// ssh call to another machine and every terminal that was opened.
+// The fixture's logs (DIR/log/*.jsonl) are the witness for every board command and every
+// terminal that was opened.
 //   ONLY=name,name  runs only the sections whose name contains one of the words.
 //   NO_RETRY=1      no second go for a section that failed (scripts/stress-checks.sh uses it: a flake must show).
 //   WAIT_SCALE=n    every wait for a state gets n times its time (default 3): the limit of a wait is a limit, not a delay.
@@ -166,10 +166,10 @@ const lastCall = (file = 'commands.jsonl') => calls(file).at(-1);
 const stateApi = () => evalJs('fetch("/api/state").then(r => r.json())');
 const debug = () => evalJs('window.world ? world.debug() : null');
 const pd = () => evalJs('window.plannerDebug ? plannerDebug() : null');
-const planet = (taskId, galaxy = '') => `{kind:'planet',galaxy:${JSON.stringify(galaxy)},id:${JSON.stringify(taskId)}}`;
+const planet = (taskId) => `{kind:'planet',id:${JSON.stringify(taskId)}}`;
 // The operator's own move: the ship flies there (a flight), the place left goes on the stack.
-const go = async (taskId, galaxy = '') => {
-  await evalJs(`planner.navigateTo(${planet(taskId, galaxy)}); true`);
+const go = async (taskId) => {
+  await evalJs(`planner.navigateTo(${planet(taskId)}); true`);
   await waitFor(`plannerDebug().selected?.id === ${JSON.stringify(taskId)} && world.debug().flight === "idle"`, 12000);
   await pageTurn();
 };
@@ -274,8 +274,11 @@ section('live', async () => {
 section('navigator', async () => {
   check('the navigator starts with this machine\'s Galaxy', await hasText('#nav [data-kind="galaxy"]', HOST), await text('#nav [data-kind="galaxy"]'));
   check('the Quasar is its own item', await exists('#nav [data-kind="quasar"]'));
-  check('far galaxies are below: vm-a is online, vm-b is lost with the reason', await hasText('#nav', 'vm-a') && await hasText('#nav', 'vm-b') && /нет связи/.test(await text('#nav')), (await text('#nav')).replace(/\s+/g, ' ').slice(-200));
-  check('"Add a galaxy" and "Add a universe" are there', await hasText('#nav', 'Добавить галактику') && await hasText('#nav', 'Добавить вселенную'));
+  // The board lists other machines (`herdr-projects machines`, `herdr machine list`: vm-a, vm-b); the planner works with this board only.
+  await quiet();
+  check('other machines of the board are not shown: no vm-a, no vm-b, no «Добавить галактику»', !/vm-a|vm-b/.test(await text('#nav')) && !(await text('#nav')).includes('Добавить галактику') && !(await exists('#nav [data-kind="addGalaxy"]')), (await text('#nav')).replace(/\s+/g, ' ').slice(-200));
+  check('the planner does not ask for them: no machine command on the board, no ssh, none in the state', calls('machines.jsonl').length === 0 && !calls('herdr.jsonl').some((c) => c.argv.includes('machine')) && !('galaxies' in (await evalJs('plannerSnap()'))), JSON.stringify([calls('machines.jsonl').length, calls('herdr.jsonl').slice(-2)]));
+  check('"Add a universe" is there', await hasText('#nav', 'Добавить вселенную'));
   const groups = await evalJs('[...document.querySelectorAll("#nav [data-kind=\\"group\\"]")].map((e) => ({ t: e.innerText.replace(/\\s+/g, " ").trim(), open: e.getAttribute("aria-expanded") }))');
   check('the first group of a universe is «Сегодня» and it is open', groups?.[0]?.t.startsWith('Сегодня') && groups[0].open === 'true', JSON.stringify(groups?.slice(0, 3)));
   check('older days are dd.mm.yyyy and folded', groups?.some((g) => /^\d\d\.\d\d\.\d{4}/.test(g.t) && g.open === 'false'), JSON.stringify(groups));
@@ -321,7 +324,7 @@ section('navigator', async () => {
 section('autopilot', async () => {
   await resetUi();
   const cam0 = (await debug()).camera;
-  await evalJs(`document.querySelector('#nav [data-nav="planet||alpha/4"]')?.click()`);
+  await evalJs(`document.querySelector('#nav [data-nav="planet|alpha/4"]')?.click()`);
   check('choosing a planet in the navigator starts a flight', await waitFor('world.debug().flight !== "idle"', 4000) || await waitFor('plannerDebug().selected?.id === "alpha/4"', 4000));
   check('the flight ends and the planet is selected', await waitFor('world.debug().flight === "idle" && plannerDebug().selected?.id === "alpha/4"', 15000), JSON.stringify(await pd()));
   const cam1 = (await debug()).camera;
@@ -367,7 +370,7 @@ section('manual', async () => {
   check('the mouse wheel changes the cruise speed', await evalJs(`(() => { const c = world.debug().ship.cruise; const e = new WheelEvent('wheel', { deltaY: -100, bubbles: true, cancelable: true }); document.querySelector('#scene').dispatchEvent(e); return world.debug().ship.cruise > c; })()`));
   await shot('manual-flight.png');
   // A dive: the crosshair on a nebula, a click → a flight inside, manual flight goes on.
-  await evalJs(`planner.navigateTo({kind:'universe',galaxy:'',id:'delta'}); true`);
+  await evalJs(`planner.navigateTo({kind:'universe',id:'delta'}); true`);
   check('a dive into a nebula keeps the ship manual and enters it', await waitFor('world.debug().flight === "idle" && world.mode === "manual" && world.level === "nebula"', 15000), JSON.stringify(await pd()));
   await press('KeyP', 'p');
   check('P returns to the autopilot', await waitFor('world.mode === "auto"', 3000));
@@ -485,7 +488,8 @@ section('search', async () => {
   check('todo items are found', await waitFor('[...document.querySelectorAll("#sres .srow")].some((e) => e.dataset.kind === "todo")', 4000), await text('#sres'));
   await evalJs('document.getElementById("q").select()');
   await send('Input.insertText', { text: 'vm-a' });
-  check('machines are found', await waitFor('[...document.querySelectorAll("#sres .srow")].some((e) => e.dataset.kind === "galaxy")', 3000), await text('#sres'));
+  await quiet();
+  check('other machines of the board are not found: the search knows this board only', !(await exists('#sres .srow[data-kind="galaxy"]')) && !(await text('#sres')).includes('vm-a'), await text('#sres'));
   await evalJs('document.getElementById("q").select()');
   await send('Input.insertText', { text: 'alp-4' });
   await waitFor('[...document.querySelectorAll("#sres .srow")].some((e) => e.dataset.id === "alpha/4")', 3000);
@@ -568,9 +572,10 @@ section('chat', async () => {
     };
     requestAnimationFrame(tick);
   })`);
+  // A history step is 70 px; a few pixels are the log settling after the field grew.
   await press('ArrowUp');
   const afterUp = await evalJs('(() => { const ta = document.querySelector("#ask-in"); return { start: ta.selectionStart, top: document.querySelector("#clog").scrollTop }; })()');
-  check('ArrowUp inside a wrapped paragraph moves the caret, not the history', afterUp.start < beforeUp.start && afterUp.top === beforeUp.top && wrapped.lines > 60, JSON.stringify({ wrapped, beforeUp, afterUp }));
+  check('ArrowUp inside a wrapped paragraph moves the caret, not the history', afterUp.start < beforeUp.start && Math.abs(afterUp.top - beforeUp.top) < 40 && wrapped.lines > 60, JSON.stringify({ wrapped, beforeUp, afterUp }));
   // The other way: from the start of the paragraph the caret goes down a visual line, the history stays.
   await evalJs('(() => { const t = document.querySelector("#ask-in"); t.focus(); t.setSelectionRange(0, 0); })()');
   await frames(1);
@@ -923,7 +928,7 @@ section('todo', async () => {
   await evalJs(`planner.goOverview(); true`);
   await waitFor('world.debug().flight === "idle" && plannerDebug().selected === null', 15000);
   await frames(2);
-  const qpos = await evalJs(`world.screenOf({kind:'quasar',galaxy:'',id:'quasar'})`);
+  const qpos = await evalJs(`world.screenOf({kind:'quasar',id:'quasar'})`);
   await dragToScene(tid2, qpos.x, qpos.y);
   check('a drop on the Quasar tells the Coordinator', await waitLog(() => calls('coordinator.jsonl').some((c) => c.text === 'Спросить про лимиты'), 10000), JSON.stringify(lastCall('coordinator.jsonl')));
   await waitFor(`!document.querySelector('#todo-list .titem[data-todo="${tid2}"]')`, 8000);
@@ -931,9 +936,9 @@ section('todo', async () => {
   await evalJs(`(() => { const i = document.querySelector('#todo-in'); i.value = 'Новая задача из дела'; document.querySelector('#todo-new').requestSubmit(); })()`);
   await todoShown('Новая задача из дела');
   const tid3 = await todoIdByText('Новая задача из дела');
-  await evalJs(`planner.navigateTo({kind:'universe',galaxy:'',id:'delta'}); true`);
+  await evalJs(`planner.navigateTo({kind:'universe',id:'delta'}); true`);
   await waitFor('world.debug().flight === "idle"', 12000);
-  const upos = await evalJs(`world.screenOf({kind:'universe',galaxy:'',id:'delta'})`);
+  const upos = await evalJs(`world.screenOf({kind:'universe',id:'delta'})`);
   await dragToScene(tid3, upos.x + 3, upos.y + 3);
   check('a drop on a nebula asks where and by whom', await waitFor('!!document.querySelector("#pop")', 5000));
   check('the model list loads (free input first, then names)', await waitFor('document.querySelectorAll("#models-list option").length >= 2', 15000), await evalJs('document.querySelectorAll("#models-list option").length'));
@@ -1121,7 +1126,7 @@ section('todo to planet', async () => {
   check('the window shows the words and both files', await waitFor('document.querySelector("#tell-text")?.value === "Разобрать запись" && document.querySelectorAll("#pop-tell .dfiles .sv").length === 2', 5000), await text('#pop-tell'));
   await click('#pop-tell [data-file-rm]');
   check('a file can be taken out in the window', await waitFor('document.querySelectorAll("#pop-tell .dfiles .sv").length === 1'));
-  const here = async () => ({ sel: JSON.stringify((await pd()).selected), galaxy: (await pd()).galaxy, level: (await pd()).level, cam: (await debug()).camera });
+  const here = async () => ({ sel: JSON.stringify((await pd()).selected), level: (await pd()).level, cam: (await debug()).camera });
   const placeBefore = await here();
   await click('#tell-go');
   const dir = join(fixture, 'state', 'herdr-planner', 'attachments');
@@ -1130,13 +1135,13 @@ section('todo to planet', async () => {
   await quiet(); await frames(3);
   const placeAfter = await here();
   const moved = Math.abs(placeAfter.cam.x - placeBefore.cam.x) + Math.abs(placeAfter.cam.y - placeBefore.cam.y) + Math.abs(placeAfter.cam.z - placeBefore.cam.z);
-  check('an action leaves the operator where they are: the same selection and level, the camera where it was, no flight', placeAfter.sel === placeBefore.sel && placeAfter.galaxy === placeBefore.galaxy && placeAfter.level === placeBefore.level && moved < 8 && (await debug()).flight === 'idle', JSON.stringify({ placeBefore, placeAfter }));
+  check('an action leaves the operator where they are: the same selection and level, the camera where it was, no flight', placeAfter.sel === placeBefore.sel && placeAfter.level === placeBefore.level && moved < 8 && (await debug()).flight === 'idle', JSON.stringify({ placeBefore, placeAfter }));
   // a nebula: the files go into the description of the new task
   check('another todo with an image', (await addTodo('Сделать по макету', ['png'])) === 200);
   const id2 = await todoShown('Сделать по макету') && await todoIdByText('Сделать по макету');
-  await evalJs(`planner.navigateTo({kind:'universe',galaxy:'',id:'delta'}); true`);
+  await evalJs(`planner.navigateTo({kind:'universe',id:'delta'}); true`);
   await waitFor('world.debug().flight === "idle"', 12000);
-  const upos = await evalJs(`world.screenOf({kind:'universe',galaxy:'',id:'delta'})`);
+  const upos = await evalJs(`world.screenOf({kind:'universe',id:'delta'})`);
   await dragToScene(id2, upos.x + 3, upos.y + 3);
   check('the nebula window shows the image too', await waitFor('!!document.querySelector("#pop") && document.querySelectorAll("#pop .dfiles .sv.img").length === 1', 5000));
   await click('#pop-go');
@@ -1400,14 +1405,14 @@ section('focus', async () => {
   check('a running and a quiet sub-agent are drawn as moons; a finished one is not (it has left)', await waitFor(moonsOk, 10000), JSON.stringify(await evalJs('world.debug().moons')));
   check('all three states exist in the snapshot', ['running', 'quiet', 'done'].every((st) => (async () => true)() && true) && await evalJs(`['running','quiet','done'].every((st) => plannerSnap().tasks.find((t) => t.id === 'alpha/2').subagents.some((s) => s.state === st))`));
   const sub = await evalJs(`plannerSnap().tasks.find((t) => t.id === 'alpha/2').subagents.find((s) => s.state === 'running')`);
-  await evalJs(`planner.navigateTo({kind:'moon',galaxy:'',id:'alpha/2#${sub.id}'}); true`);
+  await evalJs(`planner.navigateTo({kind:'moon',id:'alpha/2#${sub.id}'}); true`);
   check('choosing a moon flies to it and opens its card', await waitFor('plannerDebug().selected?.kind === "moon" && world.debug().flight === "idle"', 15000) && await exists('#focus [data-focus="moon"]'), JSON.stringify(await pd()));
   check('the card says what it does now, how long, the role', await hasText('#focus', 'Explore') && await hasText('#focus', 'что делает', 4000, true) && /идёт\s+\d/.test(await text('#focus')), (await text('#focus')).replace(/\s+/g, ' ').slice(0, 200));
   await shot('moon-card.png');
   await press('Escape');
   await waitFor('plannerDebug().selected?.id === "alpha/2"', 15000);
   const done = await evalJs(`plannerSnap().tasks.find((t) => t.id === 'alpha/2').subagents.find((s) => s.state === 'done')`);
-  await evalJs(`planner.navigateTo({kind:'moon',galaxy:'',id:'alpha/2#${done.id}'}); true`);
+  await evalJs(`planner.navigateTo({kind:'moon',id:'alpha/2#${done.id}'}); true`);
   await waitFor('plannerDebug().selected?.kind === "moon" && world.debug().flight === "idle"', 15000);
   check('a finished sub-agent shows its result', await hasText('#focus', 'итог', 4000, true) && !(await text('#focus')).includes('Итог будет') && (await text('#focus')).length > 200, (await text('#focus')).slice(0, 160));
   const pi = await evalJs(`plannerSnap().tasks.find((t) => t.id === 'alpha/7')?.subagents_note`);
@@ -1504,6 +1509,11 @@ section('links', async () => {
   await evalJs('world.connect("alpha/11", "alpha/9")');
   check('a later link edit keeps the archived wait', await waitFor(`plannerSnap().links.some((l) => l.from === 'alpha/9' && l.to === 'alpha/11') && plannerSnap().links.some((l) => l.from === 'gamma/2' && l.to === 'alpha/11')`, 15000));
   check('the after call carries the archived id, not its tag', await waitLog(() => calls().some((c) => c.argv[0] === 'after' && c.argv[1] === 'alpha/11' && String(c.argv[2]).includes('gamma/2')), 8000), JSON.stringify(lastCall()));
+  // A task may wait for a task of another machine (`vm-a:OMG-1`): the board keeps it, the page lists it and does not fly there.
+  const hasFar = await post('/api/action', { action: 'after', id: 'alpha/10', after: ['alpha/9', 'vm-a:OMG-1'] });
+  check('a task of this machine can wait for a task of another (vm-a:OMG-1): it is a link of the board', hasFar[0] === 200 && await waitFor(`plannerSnap().links.some((l) => l.to === 'alpha/10' && l.kind === 'far' && String(l.from).includes('vm-a:'))`, 15000), JSON.stringify(hasFar).slice(0, 200));
+  check('and still no other machine appears on the page', !('galaxies' in (await evalJs('plannerSnap()'))) && !(await text('#nav')).includes('vm-a'));
+  await post('/api/action', { action: 'after', id: 'alpha/10', after: ['alpha/9'] });
   const circleBefore = calls().filter((c) => c.argv[0] === 'after').length;
   await evalJs('world.connect("alpha/9", "alpha/10")');
   check('a circle is refused with the board words', await waitFor('[...document.querySelectorAll(".toast")].some((t) => t.innerText.includes("wait on each other"))', 10000), await text('.toast'));
@@ -1561,195 +1571,26 @@ section('limits', async () => {
 });
 
 
-section('far', async () => {
-  await resetUi();
-  await evalJs('planner.goHome(); true');
-  await waitFor('plannerDebug().galaxy === "" && world.debug().flight === "idle" && world.debug().livePlanets >= 10', 15000);
-  check('both machines are known: vm-a on the line, vm-b lost', await waitFor('plannerSnap().galaxies.length === 2 && plannerSnap().galaxies.find((g) => g.label === "vm-a").ok === true && plannerSnap().galaxies.find((g) => g.label === "vm-b").ok === false', 15000), await evalJs('JSON.stringify(plannerSnap().galaxies.map((g) => [g.label, g.ok, g.why?.line]))'));
-  check('they are drawn as far spirals outside the boundary', await waitFor('world.debug().far.includes("vm-a") && world.debug().far.includes("vm-b")', 10000), JSON.stringify((await debug()).far));
-  check('the same project in two galaxies is a bridge with its lag', await waitFor('plannerSnap().bridges.some((b) => b.lag === "main −2")', 10000), await evalJs('JSON.stringify(plannerSnap().bridges)'));
-  const alphaLag = await evalJs(`plannerSnap().projects.find((p) => p.name === 'alpha').lag`);
-  check('the lagging clone is marked: two behind origin, one clone on vm-a also behind', alphaLag?.behind === 2 && alphaLag.vs.some((v) => v.galaxy === 'vm-a'), JSON.stringify(alphaLag));
-  const homePlanets = (await debug()).livePlanets;
-  // flight to vm-a = connection
-  await evalJs(`document.querySelector('#nav [data-nav="gal|vm-a"]').click(); true`);
-  check('the flight to a far galaxy shows the connection state', await waitFor('(document.querySelector("#link")?.innerText || "").includes("vm-a")', 8000), await text('#link'));
-  check('we land: «на связи» and the scene is that machine\'s world', await waitFor('plannerDebug().galaxy === "vm-a" && world.debug().galaxy === "vm-a" && world.debug().flight === "idle"', 30000), JSON.stringify(await pd()));
-  check('the link notice says online with the version', await hasText('#link', 'На связи') && await hasText('#link', '1.2.4'), await text('#link'));
-  const d = await debug();
-  check('its planets are drawn: three live tasks', d.livePlanets === 3 && d.universes === 2, JSON.stringify({ p: d.livePlanets, u: d.universes }));
-  check('the session of the machine was passed (HERDR_SESSION=work)', calls('ssh.jsonl').some((c) => c.session_ok === true), JSON.stringify(calls('ssh.jsonl').slice(-2)).slice(0, 300));
-  check('the navigator opens that galaxy', (await text('#nav')).includes('OMG-1') || await evalJs('!!document.querySelector("#nav [data-nav^=\\"planet|vm-a|\\"]")'), (await text('#nav')).slice(0, 200));
-  check('a task link of that machine is drawn (OMG-2 waits for OMG-1)', (await debug()).links.some((l) => l.from.includes('omega/1') && l.to.includes('omega/2')) || (await debug()).links.length >= 1, JSON.stringify((await debug()).links));
-  await shot('far-galaxy.png');
-  // actions go there
-  await go('alpha/5', 'vm-a');
-  check('a task of that machine is in the focus', await hasText('#focus', 'ALP-5'), (await text('#focus')).slice(0, 80));
-  await evalJs('(() => { const i = document.querySelector("#tell"); i.value = "ответ на vm-a"; i.dispatchEvent(new Event("input", { bubbles: true })); })()');
-  await click('[data-act="tell-agent"]');
-  check('tell goes through remote do on that machine', await waitLog(() => calls('remote.jsonl').some((c) => JSON.stringify(c).includes('ответ на vm-a') && JSON.stringify(c).includes('tell')), 12000), JSON.stringify(calls('remote.jsonl').slice(-1)).slice(0, 300));
-  check('and not to the local board', !calls().some((c) => c.argv[0] === 'tell' && c.argv[3] === 'ответ на vm-a'));
-  // the chat goes to its Coordinator
-  await press('Slash', '/');
-  await waitFor('document.querySelector("#chat").classList.contains("off") === false', 3000);
-  await evalJs('document.querySelector("#ask-in").focus()');
-  await send('Input.insertText', { text: 'привет, vm-a' });
-  await press('Enter');
-  check('the chat goes to that machine\'s Coordinator (dispatch)', await waitLog(() => calls('remote.jsonl').some((c) => JSON.stringify(c).includes('привет, vm-a')), 12000), JSON.stringify(calls('remote.jsonl').slice(-1)).slice(0, 300));
-  check('and says honestly there is no transcript', await waitFor('(document.querySelector("#clog")?.innerText || "").includes("нет стенограммы") || (document.querySelector("#clog")?.innerText || "").includes("привет")', 5000));
-  // The far path travels base64 in one ssh argument: 25 000 bytes fit, and a bigger text is refused in words.
-  const farLong = await post('/api/chat', { text: 'x'.repeat(25000), galaxy: 'vm-a' });
-  check('a long message to a far galaxy goes through within the ssh limit', farLong[0] === 200, JSON.stringify(farLong));
-  const farTooLong = await post('/api/chat', { text: 'x'.repeat(70000), galaxy: 'vm-a' });
-  check('a message over the far-galaxy limit is a clear 400, not a vague 502', farTooLong[0] === 400 && String(farTooLong[1]?.error).includes('60000'), JSON.stringify(farTooLong));
-  // the chat is closed with Esc; if it is still open (a key that went to something else first), once more — and the output says so
-  const chatShut = 'document.querySelector("#chat").classList.contains("off") && !document.activeElement?.matches("textarea,input")';
-  for (let i = 0; i < 3 && !(await evalJs(chatShut)); i++) {
-    if (i > 0) console.log(`   the chat is still open; keys so far: ${await evalJs('window.__net.keys.join(" ")')}`);
-    await press('Escape');
-    await waitFor(chatShut, 5000);
-  }
-  // a link there
-  await evalJs('world.connect("omega/2", "alpha/4")');
-  check('a link drawn on that machine goes over ssh (after)', await waitLog(() => calls('ssh.jsonl').some((c) => JSON.stringify(c).includes('after')), 12000), JSON.stringify(calls('ssh.jsonl').slice(-1)).slice(0, 300));
-  // back home
-  check('H flies home', await untilDone('H', async () => {
-    for (let i = 0; i < 2 && !(await evalJs(chatShut)); i++) { await press('Escape'); await waitFor(chatShut, 5000); }
-    await press('KeyH', 'h');
-  }, 'plannerDebug().galaxy === "" && world.debug().galaxy === "" && world.debug().flight === "idle"', 30000,
-  '({ active: document.activeElement?.id || document.activeElement?.tagName, panels: plannerDebug().panels, keys: window.__net.keys.join(" ") })'), JSON.stringify(await pd()) + ' keys: ' + await evalJs('window.__net.keys.join(" ")'));
-  check('we are home again with our own planets', await waitFor(`world.debug().livePlanets === ${homePlanets}`, 15000) && homePlanets >= 10, `${(await debug()).livePlanets} of ${homePlanets}`);
-  // a link between this machine and that one
-  const hasFar = await post('/api/action', { action: 'after', id: 'alpha/10', after: ['alpha/9', 'vm-a:OMG-1'] });
-  check('a task of this machine can wait for a task of another (vm-a:OMG-1)', hasFar[0] === 200 && await waitFor(`plannerSnap().links.some((l) => l.to === 'alpha/10' && l.kind === 'far' && String(l.from).includes('vm-a:'))`, 15000), JSON.stringify(hasFar).slice(0, 200));
-  await post('/api/action', { action: 'after', id: 'alpha/10', after: ['alpha/9'] });
-  // vm-b: no link
-  await evalJs(`document.querySelector('#nav [data-nav="gal|vm-b"]').click(); true`);
-  check('a lost galaxy says why and what to do, and does not let us land', await waitFor('(document.querySelector("#link")?.innerText || "").includes("Нет связи") && (document.querySelector("#link")?.innerText || "").includes("herdr-projects")', 30000) && (await pd()).galaxy === '', await text('#link'));
-  check('the notice offers to retry and to go home', await waitFor('!!document.querySelector("#link-retry") && (document.querySelector("#link")?.innerText || "").includes("домой")', 5000));
-  await shot('far-lost.png');
-  await click('#link .btn:not(#link-retry)');
-  await waitFor('!document.querySelector("#link")', 4000);
-  await resetUi();
-}, { retry: true });
-
 section('lag', async () => {
   await resetUi();
   await evalJs('planner.goHome()');
   await go('alpha/2');
-  await evalJs(`planner.navigateTo({kind:'universe',galaxy:'',id:'alpha'}); true`);
+  await evalJs(`planner.navigateTo({kind:'universe',id:'alpha'}); true`);
   await waitFor('plannerDebug().selected?.kind === "universe" && world.debug().flight === "idle"', 15000);
-  check('the universe card shows the main branch against origin and the other clones', await hasText('#focus', 'main') && await hasText('#focus', 'vm-a') && /отстаёт на 2/.test(await text('#focus')), (await text('#focus')).replace(/\s+/g, ' ').slice(0, 260));
+  check('the universe card shows the main branch against origin, and no other clones', await hasText('#focus', 'main') && !(await text('#focus')).includes('vm-a') && /отстаёт на 2/.test(await text('#focus')), (await text('#focus')).replace(/\s+/g, ' ').slice(0, 260));
   check('the badge «main −2» is on its label in the world', (await text('.labels')).includes('main') || true);
   await click('#suggest-update');
   check('«Предложить обновить» asks twice', await hasText('#suggest-update', 'Точно'));
   await secondPress('#suggest-update');
   check('it makes a task on the board (nothing is done in the checkout)', await waitLog(() => calls().some((c) => c.argv[0] === 'add' && c.argv.includes('--repo') && c.argv.includes('alpha') && String(c.argv[1]).includes('Обновить')), 10000), JSON.stringify(lastCall()));
   check('and shows the command to copy', await hasText('#focus', 'git -C') && await hasText('#focus', '--ff-only'));
-  // the clone on vm-a: a dispatch to that machine
-  await evalJs(`planner.enterGalaxy('vm-a'); true`);
-  await waitFor('plannerDebug().galaxy === "vm-a" && world.debug().flight === "idle"', 30000);
-  await evalJs(`planner.navigateTo({kind:'universe',galaxy:'vm-a',id:'alpha'}); true`);
-  await waitFor('plannerDebug().selected?.kind === "universe" && world.debug().flight === "idle"', 15000);
-  const behind = await waitFor('(document.querySelector("#focus")?.innerText || "").includes("отстаёт на 1")', 10000);
-  check('the far clone is one commit behind its origin', behind, (await text('#focus')).replace(/\s+/g, ' ').slice(0, 200));
-  if (await exists('#suggest-update')) {
-    await twoPresses('#suggest-update');
-    check('on that machine the suggestion is a dispatch to its Coordinator', await waitLog(() => calls('remote.jsonl').some((c) => JSON.stringify(c).includes('Обнови главную ветку')), 12000), JSON.stringify(calls('remote.jsonl').slice(-1)).slice(0, 300));
-  }
-  await evalJs('planner.goHome()');
-  await waitFor('plannerDebug().galaxy === ""', 30000);
   await resetUi();
 });
 
-section('galaxies and universes', async () => {
+section('universes', async () => {
   await resetUi();
-  await evalJs(`document.querySelector('#nav [data-kind="addGalaxy"]').click(); true`);
-  check('«Добавить галактику…» opens the wizard with the ssh hint', await waitFor('!!document.querySelector("#addg")', 3000) && await hasText('#addg', 'ssh-агент'), await text('#addg'));
-  check('no key or password field: only the address and the label', !(await exists('#addg input[type=password]')) && (await evalJs('document.querySelectorAll("#addg input").length')) === 2);
-  const setField = (sel, v) => evalJs(`(() => { const i = document.querySelector(${JSON.stringify(sel)}); i.value = ${JSON.stringify(v)}; i.dispatchEvent(new Event("input", { bubbles: true })); })()`);
-  // an unreachable machine: the plain reason and «Повторить»
-  await setField('#g-target', 'deploy@vm-b');
-  // The button is disabled until the field holds an address; a click on a still disabled button is lost.
-  await waitFor('!document.querySelector("#g-go").disabled', 5000);
-  await click('#g-go');
-  check('an unreachable machine: the plain reason and «Повторить»', await waitFor('!!document.querySelector("#addg .wfail-box")', 15000) && await hasText('#addg .wfail-box', 'Повторить'), await text('#addg'));
-  // a fresh machine: the checklist (the probe is an ssh round trip: give a loaded runner time)
-  await setField('#g-target', 'dev@vm-c');
-  await waitFor('!document.querySelector("#g-go").disabled', 5000);
-  await click('#g-go');
-  check('the checklist: no herdr, no plugin, git and node there', await waitFor('!!document.querySelector("#g-steps")', 60000) && await hasText('#g-steps', 'herdr: не стоит') && await hasText('#g-steps', 'herdr-projects: не стоит') && await hasText('#g-steps', 'node v') && await hasText('#g-steps', 'curl: нет'), await text('#addg'));
-  check('six steps, the first one open', await waitFor('document.querySelectorAll("#g-steps > li").length === 6 && !!document.querySelector(\'[data-step="check"].w-cur\')', 5000));
-  await shot('galaxy-wizard-1-check.png');
-  // herdr: two presses, then vm-c is saved as a galaxy
-  await click('[data-step="herdr"] .wh');
-  check('the herdr step says what runs on the machine', await waitFor('!!document.querySelector("#gw-herdr")', 8000) && await hasText('#addg', 'herdr machine add dev@vm-c --label vm-c'), await text('#addg'));
-  const addsBefore = calls('herdr.jsonl').filter((c) => c.argv.includes('add')).length;
-  await click('#gw-herdr');
-  check('herdr asks twice', await hasText('#gw-herdr', 'Точно'));
   await quiet();
-  check('nothing runs before the second press', calls('herdr.jsonl').filter((c) => c.argv.includes('add')).length === addsBefore);
-  await secondPress('#gw-herdr');
-  check('herdr is installed and vm-c is saved as a galaxy', await waitLog(() => calls('herdr.jsonl').some((c) => c.argv.includes('add') && c.argv.includes('dev@vm-c')), 8000) && await waitFor('(document.querySelector("#addg")?.innerText || "").includes("уже сохранена")', 60000) && await waitFor('plannerSnap().galaxies.some((g) => g.label === "vm-c")', 15000), await text('#addg'));
-  // the plugin: the same version as at home
-  await click('[data-step="plugin"] .wh');
-  check('the plugin step shows the install of the home version', await waitFor('!!document.querySelector("#gw-plugin")', 8000) && await hasText('#addg', 'herdr plugin install eliasstravik/herdr-projects'), await text('#addg'));
-  await click('#gw-plugin');
-  check('the plugin asks twice', await hasText('#gw-plugin', 'Точно'));
-  await secondPress('#gw-plugin');
-  check('the plugin is installed at the home version', await waitFor('(document.querySelector("#addg")?.innerText || "").includes("1.2.4 — та же версия")', 60000), await text('#addg'));
-  check('herdr-projects install and version ran on vm-c', calls('far.jsonl').some((c) => c.bin === 'herdr-projects' && c.argv[0] === 'install') && calls('far.jsonl').some((c) => c.bin === 'herdr-projects' && c.argv[0] === 'version'));
-  // the crew: a missing program with an installer, a check, a login in a terminal, a check again
-  await click('[data-step="crew"] .wh');
-  check('the crew: claude needs curl, which vm-c does not have (plain message)', await waitFor('!!document.querySelector("#gw-install-codex")', 4000) && await hasText('#addg', 'нет curl'), await text('#addg'));
-  check('the station button is there (its screen is f1\'s)', await exists('#gw-roles'));
-  await click('#gw-install-codex');
-  check('the agent install asks twice', await hasText('#gw-install-codex', 'Точно'));
-  await secondPress('#gw-install-codex');
-  check('codex is installed on vm-c by its installer (npm -g)', await waitFor('!!document.querySelector("#gw-login-codex")', 60000) && calls('far.jsonl').some((c) => c.bin === 'npm' && c.argv.join(' ') === 'install -g @openai/codex'), await text('#addg'));
-  await click('#gw-check-codex');
-  check('the check before the login: not signed in', await waitFor('(document.querySelector("#addg")?.innerText || "").includes("входа нет")', 20000), await text('#addg'));
-  await click('#gw-login-codex');
-  check('the login opens a terminal: ssh -t to dev@vm-c with codex login', await waitLog(() => calls('terminal.jsonl').some((c) => c.argv.includes('-t') && c.argv.includes('dev@vm-c') && c.argv.join(' ').includes('codex login')), 8000), JSON.stringify(lastCall('terminal.jsonl')));
-  let signed = false;
-  for (let i = 0; i < 8 && !signed; i++) {
-    await click('#gw-check-codex');
-    signed = await waitFor('(document.querySelector("#addg")?.innerText || "").includes("вход есть")', 2500);
-  }
-  check('after the login the check says signed in', signed, await text('#addg'));
-  // the projects of the machine: three git repositories, one added
-  await click('[data-step="universes"] .wh');
-  check('the projects of vm-c: its three git repositories', await waitFor('document.querySelectorAll("#addg .wrepo").length === 3', 15000), await text('#addg'));
-  await evalJs(`[...document.querySelectorAll('#addg .wrepo')].filter((l) => !l.innerText.includes('api')).forEach((l) => l.querySelector('input').click()); true`);
-  check('only the one ticked is to be added', (await evalJs('[...document.querySelectorAll("#addg .wrepo input")].filter((i) => i.checked).length')) === 1, await text('#addg'));
-  // a narrow screen (400 px): the wizard still fits
-  await send('Emulation.setDeviceMetricsOverride', { width: 400, height: 900, deviceScaleFactor: 1, mobile: false });
-  await waitFor('innerWidth === 400', 5000);
-  check('at 400 px the wizard has no horizontal overflow', await waitFor('(() => { const d = document.querySelector("#addg"); return !!d && d.scrollWidth <= d.clientWidth + 1 && document.documentElement.scrollWidth <= window.innerWidth; })()', 5000));
-  await shot('galaxy-wizard-2-universes-400px.png');
-  await send('Emulation.clearDeviceMetricsOverride', {});
-  await waitFor('innerWidth !== 400', 5000);
-  await click('#gw-uni');
-  check('adding asks twice', await hasText('#gw-uni', 'Точно'));
-  await secondPress('#gw-uni');
-  check('the repository is added as a universe of vm-c (on its board)', await waitFor('plannerSnap().galaxies.some((g) => g.label === "vm-c" && g.projects.some((p) => p.name === "api"))', 30000) && calls('far.jsonl').some((c) => c.bin === 'herdr-projects' && c.argv[0] === 'add'), JSON.stringify(calls('far.jsonl').slice(-2)));
-  check('and the list marks it as already on the board', await waitFor('(document.querySelector("#addg")?.innerText || "").includes("уже на доске")', 8000), await text('#addg'));
-  await shot('galaxy-wizard-3-done.png');
-  // the last step: fly to the new galaxy
-  await click('[data-step="done"] .wh');
-  check('the summary names the galaxy and the universe', await waitFor('(document.querySelector("#addg")?.innerText || "").includes("Галактика «vm-c» готова")', 4000), await text('#addg'));
-  await click('#gw-fly');
-  check('«Лететь в галактику» flies to vm-c', await waitFor('plannerDebug().galaxy === "vm-c"', 30000), JSON.stringify(await pd()));
-  // the wizard keeps its state: reopened, it shows vm-c, and the manual route is still there
-  await evalJs(`document.querySelector('#nav [data-kind="addGalaxy"]').click(); true`);
-  check('reopened, the wizard shows the same machine and its steps', await waitFor('!!document.querySelector("#g-steps")', 3000) && (await evalJs('document.querySelector("#g-target").value')) === 'dev@vm-c', await text('#addg'));
-  await click('#gw-term');
-  check('the manual route asks twice', await hasText('#gw-term', 'Точно'));
-  await secondPress('#gw-term');
-  check('the manual route opens a terminal with herdr machine add', await waitLog(() => calls('terminal.jsonl').some((c) => c.argv.join(' ').includes('machine') && c.argv.join(' ').includes('add') && c.argv.join(' ').includes('dev@vm-c')), 8000), JSON.stringify(lastCall('terminal.jsonl')));
-  check('keys are neither asked nor stored by the planner', !(await exists('#addg input[type=password]')));
-  await press('Escape');
-  check('Esc closes the dialog', await waitFor('!document.querySelector("#addg")', 3000));
+  check('the add-universe row is in the navigator and there is no add-galaxy row', await exists('#nav [data-kind="addUniverse"]') && !(await exists('#nav [data-kind="addGalaxy"]')));
   // add a universe: a folder with git
   await evalJs(`document.querySelector('#nav [data-kind="addUniverse"]').click(); true`);
   check('«Добавить вселенную…» opens with the folder tab', await waitFor('!!document.querySelector("#addu")', 3000));
@@ -1807,13 +1648,11 @@ section('remote client', async () => {
   await evalJs('(() => { const i = document.querySelector("#tell"); i.value = "удалённый ответ"; i.dispatchEvent(new Event("input", { bubbles: true })); })()');
   await click('[data-act="tell-agent"]');
   check('a remote client answers a question', await waitLog(() => calls().some((c) => c.argv[0] === 'tell' && c.argv[1] === 'alpha/2' && c.argv[3] === 'удалённый ответ'), 8000));
-  const remoteAdd = await post('/api/galaxy/add', { target: 'a@b', confirm: true });
-  check('a remote client cannot open terminals on the board\'s machine (adding a machine)', remoteAdd[0] === 200 || remoteAdd[0] === 403, String(remoteAdd[0]));
   await navigate(base + '/?noauto&nocoach&bloom=0');
   check('the world is back after the remote visit', await waitFor('window.world && world.debug().planets > 0', 20000));
 });
 
-// ── the Station, the ship's computer and the arrival notice (PLN-9) ─────────
+// ── the Station and the ship's computer (PLN-9) ─────────
 
 const typeIn = (sel, v) => evalJs(`(() => { const el = document.querySelector(${JSON.stringify(sel)}); if (!el) return false; const d = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(el), 'value'); d.set.call(el, ${JSON.stringify(v)}); el.dispatchEvent(new Event(el.tagName === 'SELECT' ? 'change' : 'input', { bubbles: true })); return true; })()`);
 const menuPick = async (label) => {
@@ -1821,7 +1660,7 @@ const menuPick = async (label) => {
   await waitFor(`[...document.querySelectorAll('.menupop button')].some((x) => x.innerText.includes(${JSON.stringify(label)}))`, 3000);
   return evalJs(`(() => { const it = [...document.querySelectorAll('.menupop button')].find((x) => x.innerText.includes(${JSON.stringify(label)})); if (it) it.click(); return !!it; })()`);
 };
-const stationOf = (galaxy = '') => evalJs(`fetch(${JSON.stringify('/api/station?galaxy=' + encodeURIComponent(galaxy))}).then((r) => r.json())`);
+const stationOf = () => evalJs('fetch("/api/station").then((r) => r.json())');
 const readyCard = () => waitFor('!!document.querySelector("#st-confirm") && !document.querySelector("#st-confirm").disabled', 25000);
 const setCalls = (name) => calls().filter((c) => c.argv?.[0] === 'set' && c.argv.includes(name));
 // A two-step button: the first press arms it, the second must come not sooner than 0.6 s after the first and not later
@@ -1846,7 +1685,7 @@ const twoPresses = async (sel) => { await click(sel); return secondPress(sel); }
 section('station', async () => {
   await resetUi();
   await evalJs('planner.goHome()');
-  await waitFor('plannerDebug().galaxy === ""', 6000);
+  check('the top bar names whose station it is: this machine\'s', await hasText('#station-chip', 'своя станция', 8000), await text('#station-chip'));
   check('the menu opens the station of this machine', await menuPick('Станция') && await waitFor('!!document.querySelector("#station")', 4000));
   const title = await text('#station header b');
   check('the title names this machine: «Станция · host»', title === `Станция · ${HOST}`, title);
@@ -1928,31 +1767,6 @@ section('station', async () => {
   check('the planner keeps the preset', await waitFor('fetch("/api/station").then((r) => r.json()).then((d) => d.light === "claude/claude-haiku-5-5")', 8000));
   check('and the board is not asked to change anything for it', !calls().some((c) => c.argv?.[0] === 'set' && c.argv.some((a) => String(a).includes('light'))));
   await resetUi();
-  await evalJs('planner.goHome(); true');
-  await waitFor('plannerDebug().galaxy === ""', 6000);
-  await menuPick('Станция');
-  await waitFor('!!document.querySelector(\'[data-role="light"] [data-value="light"]\')', 10000);
-
-  // the station of a far galaxy: its own crew, and its change goes over the ssh stand-in
-  await resetUi();
-  await evalJs('planner.enterGalaxy("vm-a")');
-  await waitFor('plannerDebug().galaxy === "vm-a" && world.debug().flight === "idle"', 30000);
-  await click('#station-open');
-  check('the station of vm-a opens with its own crew (a codex coordinator)', await waitFor('document.querySelector("#station")?.dataset.galaxy === "vm-a" && (document.querySelector(\'[data-role="coordinator"] [data-value="coordinator.agent"]\')?.innerText || "") === "codex/gpt-5-codex"', 25000), await text('#station'));
-  check('its programs are its own: codex is signed in there', await hasText('[data-program="codex"]', 'вход выполнен'), await text('[data-program="codex"]'));
-  await waitFor('!!document.querySelector(\'[data-act="st-edit-coordinator.effort"]\')', 8000);
-  await click('[data-act="st-edit-coordinator.effort"]');
-  await waitFor('document.querySelectorAll(\'[id="st-effort-coordinator.effort"] option\').length >= 3', 8000);
-  await typeIn('[id="st-effort-coordinator.effort"]', 'xhigh');
-  await click('[id="st-next-coordinator.effort"]');
-  await readyCard();
-  check('the far change shows was → now', await waitFor('(document.querySelector("#st-now")?.innerText || "") === "xhigh"', 25000) && (await text('#st-change')).includes('high'), await text('#st-change'));
-  await twoPresses('#st-confirm');
-  check('it goes over ssh to vm-a’s board', await waitFor('fetch("/api/station?galaxy=vm-a").then((r) => r.json()).then((d) => d.settings.some((s) => s.name === "coordinator.effort" && s.value === "xhigh"))', 25000));
-  check('the home board is not touched by it', !calls().some((c) => c.argv?.[0] === 'set' && c.argv.includes('coordinator.effort')));
-  await resetUi();
-  await evalJs('planner.goHome()');
-  await waitFor('plannerDebug().galaxy === ""', 8000);
 });
 
 section('crew wizard', async () => {
@@ -1983,37 +1797,6 @@ section('crew wizard', async () => {
   check('«Готово» marks it seen too', await waitFor('!document.querySelector("#station")', 3000) && (await evalJs('localStorage.getItem("herdr-planner.crew-seen")')) === '1');
   await resetUi();
 });
-
-section('arrival', async () => {
-  await resetUi();
-  await evalJs('localStorage.removeItem("herdr-planner.arrive.vm-a"); localStorage.removeItem("herdr-planner.arrive.vm-b"); planner.goHome(); true');
-  await waitFor('plannerDebug().galaxy === "" && world.debug().flight === "idle"', 8000);
-  // the flight line: watch the connection notice while the ship flies
-  await evalJs(`window.__stLine = false; window.__stObs?.disconnect(); window.__stObs = new MutationObserver(() => { if ((document.querySelector('#link')?.innerText || '').includes('своя станция')) window.__stLine = true; }); window.__stObs.observe(document.body, { subtree: true, childList: true, characterData: true }); true`);
-  await evalJs('planner.enterGalaxy("vm-a"); true');
-  check('during the flight the connection notice says the galaxy has its own station', await waitFor('window.__stLine === true', 15000));
-  check('landed: the card names the crew of its station', await waitFor('!!document.querySelector("#arrive") && (document.querySelector("#arrive-text")?.innerText || "").includes("codex/gpt-5-codex")', 30000), await text('#arrive'));
-  const card = await text('#arrive-text');
-  check('the card has the reviewer and the workers too, and says where tasks and chat are', card.includes('claude/claude-opus-5-5') && card.includes('claude/claude-sonnet-5-5') && card.includes('задачи и чат — этой машины'), card);
-  check('the top bar shows the galaxy and whose station it is', await waitFor('(document.querySelector("#station-chip")?.innerText || "").includes("Галактика vm-a") && (document.querySelector("#station-chip")?.innerText || "").includes("станция vm-a")', 8000), await text('#station-chip'));
-  await shot('arrival-vm-a.png');
-  await click('#arrive-hide');
-  check('«not for this galaxy» hides the card and is kept for it', await waitFor('!document.querySelector("#arrive")', 3000) && (await evalJs('localStorage.getItem("herdr-planner.arrive.vm-a")')) === 'hidden');
-  await evalJs('planner.goHome(); true');
-  await waitFor('plannerDebug().galaxy === "" && world.debug().flight === "idle"', 8000);
-  await evalJs('planner.enterGalaxy("vm-a"); true');
-  await waitFor('plannerDebug().galaxy === "vm-a" && world.debug().flight === "idle"', 30000);
-  const named = await hasText('#station-chip', 'станция vm-a', 8000);
-  await frames(3); await quiet();   // the card would have been up by now (it is set the moment the ship lands)
-  check('the second landing shows no card; the top bar still names the station', !(await exists('#arrive')) && named, await text('#station-chip'));
-  await evalJs('planner.goHome(); true');
-  await waitFor('plannerDebug().galaxy === "" && world.debug().flight === "idle"', 8000);
-  check('at home the top bar says the station is this machine’s', await hasText('#station-chip', 'своя станция', 8000), await text('#station-chip'));
-  // a galaxy that does not answer: no landing, no notice
-  await evalJs('planner.enterGalaxy("vm-b"); true');
-  check('a lost galaxy gives no arrival notice and the ship stays here', await waitFor('!!document.querySelector("#link.bad")', 25000) && !(await exists('#arrive')) && (await evalJs('plannerDebug().galaxy')) === '', await text('#link'));
-  await resetUi();
-}, { retry: true });
 
 section('ship', async () => {
   await resetUi();
@@ -2063,17 +1846,11 @@ section('ship', async () => {
   await send('Network.setExtraHTTPHeaders', { headers: {} });
   await resetUi();
 
-  // the galaxies: the list, and a removal with «было → стало» and two presses
+  // the ship's computer has the planner's own settings only: no list of machines, no way to add or remove one
   await menuPick('Бортовой компьютер');
-  await waitFor('!!document.querySelector("#ship-galaxies")', 6000);
-  check('the galaxies are listed with their state', await hasText('#ship-galaxies', 'vm-a') && await hasText('#ship-galaxies', 'vm-b') && await hasText('[data-galaxy="vm-b"]', 'нет связи'), await text('#ship-galaxies'));
-  await click('[data-remove="vm-b"]');
-  check('the removal shows what leaves herdr', await waitFor('!!document.querySelector("#ship-change")', 4000) && await hasText('#ship-change', 'убрана из herdr'), await text('#ship-change'));
-  await twoPresses('#ship-confirm');
-  check('the galaxy is removed with herdr machine remove', await waitLog(() => calls('herdr.jsonl').some((c) => c.argv.includes('remove') && c.argv.includes('vm-b')), 8000));
-  check('and it has left the page', await waitFor('!plannerSnap().galaxies.some((g) => g.label === "vm-b")', 10000));
-  await click('#ship-add-galaxy');
-  check('«add a galaxy» opens the add dialog', await waitFor('!!document.querySelector("#addg")', 3000));
+  await waitFor('!!document.querySelector("#ship-dir")', 6000);
+  check('no machines in the ship\'s computer: no list, no «add a galaxy», no removal', !(await exists('#ship-galaxies')) && !(await exists('#ship-add-galaxy')) && !(await exists('[data-remove]')) && !(await text('#ship')).includes('vm-a'), (await text('#ship')).replace(/\s+/g, ' ').slice(0, 200));
+  check('the planner never ran a machine command of herdr', !calls('herdr.jsonl').some((c) => c.argv.includes('machine')));
   await resetUi();
   await shot('ship.png');
 });
@@ -2181,7 +1958,7 @@ section('simple mode and no WebGL', async () => {
   try {
   await navigate(base + '/?nocoach');
   check('without WebGL the page says so and works through the navigator', await waitFor('plannerDebug().panels.nav === true && !!document.querySelector("#nogl") && (document.querySelector("#nav")?.innerText || "").includes("ALP-4")', 10000), await text('#nogl'));
-  await click('#nav [data-nav="planet||alpha/4"]');
+  await click('#nav [data-nav="planet|alpha/4"]');
   check('the navigator selects and the focus shows the request without WebGL', await waitFor('plannerDebug().selected?.id === "alpha/4" && (document.querySelector("#focus")?.innerText || "").includes("Тёмная тема")', 6000));
   await evalJs('document.getElementById("q").focus()');
   await send('Input.insertText', { text: 'alp-2' });
@@ -2381,13 +2158,12 @@ const layoutRun = async (w, h, dsf, scale = 'auto') => {
   await station('the station', '#station', async () => { await boardChecks(at); });
   await station('the crew wizard', '#station.wizard');
   await station('the ship\'s computer', '#ship', async () => {
-    // the list of machines comes from the server a moment later: judged once it is there
-    await waitFor('document.querySelectorAll("#ship-galaxies li").length > 0', 15000);
+    // the settings come from the server a moment later: judged once they are there
+    await waitFor('!!document.querySelector("#ship-dir")', 15000);
     const late = await layoutProblems('#ship');
-    check(`${at}: the ship's computer with its list of machines: nothing wider than its box`, late.length === 0, late.join('; '));
+    check(`${at}: the ship's computer after its data came: nothing wider than its box`, late.length === 0, late.join('; '));
   });
   await panel('the dialog «Добавить вселенную»', '#addu', async () => { await menuPick('Добавить вселенную'); });
-  await panel('the dialog «Добавить галактику»', '#addg', async () => { await menuPick('Добавить галактику'); });
   await resetUi();
   const sw = await evalJs('document.documentElement.scrollWidth');
   check(`${at}: the page itself never scrolls sideways`, sw <= w + 1, String(sw));
@@ -2485,8 +2261,6 @@ section('narrow', async () => {
 const memDir = join(fixture || '', 'memory', 'galaxy');
 const alphaMem = join(fixture || '', 'projects', 'AI', 'alpha', 'docs', 'memory');
 const docsRepo = join(fixture || '', 'projects', 'herdr', 'docs');
-const vmHome = join(fixture || '', 'state', 'vm-a-home');
-const vmMem = join(vmHome, '.herdr-projects', 'memory', 'galaxy');
 const coordFiles = join(fixture || '', 'board', 'coordinator', 'default', 'chat');
 const readFile = (p) => (existsSync(p) ? readFileSync(p, 'utf8') : '');
 const filesIn = (d) => (existsSync(d) ? readdirSync(d).filter((f) => f.endsWith('.md') && f !== 'MEMORY.md') : []);
@@ -2499,19 +2273,18 @@ const gitStatus = (root) => execFileSync('git', ['-C', root, 'status', '--porcel
 const waitCard = () => waitFor('!!document.querySelector("#mem-chg")', 10000);
 // After the yes the card goes (the next change must not meet the old card still on the page).
 const sayYes = async () => { await click('#mem-chg-confirm'); await waitFor('!document.querySelector("#mem-chg")', 10000); };
-const quasarOf = async (galaxy = '') => {
-  await evalJs(`planner.navigateTo({kind:'quasar',galaxy:${JSON.stringify(galaxy)},id:'quasar'})`);
+const quasarOf = async () => {
+  await evalJs(`planner.navigateTo({kind:'quasar',id:'quasar'})`);
   await waitFor('world.debug().flight === "idle"', 15000);
 };
-const universeOf = async (id, galaxy = '') => {
-  await evalJs(`planner.navigateTo({kind:'universe',galaxy:${JSON.stringify(galaxy)},id:${JSON.stringify(id)}})`);
+const universeOf = async (id) => {
+  await evalJs(`planner.navigateTo({kind:'universe',id:${JSON.stringify(id)}})`);
   await waitFor('world.debug().flight === "idle"', 15000);
 };
 
 section('memory galaxy', async () => {
   await resetUi();
   await evalJs('planner.goHome()');
-  await waitFor('plannerDebug().galaxy === ""', 6000);
   await quasarOf();
   check('the Quasar has a memory panel with the Galaxy files', await waitFor('document.querySelectorAll("#mem-galaxy-list [data-mem]").length === 2', 30000), await text('#mem-galaxy'));
   check('the panel counts them and shows the folder', (await text('#mem-galaxy-count')) === '2' && (await text('#mem-galaxy .mm-dir')).includes('memory/galaxy'), await text('#mem-galaxy .mm-dir'));
@@ -2987,51 +2760,6 @@ section('memory guard', async () => {
   check('the Coordinator is told never to write a universe into the checkout (that would make it dirty for the board): a task instead', block.includes('никогда в чекаут') && block.includes('задачу «Запомнить в docs/memory'), block.slice(0, 200));
   check('and: no personal data or secrets in a universe, anonymise or write it to the Galaxy', block.includes('персональные данные') && block.includes('обезличить') && block.includes('в Галактику'));
   await resetUi();
-});
-
-section('memory ssh', async () => {
-  await resetUi();
-  await evalJs('planner.enterGalaxy("vm-a")');
-  await waitFor('plannerDebug().galaxy === "vm-a" && world.debug().flight === "idle"', 30000);
-  await quasarOf('vm-a');
-  check('a far galaxy has its own memory: read over ssh from that machine', await waitFor('!!document.querySelector(\'#mem-galaxy-list [data-mem="vm-a-ports"]\')', 25000) && (await text('#mem-galaxy-count')) === '1', await text('#mem-galaxy'));
-  check('the title names that galaxy', (await text('#mem-galaxy .mm-h')).toLowerCase().includes('vm-a'));
-  check('its Coordinator is not connected until asked', (await text('#mem-connect')).includes('не подключена'), await text('#mem-connect'));
-  const vmAgents = join(vmHome, '.herdr-projects', 'data', 'coordinator', 'default', 'chat', 'AGENTS.md');
-  const vmAgentsWas = readFile(vmAgents);
-  await click('#mem-connect-toggle');
-  await waitFor('!!document.querySelector("#mem-change")', 25000);
-  check('a far galaxy shows the same card: it has no instructions of its own yet', (await text('#mem-was')).includes('не задано') && (await text('#mem-now')).includes(BLOCK), await text('#mem-was'));
-  await twoPresses('#mem-change-confirm');
-  check('connecting is the far board\'s own set, over ssh', await waitFor('fetch("/api/station?galaxy=vm-a").then((r) => r.json()).then((d) => (d.settings.find((x) => x.name === "coordinator.instructions")?.value || "").includes("herdr-planner:memory"))', 25000));
-  check('the block points at that machine\'s own Galaxy folder', (await stationOf('vm-a')).settings.find((x) => x.name === 'coordinator.instructions').value.includes('~/.herdr-projects/memory/galaxy/MEMORY.md'));
-  check('the home board is not touched by it, and no file of the far board is written', !calls().some((c) => c.argv?.[0] === 'set' && c.argv.includes('coordinator.instructions') && String(c.argv[2] || '').includes('~/.herdr-projects')) && readFile(vmAgents) === vmAgentsWas && !readFile(vmAgents).includes(BLOCK));
-  await click('#mem-add');
-  await waitFor('!!document.querySelector("#mem-form")', 3000);
-  await typeIn('#mem-title', 'Ключ деплоя');
-  await typeIn('#mem-body', 'Деплой на vm-a идёт под пользователем deploy.');
-  await click('#mem-save');
-  check('a far galaxy\'s change shows the same card, and writes nothing there before the yes', await waitCard() && (await text('#mem-chg .mm-chg-file')).includes('.herdr-projects/memory/galaxy/') && !existsSync(join(vmMem, 'klyuch-deploya.md')), await text('#mem-chg'));
-  await sayYes();
-  check('a new entry is written there: its file and the index', await waitLog(() => readFile(join(vmMem, 'klyuch-deploya.md')).includes('пользователем deploy') && readFile(join(vmMem, 'MEMORY.md')).includes('(vm-a-ports.md)') && readFile(join(vmMem, 'MEMORY.md')).includes('(klyuch-deploya.md)'), 20000), readFile(join(vmMem, 'MEMORY.md')));
-  check('and it is not written on this machine', !filesIn(memDir).includes('klyuch-deploya.md'));
-  check('the list shows both', await waitFor('document.querySelectorAll("#mem-galaxy-list [data-mem]").length === 2', 15000));
-  await click('[data-mem="klyuch-deploya"] .mm-line');
-  await click('[data-mem="klyuch-deploya"] [data-act="mem-del"]');
-  await waitCard();
-  await sayYes();
-  check('delete goes there too', await waitLog(() => !existsSync(join(vmMem, 'klyuch-deploya.md')) && !readFile(join(vmMem, 'MEMORY.md')).includes('klyuch-deploya'), 20000));
-  // the universe of the far galaxy: its memory is git's, read only here
-  await universeOf('alpha', 'vm-a');
-  check('a far universe shows the memory of its folder, read only', await waitFor('!!document.querySelector(\'#mem-universe-list [data-mem="vm-alpha-note"]\')', 25000) && !(await exists('#mem-add')), await text('#mem-universe'));
-  check('and says why: it lives in git', (await text('#mem-universe')).includes('живёт в git'), await text('#mem-universe'));
-  const refused = await post('/api/memory/save', { galaxy: 'vm-a', repo: 'alpha', title: 'x', body: 'y' });
-  check('a write into a far universe is refused', refused?.[0] === 403, JSON.stringify(refused));
-  const found = await api('/api/search?q=' + encodeURIComponent('сервисы vm-a'));
-  check('the far memory is searched too, filed under its galaxy', found?.[1]?.hits?.some((h) => h.kind === 'memory' && h.galaxy === 'vm-a' && h.id === '|vm-a-ports'), JSON.stringify(found?.[1]?.hits?.map((h) => [h.kind, h.galaxy, h.id])));
-  await resetUi();
-  await evalJs('planner.goHome()');
-  await waitFor('plannerDebug().galaxy === ""', 8000);
 });
 
 // ── run ──────────────────────────────────────────────────────────────────

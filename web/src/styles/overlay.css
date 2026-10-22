@@ -8,9 +8,6 @@
 .notice.edge{top:4rem;border-color:var(--c-yellow);background:color-mix(in srgb,var(--c-yellow) 16%,var(--pl-panel-solid))}
 .notice.lock{top:6.25rem;font-size:0.7188rem;padding:0.25rem 0.75rem}
 .notice.link{top:4rem;pointer-events:auto;min-width:16.25rem;max-width:min(40rem,92vw);border-radius:0.75rem;align-items:flex-start;flex-wrap:wrap}
-.notice.link.bad{border-color:var(--c-red)}
-.notice.link .why{flex:1 1 100%;color:var(--pl-dim);font-size:0.7188rem}
-.notice.link .why li{margin:2px 0}
 .notice .spinner{width:0.625rem;height:0.625rem;border:2px solid var(--pl-accent);border-right-color:transparent;border-radius:50%;animation:spin .8s linear infinite;flex:none;align-self:center}
 .cross{position:absolute;left:50%;top:50%;width:0;height:0;z-index:6;pointer-events:none}
 .cross::before,.cross::after{content:"";position:absolute;background:color-mix(in srgb,var(--pl-title) 70%,transparent)}

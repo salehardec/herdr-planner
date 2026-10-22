@@ -8,7 +8,7 @@ import { scaleK } from '../scale';
 
 export interface LabelCandidate {
   key: string;
-  kind: 'planet' | 'universe' | 'quasar' | 'galaxy' | 'moon' | 'bridge';
+  kind: 'planet' | 'universe' | 'quasar' | 'moon';
   x: number;
   y: number;
   /** Pixels between the point and the label's bottom edge. */
@@ -25,7 +25,6 @@ export interface LabelCandidate {
   dim?: boolean;
   /** Extra marker text on the right (lag badge, «ждёт N»). */
   badge?: string;
-  off?: boolean;
   /** Full card (key + title + line) instead of a chip. */
   full?: boolean;
   line?: string;
@@ -74,7 +73,7 @@ export class Labels {
   }
 
   render(cands: LabelCandidate[], budget: number, width: number, height: number): void {
-    // The forced ones (the selected, the hovered, the Quasar, the galaxies) go first and are nudged apart from each
+    // The forced ones (the selected, the hovered, the Quasar) go first and are nudged apart from each
     // other; everything else must keep clear of all of them, so no two shown labels overlap.
     cands.sort((a, b) => Number(!!b.force) - Number(!!a.force) || b.priority - a.priority);
     const taken: Box[] = [];
@@ -120,7 +119,7 @@ export class Labels {
       slot = { el, last: '', html: '' };
       this.slots.set(c.key, slot);
     }
-    const cls = `lb ${c.kind}${c.status ? ` s-${c.status}` : ''}${c.selected ? ' sel' : ''}${c.hovered ? ' hover' : ''}${c.drop ? ' drop' : ''}${c.dim ? ' dim' : ''}${c.off ? ' off' : ''}${c.full ? ' full' : ''}`;
+    const cls = `lb ${c.kind}${c.status ? ` s-${c.status}` : ''}${c.selected ? ' sel' : ''}${c.hovered ? ' hover' : ''}${c.drop ? ' drop' : ''}${c.dim ? ' dim' : ''}${c.full ? ' full' : ''}`;
     const html = c.full
       ? `<span class="in"><b class="k">${esc(c.text)}</b>${c.badge ? `<span class="bd">${esc(c.badge)}</span>` : ''}</span><span class="ttl">${esc(c.sub ?? '')}</span>${c.line ? `<span class="line">${esc(c.line)}</span>` : ''}`
       : `<span class="in"><b class="k">${esc(c.text)}</b>${c.sub ? `<span class="sub">${esc(c.sub)}</span>` : ''}${c.badge ? `<span class="bd">${esc(c.badge)}</span>` : ''}</span>`;

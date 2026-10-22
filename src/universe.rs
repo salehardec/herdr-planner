@@ -1,11 +1,11 @@
-//! Universes: a repository (a project) added to a machine's herdr-projects board.
+//! Universes: a repository (a project) added to this machine's herdr-projects board.
 //!
 //! What the Galaxy's "add a universe" needs, without any HTTP here:
-//! - `complete_path` / `complete_path_remote`: folder names as typed, with git and board marks;
+//! - `complete_path`: folder names as typed, with git and board marks;
 //! - `parse_address`: a repository address on GitHub, GitLab (.com or self-hosted) or another host;
 //! - `inspect`: what a folder or an address is: branch, origin, who may write (`gh` / `glab`),
 //!   the suggested name and key, whether the board has it already;
-//! - `add` / `add_remote`: clone (or fork, or read a folder), register the folder on the board with
+//! - `add`: clone (or fork, or read a folder), register the folder on the board with
 //!   `herdr-projects add "…" --repo PATH`, read the key the board gives, set the settings the host needs;
 //! - `open_pull_request`, `make_fork`, `upstream_lag`: what a fork needs afterwards.
 //!
@@ -17,7 +17,6 @@
 
 use crate::config::{expand_home, AppConfig};
 use crate::gitlag;
-use crate::machines::{self, sh_quote, MachineRef};
 use crate::taskmeta;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -41,7 +40,6 @@ const BOARD_WAIT: Duration = Duration::from_secs(60);
 /// A clone, or a fork with its clone.
 const CLONE_WAIT: Duration = Duration::from_secs(900);
 /// Folder entries the picker returns when the caller gives no limit.
-const LIST_LIMIT: usize = 12;
 /// GitLab access level that may push a branch (Developer).
 const GITLAB_WRITE: u64 = 30;
 
@@ -122,59 +120,6 @@ pub fn complete_path(input: &str, board_roots: &[String], limit: usize) -> Vec<F
         })
         .collect()
 }
-
-/// The picker on another machine: one ssh call running a small read-only shell snippet.
-pub async fn complete_path_remote(
-    cfg: &AppConfig,
-    label: &str,
-    input: &str,
-) -> Result<Vec<FsEntry>, String> {
-    if input.contains('\0') {
-        return Err("в пути не должно быть NUL".into());
-    }
-    let m = machines::resolve_with(&machines::herdr_bin(), label).await?;
-    complete_remote_at(cfg, &m, input, LIST_LIMIT).await
-}
-
-async fn complete_remote_at(
-    cfg: &AppConfig,
-    m: &MachineRef,
-    input: &str,
-    limit: usize,
-) -> Result<Vec<FsEntry>, String> {
-    let (typed_dir, prefix) = split_typed(input);
-    let dir = if typed_dir.is_empty() { "." } else { typed_dir };
-    let limit_text = limit.to_string();
-    let args = own(&["-c", LIST_SCRIPT, "_", dir, prefix, limit_text.as_str()]);
-    let out = exec(cfg, Some(m), "sh", &args, None, LOCAL_WAIT).await?;
-    if !out.ok() {
-        return Err(format!("{}: {}", m.label, out.text()));
-    }
-    Ok(out
-        .stdout
-        .lines()
-        .filter_map(|line| {
-            let parts: Vec<&str> = line.split('\t').collect();
-            if parts.len() != 4 || parts[0].is_empty() {
-                return None;
-            }
-            let name = parts[0].to_string();
-            Some(FsEntry {
-                path: format!("{typed_dir}{name}"),
-                name,
-                is_dir: true,
-                git: parts[1] == "1",
-                on_board: false,
-                branch: nonempty(parts[2]),
-                origin: nonempty(parts[3]),
-            })
-        })
-        .collect())
-}
-
-/// Lists the folders of a directory on the far machine. `$1` is the directory (`~` allowed), `$2` the
-/// typed prefix, `$3` the limit. Prints `name<TAB>git(0|1)<TAB>branch<TAB>origin` per folder.
-const LIST_SCRIPT: &str = r#"d=$1; p=$2; n=$3; case "$d" in "~"|"~/"*) d="$HOME${d#\~}";; esac; [ -n "$d" ] || d=.; lp=$(printf '%s' "$p" | tr 'A-Z' 'a-z'); c=0; for e in "$d"/* "$d"/.[!.]*; do [ -d "$e" ] || continue; b=${e##*/}; case "$b" in .*) case "$p" in .*) ;; *) continue ;; esac ;; esac; lb=$(printf '%s' "$b" | tr 'A-Z' 'a-z'); case "$lb" in "$lp"*) ;; *) continue ;; esac; g=0; br=; og=; if [ -e "$e/.git" ]; then g=1; br=$(git -C "$e" symbolic-ref --short -q HEAD 2>/dev/null); og=$(git -C "$e" remote get-url origin 2>/dev/null); fi; printf '%s\t%s\t%s\t%s\n' "$b" "$g" "$br" "$og"; c=$((c+1)); [ "$c" -ge "$n" ] && break; done; exit 0"#;
 
 /// Splits what was typed into the directory part (kept as typed, with its slash) and the prefix.
 fn split_typed(input: &str) -> (&str, &str) {
@@ -960,18 +905,7 @@ pub async fn add(
     req: &AddRequest,
     progress: &(dyn Fn(&[Step]) + Send + Sync),
 ) -> Result<AddResult, String> {
-    add_at(cfg, None, req, progress, &Tools::from_env()).await
-}
-
-/// The same on another machine of the Galaxy, over the board's ssh login-shell form.
-pub async fn add_remote(
-    cfg: &AppConfig,
-    label: &str,
-    req: &AddRequest,
-    progress: &(dyn Fn(&[Step]) + Send + Sync),
-) -> Result<AddResult, String> {
-    let m = machines::resolve_with(&machines::herdr_bin(), label).await?;
-    add_at(cfg, Some(&m), req, progress, &Tools::from_env()).await
+    add_at(cfg, req, progress, &Tools::from_env()).await
 }
 
 const STEP_CLONE: &str = "клонирование";
@@ -1044,7 +978,6 @@ fn fail<T>(
 
 pub(crate) async fn add_at(
     cfg: &AppConfig,
-    place: Option<&MachineRef>,
     req: &AddRequest,
     progress: &(dyn Fn(&[Step]) + Send + Sync),
     tools: &Tools,
@@ -1091,16 +1024,8 @@ pub(crate) async fn add_at(
     } else {
         "клонирование"
     };
-    let gh = if place.is_some() {
-        "gh".to_string()
-    } else {
-        tools.gh.clone()
-    };
-    let glab = if place.is_some() {
-        "glab".to_string()
-    } else {
-        tools.glab.clone()
-    };
+    let gh = tools.gh.clone();
+    let glab = tools.glab.clone();
     let mut notes: Vec<String> = Vec::new();
 
     // 1. The source: a folder that exists, or a clone (or fork) into the target folder.
@@ -1109,7 +1034,7 @@ pub(crate) async fn add_at(
             Some(p) => p.to_string(),
             None => return fail(&mut prog, 0, step_clone, "укажите папку с git"),
         };
-        let facts = match folder_facts(cfg, place, &path).await {
+        let facts = match folder_facts(&path).await {
             Ok(f) => f,
             Err(e) => return fail(&mut prog, 0, step_clone, e),
         };
@@ -1122,20 +1047,19 @@ pub(crate) async fn add_at(
             let msg = format!("доска называет проект по имени папки: «{base}», а не «{name}»");
             return fail(&mut prog, 0, step_clone, msg);
         }
-        if let Err(e) = check_board_name(cfg, place, &name, &facts.root) {
+        if let Err(e) = check_board_name(cfg, &name, &facts.root) {
             return fail(&mut prog, 0, step_clone, e);
         }
-        if place.is_none()
-            && taskmeta::repos(&cfg.data_dir)
-                .iter()
-                .any(|r| r.root == facts.root)
+        if taskmeta::repos(&cfg.data_dir)
+            .iter()
+            .any(|r| r.root == facts.root)
         {
             let msg = format!("эта папка уже на доске: {name}");
             return fail(&mut prog, 0, step_clone, msg);
         }
         prog.ok(0, format!("папка {}", facts.root));
         let source = facts.origin.as_deref().and_then(|o| parse_address(o).ok());
-        let upstream = remote_url(cfg, place, &facts.root, "upstream").await;
+        let upstream = remote_url(&facts.root, "upstream").await;
         let fork_of = match (&upstream, &facts.origin) {
             (Some(up), Some(o)) if up != o => parse_address(up).ok().map(|a| a.path()),
             _ => None,
@@ -1153,17 +1077,17 @@ pub(crate) async fn add_at(
         }
         let base = match req.dir.as_deref().map(str::trim).filter(|d| !d.is_empty()) {
             Some(d) => d.to_string(),
-            None => default_dir(cfg, place),
+            None => cfg.projects_dir_now().display().to_string(),
         };
         let target = format!("{}/{}", base.trim_end_matches('/'), name);
-        if let Err(e) = check_target(cfg, place, &target).await {
+        if let Err(e) = check_target(&target) {
             return fail(&mut prog, 0, step_clone, e);
         }
-        if let Err(e) = check_board_name(cfg, place, &name, &target) {
+        if let Err(e) = check_board_name(cfg, &name, &target) {
             return fail(&mut prog, 0, step_clone, e);
         }
         prog.run(0, format!("{clone_url} → {target}"));
-        if let Err(e) = make_dir(cfg, place, &base).await {
+        if let Err(e) = make_dir(&base) {
             return fail(&mut prog, 0, step_clone, e);
         }
         let (fork_of, upstream) = if req.mode == Mode::Fork {
@@ -1171,7 +1095,7 @@ pub(crate) async fn add_at(
                 .clone()
                 .unwrap_or_else(|| unreachable!("fork without an address"));
             let fork =
-                match create_fork(cfg, place, &a, Some(name.as_str()), &base, &gh, &glab).await {
+                match create_fork(&a, Some(name.as_str()), &base, &gh, &glab).await {
                     Ok(f) => f,
                     Err(e) => return fail(&mut prog, 0, step_clone, e),
                 };
@@ -1179,13 +1103,10 @@ pub(crate) async fn add_at(
                 0,
                 format!("клонирование форка {} → {target}", fork.fork_path),
             );
-            if let Err(e) = clone_into(cfg, place, &mut prog, &fork.fork_url, &target).await {
+            if let Err(e) = clone_into(&mut prog, &fork.fork_url, &target).await {
                 return fail(&mut prog, 0, step_clone, e);
             }
-            if let Err(e) = git_ok(
-                cfg,
-                place,
-                &[
+            if let Err(e) = git_ok(&[
                     "-C",
                     target.as_str(),
                     "remote",
@@ -1200,12 +1121,12 @@ pub(crate) async fn add_at(
             }
             (Some(a.path()), Some(clone_url.clone()))
         } else {
-            if let Err(e) = clone_into(cfg, place, &mut prog, &clone_url, &target).await {
+            if let Err(e) = clone_into(&mut prog, &clone_url, &target).await {
                 return fail(&mut prog, 0, step_clone, e);
             }
             (None, None)
         };
-        let root = match resolve_root(cfg, place, &target).await {
+        let root = match resolve_root(&target) {
             Ok(r) => r,
             Err(e) => return fail(&mut prog, 0, step_clone, e),
         };
@@ -1218,7 +1139,6 @@ pub(crate) async fn add_at(
     prog.run(1, format!("herdr-projects add «{title}» --repo {root}"));
     let out = match board(
         cfg,
-        place,
         &own(&["add", title.as_str(), "--repo", root.as_str()]),
         BOARD_WAIT,
     )
@@ -1238,7 +1158,7 @@ pub(crate) async fn add_at(
             )
         }
     };
-    match board(cfg, place, &own(&["archive", added.as_str()]), BOARD_WAIT).await {
+    match board(cfg, &own(&["archive", added.as_str()]), BOARD_WAIT).await {
         Ok(_) => notes.push(format!(
             "задача «{title}» ({added}) в архиве: без агента она ничего не делает"
         )),
@@ -1248,7 +1168,7 @@ pub(crate) async fn add_at(
 
     // 3. The key the board gives (or the one asked for).
     prog.run(2, "читаю ключ");
-    let mut key = match board_key(cfg, place, &name).await {
+    let mut key = match board_key(cfg, &name).await {
         Some(k) => k,
         None => return fail(&mut prog, 2, STEP_KEY, "доска не сообщила ключ проекта"),
     };
@@ -1256,10 +1176,10 @@ pub(crate) async fn add_at(
         if *want != key {
             let old = key.clone();
             let set = own(&["set", "repo.key", want.as_str(), "--repo", name.as_str()]);
-            if let Err(e) = board(cfg, place, &set, BOARD_WAIT).await {
+            if let Err(e) = board(cfg, &set, BOARD_WAIT).await {
                 return fail(&mut prog, 2, STEP_KEY, e);
             }
-            key = match board_key(cfg, place, &name).await {
+            key = match board_key(cfg, &name).await {
                 Some(k) if k == *want => k,
                 other => {
                     let got = other.unwrap_or_else(|| "нет".into());
@@ -1288,10 +1208,10 @@ pub(crate) async fn add_at(
         prog.run(3, format!("{} настроек", want.len()));
         for &(n, v) in &want {
             let set = own(&["set", n, v, "--repo", name.as_str()]);
-            if let Err(e) = board(cfg, place, &set, BOARD_WAIT).await {
+            if let Err(e) = board(cfg, &set, BOARD_WAIT).await {
                 return fail(&mut prog, 3, STEP_SETTINGS, e);
             }
-            let got = board_setting(cfg, place, &name, n).await;
+            let got = board_setting(cfg, &name, n).await;
             if got.as_deref() != Some(v) {
                 let msg = format!(
                     "доска ответила {n} = {}, ждали {v}",
@@ -1320,10 +1240,10 @@ pub(crate) async fn add_at(
             "форк ← {f}: origin — ваш форк, upstream — оригинал"
         ));
     }
-    let origin = remote_url(cfg, place, &root, "origin").await;
+    let origin = remote_url(&root, "origin").await;
     let upstream = match upstream_given {
         Some(u) => Some(u),
-        None => remote_url(cfg, place, &root, "upstream").await,
+        None => remote_url(&root, "upstream").await,
     };
     Ok(AddResult {
         name,
@@ -1349,13 +1269,6 @@ fn valid_key(k: &str) -> bool {
             .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit())
 }
 
-fn default_dir(cfg: &AppConfig, place: Option<&MachineRef>) -> String {
-    match place {
-        None => cfg.projects_dir_now().display().to_string(),
-        Some(_) => "~/Projects".to_string(),
-    }
-}
-
 /// A source the clone can take: a local repository path, or a parsed address (its clone URL).
 fn source_of(url: &str) -> Result<(String, Option<RepoAddr>), String> {
     let u = url.trim();
@@ -1370,57 +1283,24 @@ fn source_of(url: &str) -> Result<(String, Option<RepoAddr>), String> {
 }
 
 /// Refuses a target folder that exists and is not empty.
-async fn check_target(
-    cfg: &AppConfig,
-    place: Option<&MachineRef>,
-    target: &str,
-) -> Result<(), String> {
-    match place {
-        None => {
-            let p = expand_home(target);
-            if !p.exists() {
-                return Ok(());
-            }
-            let empty = p.is_dir()
-                && fs::read_dir(&p)
-                    .map(|mut r| r.next().is_none())
-                    .unwrap_or(false);
-            if empty {
-                Ok(())
-            } else {
-                Err(format!("{target} уже есть и не пуста: не перезаписываю"))
-            }
-        }
-        Some(_) => {
-            let script = r#"if [ -e "$1" ]; then if [ -d "$1" ] && [ -z "$(ls -A "$1")" ]; then echo EMPTY; else echo BUSY; fi; else echo NEW; fi"#;
-            let out = exec(
-                cfg,
-                place,
-                "sh",
-                &own(&["-c", script, "_", target]),
-                None,
-                LOCAL_WAIT,
-            )
-            .await?;
-            if out.stdout.contains("BUSY") {
-                Err(format!("{target} уже есть и не пуста: не перезаписываю"))
-            } else {
-                Ok(())
-            }
-        }
+fn check_target(target: &str) -> Result<(), String> {
+    let p = expand_home(target);
+    if !p.exists() {
+        return Ok(());
+    }
+    let empty = p.is_dir()
+        && fs::read_dir(&p)
+            .map(|mut r| r.next().is_none())
+            .unwrap_or(false);
+    if empty {
+        Ok(())
+    } else {
+        Err(format!("{target} уже есть и не пуста: не перезаписываю"))
     }
 }
 
 /// Refuses a name the board already gives to another folder (the board would name two folders alike).
-fn check_board_name(
-    cfg: &AppConfig,
-    place: Option<&MachineRef>,
-    name: &str,
-    root: &str,
-) -> Result<(), String> {
-    if place.is_some() {
-        return Ok(());
-    }
+fn check_board_name(cfg: &AppConfig, name: &str, root: &str) -> Result<(), String> {
     let want = expand_home(root);
     for r in taskmeta::repos(&cfg.data_dir) {
         if r.name == name && !r.root.is_empty() {
@@ -1437,44 +1317,18 @@ fn check_board_name(
     Ok(())
 }
 
-async fn make_dir(cfg: &AppConfig, place: Option<&MachineRef>, base: &str) -> Result<(), String> {
-    match place {
-        None => fs::create_dir_all(expand_home(base)).map_err(|e| format!("{base}: {e}")),
-        Some(_) => {
-            let o = exec(cfg, place, "mkdir", &own(&["-p", base]), None, LOCAL_WAIT).await?;
-            if o.ok() {
-                Ok(())
-            } else {
-                Err(format!("{base}: {}", o.text()))
-            }
-        }
-    }
+fn make_dir(base: &str) -> Result<(), String> {
+    fs::create_dir_all(expand_home(base)).map_err(|e| format!("{base}: {e}"))
 }
 
-/// `git clone` into `target`. Locally the percent is streamed from git's progress; on another machine
-/// the clone reports once it is done.
+/// `git clone` into `target`; the percent is streamed from git's progress.
 async fn clone_into(
-    cfg: &AppConfig,
-    place: Option<&MachineRef>,
     prog: &mut Progress<'_>,
     url: &str,
     target: &str,
 ) -> Result<(), String> {
-    match place {
-        None => {
-            let mut cb = |p: u8| prog.percent(0, p);
-            clone_local(url, target, &mut cb).await
-        }
-        Some(_) => {
-            let args = own(&["clone", "--progress", url, target]);
-            let o = exec(cfg, place, "git", &args, None, CLONE_WAIT).await?;
-            if o.ok() {
-                Ok(())
-            } else {
-                Err(format!("git clone: {}", o.text()))
-            }
-        }
-    }
+    let mut cb = |p: u8| prog.percent(0, p);
+    clone_local(url, target, &mut cb).await
 }
 
 async fn clone_local(
@@ -1571,13 +1425,10 @@ fn added_id(out: &str) -> Option<String> {
 }
 
 /// The key and the folder of a repository the board knows, from its own `show --json`.
-async fn board_key(cfg: &AppConfig, place: Option<&MachineRef>, name: &str) -> Option<String> {
-    board_setting(cfg, place, name, "repo.key")
+async fn board_key(cfg: &AppConfig, name: &str) -> Option<String> {
+    board_setting(cfg, name, "repo.key")
         .await
         .or_else(|| {
-            if place.is_some() {
-                return None;
-            }
             taskmeta::repos(&cfg.data_dir)
                 .into_iter()
                 .find(|r| r.name == name && !r.key.is_empty())
@@ -1586,21 +1437,11 @@ async fn board_key(cfg: &AppConfig, place: Option<&MachineRef>, name: &str) -> O
 }
 
 /// The value of one setting for a repository, as the board's `show --repo NAME --json` gives it.
-async fn board_setting(
-    cfg: &AppConfig,
-    place: Option<&MachineRef>,
-    repo: &str,
-    setting: &str,
-) -> Option<String> {
-    let out = board(
-        cfg,
-        place,
-        &own(&["show", "--repo", repo, "--json"]),
-        BOARD_WAIT,
-    )
-    .await
-    .ok()?;
-    let v = machines::last_json(&out)?;
+async fn board_setting(cfg: &AppConfig, repo: &str, setting: &str) -> Option<String> {
+    let out = board(cfg, &own(&["show", "--repo", repo, "--json"]), BOARD_WAIT)
+        .await
+        .ok()?;
+    let v = last_json(&out)?;
     setting_text(&v, setting)
 }
 
@@ -1619,27 +1460,38 @@ fn setting_text(v: &Value, name: &str) -> Option<String> {
         .filter(|t| !t.is_empty())
 }
 
-/// Runs a board command: locally through `cfg.herdr_projects`, on another machine over ssh.
-async fn board(
-    cfg: &AppConfig,
-    place: Option<&MachineRef>,
-    args: &[String],
-    wait: Duration,
-) -> Result<String, String> {
-    match place {
-        None => {
-            let refs: Vec<&str> = args.iter().map(String::as_str).collect();
-            crate::app::run_board(cfg, &refs, wait).await
-        }
-        Some(_) => {
-            let o = exec(cfg, place, "herdr-projects", args, None, wait).await?;
-            if o.ok() {
-                Ok(o.stdout)
-            } else {
-                Err(o.text())
-            }
+/// Runs a board command through `cfg.herdr_projects`.
+async fn board(cfg: &AppConfig, args: &[String], wait: Duration) -> Result<String, String> {
+    let refs: Vec<&str> = args.iter().map(String::as_str).collect();
+    crate::app::run_board(cfg, &refs, wait).await
+}
+
+/// The board's answer: the last JSON object of stdout, where a shell's start-up files may print before it. An
+/// object that is the board's own (a task list, or one with `ok`) wins over any other.
+fn last_json(stdout: &str) -> Option<Value> {
+    if let Ok(v) = serde_json::from_str::<Value>(stdout.trim()) {
+        if v.is_object() {
+            return Some(v);
         }
     }
+    let mut other = None;
+    for line in stdout.lines().rev().map(str::trim) {
+        if !line.starts_with('{') {
+            continue;
+        }
+        if let Ok(v) = serde_json::from_str::<Value>(line) {
+            if !v.is_object() {
+                continue;
+            }
+            if v.get("tasks").is_some_and(Value::is_array)
+                || v.get("ok").is_some_and(Value::is_boolean)
+            {
+                return Some(v);
+            }
+            other.get_or_insert(v);
+        }
+    }
+    other
 }
 
 /// Where a folder is, and what git says about it.
@@ -1651,139 +1503,43 @@ struct Folder {
     branch: Option<String>,
 }
 
-async fn folder_facts(
-    cfg: &AppConfig,
-    place: Option<&MachineRef>,
-    path: &str,
-) -> Result<Folder, String> {
-    match place {
-        None => {
-            let p = expand_home(path)
-                .canonicalize()
-                .map_err(|_| format!("папка не найдена: {path}"))?;
-            if !p.is_dir() {
-                return Err(format!("это не папка: {path}"));
-            }
-            let git = p.join(".git").exists();
-            let origin = if git {
-                git_out(&p, &["remote", "get-url", "origin"]).await
-            } else {
-                None
-            };
-            let branch = if git {
-                git_out(&p, &["symbolic-ref", "--short", "-q", "HEAD"]).await
-            } else {
-                None
-            };
-            Ok(Folder {
-                root: p.display().to_string(),
-                git,
-                origin,
-                branch,
-            })
-        }
-        Some(_) => {
-            let o = exec(
-                cfg,
-                place,
-                "sh",
-                &own(&["-c", FOLDER_SCRIPT, "_", path]),
-                None,
-                LOCAL_WAIT,
-            )
-            .await?;
-            if o.stdout.lines().any(|l| l == "NODIR") {
-                return Err(format!("папка не найдена: {path}"));
-            }
-            let mut root = None;
-            let mut git = false;
-            let mut origin = None;
-            let mut branch = None;
-            for line in o.stdout.lines() {
-                if let Some(v) = line.strip_prefix("ROOT=") {
-                    root = Some(v.to_string());
-                } else if line == "GIT=1" {
-                    git = true;
-                } else if let Some(v) = line.strip_prefix("ORIGIN=") {
-                    origin = nonempty(v);
-                } else if let Some(v) = line.strip_prefix("BRANCH=") {
-                    branch = nonempty(v);
-                }
-            }
-            let root = root.ok_or("на машине не ответила папка")?;
-            Ok(Folder {
-                root,
-                git,
-                origin,
-                branch,
-            })
-        }
+async fn folder_facts(path: &str) -> Result<Folder, String> {
+    let p = expand_home(path)
+        .canonicalize()
+        .map_err(|_| format!("папка не найдена: {path}"))?;
+    if !p.is_dir() {
+        return Err(format!("это не папка: {path}"));
     }
+    let git = p.join(".git").exists();
+    let origin = if git {
+        git_out(&p, &["remote", "get-url", "origin"]).await
+    } else {
+        None
+    };
+    let branch = if git {
+        git_out(&p, &["symbolic-ref", "--short", "-q", "HEAD"]).await
+    } else {
+        None
+    };
+    Ok(Folder {
+        root: p.display().to_string(),
+        git,
+        origin,
+        branch,
+    })
 }
-
-const FOLDER_SCRIPT: &str = r#"cd "$1" 2>/dev/null || { echo NODIR; exit 0; }; echo "ROOT=$(pwd -P)"; if [ -e .git ]; then echo GIT=1; echo "ORIGIN=$(git remote get-url origin 2>/dev/null)"; echo "BRANCH=$(git symbolic-ref --short -q HEAD 2>/dev/null)"; else echo GIT=0; fi"#;
 
 /// The URL of a remote of a clone, if it has one.
-async fn remote_url(
-    cfg: &AppConfig,
-    place: Option<&MachineRef>,
-    root: &str,
-    remote: &str,
-) -> Option<String> {
-    match place {
-        None => git_out(Path::new(root), &["remote", "get-url", remote]).await,
-        Some(_) => {
-            let o = exec(
-                cfg,
-                place,
-                "git",
-                &own(&["-C", root, "remote", "get-url", remote]),
-                None,
-                LOCAL_WAIT,
-            )
-            .await
-            .ok()?;
-            o.ok()
-                .then(|| o.stdout.trim().to_string())
-                .and_then(|s| nonempty(&s))
-        }
-    }
+async fn remote_url(root: &str, remote: &str) -> Option<String> {
+    git_out(Path::new(root), &["remote", "get-url", remote]).await
 }
 
-/// The real path of a folder the clone made (on another machine: `pwd -P` over ssh).
-async fn resolve_root(
-    cfg: &AppConfig,
-    place: Option<&MachineRef>,
-    target: &str,
-) -> Result<String, String> {
-    match place {
-        None => expand_home(target)
-            .canonicalize()
-            .map(|p| p.display().to_string())
-            .map_err(|e| format!("{target}: {e}")),
-        Some(_) => {
-            let o = exec(
-                cfg,
-                place,
-                "sh",
-                &own(&["-c", "cd \"$1\" && pwd -P", "_", target]),
-                None,
-                LOCAL_WAIT,
-            )
-            .await?;
-            match o.ok().then(|| {
-                o.stdout
-                    .lines()
-                    .last()
-                    .map(str::trim)
-                    .unwrap_or("")
-                    .to_string()
-            }) {
-                Some(p) if !p.is_empty() => Ok(p),
-                _ => Err(format!("{target}: папка не найдена после клонирования")),
-            }
-        }
-    }
+/// The real path of a folder the clone made.
+fn resolve_root(target: &str) -> Result<String, String> {
+    expand_home(target)
+        .canonicalize()
+        .map(|p| p.display().to_string())
+        .map_err(|e| format!("{target}: {e}"))
 }
 
 /// A fork made on the host: where it lives and the URL to clone it from.
@@ -1794,8 +1550,6 @@ struct ForkInfo {
 
 /// Makes the fork of `addr` on its host (no clone). The fork is named `fork_name` (default: the same name).
 async fn create_fork(
-    cfg: &AppConfig,
-    place: Option<&MachineRef>,
     addr: &RepoAddr,
     fork_name: Option<&str>,
     cwd: &str,
@@ -1811,16 +1565,14 @@ async fn create_fork(
             if renamed {
                 args.extend(own(&["--fork-name", name.as_str()]));
             }
-            let o = exec(cfg, place, gh, &args, Some(cwd), PR_WAIT).await?;
+            let o = run(gh, &args, Some(Path::new(cwd)), PR_WAIT).await?;
             if !o.ok() {
                 return Err(format!("gh repo fork: {}", o.text()));
             }
-            let me = exec(
-                cfg,
-                place,
+            let me = run(
                 gh,
                 &own(&["api", "user", "--jq", ".login"]),
-                Some(cwd),
+                Some(Path::new(cwd)),
                 INFO_WAIT,
             )
             .await?;
@@ -1841,16 +1593,14 @@ async fn create_fork(
             if renamed {
                 args.extend(own(&["--name", name.as_str(), "--path", name.as_str()]));
             }
-            let o = exec(cfg, place, glab, &args, Some(cwd), PR_WAIT).await?;
+            let o = run(glab, &args, Some(Path::new(cwd)), PR_WAIT).await?;
             if !o.ok() {
                 return Err(format!("glab repo fork: {}", o.text()));
             }
-            let me = exec(
-                cfg,
-                place,
+            let me = run(
                 glab,
                 &own(&["api", "user", "--hostname", host]),
-                Some(cwd),
+                Some(Path::new(cwd)),
                 INFO_WAIT,
             )
             .await?;
@@ -1864,12 +1614,10 @@ async fn create_fork(
                 .ok_or_else(|| format!("glab api user: {}", me.text()))?;
             let fork_path = format!("{user}/{name}");
             let api = format!("projects/{}", encode_path(&fork_path));
-            let f = exec(
-                cfg,
-                place,
+            let f = run(
                 glab,
                 &own(&["api", api.as_str(), "--hostname", host]),
-                Some(cwd),
+                Some(Path::new(cwd)),
                 INFO_WAIT,
             )
             .await?;
@@ -1890,8 +1638,8 @@ async fn create_fork(
 }
 
 /// `git` with a check: an error text when the command fails.
-async fn git_ok(cfg: &AppConfig, place: Option<&MachineRef>, args: &[&str]) -> Result<(), String> {
-    let o = exec(cfg, place, "git", &own(args), None, LOCAL_WAIT).await?;
+async fn git_ok(args: &[&str]) -> Result<(), String> {
+    let o = run("git", &own(args), None, LOCAL_WAIT).await?;
     if o.ok() {
         Ok(())
     } else {
@@ -2007,15 +1755,11 @@ pub(crate) async fn open_pr_with(
 
 /// "Превратить в форк": makes a fork of this clone's origin on its host, then origin = the fork and
 /// upstream = the original (the clone's old origin).
-pub async fn make_fork(cfg: &AppConfig, root: &str) -> Result<String, String> {
-    make_fork_with(cfg, root, &Tools::from_env()).await
+pub async fn make_fork(root: &str) -> Result<String, String> {
+    make_fork_with(root, &Tools::from_env()).await
 }
 
-pub(crate) async fn make_fork_with(
-    cfg: &AppConfig,
-    root: &str,
-    tools: &Tools,
-) -> Result<String, String> {
+pub(crate) async fn make_fork_with(root: &str, tools: &Tools) -> Result<String, String> {
     let dir = checked_root(root)?;
     let dir_s = dir.display().to_string();
     let origin = git_out(&dir, &["remote", "get-url", "origin"])
@@ -2031,33 +1775,9 @@ pub(crate) async fn make_fork_with(
     if !forkable(&addr.kind) {
         return Err("форк делаю только для GitHub и GitLab".into());
     }
-    let fork = create_fork(cfg, None, &addr, None, &dir_s, &tools.gh, &tools.glab).await?;
-    git_ok(
-        cfg,
-        None,
-        &[
-            "-C",
-            dir_s.as_str(),
-            "remote",
-            "rename",
-            "origin",
-            "upstream",
-        ],
-    )
-    .await?;
-    git_ok(
-        cfg,
-        None,
-        &[
-            "-C",
-            dir_s.as_str(),
-            "remote",
-            "add",
-            "origin",
-            fork.fork_url.as_str(),
-        ],
-    )
-    .await?;
+    let fork = create_fork(&addr, None, &dir_s, &tools.gh, &tools.glab).await?;
+    git_ok(&["-C", dir_s.as_str(), "remote", "rename", "origin", "upstream"]).await?;
+    git_ok(&["-C", dir_s.as_str(), "remote", "add", "origin", fork.fork_url.as_str()]).await?;
     Ok(format!(
         "origin → {} (ваш форк), upstream → {} (оригинал)",
         fork.fork_url, origin
@@ -2211,55 +1931,6 @@ async fn run(
     }
 }
 
-/// A command on this machine, or on another one over the board's ssh form (its login shell runs the
-/// command; `cwd` is entered first). `prog` is the name to run there.
-async fn exec(
-    cfg: &AppConfig,
-    place: Option<&MachineRef>,
-    prog: &str,
-    args: &[String],
-    cwd: Option<&str>,
-    wait: Duration,
-) -> Result<Out, String> {
-    match place {
-        None => run(prog, args, cwd.map(Path::new), wait).await,
-        Some(m) => {
-            let mut line = String::new();
-            if let Some(c) = cwd {
-                line.push_str(&format!("cd {} && ", word(c)));
-            }
-            let words: Vec<String> = std::iter::once(prog.to_string())
-                .chain(args.iter().cloned())
-                .map(|w| word(&w))
-                .collect();
-            line.push_str(&words.join(" "));
-            let e = machines::ssh_ended(cfg, m, &line, wait).await?;
-            if e.timed_out {
-                return Err(format!("{}: нет ответа за {} с", m.label, wait.as_secs()));
-            }
-            if !e.error.is_empty() {
-                return Err(e.error);
-            }
-            Ok(Out {
-                code: e.code,
-                stdout: e.stdout,
-                stderr: e.stderr,
-            })
-        }
-    }
-}
-
-/// One argument for the far shell: `~/x` becomes `"$HOME"/x`, everything else is quoted.
-fn word(a: &str) -> String {
-    if a == "~" {
-        "\"$HOME\"".to_string()
-    } else if let Some(rest) = a.strip_prefix("~/") {
-        format!("\"$HOME\"/{}", sh_quote(rest))
-    } else {
-        sh_quote(a)
-    }
-}
-
 /// `git -C dir ARGS` (the dir is the first arg); the caller passes `-C` itself.
 async fn git_out(dir: &Path, args: &[&str]) -> Option<String> {
     if !dir.exists() {
@@ -2317,7 +1988,7 @@ fn word_after(text: &str, key: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::machines::test_cfg;
+    use crate::testutil::test_cfg;
     use std::process::Command as StdCmd;
 
     /// A folder under the system temp dir, removed when the test ends.
@@ -2823,7 +2494,7 @@ exit 1
                 .collect();
             seen.lock().unwrap().push(line.join(" "));
         };
-        let got = add_at(&cfg, None, &req, &progress, &t).await.unwrap();
+        let got = add_at(&cfg, &req, &progress, &t).await.unwrap();
         assert_eq!(got.key, "GIG");
         assert_eq!(got.root, repo.canonicalize().unwrap().display().to_string());
         assert_eq!(
@@ -2862,7 +2533,7 @@ exit 1
         fs::create_dir_all(&plain).unwrap();
         let mut req = request(Mode::Folder, "plain");
         req.path = Some(plain.display().to_string());
-        let err = add_at(&cfg, None, &req, &no_progress, &nothing_installed())
+        let err = add_at(&cfg, &req, &no_progress, &nothing_installed())
             .await
             .unwrap_err();
         assert!(err.contains("не git-репозиторий"), "{err}");
@@ -2872,7 +2543,7 @@ exit 1
         repo_with_commit(&repo);
         let mut req = request(Mode::Folder, "other-name");
         req.path = Some(repo.display().to_string());
-        let err = add_at(&cfg, None, &req, &no_progress, &nothing_installed())
+        let err = add_at(&cfg, &req, &no_progress, &nothing_installed())
             .await
             .unwrap_err();
         assert!(err.contains("по имени папки"), "{err}");
@@ -2888,7 +2559,7 @@ exit 1
         let mut req = request(Mode::Study, "lib");
         req.url = Some(bare.display().to_string());
         req.dir = Some(s.path().join("Projects").display().to_string());
-        let got = add_at(&cfg, None, &req, &no_progress, &nothing_installed())
+        let got = add_at(&cfg, &req, &no_progress, &nothing_installed())
             .await
             .unwrap();
         assert_eq!(got.settings, vec!["research.only true".to_string()]);
@@ -2914,7 +2585,7 @@ exit 1
         let mut req = request(Mode::Clone, "lib");
         req.url = Some(bare.display().to_string());
         req.dir = Some(s.path().join("Projects").display().to_string());
-        let err = add_at(&cfg, None, &req, &no_progress, &nothing_installed())
+        let err = add_at(&cfg, &req, &no_progress, &nothing_installed())
             .await
             .unwrap_err();
         assert!(err.contains("не перезаписываю"), "{err}");
@@ -2948,7 +2619,7 @@ exit 1
         let mut req = request(Mode::Fork, "proj");
         req.url = Some("git@gitlab.example.com:group/proj.git".into());
         req.dir = Some(s.path().join("Projects").display().to_string());
-        let got = add_at(&cfg, None, &req, &no_progress, &t).await.unwrap();
+        let got = add_at(&cfg, &req, &no_progress, &t).await.unwrap();
         assert_eq!(got.fork_of.as_deref(), Some("group/proj"));
         assert_eq!(
             got.origin.as_deref(),
@@ -2974,7 +2645,7 @@ exit 1
         let cfg = cfg_for(s.path(), fake_board(s.path(), &s.path().join("data")));
         let mut req = request(Mode::Fork, "x");
         req.url = Some("https://git.example.org/team/x.git".into());
-        let err = add_at(&cfg, None, &req, &no_progress, &nothing_installed())
+        let err = add_at(&cfg, &req, &no_progress, &nothing_installed())
             .await
             .unwrap_err();
         assert!(err.contains("форк делаю для GitHub и GitLab"), "{err}");
@@ -2990,7 +2661,7 @@ exit 1
         req.url = Some(bare.display().to_string());
         req.dir = Some(s.path().join("Projects").display().to_string());
         req.key = Some("PLX".into());
-        let got = add_at(&cfg, None, &req, &no_progress, &nothing_installed())
+        let got = add_at(&cfg, &req, &no_progress, &nothing_installed())
             .await
             .unwrap();
         assert_eq!(got.key, "PLX");
@@ -3009,70 +2680,10 @@ exit 1
         for bad in ["a/b", "..", ".hidden", "", "-x"] {
             let mut req = request(Mode::Clone, bad);
             req.url = Some("https://github.com/o/r".into());
-            assert!(add_at(&cfg, None, &req, &no_progress, &nothing_installed())
+            assert!(add_at(&cfg, &req, &no_progress, &nothing_installed())
                 .await
                 .is_err());
         }
-    }
-
-    #[tokio::test]
-    async fn add_on_another_machine_runs_the_same_steps_over_ssh() {
-        let s = Scratch::new("add-remote");
-        let far = s.path().join("far");
-        let far_bin = far.join("bin");
-        let far_data = far.join("data");
-        fs::create_dir_all(&far_bin).unwrap();
-        let far_board = fake_board(&far_bin, &far_data);
-        let ssh = script(
-            s.path(),
-            "ssh",
-            &format!(
-                "last=\"\"; for a; do last=$a; done\nSHELL=/bin/sh HOME='{}' PATH='{}':\"$PATH\" sh -c \"$last\"\n",
-                far.display(),
-                far_bin.display()
-            ),
-        );
-        let mut cfg = cfg_for(s.path(), far_board.clone());
-        cfg.ssh_bin = ssh;
-        let bare = bare_remote(s.path());
-        let m = MachineRef {
-            label: "vm-a".into(),
-            target: "vm-a.lan".into(),
-            session: String::new(),
-        };
-        let mut req = request(Mode::Clone, "lib");
-        req.url = Some(bare.display().to_string());
-        req.dir = Some(far.join("Projects").display().to_string());
-        let got = add_at(&cfg, Some(&m), &req, &no_progress, &nothing_installed())
-            .await
-            .unwrap();
-        assert_eq!(got.key, "LIB");
-        assert!(far.join("Projects/lib/.git").exists());
-        assert_eq!(
-            got.root,
-            far.join("Projects/lib")
-                .canonicalize()
-                .unwrap()
-                .display()
-                .to_string()
-        );
-        let far_log = fs::read_to_string(far_bin.join("board.log")).unwrap();
-        assert!(
-            far_log.contains("add Знакомство с проектом lib --repo"),
-            "{far_log}"
-        );
-        assert!(far_log.contains("archive LIB-1"), "{far_log}");
-
-        let listed = complete_remote_at(&cfg, &m, &format!("{}/Pro", far.display()), 10)
-            .await
-            .unwrap();
-        assert_eq!(listed.len(), 1);
-        assert_eq!(listed[0].name, "Projects");
-        let inside = complete_remote_at(&cfg, &m, &format!("{}/Projects/", far.display()), 10)
-            .await
-            .unwrap();
-        assert_eq!(inside.len(), 1);
-        assert!(inside[0].git, "lib has a .git");
     }
 
     // -- forks after the add -----------------------------------------------------
@@ -3171,9 +2782,8 @@ exit 1
                 bare.display()
             ),
         );
-        let cfg = cfg_for(s.path(), fake_board(s.path(), &s.path().join("data")));
         let t = tools_with("/nonexistent/gh".into(), glab);
-        let msg = make_fork_with(&cfg, &repo.display().to_string(), &t)
+        let msg = make_fork_with(&repo.display().to_string(), &t)
             .await
             .unwrap();
         assert!(msg.contains("ваш форк"), "{msg}");
@@ -3234,5 +2844,12 @@ exit 1
         assert_eq!(setting_text(&v, "repo.key").as_deref(), Some("PLX"));
         assert_eq!(setting_text(&v, "research.only").as_deref(), Some("true"));
         assert_eq!(setting_text(&v, "merge.pr"), None);
+    }
+    #[test]
+    fn the_boards_json_is_found_after_what_a_shell_printed() {
+        let out = "Welcome\n{\"motd\": 1}\n{\"ok\": true, \"settings\": []}\n";
+        assert_eq!(last_json(out).unwrap()["ok"], true, "the board's own object wins");
+        assert_eq!(last_json("{\"a\": 2}").unwrap()["a"], 2);
+        assert!(last_json("no json").is_none());
     }
 }

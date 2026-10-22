@@ -1,38 +1,36 @@
 import type { JSX } from 'preact';
 import { useEffect, useRef } from 'preact/hooks';
-import { attention, currentView, galaxyId, hover, level, mode, panels, selected, snap, universe, taskOf, linkStatus } from '../store';
+import { attention, level, mode, panels, selected, snap, universe, taskOf } from '../store';
 import { Search } from './Search';
-import { goHome, goOverview, navigateTo } from '../nav';
+import { goHome, navigateTo } from '../nav';
 import { fromQueue } from '../nav';
 import { setMode } from '../keys';
 import { t } from '../i18n';
-import { Gl } from './Gl';
 import { LimitsChip } from './Limits';
 import { Menu } from './Menu';
-import { StationChip } from './Arrival';
+import { StationChip } from './StationChip';
 import './top.css';
 
 function Crumbs(): JSX.Element {
   const sel = selected.value;
   const host = snap.value?.host ?? '';
-  const here = galaxyId.value === '' ? host : galaxyId.value;
   const items: { label: string; go: () => void; last?: boolean }[] = [];
-  items.push({ label: here, go: () => { void (galaxyId.value === '' ? goHome() : goOverview()); } });
+  items.push({ label: host, go: () => { void goHome(); } });
   let uni = universe.value;
-  if (sel?.kind === 'planet') uni = taskOf(sel.id, sel.galaxy)?.repo ?? uni;
-  if (sel?.kind === 'moon') { const task = sel.id.split('#')[0]; uni = task === 'quasar' ? null : taskOf(task, sel.galaxy)?.repo ?? uni; }
+  if (sel?.kind === 'planet') uni = taskOf(sel.id)?.repo ?? uni;
+  if (sel?.kind === 'moon') { const task = sel.id.split('#')[0]; uni = task === 'quasar' ? null : taskOf(task)?.repo ?? uni; }
   if (sel?.kind === 'quasar') items.push({ label: t('quasar.label'), go: () => { void navigateTo(sel); } });
   else if (uni && (level.value === 'nebula' || sel?.kind === 'universe' || sel?.kind === 'planet' || sel?.kind === 'moon')) {
-    items.push({ label: uni, go: () => { void navigateTo({ kind: 'universe', galaxy: galaxyId.value, id: uni as string }); } });
+    items.push({ label: uni, go: () => { void navigateTo({ kind: 'universe', id: uni as string }); } });
   }
   if (sel?.kind === 'planet') {
-    const tk = taskOf(sel.id, sel.galaxy);
+    const tk = taskOf(sel.id);
     items.push({ label: tk?.tag ?? sel.id, go: () => {} });
   }
   if (sel?.kind === 'moon') {
     const [tid, sid] = sel.id.split('#');
-    const tk = tid === 'quasar' ? null : taskOf(tid, sel.galaxy);
-    if (tk) items.push({ label: tk.tag, go: () => { void navigateTo({ kind: 'planet', galaxy: sel.galaxy, id: tk.id }); } });
+    const tk = tid === 'quasar' ? null : taskOf(tid);
+    if (tk) items.push({ label: tk.tag, go: () => { void navigateTo({ kind: 'planet', id: tk.id }); } });
     const sa = (tk ? tk.subagents : snap.value?.coordinator.subagents ?? []).find((x) => x.id === sid);
     items.push({ label: sa?.role ?? sid, go: () => {} });
   }
@@ -75,7 +73,6 @@ export function Top(): JSX.Element {
   useRightWidth(topRef, rightRef);
   const waits = attention.value;
   const m = mode.value;
-  void currentView; void hover; void linkStatus;
   return (
     <div class="top" id="top" ref={topRef}>
       <Crumbs />
@@ -96,5 +93,3 @@ export function Top(): JSX.Element {
     </div>
   );
 }
-
-void Gl;

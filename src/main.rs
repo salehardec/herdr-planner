@@ -12,11 +12,8 @@ mod config;
 mod coordinator;
 mod db;
 mod events;
-mod farfiles;
-mod galaxy_setup;
 mod gitlag;
 mod history;
-mod machines;
 mod memory;
 mod memory_api;
 mod memory_guard;
@@ -258,7 +255,7 @@ async fn main() {
 }
 
 /// The background work: the board re-read when files change (and once a minute as a safety net), the
-/// other machines, the clones' lag, the search index and the model lists.
+/// clones' lag, the search index and the model lists.
 fn spawn_loops(app: Shared) {
     let a = app.clone();
     tokio::spawn(async move {
@@ -281,35 +278,9 @@ fn spawn_loops(app: Shared) {
     });
     let a = app.clone();
     tokio::spawn(async move {
-        loop {
-            let prev = a.galaxies.lock().await.clone();
-            let next = machines::poll(&a.cfg, &prev, false).await;
-            for g in &next {
-                if let Ok(json) = serde_json::to_string(g) {
-                    a.db.galaxy_put(&g.label, &json, g.ok, g.why.as_ref().map(|w| w.line.as_str()).unwrap_or(""));
-                }
-            }
-            *a.galaxies.lock().await = next;
-            app::rebuild_extras(&a).await;
-            app::publish(&a).await;
-            app::index_snapshot(&a).await;
-            tokio::time::sleep(Duration::from_secs(30)).await;
-        }
-    });
-    let a = app.clone();
-    tokio::spawn(async move {
         tokio::time::sleep(Duration::from_secs(2)).await;
         loop {
             app::update_lag(&a).await;
-            tokio::time::sleep(Duration::from_secs(300)).await;
-        }
-    });
-    // The far galaxies' memory, for the search: read over ssh now and then (the panel reads fresh).
-    let a = app.clone();
-    tokio::spawn(async move {
-        tokio::time::sleep(Duration::from_secs(8)).await;
-        loop {
-            memory_api::refresh_all_far(&a).await;
             tokio::time::sleep(Duration::from_secs(300)).await;
         }
     });

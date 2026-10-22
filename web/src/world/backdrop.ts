@@ -1,10 +1,9 @@
-/* Stars, the faint disc of the Galaxy with its spiral arms, distant galaxies
-   (the other machines of the board) and the bridges between same projects. */
+/* Stars and the faint disc of the Galaxy with its spiral arms. */
 import {
-  AdditiveBlending, BufferAttribute, BufferGeometry, CanvasTexture, Color, DoubleSide, Group, Line, LineDashedMaterial,
-  Mesh, MeshBasicMaterial, NormalBlending, PlaneGeometry, Points, PointsMaterial, Sprite, SpriteMaterial, Vector3,
+  AdditiveBlending, BufferAttribute, BufferGeometry, CanvasTexture, DoubleSide, Group,
+  Mesh, MeshBasicMaterial, NormalBlending, PlaneGeometry, Points, PointsMaterial,
 } from 'three';
-import { R_FAR, R_MIN } from './layout';
+import { R_MIN } from './layout';
 import type { Palette } from './palette';
 import { hash } from '../util/format';
 
@@ -91,98 +90,5 @@ export class Backdrop {
     this.group.add(this.disc);
     this.stars = makeStars(simple, pal);
     this.group.add(this.stars);
-  }
-}
-
-function spiralTexture(color: Color, ok: boolean): CanvasTexture {
-  const c = document.createElement('canvas');
-  c.width = c.height = 256;
-  const g = c.getContext('2d');
-  if (g) {
-    g.translate(128, 128);
-    const css = `${Math.round(color.r * 255)},${Math.round(color.g * 255)},${Math.round(color.b * 255)}`;
-    const core = g.createRadialGradient(0, 0, 0, 0, 0, 70);
-    core.addColorStop(0, `rgba(255,255,255,${ok ? 0.9 : 0.35})`);
-    core.addColorStop(0.3, `rgba(${css},${ok ? 0.5 : 0.2})`);
-    core.addColorStop(1, `rgba(${css},0)`);
-    g.fillStyle = core;
-    g.fillRect(-128, -128, 256, 256);
-    for (let arm = 0; arm < 2; arm++) {
-      g.beginPath();
-      for (let r = 6; r <= 118; r += 3) {
-        const th = arm * Math.PI + r * 0.055;
-        const x = Math.cos(th) * r * 1.0, y = Math.sin(th) * r * 0.55;
-        if (r === 6) g.moveTo(x, y); else g.lineTo(x, y);
-      }
-      g.strokeStyle = `rgba(${css},${ok ? 0.55 : 0.2})`;
-      g.lineWidth = 9;
-      g.lineCap = 'round';
-      g.stroke();
-    }
-  }
-  return new CanvasTexture(c);
-}
-
-export interface FarSprite {
-  label: string;
-  pos: Vector3;
-  ok: boolean;
-  sprite: Sprite;
-}
-
-export class FarGalaxies {
-  readonly group = new Group();
-  readonly sprites = new Map<string, FarSprite>();
-  private bridges: { line: Line; a: string; b: string; label: string; mid: Vector3 }[] = [];
-
-  /** `labels` are the other galaxies (not the one the scene shows). */
-  build(entries: { label: string; ok: boolean }[], pal: Palette, radius = R_FAR): void {
-    for (const s of this.sprites.values()) { s.sprite.material.map?.dispose(); s.sprite.material.dispose(); this.group.remove(s.sprite); }
-    this.sprites.clear();
-    entries.forEach((e, i) => {
-      const a = (hash(e.label) % 360) / 360 * Math.PI * 2 + i * 0.35;
-      const pos = new Vector3(Math.cos(a) * radius, ((hash(e.label + 'y') % 40) - 20) * 3, Math.sin(a) * radius);
-      const col = e.ok ? pal.accent.clone().lerp(pal.status.working, 0.5) : pal.muted.clone();
-      const sprite = new Sprite(new SpriteMaterial({
-        map: spiralTexture(col, e.ok), transparent: true, depthWrite: false,
-        blending: pal.mode === 'light' ? NormalBlending : AdditiveBlending, opacity: e.ok ? 1 : 0.6,
-      }));
-      sprite.scale.setScalar(260);
-      sprite.position.copy(pos);
-      sprite.renderOrder = 1;
-      this.group.add(sprite);
-      this.sprites.set(e.label, { label: e.label, pos, ok: e.ok, sprite });
-    });
-  }
-
-  /** Arcs from a nebula to the far galaxy that has the same project. */
-  buildBridges(items: { a: Vector3; galaxy: string; label: string }[], pal: Palette): void {
-    for (const b of this.bridges) { this.group.remove(b.line); b.line.geometry.dispose(); (b.line.material as LineDashedMaterial).dispose(); }
-    this.bridges = [];
-    for (const it of items) {
-      const far = this.sprites.get(it.galaxy);
-      if (!far) continue;
-      const mid = it.a.clone().add(far.pos).multiplyScalar(0.5);
-      mid.y += 120;
-      const pts: Vector3[] = [];
-      for (let i = 0; i <= 40; i++) {
-        const t = i / 40;
-        pts.push(new Vector3(
-          (1 - t) * (1 - t) * it.a.x + 2 * (1 - t) * t * mid.x + t * t * far.pos.x,
-          (1 - t) * (1 - t) * it.a.y + 2 * (1 - t) * t * mid.y + t * t * far.pos.y,
-          (1 - t) * (1 - t) * it.a.z + 2 * (1 - t) * t * mid.z + t * t * far.pos.z,
-        ));
-      }
-      const geo = new BufferGeometry().setFromPoints(pts);
-      const line = new Line(geo, new LineDashedMaterial({ color: pal.accent, transparent: true, opacity: 0.45, dashSize: 6, gapSize: 6 }));
-      line.computeLineDistances();
-      line.frustumCulled = false;
-      this.group.add(line);
-      this.bridges.push({ line, a: it.label, b: it.galaxy, label: it.label, mid: pts[20].clone() });
-    }
-  }
-
-  get bridgeLabels(): { label: string; pos: Vector3 }[] {
-    return this.bridges.map((b) => ({ label: b.label, pos: b.mid }));
   }
 }

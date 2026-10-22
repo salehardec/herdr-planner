@@ -1,7 +1,7 @@
 import { signal } from '@preact/signals';
 import type { JSX } from 'preact';
 import { useEffect, useLayoutEffect, useRef, useState } from 'preact/hooks';
-import { currentView, galaxyId, panels, snap } from '../store';
+import { currentView, panels, snap } from '../store';
 import { todoAdd, todoDropOn, todoRemove, todoReorder, todoAssign, todoSend, todoToTask, todoUpdate } from '../actions';
 import { api } from '../api';
 import { t } from '../i18n';
@@ -297,11 +297,11 @@ export function installTodoDnD(canvas: HTMLElement): void {
     endDrag();
     if (!target) return;
     void todoDropOn(id, target).then((r) => {
-      if (r === 'asked') { openNewTask(id, target.id, target.galaxy); void loadModels('claude'); }
-      else if (r === 'tell') openTell(id, target.id, target.galaxy);
+      if (r === 'asked') { openNewTask(id, target.id); void loadModels('claude'); }
+      else if (r === 'tell') openTell(id, target.id);
     });
   });
 }
 
 export { models as modelList };
-void galaxyId; void todoToTask;
+void todoToTask;

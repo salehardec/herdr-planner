@@ -1,8 +1,6 @@
-//! The memory panel's endpoints, the Coordinator's instructions, the far machines' memory and the suggestions made
-//! when a task is done. The files and their format are in `memory`.
+//! The memory panel's endpoints, the Coordinator's instructions and the suggestions made when a task is done. The
+//! files and their format are in `memory`.
 //!
-//! * A far galaxy's memory is read and written over the board's ssh (a login shell, plain POSIX `sh` scripts); its
-//!   universes' memory is only read — it lives in git, and a far checkout is not the planner's to change.
 //! * The Coordinator is told about the memory through the board's own setting `coordinator.instructions`: the planner
 //!   shows the human the instructions they have and the same with a memory block added at the end (their text kept),
 //!   and on their confirmation the board's `set` makes the change (the Station's endpoints). The planner writes no
@@ -12,101 +10,22 @@
 use crate::app::{self, Shared};
 use crate::board::Task;
 use crate::config::now_ms;
-use crate::machines::{self, MachineRef};
 use crate::memory::{self, Entry, Line};
 use crate::memory_guard::{self, Finding};
-use crate::server::{clip, error, same_origin};
-use crate::station::{self, galaxy_of, place_of, Fail, Place};
+use crate::server::{error, same_origin};
+use crate::station::{self, Fail};
 use crate::{taskmeta, translate};
 use axum::extract::{Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::Json;
-use base64::Engine;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
-const FAR_WAIT: Duration = Duration::from_secs(25);
-/// The Galaxy memory on a far machine (the same place as at home, under that machine's home folder).
-pub const FAR_GALAXY_DIR: &str = "~/.herdr-projects/memory/galaxy";
 const SUGGEST_KEY: &str = "memory.suggest";
-
-/// The memory of the far galaxies as the planner last read it (for the search; the panel reads fresh).
-#[derive(Debug, Clone, Default)]
-pub struct FarMemory {
-    pub galaxy: Vec<Entry>,
-    pub universes: HashMap<String, Vec<Entry>>,
-}
-
-/* ───────── scripts for a far machine ───────── */
-
-/// A path for the far shell: `~/x` is under that machine's `$HOME`.
-pub fn sh_path(p: &str) -> String {
-    match p.strip_prefix("~/") {
-        Some(rest) => format!("\"$HOME\"{}", machines::sh_quote(&format!("/{rest}"))),
-        None => machines::sh_quote(p),
-    }
-}
-
-/// One line of `sh` that prints the `*.md` files of the folders: `\036DIR <n>` then, per file, `\037FILE <name>` and
-/// its first 64 KB.
-pub fn read_script(dirs: &[String]) -> String {
-    let list: Vec<String> = dirs.iter().map(|d| sh_path(d)).collect();
-    format!(
-        r#"HP_MEMORY=1; i=0; for d in {}; do i=$((i+1)); printf '\036DIR %s\n' "$i"; [ -d "$d" ] || continue; for f in "$d"/*.md; do [ -f "$f" ] || continue; printf '\037FILE %s\n' "${{f##*/}}"; head -c 65536 "$f"; printf '\n'; done; done"#,
-        list.join(" ")
-    )
-}
-
-/// `read_script`'s output: for each folder (in the order asked) its entries.
-pub fn parse_read(stdout: &str, n: usize) -> Vec<Vec<Entry>> {
-    let mut out = vec![Vec::new(); n];
-    for chunk in stdout.split('\u{1e}').skip(1) {
-        let (head, rest) = chunk.split_once('\n').unwrap_or((chunk, ""));
-        let Some(idx) = head
-            .strip_prefix("DIR ")
-            .and_then(|i| i.trim().parse::<usize>().ok())
-            .filter(|i| (1..=n).contains(i))
-        else {
-            continue;
-        };
-        for file in rest.split('\u{1f}').skip(1) {
-            let (h, content) = file.split_once('\n').unwrap_or((file, ""));
-            let Some(name) = h.strip_prefix("FILE ").map(str::trim) else { continue };
-            let Some(stem) = name.strip_suffix(".md") else { continue };
-            if name.eq_ignore_ascii_case(memory::INDEX) || name.eq_ignore_ascii_case("README.md") || stem.is_empty() {
-                continue;
-            }
-            let content = content.strip_suffix('\n').unwrap_or(content);
-            out[idx - 1].push(memory::parse_entry(stem, content));
-        }
-        out[idx - 1].sort_by(|a, b| a.id.cmp(&b.id));
-    }
-    out
-}
-
-/// One line of `sh` that writes files into a folder (each by a temporary name, then moved) and removes others.
-pub fn write_script(dir: &str, writes: &[(String, String)], removes: &[String]) -> String {
-    let mut s = format!(
-        "HP_MEMORY=1; b() {{ base64 -d 2>/dev/null || base64 -D; }}; d={}; mkdir -p \"$d\"",
-        sh_path(dir)
-    );
-    for (name, text) in writes {
-        let b64 = base64::engine::general_purpose::STANDARD.encode(text.as_bytes());
-        let n = machines::sh_quote(name);
-        let tmp = machines::sh_quote(&format!("{name}.new"));
-        s.push_str(&format!(
-            " && printf %s '{b64}' | b > \"$d\"/{tmp} && mv \"$d\"/{tmp} \"$d\"/{n}"
-        ));
-    }
-    for name in removes {
-        s.push_str(&format!(" && rm -f \"$d\"/{}", machines::sh_quote(name)));
-    }
-    s
-}
 
 /// Whether the model proposes memory lines when a task is done (on until the human switches it off).
 pub fn suggest_enabled(app: &Shared) -> bool {
@@ -116,12 +35,12 @@ pub fn suggest_enabled(app: &Shared) -> bool {
 /// The board's setting that carries the human's own instructions for its Coordinator.
 pub const INSTRUCTIONS: &str = "coordinator.instructions";
 
-/// What the panel shows about the memory block in `coordinator.instructions` of a galaxy's board. Nothing is changed
+/// What the panel shows about the memory block in `coordinator.instructions` of this machine's board. Nothing is changed
 /// here: `memory_connect` previews the change and, on the human's confirmation, makes it with the board's own `set`.
 /// Files the board writes (its `AGENTS.md`, `rules.md`) are not touched.
-async fn connect_state(app: &Shared, place: &Place, galaxy_dir: &str) -> Value {
+async fn connect_state(app: &Shared, galaxy_dir: &str) -> Value {
     let block = memory::coordinator_block(galaxy_dir);
-    match station::read_settings(&app.cfg, place, "").await {
+    match station::read_settings(&app.cfg, "").await {
         Ok(settings) => {
             // «none» is what an unset setting says
             let current = station::find(&settings, INSTRUCTIONS)
@@ -168,62 +87,10 @@ pub async fn reindex_stores(app: &Shared) {
     .await;
 }
 
-/* ───────── ssh ───────── */
-
-async fn ssh_run(app: &Shared, m: &MachineRef, script: &str) -> Result<String, Fail> {
-    let end = machines::ssh_ended(&app.cfg, m, script, FAR_WAIT)
-        .await
-        .map_err(|e| Fail::new(502, e))?;
-    if end.timed_out || !end.error.is_empty() || end.code == Some(255) {
-        return Err(Fail::unreachable(machines::why_not(&end, m)));
-    }
-    if end.code != Some(0) {
-        let words = if end.stderr.trim().is_empty() { end.stdout.trim() } else { end.stderr.trim() };
-        return Err(Fail::new(502, clip(format!("на машине {}: {words}", m.label))));
-    }
-    Ok(end.stdout)
-}
-
-async fn far_entries(app: &Shared, m: &MachineRef, dir: &str) -> Result<Vec<Entry>, Fail> {
-    let out = ssh_run(app, m, &read_script(&[dir.to_string()])).await?;
-    Ok(parse_read(&out, 1).remove(0))
-}
-
-/// Reads a far galaxy's memory (its Galaxy folder and every universe's `docs/memory`) for the search.
-pub async fn refresh_far(app: &Shared, label: &str) {
-    let Some(g) = galaxy_of(app, label).await else { return };
-    if !g.ok {
-        return;
-    }
-    let Ok(Place::Far(m)) = place_of(label).await else { return };
-    let mut dirs = vec![FAR_GALAXY_DIR.to_string()];
-    let names: Vec<&str> = g.projects.iter().filter(|p| !p.folder.is_empty()).map(|p| p.name.as_str()).collect();
-    for n in &names {
-        let folder = g.projects.iter().find(|p| p.name == *n).map(|p| p.folder.as_str()).unwrap_or("");
-        dirs.push(format!("{}/{}", folder.trim_end_matches('/'), memory::UNIVERSE_DIR));
-    }
-    let Ok(out) = ssh_run(app, &m, &read_script(&dirs)).await else { return };
-    let mut got = parse_read(&out, dirs.len());
-    let galaxy = got.remove(0);
-    let universes = names.iter().map(|n| n.to_string()).zip(got).collect();
-    app.far_memory.lock().await.insert(label.to_string(), FarMemory { galaxy, universes });
-}
-
-/// All the connected far galaxies, one after the other.
-pub async fn refresh_all_far(app: &Shared) {
-    let labels: Vec<String> = app.galaxies.lock().await.iter().filter(|g| g.ok).map(|g| g.label.clone()).collect();
-    for l in &labels {
-        refresh_far(app, l).await;
-    }
-    app.far_memory.lock().await.retain(|k, _| labels.contains(k));
-    app::index_snapshot(app).await;
-}
-
 /* ───────── the panel ───────── */
 
 #[derive(Deserialize)]
 pub struct GetQuery {
-    galaxy: Option<String>,
     repo: Option<String>,
 }
 
@@ -231,122 +98,85 @@ fn entry_json(e: &Entry) -> Value {
     serde_json::to_value(e).unwrap_or(Value::Null)
 }
 
-fn bad_scope(galaxy: &str, repo: &str) -> Option<Fail> {
-    if !repo.is_empty() && !taskmeta::valid_repo(repo) {
-        return Some(Fail::new(400, "bad universe name"));
-    }
-    if !galaxy.is_empty() && !machines::valid_label(galaxy) {
-        return Some(Fail::new(400, "bad machine label"));
-    }
-    None
+fn bad_scope(repo: &str) -> Option<Fail> {
+    (!repo.is_empty() && !taskmeta::valid_repo(repo)).then(|| Fail::new(400, "bad universe name"))
 }
 
 async fn panel_read(app: &Shared, q: GetQuery) -> Result<Value, Fail> {
-    let galaxy = q.galaxy.unwrap_or_default();
     let repo = q.repo.unwrap_or_default();
-    if let Some(f) = bad_scope(&galaxy, &repo) {
+    if let Some(f) = bad_scope(&repo) {
         return Err(f);
     }
-    let place = place_of(&galaxy).await?;
     let level = if repo.is_empty() { "galaxy" } else { "universe" };
-    match place {
-        Place::Home => {
-            let cfg = app.cfg.clone();
-            let repo2 = repo.clone();
-            let mut v = tokio::task::spawn_blocking(move || -> Result<Value, Fail> {
-                if repo2.is_empty() {
-                    let st = memory::galaxy_store(&cfg);
-                    let foreign: Vec<Value> = memory::foreign_sources(&cfg)
-                        .into_iter()
-                        .map(|f| {
-                            let entries: Vec<Value> = memory::read_dir_entries(&f.dir).iter().map(entry_json).collect();
-                            json!({"program": f.program, "label": f.label, "dir": f.dir.display().to_string(), "entries": entries})
-                        })
-                        .collect();
-                    Ok(json!({
-                        "dir": st.dir.display().to_string(),
-                        "exists": st.exists(),
-                        "writable": true,
-                        "entries": st.list().iter().map(entry_json).collect::<Vec<_>>(),
-                        "foreign": foreign,
-                    }))
-                } else {
-                    let root = memory::repo_root(&cfg, &repo2)
-                        .ok_or_else(|| Fail::new(404, "у этой вселенной нет папки на этой машине"))?;
-                    let st = memory::universe_store(&root, &repo2);
-                    let dirty = memory::git_dirty(&root);
-                    // In a git checkout the drafts are in front of the files (and not in the checkout).
-                    let drafts = dirty.is_some().then(|| memory::Drafts::new(&cfg, &repo2));
-                    let entries: Vec<Value> = match &drafts {
-                        Some(d) => memory::effective(&st, d)
-                            .iter()
-                            .map(|(e, mark)| {
-                                let mut j = entry_json(e);
-                                j["draft"] = json!(mark);
-                                j
-                            })
-                            .collect(),
-                        None => st.list().iter().map(entry_json).collect(),
-                    };
-                    let git = match &dirty {
-                        None => json!({"checkout": false, "dirty": [], "drafts": 0}),
-                        Some(d) => json!({
-                            "checkout": true,
-                            "dirty": d.iter().map(|(s, f)| json!({"state": s, "file": f})).collect::<Vec<_>>(),
-                            "drafts": drafts.as_ref().map(|d| d.puts().len() + d.dels().len()).unwrap_or(0),
-                        }),
-                    };
-                    Ok(json!({
-                        "dir": st.dir.display().to_string(),
-                        "exists": st.exists(),
-                        "writable": true,
-                        "entries": entries,
-                        "git": git,
-                    }))
-                }
-            })
-            .await
-            .map_err(|e| Fail::new(500, e.to_string()))??;
-            if repo.is_empty() {
-                v["connect"] = connect_state(app, &Place::Home, &memory::galaxy_dir(&app.cfg).display().to_string()).await;
-                v["settings"] = json!({"suggest": suggest_enabled(app)});
-            } else {
-                v["suggestions"] = json!(suggestions_for(app, &repo).await);
-            }
-            v["galaxy"] = json!(galaxy);
-            v["repo"] = json!(repo);
-            v["level"] = json!(level);
-            v["ok"] = json!(true);
-            Ok(v)
-        }
-        Place::Far(m) => {
-            let (dir, writable) = if repo.is_empty() {
-                (FAR_GALAXY_DIR.to_string(), true)
-            } else {
-                let g = galaxy_of(app, &galaxy).await.ok_or_else(|| Fail::new(404, "такой галактики нет"))?;
-                let p = g
-                    .projects
+    let cfg = app.cfg.clone();
+    let repo2 = repo.clone();
+    let mut v = tokio::task::spawn_blocking(move || -> Result<Value, Fail> {
+        if repo2.is_empty() {
+            let st = memory::galaxy_store(&cfg);
+            let foreign: Vec<Value> = memory::foreign_sources(&cfg)
+                .into_iter()
+                .map(|f| {
+                    let entries: Vec<Value> = memory::read_dir_entries(&f.dir).iter().map(entry_json).collect();
+                    json!({"program": f.program, "label": f.label, "dir": f.dir.display().to_string(), "entries": entries})
+                })
+                .collect();
+            Ok(json!({
+                "dir": st.dir.display().to_string(),
+                "exists": st.exists(),
+                "writable": true,
+                "entries": st.list().iter().map(entry_json).collect::<Vec<_>>(),
+                "foreign": foreign,
+            }))
+        } else {
+            let root = memory::repo_root(&cfg, &repo2)
+                .ok_or_else(|| Fail::new(404, "у этой вселенной нет папки на этой машине"))?;
+            let st = memory::universe_store(&root, &repo2);
+            let dirty = memory::git_dirty(&root);
+            // In a git checkout the drafts are in front of the files (and not in the checkout).
+            let drafts = dirty.is_some().then(|| memory::Drafts::new(&cfg, &repo2));
+            let entries: Vec<Value> = match &drafts {
+                Some(d) => memory::effective(&st, d)
                     .iter()
-                    .find(|p| p.name == repo && !p.folder.is_empty())
-                    .ok_or_else(|| Fail::new(404, "у этой вселенной нет папки на той машине"))?;
-                (format!("{}/{}", p.folder.trim_end_matches('/'), memory::UNIVERSE_DIR), false)
+                    .map(|(e, mark)| {
+                        let mut j = entry_json(e);
+                        j["draft"] = json!(mark);
+                        j
+                    })
+                    .collect(),
+                None => st.list().iter().map(entry_json).collect(),
             };
-            let entries = far_entries(app, &m, &dir).await?;
-            let mut v = json!({
-                "ok": true, "galaxy": galaxy, "repo": repo, "level": level,
-                "dir": dir, "exists": !entries.is_empty(), "writable": writable,
-                "entries": entries.iter().map(entry_json).collect::<Vec<_>>(),
-                "note": if writable { "" } else { "Память вселенной живёт в git: здесь она только читается, а меняется в своей галактике и приезжает через git." },
-            });
-            if repo.is_empty() {
-                v["connect"] = connect_state(app, &Place::Far(m.clone()), FAR_GALAXY_DIR).await;
-            }
-            Ok(v)
+            let git = match &dirty {
+                None => json!({"checkout": false, "dirty": [], "drafts": 0}),
+                Some(d) => json!({
+                    "checkout": true,
+                    "dirty": d.iter().map(|(s, f)| json!({"state": s, "file": f})).collect::<Vec<_>>(),
+                    "drafts": drafts.as_ref().map(|d| d.puts().len() + d.dels().len()).unwrap_or(0),
+                }),
+            };
+            Ok(json!({
+                "dir": st.dir.display().to_string(),
+                "exists": st.exists(),
+                "writable": true,
+                "entries": entries,
+                "git": git,
+            }))
         }
+    })
+    .await
+    .map_err(|e| Fail::new(500, e.to_string()))??;
+    if repo.is_empty() {
+        v["connect"] = connect_state(app, &memory::galaxy_dir(&app.cfg).display().to_string()).await;
+        v["settings"] = json!({"suggest": suggest_enabled(app)});
+    } else {
+        v["suggestions"] = json!(suggestions_for(app, &repo).await);
     }
+    v["repo"] = json!(repo);
+    v["level"] = json!(level);
+    v["ok"] = json!(true);
+    Ok(v)
 }
 
-/// `GET /api/memory?galaxy=&repo=`: the entries of a level, with the Coordinator's wiring (Galaxy) or git state and
+/// `GET /api/memory?repo=`: the entries of a level, with the Coordinator's wiring (Galaxy) or git state and
 /// suggestions (universe).
 pub async fn memory_get(State(app): State<Shared>, Query(q): Query<GetQuery>) -> Response {
     match panel_read(&app, q).await {
@@ -438,7 +268,6 @@ struct FindingOut {
 
 /// A change as the human will see it, before anything is written.
 struct Plan {
-    galaxy: String,
     repo: String,
     changes: Vec<Change>,
     findings: Vec<FindingOut>,
@@ -473,7 +302,7 @@ impl Plan {
     fn preview(&self) -> Value {
         let level = if self.repo.is_empty() { "galaxy" } else { "universe" };
         json!({
-            "ok": true, "preview": true, "token": self.token(), "level": level, "galaxy": self.galaxy, "repo": self.repo,
+            "ok": true, "preview": true, "token": self.token(), "level": level, "repo": self.repo,
             "draft": self.draft, "changes": self.changes, "findings": self.findings, "risk": self.risk(),
             "visibility": self.visibility, "redacted": self.redacted,
         })
@@ -573,22 +402,17 @@ impl Local {
 
 enum Req {
     Save(SaveBody),
-    Delete { galaxy: String, repo: String, id: String },
+    Delete { repo: String, id: String },
     Lines { repo: String, task: String, lines: Vec<Line> },
-}
-
-fn far_universe_refused(repo: &str, what: &str) -> Option<Fail> {
-    (!repo.is_empty()).then(|| Fail::new(403, format!("память вселенной живёт в git: {what}")))
 }
 
 /// Works out what a request would change, without writing anything.
 async fn plan(app: &Shared, req: &Req) -> Result<Plan, Fail> {
-    let (galaxy, repo) = match req {
-        Req::Save(b) => (b.galaxy.clone(), b.repo.clone()),
-        Req::Delete { galaxy, repo, .. } => (galaxy.clone(), repo.clone()),
-        Req::Lines { repo, .. } => (String::new(), repo.clone()),
+    let repo = match req {
+        Req::Save(b) => b.repo.clone(),
+        Req::Delete { repo, .. } | Req::Lines { repo, .. } => repo.clone(),
     };
-    if let Some(f) = bad_scope(&galaxy, &repo) {
+    if let Some(f) = bad_scope(&repo) {
         return Err(f);
     }
     match req {
@@ -597,72 +421,39 @@ async fn plan(app: &Shared, req: &Req) -> Result<Plan, Fail> {
         _ => {}
     }
     let default_kind = if repo.is_empty() { "rule" } else { "decision" };
-    let place = place_of(&galaxy).await?;
-    let mut draft = false;
-    let mut root = None;
-    let changes: Vec<Change> = match place {
-        Place::Home => {
-            let (cfg, repo2, req2) = (app.cfg.clone(), repo.clone(), req_clone(req));
-            let (changes, drafted, r) = tokio::task::spawn_blocking(move || -> Result<(Vec<Change>, bool, Option<String>), Fail> {
-                let lv = Local::open(&cfg, &repo2)?;
-                let now = now_ms();
-                let mut out: Vec<Change> = Vec::new();
-                match &req2 {
-                    Req::Save(b) => {
-                        let existing = if b.id.is_empty() { None } else { lv.get(&b.id) };
-                        let mut entry = memory::complete(merged(existing.clone(), b), default_kind, now).map_err(|e| Fail::new(422, e))?;
-                        memory::assign_id(&mut entry, |c| lv.taken(c)).map_err(|e| Fail::new(400, e))?;
-                        let file = lv.file(&entry.id, &repo2);
-                        out.push(change_of(&entry.id.clone(), file, existing.as_ref(), Some(entry)));
-                    }
-                    Req::Delete { id, .. } => {
-                        let existing = lv.get(id).ok_or_else(|| Fail::new(404, "такой записи нет"))?;
-                        out.push(change_of(id, lv.file(id, &repo2), Some(&existing), None));
-                    }
-                    Req::Lines { task, lines, .. } => {
-                        let mut taken: Vec<String> = Vec::new();
-                        for l in lines {
-                            let e = Entry { kind: l.kind.clone(), body: l.text.clone(), source: format!("task {task}"), ..Entry::default() };
-                            let mut e = memory::complete(e, "decision", now).map_err(|er| Fail::new(422, er))?;
-                            memory::assign_id(&mut e, |c| lv.taken(c) || taken.iter().any(|t| t == c)).map_err(|er| Fail::new(400, er))?;
-                            taken.push(e.id.clone());
-                            let (id, file) = (e.id.clone(), lv.file(&e.id, &repo2));
-                            out.push(change_of(&id, file, None, Some(e)));
-                        }
-                    }
-                }
-                Ok((out, lv.drafts.is_some(), lv.root.clone()))
-            })
-            .await
-            .map_err(|e| Fail::new(500, e.to_string()))??;
-            draft = drafted;
-            root = r;
-            changes
-        }
-        Place::Far(m) => {
-            if let Some(f) = far_universe_refused(&repo, "запишите её в своей галактике, а в далёкой она появится после pull") {
-                return Err(f);
+    let (cfg, repo2, req2) = (app.cfg.clone(), repo.clone(), req_clone(req));
+    let (changes, draft, root) = tokio::task::spawn_blocking(move || -> Result<(Vec<Change>, bool, Option<String>), Fail> {
+        let lv = Local::open(&cfg, &repo2)?;
+        let now = now_ms();
+        let mut out: Vec<Change> = Vec::new();
+        match &req2 {
+            Req::Save(b) => {
+                let existing = if b.id.is_empty() { None } else { lv.get(&b.id) };
+                let mut entry = memory::complete(merged(existing.clone(), b), default_kind, now).map_err(|e| Fail::new(422, e))?;
+                memory::assign_id(&mut entry, |c| lv.taken(c)).map_err(|e| Fail::new(400, e))?;
+                let file = lv.file(&entry.id, &repo2);
+                out.push(change_of(&entry.id.clone(), file, existing.as_ref(), Some(entry)));
             }
-            let all = far_entries(app, &m, FAR_GALAXY_DIR).await?;
-            match req {
-                Req::Save(b) => {
-                    let existing = all.iter().find(|e| e.id == b.id).cloned();
-                    // a new entry has a slug for a name; one that is there keeps its name
-                    if !b.id.is_empty() && existing.is_none() && !memory::valid_id(&b.id) {
-                        return Err(Fail::new(400, "недопустимое имя записи"));
-                    }
-                    let mut entry = memory::complete(merged(existing.clone(), b), default_kind, now_ms()).map_err(|e| Fail::new(422, e))?;
-                    memory::assign_id(&mut entry, |c| all.iter().any(|e| e.id == c)).map_err(|e| Fail::new(400, e))?;
-                    vec![change_of(&entry.id, format!("{FAR_GALAXY_DIR}/{}.md", entry.id), existing.as_ref(), Some(entry.clone()))]
+            Req::Delete { id, .. } => {
+                let existing = lv.get(id).ok_or_else(|| Fail::new(404, "такой записи нет"))?;
+                out.push(change_of(id, lv.file(id, &repo2), Some(&existing), None));
+            }
+            Req::Lines { task, lines, .. } => {
+                let mut taken: Vec<String> = Vec::new();
+                for l in lines {
+                    let e = Entry { kind: l.kind.clone(), body: l.text.clone(), source: format!("task {task}"), ..Entry::default() };
+                    let mut e = memory::complete(e, "decision", now).map_err(|er| Fail::new(422, er))?;
+                    memory::assign_id(&mut e, |c| lv.taken(c) || taken.iter().any(|t| t == c)).map_err(|er| Fail::new(400, er))?;
+                    taken.push(e.id.clone());
+                    let (id, file) = (e.id.clone(), lv.file(&e.id, &repo2));
+                    out.push(change_of(&id, file, None, Some(e)));
                 }
-                Req::Delete { id, .. } => {
-                    let existing = all.iter().find(|e| e.id == *id).ok_or_else(|| Fail::new(404, "такой записи нет"))?;
-                    vec![change_of(id, format!("{FAR_GALAXY_DIR}/{id}.md"), Some(existing), None)]
-                }
-                Req::Lines { .. } => return Err(Fail::new(403, "память вселенной живёт в git")),
             }
         }
-    };
+        Ok((out, lv.drafts.is_some(), lv.root.clone()))
+    })
+    .await
+    .map_err(|e| Fail::new(500, e.to_string()))??;
     if changes.iter().all(|c| c.op == "change" && c.before == c.after) {
         return Err(Fail::new(422, "ничего не изменится: запись такая же"));
     }
@@ -677,13 +468,13 @@ async fn plan(app: &Shared, req: &Req) -> Result<Plan, Fail> {
         };
         (findings, redacted, vis)
     };
-    Ok(Plan { galaxy, repo, changes, findings, visibility, draft, redacted })
+    Ok(Plan { repo, changes, findings, visibility, draft, redacted })
 }
 
 fn req_clone(r: &Req) -> Req {
     match r {
         Req::Save(b) => Req::Save(b.clone()),
-        Req::Delete { galaxy, repo, id } => Req::Delete { galaxy: galaxy.clone(), repo: repo.clone(), id: id.clone() },
+        Req::Delete { repo, id } => Req::Delete { repo: repo.clone(), id: id.clone() },
         Req::Lines { repo, task, lines } => Req::Lines { repo: repo.clone(), task: task.clone(), lines: lines.clone() },
     }
 }
@@ -710,54 +501,28 @@ fn allowed(plan: &Plan, gate: &Gate) -> Result<(), Fail> {
 /// Writes a plan: files for the Galaxy (and a folder that is not in git), drafts for a universe in a git checkout.
 async fn execute(app: &Shared, plan: &Plan) -> Result<Value, Fail> {
     let entries: Vec<(String, Option<Entry>)> = plan.changes.iter().map(|c| (c.id.clone(), c.entry.clone())).collect();
-    let saved: Vec<Entry>;
-    match place_of(&plan.galaxy).await? {
-        Place::Home => {
-            let (cfg, repo) = (app.cfg.clone(), plan.repo.clone());
-            saved = tokio::task::spawn_blocking(move || -> Result<Vec<Entry>, Fail> {
-                let lv = Local::open(&cfg, &repo)?;
-                let mut saved = Vec::new();
-                for (id, entry) in entries {
-                    match (entry, &lv.drafts) {
-                        (Some(e), Some(d)) => {
-                            d.put(&e).map_err(|er| Fail::new(500, er))?;
-                            saved.push(e);
-                        }
-                        (Some(e), None) => saved.push(lv.store.save(e).map_err(|er| Fail::new(500, er))?),
-                        (None, Some(d)) => d.delete(&id, lv.store.get(&id).is_some()).map_err(|er| Fail::new(500, er))?,
-                        (None, None) => {
-                            lv.store.delete(&id).map_err(|er| Fail::new(500, er))?;
-                        }
-                    }
+    let (cfg, repo) = (app.cfg.clone(), plan.repo.clone());
+    let saved = tokio::task::spawn_blocking(move || -> Result<Vec<Entry>, Fail> {
+        let lv = Local::open(&cfg, &repo)?;
+        let mut saved = Vec::new();
+        for (id, entry) in entries {
+            match (entry, &lv.drafts) {
+                (Some(e), Some(d)) => {
+                    d.put(&e).map_err(|er| Fail::new(500, er))?;
+                    saved.push(e);
                 }
-                Ok(saved)
-            })
-            .await
-            .map_err(|e| Fail::new(500, e.to_string()))??;
-            app::index_snapshot(app).await;
-        }
-        Place::Far(m) => {
-            let mut all = far_entries(app, &m, FAR_GALAXY_DIR).await?;
-            let mut writes = Vec::new();
-            let mut removes = Vec::new();
-            let mut done = Vec::new();
-            for (id, entry) in entries {
-                all.retain(|e| e.id != id);
-                match entry {
-                    Some(e) => {
-                        writes.push((format!("{}.md", e.id), memory::render_entry(&e)));
-                        all.push(e.clone());
-                        done.push(e);
-                    }
-                    None => removes.push(format!("{id}.md")),
+                (Some(e), None) => saved.push(lv.store.save(e).map_err(|er| Fail::new(500, er))?),
+                (None, Some(d)) => d.delete(&id, lv.store.get(&id).is_some()).map_err(|er| Fail::new(500, er))?,
+                (None, None) => {
+                    lv.store.delete(&id).map_err(|er| Fail::new(500, er))?;
                 }
             }
-            writes.push((memory::INDEX.to_string(), memory::render_index("Память Галактики", &all)));
-            ssh_run(app, &m, &write_script(FAR_GALAXY_DIR, &writes, &removes)).await?;
-            remember_far(app, &m.label, all).await;
-            saved = done;
         }
-    }
+        Ok(saved)
+    })
+    .await
+    .map_err(|e| Fail::new(500, e.to_string()))??;
+    app::index_snapshot(app).await;
     Ok(json!({
         "ok": true, "draft": plan.draft, "saved": saved.iter().map(entry_json).collect::<Vec<_>>(),
         "entry": saved.first().map(entry_json), "removed": plan.changes.iter().any(|c| c.op == "delete"),
@@ -774,14 +539,6 @@ async fn run(app: &Shared, req: Req, gate: &Gate) -> Result<Value, Fail> {
     execute(app, &p).await
 }
 
-async fn remember_far(app: &Shared, label: &str, galaxy: Vec<Entry>) {
-    {
-        let mut all = app.far_memory.lock().await;
-        all.entry(label.to_string()).or_default().galaxy = galaxy;
-    }
-    app::index_snapshot(app).await;
-}
-
 fn respond(r: Result<Value, Fail>) -> Response {
     match r {
         Ok(v) => Json(v).into_response(),
@@ -791,8 +548,6 @@ fn respond(r: Result<Value, Fail>) -> Response {
 
 #[derive(Deserialize, Clone)]
 pub struct SaveBody {
-    #[serde(default)]
-    galaxy: String,
     #[serde(default)]
     repo: String,
     #[serde(default)]
@@ -848,8 +603,6 @@ pub async fn memory_save(State(app): State<Shared>, headers: HeaderMap, Json(bod
 #[derive(Deserialize)]
 pub struct DeleteBody {
     #[serde(default)]
-    galaxy: String,
-    #[serde(default)]
     repo: String,
     id: String,
     #[serde(flatten)]
@@ -861,7 +614,7 @@ pub async fn memory_delete(State(app): State<Shared>, headers: HeaderMap, Json(b
     if !same_origin(&headers) {
         return error(StatusCode::FORBIDDEN, "cross-origin request refused");
     }
-    respond(run(&app, Req::Delete { galaxy: body.galaxy, repo: body.repo, id: body.id }, &body.gate).await)
+    respond(run(&app, Req::Delete { repo: body.repo, id: body.id }, &body.gate).await)
 }
 
 #[derive(Deserialize)]
@@ -916,7 +669,7 @@ pub async fn memory_discard(State(app): State<Shared>, headers: HeaderMap, Json(
         let token = token_of(&changes, &[]);
         if body.gate.confirm != Some(true) {
             return Ok(json!({
-                "ok": true, "preview": true, "token": token, "level": "universe", "galaxy": "", "repo": repo, "draft": true,
+                "ok": true, "preview": true, "token": token, "level": "universe", "repo": repo, "draft": true,
                 "discard": true, "changes": changes, "findings": [], "risk": "none", "visibility": null, "redacted": [],
             }));
         }
@@ -1079,17 +832,15 @@ pub async fn memory_settings(State(app): State<Shared>, headers: HeaderMap, Json
 
 #[derive(Deserialize)]
 pub struct ConnectBody {
-    #[serde(default)]
-    galaxy: String,
     on: bool,
     /// The instructions the human saw on the card. Absent: only a preview.
     expect: Option<String>,
     confirm: Option<bool>,
 }
 
-/// The instructions of the galaxy's board as they are now (empty when the setting is not set).
-async fn current_instructions(app: &Shared, place: &Place) -> Result<String, Fail> {
-    let settings = station::read_settings(&app.cfg, place, "").await.map_err(Fail::refused)?;
+/// The instructions of the board as they are now (empty when the setting is not set).
+async fn current_instructions(app: &Shared) -> Result<String, Fail> {
+    let settings = station::read_settings(&app.cfg, "").await.map_err(Fail::refused)?;
     Ok(station::find(&settings, INSTRUCTIONS)
         .filter(|s| s.from != "built in" && s.value.trim() != "none")
         .map(|s| s.value.clone())
@@ -1106,16 +857,8 @@ pub async fn memory_connect(State(app): State<Shared>, headers: HeaderMap, Json(
         return error(StatusCode::FORBIDDEN, "cross-origin request refused");
     }
     let result = async {
-        if let Some(f) = bad_scope(&body.galaxy, "") {
-            return Err(f);
-        }
-        let place = place_of(&body.galaxy).await?;
-        let dir = match &place {
-            Place::Home => memory::galaxy_dir(&app.cfg).display().to_string(),
-            Place::Far(_) => FAR_GALAXY_DIR.to_string(),
-        };
-        let block = memory::coordinator_block(&dir);
-        let current = current_instructions(&app, &place).await?;
+        let block = memory::coordinator_block(&memory::galaxy_dir(&app.cfg).display().to_string());
+        let current = current_instructions(&app).await?;
         let value = memory::connect_value(&current, &block, body.on).map_err(|e| Fail::new(422, e))?;
         if body.confirm != Some(true) {
             return Ok(json!({"ok": true, "name": INSTRUCTIONS, "current": current, "now": value}));
@@ -1133,16 +876,11 @@ pub async fn memory_connect(State(app): State<Shared>, headers: HeaderMap, Json(
             Some(v) => vec!["set".into(), INSTRUCTIONS.into(), v.clone()],
             None => vec!["unset".into(), INSTRUCTIONS.into()],
         };
-        let out = station::board_run(&app.cfg, &place, &args, station::BOARD_WAIT).await?;
+        let out = station::board_run(&app.cfg, &args, station::BOARD_WAIT).await;
         if !out.ok() {
             return Err(Fail::new(422, out.words()));
         }
-        match &place {
-            Place::Home => app::refresh(&app).await,
-            Place::Far(m) => {
-                let _ = crate::api::ask_galaxy(&app, &m.label).await;
-            }
-        }
+        app::refresh(&app).await;
         Ok(json!({"ok": true, "name": INSTRUCTIONS, "was": current, "now": value}))
     }
     .await;
@@ -1337,86 +1075,12 @@ pub async fn memory_suggestion(State(app): State<Shared>, headers: HeaderMap, Js
 mod tests {
     use super::*;
 
-    #[test]
-    fn far_paths_are_under_that_machines_home() {
-        assert_eq!(sh_path("~/.herdr-projects/memory/galaxy"), "\"$HOME\"/.herdr-projects/memory/galaxy");
-        assert_eq!(sh_path("/srv/my projects/a"), "'/srv/my projects/a'");
-    }
-
-    #[test]
-    fn a_far_read_comes_back_as_entries_in_the_order_asked() {
-        let one = memory::render_entry(&Entry {
-            id: "a".into(),
-            title: "Раз".into(),
-            description: "один".into(),
-            kind: "rule".into(),
-            body: "тело".into(),
-            ..Entry::default()
-        });
-        let out = format!(
-            "Welcome to vm-a\n\u{1e}DIR 1\n\u{1f}FILE a.md\n{one}\n\u{1f}FILE MEMORY.md\n# index\n\n\u{1e}DIR 2\n\u{1e}DIR 3\n\u{1f}FILE z.md\nбез шапки\n\n"
-        );
-        let got = parse_read(&out, 3);
-        assert_eq!(got[0].len(), 1, "the index is not an entry");
-        assert_eq!(got[0][0].title, "Раз");
-        assert_eq!(got[0][0].body, "тело");
-        assert!(got[1].is_empty());
-        assert_eq!(got[2][0].id, "z");
-        assert_eq!(parse_read("no records at all", 2), vec![Vec::<Entry>::new(), vec![]]);
-        assert_eq!(parse_read("\u{1e}DIR 9\n", 2), vec![Vec::<Entry>::new(), vec![]], "a folder number out of range is ignored");
-    }
-
-    #[test]
-    fn a_far_write_is_one_line_and_hides_the_text_in_base64() {
-        let s = write_script(
-            FAR_GALAXY_DIR,
-            &[("a.md".into(), "привет'; rm -rf /; echo '".into())],
-            &["old.md".into()],
-        );
-        assert!(!s.contains('\n'), "one line, so the far login shell takes it as one command");
-        assert!(!s.contains("rm -rf /"), "the text never reaches the shell as text");
-        assert!(s.starts_with("HP_MEMORY=1;"));
-        assert!(s.contains("mkdir -p \"$d\"") && s.contains("rm -f \"$d\"/old.md"));
-        assert!(s.contains("mv \"$d\"/a.md.new \"$d\"/a.md"));
-        let r = read_script(&[FAR_GALAXY_DIR.into(), "/srv/p q/docs/memory".into()]);
-        assert!(!r.contains('\n') && r.contains("'/srv/p q/docs/memory'"));
-    }
-
-    #[test]
-    fn the_far_script_really_runs_in_sh() {
-        let dir = tempfile::tempdir().unwrap();
-        let home = dir.path().to_str().unwrap().to_string();
-        let run = |script: &str| {
-            let out = std::process::Command::new("/bin/sh")
-                .arg("-c")
-                .arg(script)
-                .env("HOME", &home)
-                .output()
-                .unwrap();
-            assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
-            String::from_utf8_lossy(&out.stdout).into_owned()
-        };
-        let e = Entry { id: "a".into(), title: "Заголовок: с двоеточием".into(), description: "d".into(), kind: "rule".into(), body: "Строка 1\nСтрока 2 'кавычки'".into(), added: "2026-10-21".into(), ..Entry::default() };
-        run(&write_script(
-            FAR_GALAXY_DIR,
-            &[("a.md".into(), memory::render_entry(&e)), (memory::INDEX.into(), memory::render_index("П", std::slice::from_ref(&e)))],
-            &[],
-        ));
-        let got = parse_read(&run(&read_script(&[FAR_GALAXY_DIR.into(), "/nonexistent/x".into()])), 2);
-        assert_eq!(got[0].len(), 1);
-        assert_eq!(got[0][0].title, e.title);
-        assert_eq!(got[0][0].body, e.body);
-        assert!(got[1].is_empty());
-        run(&write_script(FAR_GALAXY_DIR, &[], &["a.md".into()]));
-        assert!(parse_read(&run(&read_script(&[FAR_GALAXY_DIR.into()])), 1)[0].is_empty());
-    }
-
     fn plan_with(body: &str, vis: Option<Visibility>) -> Plan {
         let mut e = memory::complete(Entry { title: "Т".into(), body: body.into(), ..Entry::default() }, "decision", 0).unwrap();
         e.id = "t".into();
         let changes = vec![change_of("t", "docs/memory/t.md".into(), None, Some(e))];
         let (findings, redacted) = check_entries(&changes);
-        Plan { galaxy: String::new(), repo: "demo".into(), changes, findings, visibility: vis, draft: true, redacted }
+        Plan { repo: "demo".into(), changes, findings, visibility: vis, draft: true, redacted }
     }
 
     fn gate(token: &str, risk: bool, public: bool) -> Gate {

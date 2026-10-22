@@ -2,11 +2,11 @@ import { signal } from '@preact/signals';
 import type { JSX } from 'preact';
 import { useEffect } from 'preact/hooks';
 import {
-  currentView, details, galaxies, galaxyId, linkSel, panels, requests, screens, selected, snap, taskOf,
+  currentView, details, linkSel, panels, requests, screens, selected, snap, taskOf,
 } from '../store';
 import { api } from '../api';
-import { farScreen, farYazi, openFiles, removeLink, archiveAllDone, fetchScreen } from '../actions';
-import { fetchDetails, navigateTo, getWorld } from '../nav';
+import { openFiles, removeLink, archiveAllDone, fetchScreen } from '../actions';
+import { fetchDetails, navigateTo } from '../nav';
 import { closing, loadClosing } from '../closing';
 import { addDialogs } from '../dialogs';
 import { t } from '../i18n';
@@ -18,12 +18,12 @@ import { TaskActionButtons, TellBox } from './AgentActions';
 import { dayTimeOf } from '../util/dates';
 import { duration } from '../util/format';
 import type { Entity, Subagent, Task } from '../types';
-import { UniverseFocus, QuasarFocus, GalaxyFocus, ArchiveFocus } from './FocusOther';
+import { UniverseFocus, QuasarFocus, ArchiveFocus } from './FocusOther';
 import { SuggestionCard, suggestionsOfTask } from './MemoryPanel';
 import { openRemember } from './memory-api';
 import './focus.css';
 
-const linkLabel = (l: { from: string; label?: string; kind: string }, galaxy: string): string => l.label || (l.kind === 'far' ? l.from : taskOf(l.from, galaxy)?.tag ?? l.from);
+const linkLabel = (l: { from: string; label?: string; kind: string }): string => l.label || (l.kind === 'far' ? l.from : taskOf(l.from)?.tag ?? l.from);
 const remoteLink = (l: { from: string; kind: string }): boolean => l.kind === 'far' && String(l.from).includes(':');
 
 
@@ -33,8 +33,8 @@ function SubagentRow(props: { task: Task; sa: Subagent }): JSX.Element {
   return (
     <div
       class={`moonl s-${sa.state}`} data-sub={sa.id} tabIndex={0} role="button"
-      onClick={() => void navigateTo({ kind: 'moon', galaxy: galaxyId.value, id: `${props.task.id}#${sa.id}` })}
-      onKeyDown={(e) => { if (e.key === 'Enter') void navigateTo({ kind: 'moon', galaxy: galaxyId.value, id: `${props.task.id}#${sa.id}` }); }}
+      onClick={() => void navigateTo({ kind: 'moon', id: `${props.task.id}#${sa.id}` })}
+      onKeyDown={(e) => { if (e.key === 'Enter') void navigateTo({ kind: 'moon', id: `${props.task.id}#${sa.id}` }); }}
     >
       <span class="dotc" />
       <span class="role">{sa.role}</span>
@@ -47,7 +47,6 @@ function SubagentRow(props: { task: Task; sa: Subagent }): JSX.Element {
 function TaskFocus(props: { task: Task }): JSX.Element {
   const task = props.task;
   const d = details.value[task.id];
-  const home = galaxyId.value === '';
   const local = ['127.0.0.1', '::1', '[::1]', 'localhost'].includes(location.hostname);
   const review = d?.review && typeof d.review === 'object' ? d.review : task.review;
   const checks: string[] = Array.isArray(review?.checks) ? review.checks : [];
@@ -74,10 +73,10 @@ function TaskFocus(props: { task: Task }): JSX.Element {
       {linkCard && (
         <div class="req s-ready">
           <div class="rh"><Gl n="link" />{t('focus.link')}</div>
-          <p class="full">{t('focus.linkText', { a: task.tag, b: linkLabel(linkCard, galaxyId.value) })}</p>
+          <p class="full">{t('focus.linkText', { a: task.tag, b: linkLabel(linkCard) })}</p>
           <div class="row">
             {remoteLink(linkCard) ? <span class="hint">{t('focus.linkRemote')}</span>
-              : <button class="btn danger" type="button" data-act="after-remove" data-id={task.id} data-from={linkCard.from} onClick={() => { void removeLink(task.id, linkCard.from, galaxyId.value); linkSel.value = null; }}>{t('focus.unlink')}</button>}
+              : <button class="btn danger" type="button" data-act="after-remove" data-id={task.id} data-from={linkCard.from} onClick={() => { void removeLink(task.id, linkCard.from); linkSel.value = null; }}>{t('focus.unlink')}</button>}
           </div>
         </div>
       )}
@@ -91,7 +90,7 @@ function TaskFocus(props: { task: Task }): JSX.Element {
       </div>
       <div class="f-actions">
         {!attention && <TaskActionButtons task={task} />}
-        {home && task.status !== 'queued' && (
+        {task.status !== 'queued' && (
           <>
             <button class="btn" type="button" data-act="files" data-id={task.id} onClick={() => void openFiles(task, 'worktree')}><Gl n="folder" />{t('focus.worktreeBtn')}</button>
             <button class="btn" type="button" data-act="reports" data-id={task.id} onClick={() => void openFiles(task, 'reports')}><Gl n="folder" />{t('focus.reports')}</button>
@@ -99,14 +98,8 @@ function TaskFocus(props: { task: Task }): JSX.Element {
           </>
         )}
       </div>
-      {!home && task.status !== 'queued' && (
-        <div class="f-actions">
-          <button class="btn" type="button" data-act="far-screen" data-id={task.id} onClick={() => void farScreen(task)}><Gl n="screen" />{t('focus.agentScreen')}</button>
-          <button class="btn" type="button" data-act="far-files" data-id={task.id} disabled={!task.worktree} onClick={() => void farYazi(task)}><Gl n="folder" />{t('far.files')}</button>
-        </div>
-      )}
-      {home && !local && <div class="remote">{t('focus.remoteFiles', { path: worktree || d?.reports_dir || t('focus.none') })}</div>}
-      {home && screens.value[task.id] && <Screen target={task.id} label={t('focus.agentScreen')} />}
+      {!local && <div class="remote">{t('focus.remoteFiles', { path: worktree || d?.reports_dir || t('focus.none') })}</div>}
+      {screens.value[task.id] && <Screen target={task.id} label={t('focus.agentScreen')} />}
       <TellBox task={task} />
 
       {(task.status === 'done' || cl?.text) && (
@@ -114,7 +107,7 @@ function TaskFocus(props: { task: Task }): JSX.Element {
           <div class="block-hd">
             <h3>
               {t('focus.closing')}
-              {cl?.text && home && (
+              {cl?.text && (
                 <button class="btn sm mm-tomem always" type="button" data-act="to-memory" title={t('mem.toMemoryTip')}
                   onClick={() => openRemember({ text: cl.text, source: `task ${task.id}`, repo: task.repo })}>
                   <Gl n="memory" />{t('mem.toMemory')}
@@ -125,7 +118,7 @@ function TaskFocus(props: { task: Task }): JSX.Element {
               <button
                 class="btn sm" type="button" data-act="summary-open" data-part="closing" data-id={task.id}
                 aria-label={t('focus.expand')}
-                onClick={() => { addDialogs.summary.value = { task: task.id, galaxy: galaxyId.value, part: 'closing' }; }}
+                onClick={() => { addDialogs.summary.value = { task: task.id, part: 'closing' }; }}
               ><Gl n="expand" />{t('focus.expand')}</button>
             )}
           </div>
@@ -152,7 +145,7 @@ function TaskFocus(props: { task: Task }): JSX.Element {
             <button
               class="btn sm" type="button" data-act="summary-open" data-part="description" data-id={task.id}
               aria-label={t('focus.expand')}
-              onClick={() => { addDialogs.summary.value = { task: task.id, galaxy: galaxyId.value, part: 'description' }; }}
+              onClick={() => { addDialogs.summary.value = { task: task.id, part: 'description' }; }}
             ><Gl n="expand" />{t('focus.expand')}</button>
           </div>
           <div class="desc"><Translatable text={task.description} /></div>
@@ -162,8 +155,8 @@ function TaskFocus(props: { task: Task }): JSX.Element {
       <h3>{t('focus.links')}</h3>
       {deps.length ? deps.map((l) => (
         <div class="row" key={l.from}>
-          <span class="hint">{linkLabel(l, galaxyId.value)}</span>
-          <button class="btn icon sm" type="button" data-act="after-remove" data-id={task.id} data-from={l.from} title={t('focus.unlink')} aria-label={t('focus.unlink')} onClick={() => void removeLink(task.id, l.from, galaxyId.value)}><Gl n="close" /></button>
+          <span class="hint">{linkLabel(l)}</span>
+          <button class="btn icon sm" type="button" data-act="after-remove" data-id={task.id} data-from={l.from} title={t('focus.unlink')} aria-label={t('focus.unlink')} onClick={() => void removeLink(task.id, l.from)}><Gl n="close" /></button>
         </div>
       )) : <div class="hint">{t('focus.noLinks')}</div>}
 
@@ -174,7 +167,7 @@ function TaskFocus(props: { task: Task }): JSX.Element {
       {d?.failure && <><h3>{t('focus.failure')}</h3><p class="review"><Translatable text={failureText(d.failure)} /></p></>}
       {d?.plan?.text && <><h3>{t('focus.plan')}</h3><p class="review"><Translatable text={d.plan.text} /></p></>}
       {(d?.failure?.next || d?.review?.next) && <><h3>{t('focus.next')}</h3><p><RichText text={d?.failure?.next || d?.review?.next} /></p></>}
-      {home && !d && <div class="hint">{t('focus.detailsLoading')}</div>}
+      {!d && <div class="hint">{t('focus.detailsLoading')}</div>}
       {d?.report && (
         <div class="row">
           <button class="btn" type="button" data-act="report" onClick={() => { const url = String(d.report.url || d.report); if (/^https?:\/\//.test(url)) window.open(url, '_blank', 'noopener'); }}><Gl n="ext" />{t('req.report')}</button>
@@ -193,12 +186,12 @@ function failureText(f: any): string {
 function MoonFocus(props: { entity: Entity }): JSX.Element {
   const [taskId, sid] = props.entity.id.split('#');
   const s = snap.value;
-  const task = taskId === 'quasar' ? null : taskOf(taskId, props.entity.galaxy);
+  const task = taskId === 'quasar' ? null : taskOf(taskId);
   const list = task ? task.subagents : s?.coordinator.subagents ?? [];
   const sa = list.find((x) => x.id === sid);
   const card = fullCards.value[props.entity.id];
   useEffect(() => {
-    if (!sa || props.entity.galaxy !== '') return;
+    if (!sa) return;
     void (async () => {
       try {
         const r = await api<{ subagent: Subagent }>(`/api/subagent?task=${encodeURIComponent(taskId)}&id=${encodeURIComponent(sid)}`);
@@ -229,7 +222,7 @@ function MoonFocus(props: { entity: Entity }): JSX.Element {
       {shown.result ? <div class="closing-text"><Translatable text={shown.result} /></div> : <div class="hint">{sa.state === 'running' ? t('moon.resultLater') : t('moon.resultNone')}</div>}
       {sa.note && <div class="hint">{sa.note}</div>}
       <div class="row">
-        {task && <button class="btn" type="button" onClick={() => void navigateTo({ kind: 'planet', galaxy: props.entity.galaxy, id: task.id })}>{t('moon.toParent')}</button>}
+        {task && <button class="btn" type="button" onClick={() => void navigateTo({ kind: 'planet', id: task.id })}>{t('moon.toParent')}</button>}
       </div>
     </div>
   );
@@ -243,12 +236,11 @@ export function Focus(): JSX.Element {
   if (panels.archive.value) body = <ArchiveFocus />;
   else if (!e) body = <Welcome />;
   else if (e.kind === 'planet') {
-    const task = taskOf(e.id, e.galaxy);
+    const task = taskOf(e.id);
     body = task ? <TaskFocus task={task} /> : <div class="fbody"><h2>{t('focus.gone')}</h2></div>;
   } else if (e.kind === 'universe') body = <UniverseFocus entity={e} />;
   else if (e.kind === 'quasar') body = <QuasarFocus />;
-  else if (e.kind === 'moon') body = <MoonFocus entity={e} />;
-  else body = <GalaxyFocus entity={e} />;
+  else body = <MoonFocus entity={e} />;
   return (
     <aside class={`panel focus ${open ? '' : 'off'}`} id="focus" aria-label={t('focus.aria')} aria-hidden={!open}>
       <header>
@@ -277,4 +269,4 @@ function Welcome(): JSX.Element {
   );
 }
 
-void archiveAllDone; void galaxies; void getWorld;
+void archiveAllDone;

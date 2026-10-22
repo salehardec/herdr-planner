@@ -144,9 +144,6 @@ input.field:focus,textarea.field:focus,select.field:focus{border-color:var(--pl-
 .lb.quasar{border-color:color-mix(in srgb,var(--c-accent) 55%,var(--pl-line));background:var(--pl-panel-solid);font-weight:700;font-size:0.7812rem}
 .lb.universe{background:color-mix(in srgb,var(--pl-bg) 66%,transparent)}
 .lb.universe .k{color:var(--pl-title)}
-.lb.galaxy{font-size:0.8125rem;border-color:color-mix(in srgb,var(--c-accent) 40%,var(--pl-line))}
-.lb.galaxy.off{color:var(--c-red);opacity:.85;border-style:dashed}
-.lb.bridge{pointer-events:none;color:var(--c-yellow);border:0;background:none;font-size:0.6562rem;text-shadow:0 0 0.375rem var(--c-bg)}
 .lb.moon{border-style:dashed;font-size:0.6562rem}
 .lb.full{white-space:normal;padding:0.25rem 0.5rem;border-radius:0.4375rem}
 .lb.sel,.lb.hover{border-color:var(--pl-accent);background:var(--pl-panel-solid);z-index:5}

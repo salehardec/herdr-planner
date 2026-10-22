@@ -968,9 +968,6 @@ summary() {
     fi
   fi
   say ""
-  say "Далёкие галактики: чтобы эта машина стала далёкой галактикой на другой, там выполните"
-  say "  herdr machine add $(id -un)@$hn --label $hn"
-  say "  (ключ SSH — в ssh-agent)"
   if [ "$dry" -eq 0 ] && [ -n "$pv" ]; then
     chk=$("${SHELL:-/bin/sh}" -lc 'herdr-projects version' 2>/dev/null | head -n 1 || true)
     if [ -n "$chk" ]; then

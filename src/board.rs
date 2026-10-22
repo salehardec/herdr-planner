@@ -485,16 +485,16 @@ pub fn apply_tags(tasks: &mut [Task], tags: &[String]) {
     }
 }
 
-/// One `after` dependency: `to` waits for `from`. A `far` link names a task
-/// on another machine (or a tag this board cannot resolve) in `from`.
+/// One `after` dependency: `to` waits for `from`. A `far` link names an archived task
+/// (or a tag this board cannot resolve) in `from`.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 pub struct Link {
     pub from: String,
     pub to: String,
-    /// `waiting` (the task is not done yet), `done` (it is), `far` (another machine /
-    /// an archived task / an unknown tag).
+    /// `waiting` (the task is not done yet), `done` (it is), `far` (an archived task /
+    /// an unknown tag).
     pub kind: String,
-    /// How to name `from` in the world: a tag for an archived task, a machine ref for far.
+    /// How to name `from` in the world: a tag for an archived task, the reference as written for an unknown one.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub label: String,
 }
@@ -538,8 +538,8 @@ pub fn parse_after(stdout: &str) -> Vec<String> {
         .collect()
 }
 
-/// A task id or a task of another machine (`vm-str:ELA-3`) that `after` may be
-/// given. Tags are not accepted here: the gesture and the API speak ids.
+/// A task id, or a reference the board resolves on its own (`vm-str:ELA-3`, set with its CLI), that `after`
+/// may be given. Tags are not accepted here: the gesture and the API speak ids.
 pub fn valid_ref(r: &str) -> bool {
     if valid_id(r) && r.contains('/') {
         return true;
@@ -604,7 +604,7 @@ pub fn links_from(after: &BTreeMap<String, Vec<String>>, tasks: &[Task]) -> Vec<
     out
 }
 
-/// How far a clone's main branch is from its origin, and from the same project on other machines.
+/// How far a clone's main branch is from its origin.
 #[derive(Debug, Clone, Default, PartialEq, Serialize)]
 pub struct ProjectLag {
     pub origin: String,
@@ -614,17 +614,6 @@ pub struct ProjectLag {
     pub known: bool,
     pub as_of_ms: u64,
     pub note: String,
-    /// The same project's clones on other machines, compared with this one.
-    pub vs: Vec<LagVs>,
-}
-
-#[derive(Debug, Clone, Default, PartialEq, Serialize)]
-pub struct LagVs {
-    pub galaxy: String,
-    pub behind: u32,
-    pub ahead: u32,
-    /// `same`, `behind`, `ahead`, `diverged` or `unknown`.
-    pub state: String,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize)]

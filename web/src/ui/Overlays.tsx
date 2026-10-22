@@ -1,13 +1,11 @@
 import { signal } from '@preact/signals';
 import type { JSX } from 'preact';
 import {
-  aim, edge, flight, linkStatus, locked, mode, panels, snap, speed, webgl, selected, galaxyId, level, linkMode,
+  aim, edge, flight, locked, mode, panels, snap, speed, webgl, selected,
 } from '../store';
 import { t } from '../i18n';
 import { refreshNow } from '../api';
-import { enterGalaxy, goHome } from '../nav';
 import { Gl } from './Gl';
-import { FlightStationLine } from './Arrival';
 import './../styles/overlay.css';
 
 export function Banner(): JSX.Element | null {
@@ -60,39 +58,18 @@ import { taskOf } from '../store';
 function aimLabel(): string {
   const e = aim.value.entity;
   if (!e) return '';
-  if (e.kind === 'planet') return taskOf(e.id, e.galaxy)?.tag ?? e.id;
+  if (e.kind === 'planet') return taskOf(e.id)?.tag ?? e.id;
   if (e.kind === 'quasar') return t('quasar.label');
-  if (e.kind === 'galaxy') return e.id || (snap.value?.host ?? '');
   if (e.kind === 'moon') return e.id.split('#')[1];
   return e.id;
 }
 
 const phaseWord = (p: string): string => t(`flight.${p}`);
 
-/** The connection to a far galaxy: «устанавливаю связь…», «на связи», «нет связи: причина». */
+/** The flight in progress: the phase of the warp, from the moment the ship leaves its place. */
 export function LinkNotice(): JSX.Element | null {
-  const ls = linkStatus.value;
   const f = flight.value;
-  // Flying to a far galaxy: its target is the galaxy itself (`kind: 'galaxy'`, id = label).
-  const flyingTo = f.target && typeof f.target === 'object' && f.target.kind === 'galaxy' && f.target.id ? f.target.id : '';
-  if (ls.state === 'idle') {
-    return f.phase !== 'idle' && f.phase !== 'accel' ? <div class="notice link" id="link"><span class="spinner" /><b>{phaseWord(f.phase)}</b>{flyingTo && <FlightStationLine label={flyingTo} />}</div> : null;
-  }
-  if (ls.state === 'connecting') {
-    return <div class="notice link" id="link"><span class="spinner" /><b>{t('link.connecting', { g: ls.label })}</b><FlightStationLine label={ls.label} /></div>;
-  }
-  if (ls.state === 'online') {
-    return <div class="notice link" id="link"><Gl n="galaxy" /><b>{t('link.online', { g: ls.label })}</b><span class="hint">{ls.version ? `herdr-projects ${ls.version} · ` : ''}{t('link.allHere')}</span>
-      <button class="btn sm" type="button" onClick={() => void goHome()}>{t('link.home')}</button></div>;
-  }
-  return (
-    <div class="notice link bad" id="link">
-      <Gl n="failed" /><b>{t('link.offline', { g: ls.label, why: ls.why ?? '' })}</b>
-      <ul class="why">{(ls.detail ?? []).map((d, i) => <li key={i}>{d}</li>)}</ul>
-      <div class="row"><button class="btn sm primary" type="button" id="link-retry" onClick={() => void enterGalaxy(ls.label)}>{t('galaxy.retry')}</button>
-        <button class="btn sm" type="button" onClick={() => { linkStatus.value = { state: 'idle', label: '' }; void goHome(); }}>{t('link.home')}</button></div>
-    </div>
-  );
+  return f.phase !== 'idle' && f.phase !== 'accel' ? <div class="notice link" id="link"><span class="spinner" /><b>{phaseWord(f.phase)}</b></div> : null;
 }
 
 const hintClosed = signal(((): boolean => { try { return localStorage.getItem('herdr-planner.hint') === 'closed'; } catch { return false; } })());
@@ -142,5 +119,3 @@ export function HerdrPop(): JSX.Element | null {
     </div>
   );
 }
-
-void selected; void galaxyId; void level; void linkMode;

@@ -55,19 +55,19 @@ function Screen(props: { target: string; label: string; role?: string }): JSX.El
   );
 }
 
-function ArmBtn(props: { id: string; cmd: string; label: string; armLabel: string; cls: string; task: Task; galaxy?: string }): JSX.Element {
+function ArmBtn(props: { id: string; cmd: string; label: string; armLabel: string; cls: string; task: Task }): JSX.Element {
   const key = `${props.id}:${props.cmd}`;
   const on = armed.value?.key === key;
   return (
     <button
       class={`btn ${props.cls} ${on ? 'arm' : ''}`} type="button" data-act={props.cmd} data-id={props.id}
-      aria-disabled={!boardOk()} onClick={() => runTaskAction(props.cmd, props.task, props.galaxy ? { kind: 'planet', galaxy: props.galaxy, id: props.id } : undefined)}
+      aria-disabled={!boardOk()} onClick={() => runTaskAction(props.cmd, props.task)}
     >{on ? props.armLabel : props.label}</button>
   );
 }
 
 /** The answers that fit what the task asks of the human, wherever the request is drawn (the Focus, the whole-page result). */
-export function RequestActions(props: { task: Task; input?: string; galaxy?: string }): JSX.Element | null {
+export function RequestActions(props: { task: Task; input?: string }): JSX.Element | null {
   const task = props.task;
   const type = requestType(task);
   const attention = ['waiting', 'failed', 'ready', 'plan'].includes(task.status);
@@ -75,7 +75,7 @@ export function RequestActions(props: { task: Task; input?: string; galaxy?: str
   const d = details.value[task.id];
   const dis = !boardOk();
   const input = props.input ?? 'tell';
-  const run = (cmd: string): void => runTaskAction(cmd, task, props.galaxy ? { kind: 'planet', galaxy: props.galaxy, id: task.id } : undefined);
+  const run = (cmd: string): void => runTaskAction(cmd, task);
   const draft = (text: string): void => {
     tellDraft.value = { ...tellDraft.value, [task.id]: text };
     setTimeout(() => { const i = document.getElementById(input) as HTMLTextAreaElement | null; if (i) { i.value = text; i.focus(); i.select(); } }, 30);
@@ -92,8 +92,8 @@ export function RequestActions(props: { task: Task; input?: string; galaxy?: str
           </div>
           {task.stage === 'approval' && (
             <div class="row">
-              <ArmBtn id={task.id} cmd="anyway" label={t('act.anyway')} armLabel={t('req.confirmAnyway')} cls="danger" task={task} galaxy={props.galaxy} />
-              <ArmBtn id={task.id} cmd="review" label={t('req.returnReview')} armLabel={t('req.confirmReturn')} cls="" task={task} galaxy={props.galaxy} />
+              <ArmBtn id={task.id} cmd="anyway" label={t('act.anyway')} armLabel={t('req.confirmAnyway')} cls="danger" task={task} />
+              <ArmBtn id={task.id} cmd="review" label={t('req.returnReview')} armLabel={t('req.confirmReturn')} cls="" task={task} />
             </div>
           )}
         </>
@@ -126,14 +126,14 @@ export function RequestActions(props: { task: Task; input?: string; galaxy?: str
       )}
       {type === 'plan' && (
         <div class="row">
-          <ArmBtn id={task.id} cmd="approve" label={t('req.approvePlan')} armLabel={t('req.confirmApprovePlan')} cls="go" task={task} galaxy={props.galaxy} />
+          <ArmBtn id={task.id} cmd="approve" label={t('req.approvePlan')} armLabel={t('req.confirmApprovePlan')} cls="go" task={task} />
           <button class="btn" type="button" data-act="answer" data-id={task.id} onClick={toInput}>{t('req.returnWithNotes')}</button>
         </div>
       )}
       {type === 'approval' && (
         <div class="row">
-          <ArmBtn id={task.id} cmd="approve" label={t('act.approve')} armLabel={t('req.confirmApprove')} cls="go" task={task} galaxy={props.galaxy} />
-          <ArmBtn id={task.id} cmd="anyway" label={t('act.anyway')} armLabel={t('req.confirmAnyway')} cls="danger" task={task} galaxy={props.galaxy} />
+          <ArmBtn id={task.id} cmd="approve" label={t('act.approve')} armLabel={t('req.confirmApprove')} cls="go" task={task} />
+          <ArmBtn id={task.id} cmd="anyway" label={t('act.anyway')} armLabel={t('req.confirmAnyway')} cls="danger" task={task} />
         </div>
       )}
       {type === 'pick' && (

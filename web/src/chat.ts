@@ -2,7 +2,7 @@
    and sending (text and files: pasted screenshots, images, sound, text). */
 import { signal } from '@preact/signals';
 import { api, post, refreshNow } from './api';
-import { chat, galaxyId, snap } from './store';
+import { chat, snap } from './store';
 import type { TurnData } from './types';
 import { t } from './i18n';
 import { makeShelf, type SavedFile } from './attach';
@@ -122,7 +122,7 @@ export function draftMessage(id: string, text: string, files: SavedFile[]): bool
   return true;
 }
 
-/** Sends text (and the ready files) to the Coordinator of the galaxy the operator is in. */
+/** Sends text (and the ready files) to the Coordinator. */
 export async function send(text: string): Promise<boolean> {
   if (sending.value) return false;
   const body = text.trim();
@@ -137,7 +137,7 @@ export async function send(text: string): Promise<boolean> {
     optimistic.value = { text: body, at: Date.now(), attachments };
     notePending(body, attachments);
     try {
-      await post('/api/chat', { text: body, attachments, galaxy: galaxyId.value || undefined });
+      await post('/api/chat', { text: body, attachments });
       const keys = new Set(files.map((p) => p.key));
       for (const k of keys) shelf.remove(k);
       const sentTodos = draftTodos.value;

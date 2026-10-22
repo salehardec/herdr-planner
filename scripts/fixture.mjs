@@ -4,8 +4,8 @@
 //   node scripts/fixture.mjs DIR [--scale 50x500]
 //
 // DIR gets:
-//   bin/        stand-ins on PATH: herdr-projects, herdr, ssh (machine vm-a works,
-//               vm-b refuses), claude (translation), gh, glab, xdg-terminal-exec.
+//   bin/        stand-ins on PATH: herdr-projects, herdr, claude (translation), gh, glab,
+//               xdg-terminal-exec.
 //               Each is a node script built from the functions below.
 //   state/      the stand-ins' own world: board.json (rows, waits, meta), coordinator.json,
 //               todo.json (the planner's), the Omarchy usage records.
@@ -14,7 +14,7 @@
 //   projects/   the repositories' folders in two groups (AI, herdr); alpha, beta are git clones
 //               of origins/ (alpha's clone is two commits behind its origin).
 //   claude/, omp/, codex/   the sub-agents' session files (CLAUDE_CONFIG_DIR, omp sessions, CODEX_HOME).
-//   log/        one JSON line per command a stand-in got (calls, commands, ssh, claude, …).
+//   log/        one JSON line per command a stand-in got (calls, commands, claude, …).
 // Every name, id and env var is listed in scripts/fixture-notes.md.
 //
 // Run the planner on it (run-checks.sh does this):
@@ -210,21 +210,7 @@ function common(DATA, mods) {
     };
     return { show, set, unset };
   };
-  // The words of a command line as sh splits them: single quotes keep everything, a backslash escapes the next character.
-  const shWords = (s) => {
-    const out = [];
-    let cur = null;
-    for (let i = 0; i < s.length;) {
-      const ch = s[i];
-      if (ch === ' ') { if (cur !== null) { out.push(cur); cur = null; } i++; }
-      else if (ch === "'") { cur = cur ?? ''; i++; while (i < s.length && s[i] !== "'") cur += s[i++]; i++; }
-      else if (ch === '\\' && i + 1 < s.length) { cur = (cur ?? '') + s[i + 1]; i += 2; }
-      else { cur = (cur ?? '') + ch; i++; }
-    }
-    if (cur !== null) out.push(cur);
-    return out;
-  };
-  return { boardSettings, shWords, D, fs, path, log, readJson, world, save, coord, saveCoord, tag, find, say, resolve, plain, said, sleepMs, uuid, nextN, publishRepos, publishTask, suggestKey, registerFolder };
+  return { boardSettings, D, fs, path, log, readJson, world, save, coord, saveCoord, tag, find, say, resolve, plain, said, sleepMs, uuid, nextN, publishRepos, publishTask, suggestKey, registerFolder };
 }
 
 // ---------------------------------------------------------------- the world
@@ -678,8 +664,8 @@ const models = {
 const modelNote = 'Имена моделей программа отдаёт сама: доска спрашивает её, что принимает. Здесь — то, что видно на этой машине; аккаунт может открыть не все.';
 
 const ORIGIN_URL = alphaBare;
-// The board's own settings for the stand-ins: the effort levels, the built-in values, what each board starts with,
-// what its doctor says and which crew programs are on vm-a's PATH. Home's PATH gets codex and omp stand-ins below.
+// The board's own settings for the stand-ins: the effort levels, the built-in values, what the board starts with and
+// what its doctor says. The PATH gets codex and omp stand-ins below.
 const BOARD = {
   efforts: {
     claude: ['low', 'medium', 'high', 'xhigh', 'max'],
@@ -701,12 +687,6 @@ const BOARD = {
       'coordinator.instructions': 'Мои правила, поверх общих:\n1. Настройки меняй только с моего явного согласия.\n2. Если непонятно, к какой задаче это относится, — спроси.',
     },
     alpha: { 'worker.effort': 'max' },
-    vmA: {
-      'coordinator.agent': 'codex/gpt-5-codex', 'coordinator.effort': 'high', 'plan.agent': 'claude/claude-opus-5-5',
-      'reviewer.agent': 'claude/claude-opus-5-5', 'reviewer.effort': 'high', 'worker.agent': 'claude/claude-sonnet-5-5',
-      'worker.effort': 'high',
-    },
-    vmAAlpha: { 'worker.effort': 'xhigh' },
   },
   doctor: {
     home: [
@@ -716,15 +696,8 @@ const BOARD = {
       '✓ omp 1.5.0, API keys: no sign-in needed',
       '1 problem.',
     ],
-    vmA: [
-      '✓ herdr-projects 1.2.4, downloaded: the fixture plugin on vm-a',
-      '✓ claude 2.1.303, signed in (worker.agent, reviewer.agent and 1 more)',
-      '✓ codex 0.9.2, signed in (coordinator.agent)',
-      '✓ omp 1.5.0, API keys: no sign-in needed',
-    ],
   },
-  doctorExit: { home: 1, vmA: 0 },
-  installed: { vmA: ['claude', 'codex', 'omp'] },
+  doctorExit: { home: 1 },
 };
 
 const DATA = {
@@ -733,18 +706,13 @@ const DATA = {
   gh: { 'acme/mine': 'WRITE', 'acme/theirs': 'READ' },
   models,
   modelNote,
+  // Machines the board knows (`herdr-projects machines`, `herdr machine list`): the planner works with its own board only and
+  // must not show them, nor fail on them.
   machines: {
     here: { label: 'this', host: 'fixture', version: '1.2.4' },
     machines: [
       { label: 'vm-a', target: 'deploy@vm-a', ok: true, version: '1.2.4', tasks: 4 },
-      {
-        label: 'vm-b', target: 'deploy@vm-b', ok: false,
-        why: {
-          kind: 'herdr-projects', line: 'herdr-projects is not found there',
-          detail: ["ssh deploy@vm-b — it answers, but herdr-projects is not in its login shell's PATH", 'install it there: herdr plugin install eliasstravik/herdr-projects'],
-          said: '', code: 127,
-        },
-      },
+      { label: 'vm-b', target: 'deploy@vm-b', ok: false, why: { kind: 'herdr-projects', line: 'herdr-projects is not found there', detail: [], said: '', code: 127 } },
     ],
     off: false,
   },
@@ -752,44 +720,6 @@ const DATA = {
     { label: 'vm-a', ssh_target: 'deploy@vm-a', remote_session: 'work' },
     { label: 'vm-b', ssh_target: 'deploy@vm-b' },
   ],
-  // What vm-a's board says (`herdr-projects remote list`). alpha is the same project as the local
-  // alpha (the same origin); omega is a project only vm-a has.
-  vmA: {
-    version: '1.2.4',
-    host: 'vm-a',
-    coordinator: {
-      state: 'idle',
-      said: 'Жду задач на vm-a. ALP-4 идёт, ALP-5 ждёт ответа.',
-      talk: [{ you: true, text: 'что по ALP-4?' }, { you: false, text: 'Пишет тесты, около половины.' }],
-    },
-    tasks: [
-      {
-        id: 'alpha/4', repo: 'alpha', n: 4, key: 'ALP', title: 'Тёмная тема на vm-a', state: 'working', stage: 'working', kind: '', msg: 'Пишу тесты для палитры', app: 'claude', progress: 50,
-        created: createdAgo(2 * HOUR), description: 'Тёмная тема для страницы отчётов на сервере vm-a.', model: 'claude-sonnet-5-5', session: C0.uuid('vm-a alpha/4'), worktree: '/srv/herdr/worktrees/alpha-4', exitedAt: 0,
-        settings: { 'worker.agent': 'claude/claude-sonnet-5-5' }, afterNames: [], snap: { repo: 'alpha', folder: '/srv/projects/alpha' },
-      },
-      {
-        id: 'alpha/5', repo: 'alpha', n: 5, key: 'ALP', title: 'Ветка для релиза', state: 'blocked', stage: 'working', kind: 'question', app: 'claude', msg: 'Какую ветку брать: main или release?',
-        created: createdAgo(40 * MIN), description: 'Выпустить релиз с темой; вопрос — от какой ветки.', model: 'claude-sonnet-5-5', session: C0.uuid('vm-a alpha/5'), worktree: '/srv/herdr/worktrees/alpha-5', exitedAt: 0,
-        settings: { 'worker.agent': 'claude/claude-sonnet-5-5' }, afterNames: ['alpha/4'], snap: { repo: 'alpha', folder: '/srv/projects/alpha' },
-      },
-      {
-        id: 'omega/1', repo: 'omega', n: 1, key: 'OMG', title: 'Импорт заказов', state: 'working', stage: 'working', app: 'omp', msg: 'Writing importer', progress: 20,
-        created: createdAgo(26 * HOUR), description: 'Import the orders of the old CSV export into omega.', model: 'deepseek-v4-flash', session: '/srv/herdr/omp/sessions/omega-1.jsonl', worktree: '/srv/herdr/worktrees/omega-1', exitedAt: 0,
-        settings: { 'worker.agent': 'omp/deepseek/deepseek-v4-flash' }, afterNames: [], snap: { repo: 'omega', folder: '/srv/projects/omega' },
-      },
-      {
-        id: 'omega/2', repo: 'omega', n: 2, key: 'OMG', title: 'Схема заказов', state: 'done', stage: 'done', app: 'claude', msg: 'Merged into main.',
-        created: createdAgo(3 * DAY), description: 'Order schema for omega.', model: 'claude-sonnet-5-5', session: C0.uuid('vm-a omega/2'), worktree: '/srv/herdr/worktrees/omega-2', exitedAt: NOW - 2 * DAY,
-        settings: { 'worker.agent': 'claude/claude-sonnet-5-5' }, afterNames: [], snap: { repo: 'omega', folder: '/srv/projects/omega' },
-      },
-    ],
-  },
-  // Read-only git of vm-a's folders (the gitlag snippet's lines): alpha is one commit behind its origin.
-  vmAGit: {
-    '/srv/projects/alpha': { origin: ORIGIN_URL, main: 'main', head: alphaMid, origin_sha: alphaOriginSha, ahead: 0, behind: 1, fetch: Math.floor(NOW / 1000) - 5 * 3600, tip: alphaTip },
-    '/srv/projects/omega': { origin: 'https://github.com/acme/omega.git', main: 'main', head: C0.uuid('omega head').replace(/-/g, '').padEnd(40, 'a').slice(0, 40), origin_sha: C0.uuid('omega head').replace(/-/g, '').padEnd(40, 'a').slice(0, 40), ahead: 0, behind: 0, fetch: Math.floor(NOW / 1000) - 600, tip: Math.floor(NOW / 1000) - DAY / 1000 },
-  },
 };
 
 function herdrProjectsMain(C, DATA) {
@@ -800,9 +730,6 @@ function herdrProjectsMain(C, DATA) {
   const fail = (msg, code = 1) => { console.error(msg); process.exit(code); };
   const flag = (name) => { const i = rest.indexOf(name); return i >= 0 ? rest[i + 1] : undefined; };
   if (cmd !== 'list' && cmd !== 'details' && cmd !== 'after') log('calls.jsonl', { argv });
-  // `herdr-projects version` (the first line is the version the galaxy setup compares with the far machine's).
-  if (cmd === 'version') { console.log('herdr-projects ' + DATA.plugin.version + ' (fixture)'); return; }
-
   if (cmd === 'list') {
     if (fs.existsSync(join('state', 'list-fails'))) fail('herdr-projects: the board is locked');
     const w = world();
@@ -815,25 +742,8 @@ function herdrProjectsMain(C, DATA) {
 
   if (cmd === 'machines') {
     log('machines.jsonl', { argv });
-    // The machines herdr has saved (state/herdr-machines.json) beyond the static list: a new galaxy such as vm-c is
-    // on the board's list with the reason it is not ok, until its herdr-projects is installed (then it answers).
-    const saved = (() => { try { return JSON.parse(fs.readFileSync(join('state', 'herdr-machines.json'), 'utf8')); } catch (e) { return DATA.savedMachines; } })();
-    const have = DATA.machines.machines.map((m) => m.label);
-    const extra = saved.filter((m) => !have.includes(m.label)).map((m) => {
-      const ready = m.label === DATA.farC.label && fs.existsSync(path.join(DATA.farC.userBin, 'herdr-projects'));
-      if (ready) return { label: m.label, target: m.ssh_target, ok: true, version: DATA.plugin.version, tasks: 0 };
-      return {
-        label: m.label, target: m.ssh_target, ok: false,
-        why: {
-          kind: 'herdr-projects', line: 'herdr-projects is not found there',
-          detail: ['ssh ' + m.ssh_target + ' — it answers, but herdr-projects is not in its login shell\'s PATH', 'install it there: herdr plugin install eliasstravik/herdr-projects'],
-          said: '', code: 127,
-        },
-      };
-    });
-    const all = { ...DATA.machines, machines: DATA.machines.machines.concat(extra) };
-    if (argv.includes('--json')) console.log(JSON.stringify(all));
-    else console.log(all.machines.map((m) => m.label + '  ' + m.target + '  ' + (m.ok ? 'ok' : 'не отвечает: ' + m.why.line)).join('\n'));
+    if (argv.includes('--json')) console.log(JSON.stringify(DATA.machines));
+    else console.log(DATA.machines.machines.map((m) => m.label + '  ' + m.target + '  ' + (m.ok ? 'ok' : 'не отвечает: ' + m.why.line)).join('\n'));
     return;
   }
 
@@ -1068,76 +978,10 @@ function herdrMain(C, DATA) {
     }
     return names;
   };
-  // The saved machines live in state/herdr-machines.json (the list the fixture starts with is DATA.savedMachines).
-  const savedFile = join('state', 'herdr-machines.json');
-  const readSaved = () => { try { return JSON.parse(fs.readFileSync(savedFile, 'utf8')); } catch (e) { return DATA.savedMachines; } };
-  const writeSaved = (list) => fs.writeFileSync(savedFile, JSON.stringify(list, null, 1));
   if (cmd === '--version') { console.log('herdr 0.9.4'); return; }
-  if (cmd === 'plugin' && sub === 'list') {
-    log('herdr.jsonl', { argv: process.argv.slice(2) });
-    console.log(DATA.plugin.name + ' ' + DATA.plugin.version + '  ' + DATA.plugin.repo + '@' + DATA.plugin.ref);
-    return;
-  }
-  if (cmd === 'plugin' && sub === 'install') {
-    log('herdr.jsonl', { argv: process.argv.slice(2) });
-    console.log('herdr-projects уже установлен: ' + DATA.plugin.version);
-    return;
-  }
   if (cmd === 'machine' && sub === 'list') {
     log('herdr.jsonl', { argv: process.argv.slice(2) });
-    console.log(JSON.stringify(readSaved()));
-    return;
-  }
-  if (cmd === 'machine' && sub === 'remove') {
-    log('herdr.jsonl', { argv: process.argv.slice(2) });
-    const label = rest[0];
-    const list = readSaved();
-    if (!list.some((m) => m.label === label)) { console.error('no such machine: ' + label); process.exit(1); }
-    writeSaved(list.filter((m) => m.label !== label));
-    console.log('Машина ' + label + ' удалена из herdr.');
-    return;
-  }
-  if (cmd === 'machine' && sub === 'add') {
-    // `herdr machine add TARGET --label LABEL`. A machine without herdr asks, in a terminal, whether to install it;
-    // without a terminal the question cannot be asked, so the answer is refused (the planner runs it in a pty).
-    const target = rest[0];
-    const li = rest.indexOf('--label');
-    const label = li >= 0 ? rest[li + 1] : '';
-    log('herdr.jsonl', { argv: process.argv.slice(2), tty: !!process.stdin.isTTY });
-    if (!target || !label) { console.error('herdr machine add: нужны адрес и --label'); process.exit(2); }
-    const list = readSaved();
-    const far = DATA.farC;
-    const save = () => {
-      writeSaved(list.concat([{ label, ssh_target: target }]));
-      console.log('Машина ' + label + ' сохранена (herdr machine list --json).');
-      process.exit(0);
-    };
-    if (list.some((m) => m.label === label)) { console.log('Машина ' + label + ' уже сохранена.'); process.exit(0); }
-    if (target !== far.target) { console.error('ssh: connect to host ' + target + ' port 22: Connection refused'); process.exit(255); }
-    if (fs.existsSync(path.join(far.userBin, 'herdr'))) save();
-    if (!process.stdin.isTTY) {
-      console.error('herdr machine add: на ' + target + ' нет herdr, и установку надо подтвердить в интерактивном терминале');
-      process.exit(1);
-    }
-    const readline = require('node:readline');
-    process.stdout.write('На ' + target + ' (Linux x86_64) нет herdr. Установить herdr и сохранить машину ' + label + '? [y/N] ');
-    const rl = readline.createInterface({ input: process.stdin });
-    let answered = false;
-    rl.on('line', (line) => {
-      answered = true;
-      rl.close();
-      if (!/^y(es)?$/i.test(line.trim())) { console.log('Отменено: машина не сохранена.'); process.exit(1); }
-      console.log('Проверяю вход по ssh… ок');
-      console.log('Ставлю herdr 0.9.4 на ' + target + '…');
-      fs.copyFileSync(path.join(far.lib, 'herdr'), path.join(far.userBin, 'herdr'));
-      fs.chmodSync(path.join(far.userBin, 'herdr'), 0o755);
-      const s = JSON.parse(fs.readFileSync(far.state, 'utf8'));
-      s.herdr = { version: '0.9.4' };
-      fs.writeFileSync(far.state, JSON.stringify(s, null, 1));
-      console.log('herdr 0.9.4 стоит на ' + label + '.');
-      save();
-    });
-    rl.on('close', () => { if (!answered) { console.log('Ответа не было: отменено.'); process.exit(1); } });
+    console.log(JSON.stringify(DATA.savedMachines));
     return;
   }
   if (cmd === 'agent' && sub === 'list') {
@@ -1160,144 +1004,6 @@ function herdrMain(C, DATA) {
   }
   console.error('fixture herdr: unsupported ' + process.argv.slice(2).join(' '));
   process.exit(2);
-}
-
-// vm-a answers like the board there: a login banner, then the reply's line. vm-b refuses the connection.
-function sshMain(C, DATA) {
-  const { fs, path, log } = C;
-  const args = process.argv.slice(2);
-  const target = args.length >= 2 ? args[args.length - 2] : '';
-  const remote = args.length ? args[args.length - 1] : '';
-  const unwrapped = /^exec "\$\{SHELL:-\/bin\/sh\}" -lc '([\s\S]*)'$/.exec(remote);
-  const inner = unwrapped ? unwrapped[1].split("'\\''").join("'") : remote;
-  const host = target.includes('@') ? target.split('@')[1] : target;
-  const rec = { argv: args, target, inner: inner.slice(0, 400) };
-  if (host === DATA.farC.label) {
-    // vm-c: the command runs in the machine's own folder, with that folder as HOME and only its own PATH, so
-    // what the probe finds is what the machine has. No login banner: a fresh machine prints none.
-    const { spawnSync } = require('node:child_process');
-    log('ssh.jsonl', { ...rec, far: DATA.farC.label });
-    const r = spawnSync('/bin/sh', ['-c', inner], {
-      cwd: DATA.farC.home,
-      env: { HOME: DATA.farC.home, PATH: [DATA.farC.bin, DATA.farC.userBin].join(':'), USER: 'dev', LANG: 'C' },
-      encoding: 'utf8',
-    });
-    if (r.stdout) process.stdout.write(r.stdout);
-    if (r.stderr) process.stderr.write(r.stderr);
-    process.exit(r.status === null ? 255 : r.status);
-  }
-  if (host === 'vm-b') {
-    log('ssh.jsonl', { ...rec, refused: true });
-    process.stderr.write('ssh: connect to host vm-b port 22: Connection refused\n');
-    process.exit(255);
-  }
-  if (host !== 'vm-a') {
-    log('ssh.jsonl', { ...rec, refused: true });
-    process.stderr.write('ssh: Could not resolve hostname ' + host + ': Name or service not known\n');
-    process.exit(255);
-  }
-  const PREFIX = 'HERDR_SESSION=work ';
-  const sessionOk = inner.startsWith(PREFIX);
-  rec.session_ok = sessionOk;
-  log('ssh.jsonl', rec);
-  process.stdout.write('Welcome to vm-a (Ubuntu 24.04 LTS). Last login: Mon Oct 19 22:10:04 2026\n');
-  if (sessionOk && inner.slice(PREFIX.length).startsWith('HP_MEMORY=1;')) {
-    // The planner's memory scripts (plain sh): they run in vm-a's own home, where /srv/projects is a folder too.
-    const { spawnSync } = require('node:child_process');
-    const home = path.join(C.D, 'state', 'vm-a-home');
-    const script = inner.slice(PREFIX.length).split('/srv/projects/').join(home + '/srv/projects/');
-    log('memory.jsonl', { what: script.includes('base64') ? 'write' : script.includes('coordinator') ? 'coordinator' : 'read', home });
-    const r = spawnSync('/bin/sh', ['-c', script], { env: { HOME: home, PATH: process.env.PATH, LANG: 'C' }, encoding: 'utf8' });
-    if (r.stdout) process.stdout.write(r.stdout);
-    if (r.stderr) process.stderr.write(r.stderr);
-    process.exit(r.status === null ? 255 : r.status);
-  }
-  if (!sessionOk) {
-    console.error('herdr-projects: no board in the default session on vm-a');
-    process.exit(1);
-  }
-  const cmd = inner.slice(PREFIX.length);
-  let m;
-  // vm-a's own board: its settings (show, set, unset), its doctor, its models and the crew's programs on its PATH.
-  const words = C.shWords(cmd);
-  const keysOf = Object.fromEntries(DATA.vmA.tasks.map((t) => [t.repo, t.key]));
-  const vmOps = () => C.boardSettings(path.join(C.D, 'state', 'vm-a-settings.json'), { models: DATA.models, efforts: DATA.board.efforts, builtin: DATA.board.builtin, keys: keysOf });
-  if (words[0] === 'herdr-projects' && words[1] === 'show') {
-    const i = words.indexOf('--repo');
-    const repo = i >= 0 ? words[i + 1] : '';
-    if (repo && !(repo in keysOf)) { console.error('No repo ' + repo); process.exit(1); }
-    console.log(JSON.stringify(vmOps().show(repo), null, 2));
-    return;
-  }
-  if (words[0] === 'herdr-projects' && (words[1] === 'set' || words[1] === 'unset')) {
-    const i = words.indexOf('--repo');
-    const repo = i >= 0 ? words[i + 1] : '';
-    const args = words.slice(2, i >= 0 ? i : words.length);
-    if (repo && !(repo in keysOf)) { console.error('No repo ' + repo); process.exit(1); }
-    const res = words[1] === 'set' ? vmOps().set(args[0], args[1], repo) : vmOps().unset(args[0], repo);
-    if (res.error) { console.error(res.error); process.exit(1); }
-    console.log((repo || 'home') + ': ' + args[0] + (words[1] === 'set' ? ' = ' + args[1] : ' unset'));
-    return;
-  }
-  if (cmd === 'herdr-projects doctor') {
-    console.log(DATA.board.doctor.vmA.join('\n'));
-    process.exit(DATA.board.doctorExit.vmA);
-  }
-  if (words[0] === 'herdr-projects' && words[1] === 'models') {
-    const prog = words[2];
-    const names = DATA.models[prog];
-    if (!names) { console.error('models: unknown program ' + prog); process.exit(1); }
-    console.log(DATA.modelNote + '\n');
-    for (const name of names) console.log(name);
-    if (DATA.board.efforts[prog]) console.log('\nEffort (worker.effort and the like): ' + DATA.board.efforts[prog].join(', ') + ' (from `' + prog + ' --help`).');
-    return;
-  }
-  if (cmd.startsWith('for p in ')) {
-    // `command -v` for the crew's programs: one name per line, for the ones vm-a has.
-    DATA.board.installed.vmA.forEach((p) => console.log(p));
-    return;
-  }
-  if (cmd === 'herdr-projects remote list') {
-    console.log(JSON.stringify(DATA.vmA));
-    return;
-  }
-  if ((m = /^herdr-projects remote (do|dispatch) (\S+)$/.exec(cmd))) {
-    const payload = JSON.parse(Buffer.from(m[2], 'base64').toString('utf8'));
-    log('remote.jsonl', { what: m[1], payload });
-    const msg = m[1] === 'do'
-      ? payload.id + ': ' + payload.action + ' — принято на vm-a'
-      : 'Координатор vm-a получил сообщение' + (payload.to ? ' для ' + payload.to : '');
-    console.log(JSON.stringify({ ok: true, msg }));
-    return;
-  }
-  if (cmd.startsWith('herdr-projects after ')) {
-    const parts = cmd.slice('herdr-projects after '.length).replace(/'/g, '').trim().split(/\s+/);
-    const id = parts[0];
-    const clear = parts.includes('--clear');
-    const refs = clear ? [] : parts.slice(1);
-    const task = DATA.vmA.tasks.find((t) => t.id === id);
-    log('remote.jsonl', { what: 'after', id, refs, clear });
-    if (!task) { console.error('No task ' + id); process.exit(1); }
-    const tagOf = (ref) => { const t = DATA.vmA.tasks.find((x) => x.id === ref); return t ? t.key + '-' + t.n : ref; };
-    // A query (no refs, no --clear) answers with what the task waits for now.
-    const now = clear || refs.length ? refs : (task.afterNames || []);
-    console.log(task.key + '-' + task.n + ': ' + (now.length ? 'waits for ' + now.map(tagOf).join(', ') : 'waits for nothing'));
-    return;
-  }
-  if (cmd.startsWith('sh -c ')) {
-    // The read-only snippet: its folders are the arguments after the snippet's last line.
-    const marker = "done\n' sh ";
-    const at = cmd.lastIndexOf(marker);
-    const folders = at >= 0 ? cmd.slice(at + marker.length).trim().split(/\s+/).map((f) => f.replace(/'/g, '')) : [];
-    log('remote.jsonl', { what: 'gitlag', folders });
-    folders.forEach((f, i) => {
-      const g = DATA.vmAGit[f];
-      console.log(g ? [i + 1, g.origin, g.main, g.head, g.origin_sha, g.ahead, g.behind, g.fetch, g.tip].join('\t') : [i + 1, 'NOGIT'].join('\t'));
-    });
-    return;
-  }
-  console.error('herdr-projects: unknown remote command ' + cmd);
-  process.exit(127);
 }
 
 // The translator: reads the text between <<< and >>> on stdin; answers «ПЕРЕВОД: » and the first 60 characters.
@@ -1377,11 +1083,6 @@ function glabMain(C, DATA) {
 function xdgMain(C) {
   const argv = process.argv.slice(2);
   C.log('terminal.jsonl', { argv });
-  // A login window (`ssh -t ... <program> login`) runs its ssh call now: the fixture has no person to type the
-  // password or finish the browser login, so the login completes at once.
-  if (argv[0] && C.path.basename(argv[0]) === 'ssh') {
-    require('node:child_process').spawnSync(argv[0], argv.slice(1), { stdio: 'ignore' });
-  }
   console.log('opened');
 }
 
@@ -1396,241 +1097,12 @@ function writeBin(name, fn) {
   fs.writeFileSync(p, src);
   fs.chmodSync(p, 0o755);
 }
-// ---------------------------------------------------------------- vm-c: a fresh far machine
-// dev@vm-c has git and node and nothing else of herdr's: no herdr, no plugin, no agents, no curl, no npm of its own.
-// Its folder is a fake home: HOME, and a PATH with only the tools it has (symlinks to the host's git, node and the
-// shell tools the planner's checks use) and the folder of user-installed programs. Installs there write real files
-// into that folder (the installers "work"); the state of the machine is state.json in the same folder.
-const VMC = {
-  label: 'vm-c',
-  target: 'dev@vm-c',
-  root: path.join(dir, 'machines', 'vm-c'),
-  home: path.join(dir, 'machines', 'vm-c', 'home'),
-  bin: path.join(dir, 'machines', 'vm-c', 'bin'),
-  userBin: path.join(dir, 'machines', 'vm-c', 'home', '.local', 'bin'),
-  lib: path.join(dir, 'machines', 'vm-c', 'lib'),
-  state: path.join(dir, 'machines', 'vm-c', 'state.json'),
-};
-// The home plugin: its commit is the `@<sha>` of `herdr plugin list`. The far machine gets the same commit.
-DATA.farC = VMC;
-DATA.plugin = { name: 'herdr-projects', version: '1.2.4', repo: 'eliasstravik/herdr-projects', ref: '7d8bba7c1f2e3a4b5c6d7e8f9a0b1c2d3e4f5a6b' };
-// What `npm install -g <package>` installs on the far machine: the program's name and its version.
-DATA.packages = {
-  '@openai/codex': { name: 'codex', version: '0.5.1' },
-  '@oh-my-pi/pi-coding-agent': { name: 'omp', version: '0.9.2' },
-  '@mariozechner/pi-coding-agent': { name: 'pi', version: '0.4.7' },
-  'opencode-ai': { name: 'opencode', version: '1.2.0' },
-};
-
 writeBin('herdr-projects', herdrProjectsMain);
 writeBin('herdr', herdrMain);
-writeBin('ssh', sshMain);
 writeBin('claude', claudeMain);
 writeBin('gh', ghMain);
 writeBin('glab', glabMain);
 writeBin('xdg-terminal-exec', xdgMain);
-
-// The far machine's own commands (written into its lib/ folder; the install steps copy them into its folder of
-// user-installed programs). They read and write the machine's state.json. Each is a node script with DATA embedded.
-function writeFarScript(file, fn) {
-  const src = '#!/usr/bin/env node\n' +
-    '// Generated by scripts/fixture.mjs: a command of the far machine vm-c. Do not edit; rerun the generator.\n' +
-    `const DATA = ${JSON.stringify(DATA)};\n` +
-    `(${fn.toString()})(DATA);\n`;
-  fs.writeFileSync(file, src);
-  fs.chmodSync(file, 0o755);
-}
-function farHerdr(DATA) {
-  const fs = require('node:fs');
-  const path = require('node:path');
-  const far = DATA.farC;
-  const args = process.argv.slice(2);
-  fs.appendFileSync(path.join(DATA.dir, 'log', 'far.jsonl'), JSON.stringify({ host: far.label, bin: 'herdr', argv: args }) + '\n');
-  if (args[0] === '--version') { console.log('herdr 0.9.4'); return; }
-  if (args[0] === 'plugin' && args[1] === 'list') {
-    const s = JSON.parse(fs.readFileSync(far.state, 'utf8'));
-    if (s.plugin) console.log(DATA.plugin.name + ' ' + s.plugin.version + '  ' + DATA.plugin.repo + (s.plugin.ref ? '@' + s.plugin.ref : ''));
-    return;
-  }
-  if (args[0] === 'plugin' && (args[1] === 'install' || args[1] === 'update')) {
-    const repo = args[2];
-    const ri = args.indexOf('--ref');
-    const ref = ri >= 0 ? args[ri + 1] : '';
-    if (repo !== DATA.plugin.repo) { console.error('herdr plugin: нет плагина ' + repo); process.exit(1); }
-    if (!args.includes('-y')) { console.error('herdr plugin install: без -y ждёт подтверждения в терминале'); process.exit(1); }
-    const s = JSON.parse(fs.readFileSync(far.state, 'utf8'));
-    s.plugin = { version: DATA.plugin.version, ref };
-    fs.writeFileSync(far.state, JSON.stringify(s, null, 1));
-    const to = path.join(far.userBin, 'herdr-projects');
-    fs.copyFileSync(path.join(far.lib, 'herdr-projects'), to);
-    fs.chmodSync(to, 0o755);
-    console.log('Установлен ' + DATA.plugin.repo + (ref ? ' @' + ref : '') + ': herdr-projects ' + DATA.plugin.version);
-    return;
-  }
-  console.error('herdr: команда «' + args.join(' ') + '» на этой машине не знает');
-  process.exit(2);
-}
-function farBoard(DATA) {
-  const fs = require('node:fs');
-  const path = require('node:path');
-  const far = DATA.farC;
-  const args = process.argv.slice(2);
-  const fail = (m, c) => { console.error(m); process.exit(c || 1); };
-  const flag = (name) => { const i = args.indexOf(name); return i >= 0 ? args[i + 1] : undefined; };
-  const st = () => JSON.parse(fs.readFileSync(far.state, 'utf8'));
-  const save = (s) => fs.writeFileSync(far.state, JSON.stringify(s, null, 1));
-  fs.appendFileSync(path.join(DATA.dir, 'log', 'far.jsonl'), JSON.stringify({ host: far.label, bin: 'herdr-projects', argv: args }) + '\n');
-  const cmd = args[0];
-  if (cmd === 'version') { console.log('herdr-projects ' + DATA.plugin.version + ' (fixture)'); return; }
-  if (cmd === 'install') {
-    const s = st();
-    s.board.installed = true;
-    save(s);
-    console.log('herdr-projects: доска готова');
-    return;
-  }
-  if (cmd === 'doctor') {
-    const s = st();
-    console.log('herdr-projects doctor');
-    for (const [name, a] of Object.entries(s.agents)) {
-      if (!a.installed) continue;
-      console.log(a.signedIn ? '✓ ' + name + ' ' + a.version + ', signed in (fixture)' : '⚠ ' + name + ' ' + a.version + ', not signed in: ' + name + ' login');
-    }
-    return;
-  }
-  if (cmd === 'remote' && args[1] === 'list') {
-    const s = st();
-    console.log(JSON.stringify({ version: DATA.plugin.version, host: far.label, coordinator: { state: 'idle', said: 'Жду задач на vm-c', talk: [] }, tasks: s.board.tasks }));
-    return;
-  }
-  if (cmd === 'show' && args.includes('--json')) {
-    const repo = flag('--repo');
-    const r = st().board.repos[repo];
-    if (!r) fail('No repo ' + repo);
-    console.log(JSON.stringify({ repo: { name: repo, key: r.key, folder: r.folder }, settings: [{ name: 'repo.key', value: r.key }].concat(Object.entries(r.settings || {}).map(([name, value]) => ({ name, value }))) }));
-    return;
-  }
-  if (cmd === 'archive') {
-    // `archive KEY-N`: the task leaves the queue (the universe add does this to its first task).
-    const s = st();
-    const t = s.board.tasks.find((x) => x.key + '-' + x.n === args[1] || x.id === args[1]);
-    if (!t) fail('No task ' + args[1]);
-    t.archivedAt = Date.now();
-    save(s);
-    console.log(args[1] + ': archived');
-    return;
-  }
-  if (cmd === 'set') {
-    const name = args[1];
-    const value = args[2];
-    const repo = flag('--repo');
-    const s = st();
-    if (!repo || !s.board.repos[repo]) fail('No repo ' + repo);
-    if (name === 'repo.key') s.board.repos[repo].key = value;
-    else s.board.repos[repo].settings = Object.assign(s.board.repos[repo].settings || {}, { [name]: value });
-    save(s);
-    console.log(repo + ': ' + name + ' = ' + value);
-    return;
-  }
-  if (cmd === 'add') {
-    // `add TITLE --repo FOLDER`: the folder is a git folder; its name is the project's; the first task is KEY-1.
-    const title = args[1] || '';
-    const root = flag('--repo');
-    if (!root || !fs.existsSync(path.join(root, '.git'))) fail('herdr-projects: ' + root + ' — не git-папка');
-    const name = path.basename(root);
-    const s = st();
-    if (!s.board.repos[name]) s.board.repos[name] = { key: name.slice(0, 3).toUpperCase(), folder: root, settings: {} };
-    else if (s.board.repos[name].folder !== root) fail('herdr-projects: проект ' + name + ' уже на доске в другой папке');
-    const key = s.board.repos[name].key;
-    const n = s.board.tasks.filter((t) => t.repo === name).length + 1;
-    s.board.tasks.push({
-      id: name + '/' + n, repo: name, n, title, state: 'idle', stage: 'todo', kind: '', msg: '', app: 'claude', key,
-      created: Date.now(), description: 'Добавлено на vm-c: ' + root, agent: 'claude', model: '', session: '', worktree: '', exitedAt: 0,
-      settings: {}, afterNames: [], snap: { repo: name, folder: root },
-    });
-    save(s);
-    console.log(key + '-' + n + ': added');
-    return;
-  }
-  fail('herdr-projects: на vm-c «' + args.join(' ') + '» не нужно в fixture', 2);
-}
-function farNpm(DATA) {
-  const fs = require('node:fs');
-  const path = require('node:path');
-  const far = DATA.farC;
-  const args = process.argv.slice(2);
-  fs.appendFileSync(path.join(DATA.dir, 'log', 'far.jsonl'), JSON.stringify({ host: far.label, bin: 'npm', argv: args }) + '\n');
-  if (args[0] === '--version') { console.log('10.2.4'); return; }
-  if (args[0] === 'install' && args[1] === '-g') {
-    const pkg = args[2] || '';
-    const pk = DATA.packages[pkg];
-    if (!pk) { console.error('npm ERR! 404 Not Found - GET https://registry.npmjs.org/' + pkg); process.exit(1); }
-    // A global install puts the program's command into the user's folder of programs and records it.
-    const s = JSON.parse(fs.readFileSync(far.state, 'utf8'));
-    s.agents[pk.name] = { installed: true, version: pk.version, signedIn: false };
-    fs.writeFileSync(far.state, JSON.stringify(s, null, 1));
-    const to = path.join(far.userBin, pk.name);
-    fs.copyFileSync(path.join(far.lib, 'agent'), to);
-    fs.chmodSync(to, 0o755);
-    console.log('added 1 package in 2s');
-    return;
-  }
-  console.error('npm: fixture vm-c знает только install -g');
-  process.exit(2);
-}
-// An agent's command: --version, and the login (`login` or `auth login`), which signs the agent in on this machine.
-function farAgent(DATA) {
-  const fs = require('node:fs');
-  const path = require('node:path');
-  const far = DATA.farC;
-  const name = path.basename(process.argv[1]);
-  const args = process.argv.slice(2).join(' ');
-  const s = JSON.parse(fs.readFileSync(far.state, 'utf8'));
-  const a = s.agents[name] || { version: '0.0.0' };
-  if (args === '--version') { console.log(name + ' ' + a.version); return; }
-  if (args === 'login' || args === 'auth login') {
-    s.agents[name].signedIn = true;
-    fs.writeFileSync(far.state, JSON.stringify(s, null, 1));
-    console.log(name + ': вход выполнен (fixture)');
-    return;
-  }
-  console.log(name + ': fixture знает только --version и login');
-}
-
-// Builds the far machine: its folder, the tools, its three git repositories, its state and its stand-in commands.
-function buildFarMachine() {
-  const far = DATA.farC;
-  for (const d of [far.home, far.bin, far.userBin, far.lib, path.join(far.home, 'Projects')]) fs.mkdirSync(d, { recursive: true });
-  const hostTool = (name) => ['/usr/bin/' + name, '/bin/' + name].find((p) => fs.existsSync(p));
-  const tools = [['git', hostTool('git')], ['node', process.execPath], ['env', hostTool('env')], ['sh', hostTool('sh') || '/bin/sh']];
-  for (const t of ['uname', 'cat', 'head', 'tr', 'sed', 'grep', 'ls', 'mkdir', 'chmod', 'cp', 'mv', 'rm', 'dirname', 'basename', 'find', 'wc', 'sort', 'cut', 'date', 'readlink', 'tail']) {
-    tools.push([t, hostTool(t)]);
-  }
-  for (const [name, src] of tools) {
-    if (src) fs.symlinkSync(src, path.join(far.bin, name));
-  }
-  writeFarScript(path.join(far.bin, 'npm'), farNpm);
-  writeFarScript(path.join(far.lib, 'herdr'), farHerdr);
-  writeFarScript(path.join(far.lib, 'herdr-projects'), farBoard);
-  writeFarScript(path.join(far.lib, 'agent'), farAgent);
-  // Three git repositories: two one folder deep, one two folders deep (the planner looks two deep).
-  const repos = [
-    { rel: 'api', origin: 'https://github.com/acme/api.git' },
-    { rel: 'web', origin: null },
-    { rel: 'labs/tools', origin: 'git@github.com:acme/tools.git' },
-  ];
-  for (const r of repos) {
-    const d = path.join(far.home, 'Projects', r.rel);
-    fs.mkdirSync(d, { recursive: true });
-    git(d, ['init', '-q']);
-    commit(d, 'README.md', '# ' + path.basename(r.rel) + '\n', 'Первый коммит', D1);
-    if (r.origin) git(d, ['remote', 'add', 'origin', r.origin]);
-  }
-  fs.writeFileSync(far.state, JSON.stringify({ plugin: null, board: { installed: false, repos: {}, tasks: [] }, agents: {} }, null, 1));
-  // The home herdr's saved machines: the fixture's list until a machine is added or removed.
-  fs.writeFileSync(path.join(dir, 'state', 'herdr-machines.json'), JSON.stringify(DATA.savedMachines, null, 1));
-}
-buildFarMachine();
 
 // ---------------------------------------------------------------- the world's state and files
 
@@ -1693,11 +1165,6 @@ for (const [id, text] of Object.entries(CLOSING)) {
 }
 // The stand-ins' world (the rows, the waits, the meta) lives under state/.
 fs.writeFileSync(path.join(dir, 'state', 'board.json'), JSON.stringify(w, null, 1));
-// vm-a's home (the ssh stand-in runs the memory scripts there): a Galaxy entry, a universe entry, a Coordinator folder.
-const vmHome = path.join(dir, 'state', 'vm-a-home');
-write(path.join(vmHome, '.herdr-projects', 'memory', 'galaxy', 'vm-a-ports.md'), memEntry('vm-a-ports', 'Порты vm-a', 'На vm-a сервисы слушают 8000–8100', 'reference', 'Не занимать порты 8000–8100: там живут сервисы vm-a.'));
-write(path.join(vmHome, '.herdr-projects', 'data', 'coordinator', 'default', 'chat', 'AGENTS.md'), "<!-- herdr-projects: the Coordinator's standing rules. -->\nYou are the Coordinator of vm-a.\n<!-- /herdr-projects -->\n");
-write(path.join(vmHome, 'srv', 'projects', 'alpha', 'docs', 'memory', 'vm-alpha-note.md'), memEntry('vm-alpha-note', 'Заметка alpha на vm-a', 'alpha на vm-a собирается через make', 'convention', 'На vm-a alpha собирают командой make, а не cargo.'));
 write(path.join(dir, 'theme', 'colors.toml'), `mode = "dark"
 accent = "#dfa360"
 selection = "#513b24"
@@ -1744,10 +1211,9 @@ for (const [id, name] of [['omp', 'OMP'], ['pi', 'Pi']]) {
 write(path.join(dir, 'cache', 'omarchy', 'agent-usage', 'claude-limits.json'), JSON.stringify({ fetchedAtMs: usageAt, limits: claudeLimits }));
 const old = new Date(usageAt - 2 * 3600 * 1000);
 fs.utimesSync(path.join(usageDir, 'pi.json'), old, old);
-// The boards' own settings (show, set and unset read and write these files): home with its repo alpha, and vm-a.
+// The board's own settings (show, set and unset read and write this file): the board with its repo alpha.
 write(path.join(dir, 'state', 'board-settings.json'), JSON.stringify({ '': BOARD.seed.home, alpha: BOARD.seed.alpha }, null, 1));
-write(path.join(dir, 'state', 'vm-a-settings.json'), JSON.stringify({ '': BOARD.seed.vmA, alpha: BOARD.seed.vmAAlpha }, null, 1));
-// The home crew's programs on PATH (the planner looks for them there): stand-ins for codex and omp (claude is above).
+// The crew's programs on PATH (the planner looks for them there): stand-ins for codex and omp (claude is above).
 for (const name of ['codex', 'omp']) {
   const p = path.join(dir, 'bin', name);
   fs.writeFileSync(p, '#!/bin/sh\necho "' + name + ' stand-in"\n');

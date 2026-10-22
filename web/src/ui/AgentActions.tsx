@@ -1,16 +1,15 @@
 import type { JSX } from 'preact';
 import { useRef } from 'preact/hooks';
-import { armed, galaxyId, tellDraft } from '../store';
+import { armed, tellDraft } from '../store';
 import { ACTION_LABEL, boardOk, runTaskAction, tellTask } from '../actions';
 import { t } from '../i18n';
 import { AutoTextarea } from './AutoText';
 import type { Task } from '../types';
 
 /** The buttons of the board's actions for a task, exactly as the Focus shows them. */
-export function TaskActionButtons(props: { task: Task; galaxy?: string }): JSX.Element {
+export function TaskActionButtons(props: { task: Task }): JSX.Element {
   const task = props.task;
-  const galaxy = props.galaxy ?? galaxyId.value;
-  const dis = !boardOk() && galaxy === '';
+  const dis = !boardOk();
   const actions = (task.actions || []).filter((a) => !['tell', 'answer'].includes(a));
   return (
     <>
@@ -21,7 +20,7 @@ export function TaskActionButtons(props: { task: Task; galaxy?: string }): JSX.E
           <button
             key={a} type="button" data-act={a} data-id={task.id} aria-disabled={dis}
             class={`btn ${a === 'approve' ? 'go' : ''} ${a === 'anyway' ? 'danger' : ''} ${on ? 'arm' : ''}`}
-            onClick={() => runTaskAction(a, task, { kind: 'planet', galaxy, id: task.id })}
+            onClick={() => runTaskAction(a, task)}
           >{on ? t('req.confirm', { a: label.toLowerCase() }) : label}</button>
         );
       })}
@@ -30,16 +29,15 @@ export function TaskActionButtons(props: { task: Task; galaxy?: string }): JSX.E
 }
 
 /** The line that returns words to the agent (a refusal, a correction, an answer). */
-export function TellBox(props: { task: Task; galaxy?: string; input?: string }): JSX.Element {
+export function TellBox(props: { task: Task; input?: string }): JSX.Element {
   const task = props.task;
   const id = props.input ?? 'tell';
-  const galaxy = props.galaxy ?? galaxyId.value;
-  const dis = !boardOk() && galaxy === '';
+  const dis = !boardOk();
   const ref = useRef<HTMLTextAreaElement>(null);
   const submit = async (): Promise<void> => {
     const el = ref.current;
     if (!el) return;
-    await tellTask(task, el.value, galaxy || undefined);
+    await tellTask(task, el.value);
   };
   return (
     <div class="tell">

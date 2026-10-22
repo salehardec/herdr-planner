@@ -1,12 +1,12 @@
 import { signal } from '@preact/signals';
 import type { JSX } from 'preact';
 import { useEffect } from 'preact/hooks';
-import { chat, galaxyId, searchState, snap, views } from '../store';
+import { chat, currentView, searchState, snap } from '../store';
 import { api } from '../api';
 import { buildDocs, GROUPS, searchDocs, type Doc } from '../search';
 import { t } from '../i18n';
 import { highlight } from '../util/format';
-import { enterGalaxy, goHome, navigateTo } from '../nav';
+import { goHome, navigateTo } from '../nav';
 import { panels } from '../store';
 import { openChat } from '../keys';
 import { openChatAt } from '../chat';
@@ -20,7 +20,6 @@ import './search.css';
 interface Row {
   kind: SearchHit['kind'];
   id: string;
-  galaxy: string;
   path: string;
   title: string;
   status: string;
@@ -45,23 +44,23 @@ function onType(q: string): void {
   window.clearTimeout(timer);
   const mine = ++seq;
   if (q.trim().length < 2) { serverHits.value = []; return; }
-  // The server knows what the page does not: descriptions of far tasks, the whole old chat.
+  // The server knows what the page does not: the whole old chat, memory and closing notes.
   timer = window.setTimeout(async () => {
     try {
       const r = await api<{ hits: SearchHit[] }>('/api/search?q=' + encodeURIComponent(q) + '&limit=20');
       if (mine !== seq) return;
-      serverHits.value = r.hits.map((h) => ({ kind: h.kind, id: h.id, galaxy: h.galaxy, path: h.path, title: h.title, status: h.status, snippet: h.snippet }));
+      serverHits.value = r.hits.map((h) => ({ kind: h.kind, id: h.id, path: h.path, title: h.title, status: h.status, snippet: h.snippet }));
     } catch { /* the local part stays */ }
   }, 150);
 }
 
 function rows(q: string): Row[] {
-  const docs: Doc[] = buildDocs(views.value, snap.value, chat.value.turns, {
+  const docs: Doc[] = buildDocs(currentView.value, snap.value, chat.value.turns, {
     quasar: t('quasar.label'), todo: t('search.todoPath'), chat: t('search.chatPath'),
   });
   const local = searchDocs(docs, q).map<Row>((f) => ({ ...f.doc }));
-  const seen = new Set(local.map((r) => `${r.kind}|${r.galaxy}|${r.id}`));
-  const extra = serverHits.value.filter((h) => !seen.has(`${h.kind}|${h.galaxy}|${h.id}`));
+  const seen = new Set(local.map((r) => `${r.kind}|${r.id}`));
+  const extra = serverHits.value.filter((h) => !seen.has(`${h.kind}|${h.id}`));
   const all = [...local, ...extra];
   const per = new Map<string, number>();
   const out: Row[] = [];
@@ -78,13 +77,13 @@ export function choose(r: Row): void {
   searchState.value = { open: false, q: '', hits: [], cur: 0 };
   (document.getElementById('q') as HTMLInputElement | null)?.blur();
   switch (r.kind) {
-    case 'galaxy': void (r.id === galaxyId.value ? goHome() : r.id === '' ? goHome() : enterGalaxy(r.id)); return;
+    case 'galaxy': void goHome(); return;
     case 'todo': panels.todo.value = true; todoHighlight.value = r.id; setTimeout(() => { todoHighlight.value = null; }, 2000); return;
     case 'chat': openChat(true); void openChatAt(Number(r.id)); return;
-    case 'memory': openMemoryEntry(r.galaxy, r.id); return;
-    case 'closing': void navigateTo({ kind: 'planet', galaxy: r.galaxy, id: r.id }); return;
+    case 'memory': openMemoryEntry(r.id); return;
+    case 'closing': void navigateTo({ kind: 'planet', id: r.id }); return;
     default: {
-      const e: Entity = { kind: r.kind as Entity['kind'], galaxy: r.galaxy, id: r.id };
+      const e: Entity = { kind: r.kind as Entity['kind'], id: r.id };
       void navigateTo(e);
     }
   }
@@ -128,7 +127,7 @@ export function Search(): JSX.Element {
                 flat = list.indexOf(r);
                 return (
                   <div
-                    key={`${r.kind}|${r.galaxy}|${r.id}`} role="option" aria-selected={flat === st.cur}
+                    key={`${r.kind}|${r.id}`} role="option" aria-selected={flat === st.cur}
                     class={`srow s-${r.status || 'none'} ${flat === st.cur ? 'cur' : ''}`}
                     data-kind={r.kind} data-id={r.id}
                     onMouseEnter={() => { searchState.value = { ...searchState.value, cur: list.indexOf(r) }; }}

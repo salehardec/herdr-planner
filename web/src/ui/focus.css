@@ -66,7 +66,6 @@
 .lagt td,.lagt th{padding:0.1875rem 0.25rem;border-bottom:1px solid var(--pl-line);text-align:left}
 .lagt th{color:var(--pl-faint);font-weight:500}
 .cmd{font-size:0.6875rem;color:var(--pl-accent-ink);word-break:break-all;cursor:copy}
-.why{margin:0;padding-left:1.125rem;color:var(--pl-dim)}
 .arc-list{display:grid;gap:0.25rem}
 .arc-row{display:grid;grid-template-columns:auto minmax(0,1fr) auto;gap:0.5rem;align-items:center;padding:0.3125rem 0.375rem;border:1px solid var(--pl-line);border-radius:0.3125rem;background:var(--pl-tile)}
 .arc-row .t{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--pl-dim)}

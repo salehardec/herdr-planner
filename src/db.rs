@@ -2,8 +2,7 @@
 //!
 //! Everything the planner keeps across restarts lives here: the God's list (todo),
 //! the journal, the Coordinator's chat (its state and an index of its transcript
-//! turns), the status history, the search index, translations and the cache of far
-//! galaxies. One connection behind a mutex; every method is short and blocking, so
+//! turns), the status history, the search index and translations. One connection behind a mutex; every method is short and blocking, so
 //! async callers wrap them in `spawn_blocking`.
 //!
 //! Full-text search uses FTS5 with the `trigram` tokenizer: it finds substrings of
@@ -27,6 +26,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("db/migrations/001_init.sql"),
     include_str!("db/migrations/002_todo_files.sql"),
     include_str!("db/migrations/003_memory_suggest.sql"),
+    include_str!("db/migrations/004_no_far_galaxies.sql"),
 ];
 
 /// Entries the journal hands out; older ones stay in the table up to [`JOURNAL_KEEP`].
@@ -35,14 +35,13 @@ const JOURNAL_KEEP: usize = 500;
 #[allow(dead_code)]
 const TRANSLATIONS_KEEP: usize = 500;
 
-/// A searchable thing: a planet, a task, a galaxy, a satellite, ... The lead builds
+/// A searchable thing: a planet, a task, a universe, a satellite, ... The lead builds
 /// these from the board snapshot; `key` is unique across the whole index.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct SearchDoc {
     pub key: String,
     pub kind: String,
     pub id: String,
-    pub galaxy: String,
     pub path: String,
     pub title: String,
     pub text: String,
@@ -423,94 +422,6 @@ impl Db {
         })
     }
 
-    // ---- far galaxies ----
-
-    /// Stores what a far galaxy's board said (`json`), or why it could not be reached.
-    pub fn galaxy_put(&self, label: &str, json: &str, ok: bool, why: &str) {
-        self.with("galaxy_put", |c| {
-            c.execute(
-                "INSERT OR REPLACE INTO galaxies (label, json, fetched_at, ok, why) \
-                 VALUES (?1, ?2, ?3, ?4, ?5)",
-                params![label, json, now_ms() as i64, ok, why],
-            )?;
-            Ok(())
-        })
-    }
-
-    /// Forgets a far galaxy that was removed from herdr.
-    pub fn galaxy_remove(&self, label: &str) {
-        self.with("galaxy_remove", |c| {
-            c.execute("DELETE FROM galaxies WHERE label = ?1", [label])?;
-            Ok(())
-        })
-    }
-
-    /// `(json, fetched_at, ok, why)`.
-    pub fn galaxy_get(&self, label: &str) -> Option<(String, u64, bool, String)> {
-        self.with("galaxy_get", |c| {
-            c.query_row(
-                "SELECT json, fetched_at, ok, why FROM galaxies WHERE label = ?1",
-                [label],
-                |r| Ok((r.get(0)?, r.get::<_, i64>(1)? as u64, r.get(2)?, r.get(3)?)),
-            )
-            .optional()
-        })
-    }
-
-    /// `(label, json, fetched_at, ok, why)` for every galaxy, by label.
-    pub fn galaxy_all(&self) -> Vec<(String, String, u64, bool, String)> {
-        self.with("galaxy_all", |c| {
-            let mut st =
-                c.prepare("SELECT label, json, fetched_at, ok, why FROM galaxies ORDER BY label")?;
-            let rows = st.query_map([], |r| {
-                Ok((
-                    r.get(0)?,
-                    r.get(1)?,
-                    r.get::<_, i64>(2)? as u64,
-                    r.get(3)?,
-                    r.get(4)?,
-                ))
-            })?;
-            rows.collect()
-        })
-    }
-
-    // ---- main-branch lag per repository ----
-
-    pub fn gitlag_put(&self, galaxy: &str, repo: &str, json: &str, at: u64) {
-        self.with("gitlag_put", |c| {
-            c.execute(
-                "INSERT OR REPLACE INTO gitlag (galaxy, repo, json, at) VALUES (?1, ?2, ?3, ?4)",
-                params![galaxy, repo, json, at as i64],
-            )?;
-            Ok(())
-        })
-    }
-
-    /// `(json, at)`.
-    pub fn gitlag_get(&self, galaxy: &str, repo: &str) -> Option<(String, u64)> {
-        self.with("gitlag_get", |c| {
-            c.query_row(
-                "SELECT json, at FROM gitlag WHERE galaxy = ?1 AND repo = ?2",
-                params![galaxy, repo],
-                |r| Ok((r.get(0)?, r.get::<_, i64>(1)? as u64)),
-            )
-            .optional()
-        })
-    }
-
-    /// `(galaxy, repo, json, at)` for every row.
-    pub fn gitlag_all(&self) -> Vec<(String, String, String, u64)> {
-        self.with("gitlag_all", |c| {
-            let mut st =
-                c.prepare("SELECT galaxy, repo, json, at FROM gitlag ORDER BY galaxy, repo")?;
-            let rows = st.query_map([], |r| {
-                Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get::<_, i64>(3)? as u64))
-            })?;
-            rows.collect()
-        })
-    }
-
     // ---- meta ----
 
     pub fn meta_get(&self, key: &str) -> Option<String> {
@@ -608,15 +519,15 @@ impl Db {
 
     // ---- search documents ----
 
-    /// Makes the index of `galaxy` equal to `docs`: documents of that galaxy that are
-    /// no longer present are removed, the others are inserted or updated.
-    pub fn search_docs_replace(&self, galaxy: &str, docs: &[SearchDoc]) {
+    /// Makes the index equal to `docs`: documents that are no longer present are removed,
+    /// the others are inserted or updated.
+    pub fn search_docs_replace(&self, docs: &[SearchDoc]) {
         self.with("search_docs_replace", |c| {
             let tx = c.transaction()?;
             let wanted: HashSet<&str> = docs.iter().map(|d| d.key.as_str()).collect();
             let present: Vec<String> = {
-                let mut st = tx.prepare("SELECT key FROM search_docs WHERE galaxy = ?1")?;
-                let rows = st.query_map([galaxy], |r| r.get(0))?;
+                let mut st = tx.prepare("SELECT key FROM search_docs")?;
+                let rows = st.query_map([], |r| r.get(0))?;
                 rows.collect::<rusqlite::Result<_>>()?
             };
             for key in present.iter().filter(|k| !wanted.contains(k.as_str())) {
@@ -624,15 +535,15 @@ impl Db {
             }
             {
                 let mut up = tx.prepare(
-                    "INSERT INTO search_docs (key, kind, id, galaxy, path, title, text, status, at) \
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9) \
+                    "INSERT INTO search_docs (key, kind, id, path, title, text, status, at) \
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8) \
                      ON CONFLICT(key) DO UPDATE SET kind = excluded.kind, id = excluded.id, \
-                     galaxy = excluded.galaxy, path = excluded.path, title = excluded.title, \
+                     path = excluded.path, title = excluded.title, \
                      text = excluded.text, status = excluded.status, at = excluded.at",
                 )?;
                 for d in docs {
                     up.execute(params![
-                        d.key, d.kind, d.id, d.galaxy, d.path, d.title, d.text, d.status, d.at as i64
+                        d.key, d.kind, d.id, d.path, d.title, d.text, d.status, d.at as i64
                     ])?;
                 }
             }
@@ -664,14 +575,13 @@ impl Db {
                         key: r.get(0)?,
                         kind: r.get(1)?,
                         id: r.get(2)?,
-                        galaxy: r.get(3)?,
-                        path: r.get(4)?,
-                        title: r.get(5)?,
-                        text: r.get(6)?,
-                        status: r.get(7)?,
-                        at: r.get::<_, i64>(8)? as u64,
+                        path: r.get(3)?,
+                        title: r.get(4)?,
+                        text: r.get(5)?,
+                        status: r.get(6)?,
+                        at: r.get::<_, i64>(7)? as u64,
                     },
-                    rank: r.get(9)?,
+                    rank: r.get(8)?,
                 })
             })?;
             rows.collect()
@@ -1007,7 +917,7 @@ fn build_match(
     };
     conds.extend(like_conditions(&shorts, like_cols, &mut args));
     let select = if table == "search_docs" {
-        "d.key, d.kind, d.id, d.galaxy, d.path, d.title, d.text, d.status, d.at"
+        "d.key, d.kind, d.id, d.path, d.title, d.text, d.status, d.at"
     } else {
         "t.n, t.at, t.from_, t.q, t.a"
     };
@@ -1181,12 +1091,11 @@ mod tests {
         }
     }
 
-    fn doc(key: &str, galaxy: &str, title: &str, text: &str) -> SearchDoc {
+    fn doc(key: &str, title: &str, text: &str) -> SearchDoc {
         SearchDoc {
             key: key.into(),
             kind: "planet".into(),
             id: key.into(),
-            galaxy: galaxy.into(),
             path: "alpha › ALP".into(),
             title: title.into(),
             text: text.into(),
@@ -1213,10 +1122,9 @@ mod tests {
     fn trigram_finds_russian_substrings_in_any_case() {
         let db = Db::memory().unwrap();
         db.search_docs_replace(
-            "",
             &[
-                doc("a", "", "Удалить Задачу", "Текст про базу"),
-                doc("b", "", "Другое", ""),
+                doc("a", "Удалить Задачу", "Текст про базу"),
+                doc("b", "Другое", ""),
             ],
         );
         db.chat_turns_upsert(&[turn(0, "Удали все Задачи", "Удалил шесть задач.")]);
@@ -1242,10 +1150,9 @@ mod tests {
     fn short_terms_fall_back_to_like_in_any_case() {
         let db = Db::memory().unwrap();
         db.search_docs_replace(
-            "",
             &[
-                doc("a", "", "Яблоко", "OK готово"),
-                doc("b", "", "Груша", ""),
+                doc("a", "Яблоко", "OK готово"),
+                doc("b", "Груша", ""),
             ],
         );
         assert_eq!(
@@ -1277,8 +1184,7 @@ mod tests {
     fn search_text_is_literal_not_fts_syntax() {
         let db = Db::memory().unwrap();
         db.search_docs_replace(
-            "",
-            &[doc("a", "", "задача OR NEAR(x) * ^", "a \"quoted\" word")],
+            &[doc("a", "задача OR NEAR(x) * ^", "a \"quoted\" word")],
         );
         db.chat_turns_upsert(&[turn(0, "что (с) задачей?", "ответ")]);
         for q in [
@@ -1432,6 +1338,45 @@ mod tests {
     }
 
     #[test]
+    fn a_database_from_before_the_far_galaxies_went_forgets_them() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("p.sqlite");
+        {
+            let c = Connection::open(&path).unwrap();
+            for sql in &MIGRATIONS[..3] {
+                c.execute_batch(sql).unwrap();
+            }
+            c.execute_batch(
+                "INSERT INTO galaxies (label, json, fetched_at, ok) VALUES ('vm-b', '{}', 1, 1);
+                 INSERT INTO gitlag (galaxy, repo, json, at) VALUES ('', 'r', '{}', 1);
+                 INSERT INTO search_docs (key, kind, id, galaxy, title) VALUES ('p::a', 'planet', 'a', '', 'Свой мост');
+                 INSERT INTO search_docs (key, kind, id, galaxy, title) VALUES ('p:vm-b:a', 'planet', 'a', 'vm-b', 'Чужой мост');
+                 PRAGMA user_version = 3;",
+            )
+            .unwrap();
+        }
+        let db = Db::open(&path).unwrap();
+        let tables: i64 = db
+            .conn()
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE name IN ('galaxies', 'gitlag')",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(tables, 0, "the cache of the other machines is dropped");
+        let hits = db.search_docs_match("мост", 10);
+        assert_eq!(hits.len(), 1, "{hits:?}");
+        assert_eq!(hits[0].doc.title, "Свой мост");
+        db.conn()
+            .execute(
+                "INSERT INTO search_fts(search_fts, rank) VALUES ('integrity-check', 1)",
+                [],
+            )
+            .expect("the FTS index matches its table");
+    }
+
+    #[test]
     fn a_newer_schema_is_refused() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("p.sqlite");
@@ -1548,7 +1493,7 @@ mod tests {
     }
 
     #[test]
-    fn translations_galaxies_gitlag_meta() {
+    fn translations_and_meta() {
         let db = Db::memory().unwrap();
         assert_eq!(db.translation_get("h"), None);
         db.translation_put("h", "перевод", 1);
@@ -1564,29 +1509,6 @@ mod tests {
         assert_eq!(n, TRANSLATIONS_KEEP as i64);
         assert_eq!(db.translation_get("h"), None, "the oldest went");
 
-        db.galaxy_put("vm-b", "{\"a\":1}", true, "");
-        db.galaxy_put("vm-c", "", false, "нет связи");
-        let g = db.galaxy_get("vm-b").unwrap();
-        assert_eq!((g.0.as_str(), g.2, g.3.as_str()), ("{\"a\":1}", true, ""));
-        assert!(g.1 > 0);
-        assert_eq!(
-            db.galaxy_all()
-                .iter()
-                .map(|r| r.0.as_str())
-                .collect::<Vec<_>>(),
-            vec!["vm-b", "vm-c"]
-        );
-        assert_eq!(db.galaxy_get("vm-c").unwrap().3, "нет связи");
-
-        db.gitlag_put("vm-b", "repo", "{\"behind\":3}", 7);
-        db.gitlag_put("vm-b", "repo", "{\"behind\":4}", 8);
-        assert_eq!(
-            db.gitlag_get("vm-b", "repo"),
-            Some(("{\"behind\":4}".into(), 8))
-        );
-        assert_eq!(db.gitlag_get("vm-b", "other"), None);
-        assert_eq!(db.gitlag_all().len(), 1);
-
         assert_eq!(db.meta_get("k"), None);
         db.meta_set("k", "1");
         db.meta_set("k", "2");
@@ -1596,29 +1518,22 @@ mod tests {
     #[test]
     fn search_docs_replace_removes_gone_docs_and_keeps_fts_in_step() {
         let db = Db::memory().unwrap();
-        db.search_docs_replace(
-            "vm-b",
-            &[
-                doc("p1", "vm-b", "Мост", "старый текст"),
-                doc("p2", "vm-b", "Дорога", ""),
-            ],
-        );
-        db.search_docs_replace("", &[doc("local", "", "Мост локальный", "")]);
+        db.search_docs_replace(&[
+            doc("p1", "Мост", "старый текст"),
+            doc("p2", "Дорога", ""),
+            doc("local", "Мост локальный", ""),
+        ]);
         assert_eq!(db.search_docs_match("мост", 10).len(), 2);
 
-        // The far galaxy's board changed: p2 is gone, p1 has a new text.
-        db.search_docs_replace("vm-b", &[doc("p1", "vm-b", "Мост", "новый текст")]);
+        // The board changed: p2 is gone, p1 has a new text.
+        db.search_docs_replace(&[doc("p1", "Мост", "новый текст"), doc("local", "Мост локальный", "")]);
         assert!(db.search_docs_match("дорога", 10).is_empty());
         assert!(
             db.search_docs_match("старый", 10).is_empty(),
             "updated text is no longer indexed"
         );
         assert_eq!(db.search_docs_match("новый", 10).len(), 1);
-        assert_eq!(
-            db.search_docs_match("мост", 10).len(),
-            2,
-            "other galaxies are untouched"
-        );
+        assert_eq!(db.search_docs_match("мост", 10).len(), 2);
         db.conn()
             .execute(
                 "INSERT INTO search_fts(search_fts, rank) VALUES ('integrity-check', 1)",
@@ -1631,10 +1546,9 @@ mod tests {
     fn doc_search_ranks_title_hits_first() {
         let db = Db::memory().unwrap();
         db.search_docs_replace(
-            "",
             &[
-                doc("body", "", "Другое", "здесь упомянут бюджет и бюджет"),
-                doc("title", "", "Бюджет проекта", "нет"),
+                doc("body", "Другое", "здесь упомянут бюджет и бюджет"),
+                doc("title", "Бюджет проекта", "нет"),
             ],
         );
         let hits = db.search_docs_match("бюджет", 10);

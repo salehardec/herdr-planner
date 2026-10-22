@@ -10,14 +10,14 @@ const task = (over: Partial<Task>): Task => ({
 });
 
 const view = (tasks: Task[]): GalaxyView => ({
-  id: '', label: 'host', home: true, ok: true, tasks, links: [],
+  label: 'host', ok: true, tasks, links: [],
   projects: [{ name: 'alpha', key: 'ALP', active: 1, done: 0, total: 1, statuses: {}, quiet: false, root: '', folder: '', origin: '', lag: null, empty: false }],
 });
 
 const labels = { quasar: 'Квазар · Координатор', todo: 'дела', chat: 'Чат' };
 
 describe('search', () => {
-  const docs = buildDocs([view([task({}), task({ id: 'alpha/8', n: 8, tag: 'ALP-8', title: 'Новая вкладка', description: 'модель deepseek', model: 'deepseek' })])], null, [], labels);
+  const docs = buildDocs(view([task({}), task({ id: 'alpha/8', n: 8, tag: 'ALP-8', title: 'Новая вкладка', description: 'модель deepseek', model: 'deepseek' })]), null, [], labels);
 
   it('finds a task by a loose spelling (е for ё) and by a key typed without the dash', () => {
     const f = searchDocs(docs, 'отчетов кэш');

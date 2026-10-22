@@ -2,9 +2,8 @@ import { signal } from '@preact/signals';
 import type { JSX } from 'preact';
 import { useEffect } from 'preact/hooks';
 import { api, post, onProgress } from '../api';
-import { addDialogs } from '../dialogs';
 import { openAddUniverse, tab } from './AddUniverse';
-import { galaxyId, persist, SEEN_KEY, snap } from '../store';
+import { persist, SEEN_KEY, snap } from '../store';
 import type { Snapshot } from '../types';
 import { t } from '../i18n';
 import { Gl } from './Gl';
@@ -20,8 +19,8 @@ const dismissed = signal(false);
 let scanned = '';
 
 /** The empty galaxy's first-run card is on the screen. The crew wizard waits while it is. */
-export function firstRunShown(s: Snapshot | null, galaxy: string): boolean {
-  return !dismissed.value && !!s && s.projects.length === 0 && s.tasks.length === 0 && s.board.ok && galaxy === '';
+export function firstRunShown(s: Snapshot | null): boolean {
+  return !dismissed.value && !!s && s.projects.length === 0 && s.tasks.length === 0 && s.board.ok;
 }
 
 async function scan(dir: string): Promise<void> {
@@ -55,13 +54,13 @@ async function addPicked(): Promise<void> {
     }
   }
   busy.value = false;
-  if (first) { dismissed.value = true; setTimeout(() => { void navigateTo({ kind: 'universe', galaxy: '', id: first }); }, 600); }
+  if (first) { dismissed.value = true; setTimeout(() => { void navigateTo({ kind: 'universe', id: first }); }, 600); }
 }
 
 /** The empty Galaxy: nothing on the board yet. Offers the git folders it finds in the projects folder. */
 export function FirstRun(): JSX.Element | null {
   const s = snap.value;
-  const empty = !!s && s.projects.length === 0 && s.tasks.length === 0 && s.board.ok && galaxyId.value === '';
+  const empty = !!s && s.projects.length === 0 && s.tasks.length === 0 && s.board.ok;
   useEffect(() => { if (empty && s) void scan(s.server.projects_dir); }, [empty, s?.server.projects_dir]);
   if (!empty || dismissed.value) return null;
   return (
@@ -90,11 +89,10 @@ export function FirstRun(): JSX.Element | null {
       )}
       <div class="row">
         {found.value.length > 0 && <button class="btn primary" type="button" id="first-add" disabled={busy.value || picked.value.size === 0} onClick={() => void addPicked()}>{t('first.add', { n: picked.value.size })}</button>}
-        <button class="btn" type="button" onClick={() => { tab.value = 'folder'; openAddUniverse(''); }}><Gl n="folder" />{t('first.folder')}</button>
-        <button class="btn" type="button" onClick={() => { tab.value = 'address'; openAddUniverse(''); }}><Gl n="globe" />{t('first.address')}</button>
+        <button class="btn" type="button" onClick={() => { tab.value = 'folder'; openAddUniverse(); }}><Gl n="folder" />{t('first.folder')}</button>
+        <button class="btn" type="button" onClick={() => { tab.value = 'address'; openAddUniverse(); }}><Gl n="globe" />{t('first.address')}</button>
       </div>
       <div class="more">
-        <button class="btn sm" type="button" onClick={() => { addDialogs.galaxy.value = true; }}><Gl n="plus" />{t('nav.addGalaxy')}</button>
         <button class="btn sm" type="button" onClick={() => { dismissed.value = true; }}>{t('first.later')}</button>
       </div>
     </section>

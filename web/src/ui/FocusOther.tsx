@@ -1,16 +1,12 @@
 import type { JSX } from 'preact';
-import {
-  armed, attention, currentView, galaxies, galaxyId, linkStatus, panels, requests, snap, taskOf,
-} from '../store';
-import { archiveAllDone, compactCoordinator, confirmStep, newCoordinator, removeLink, runTaskAction, sendAction } from '../actions';
-import { enterGalaxy, goHome, navigateTo, openRequest } from '../nav';
+import { armed, currentView, panels, requests, snap } from '../store';
+import { archiveAllDone, compactCoordinator, confirmStep, newCoordinator, runTaskAction, sendAction } from '../actions';
+import { navigateTo, openRequest } from '../nav';
 import { t } from '../i18n';
 import { dayTimeOf } from '../util/dates';
-import { openStation } from './station-api';
 import { Gl } from './Gl';
 import { MemoryPanel } from './MemoryPanel';
 import { RichText } from './RichText';
-import { Translatable } from './Translatable';
 import { toast } from '../toast';
 import { STATUS_ORDER } from '../types';
 import type { Entity } from '../types';
@@ -26,31 +22,30 @@ export function contextLevel(p: number): 'ok' | 'warn' | 'crit' {
 /** The Coordinator's memory: the context filled, and the two buttons that clear room. */
 export function Memory(props: { compact?: boolean } = {}): JSX.Element {
   const c = snap.value?.coordinator;
-  const far = galaxyId.value !== '';
   const ctx = c?.context;
   const pct = ctx?.known ? Math.round(ctx.percent) : 0;
   const level = contextLevel(pct);
   const compactOn = armed.value?.key === 'coordinator:compact';
   const newOn = armed.value?.key === 'coordinator:new';
-  const canCompact = far ? true : !!c?.can_compact;
+  const canCompact = !!c?.can_compact;
   return (
     <div class={`memory ${level} ${props.compact ? 'compact' : ''}`} id={props.compact ? 'memory-c' : 'memory'}>
       <div class="mhead">
         <span>{t('memory.title')}</span>
-        <b>{far ? '—' : ctx?.known ? `${pct} %` : t('memory.unknown')}</b>
+        <b>{ctx?.known ? `${pct} %` : t('memory.unknown')}</b>
       </div>
       <div class="bar" role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={pct} aria-label={t('memory.title')}><i style={`--w:${pct}%`} /></div>
-      {ctx?.known && !far && <div class="hint">{ctx.used.toLocaleString()} / {ctx.window.toLocaleString()} · {ctx.model}</div>}
-      {level !== 'ok' && !far && <div class={`hint ${level === 'crit' ? 'bad' : 'warn'}`}>{t('memory.time')}</div>}
+      {ctx?.known && <div class="hint">{ctx.used.toLocaleString()} / {ctx.window.toLocaleString()} · {ctx.model}</div>}
+      {level !== 'ok' && <div class={`hint ${level === 'crit' ? 'bad' : 'warn'}`}>{t('memory.time')}</div>}
       <div class="row">
         <button
           class={`btn ${compactOn ? 'arm' : ''}`} type="button" id="compact" data-act="compact" disabled={!canCompact}
           title={canCompact ? t('memory.compactTip') : t('memory.compactOff')}
-          onClick={() => (far ? confirmStep('coordinator:compact', async () => { try { await sendAction('coordinator-compact', { confirm: true }); toast(t('toast.compacting')); } catch { /* shown */ } }) : compactCoordinator())}
+          onClick={() => compactCoordinator()}
         >{compactOn ? t('memory.confirm') : t('memory.compact')}</button>
         <button
-          class={`btn danger ${newOn ? 'arm' : ''}`} type="button" id="newcoord" data-act="new-coordinator" disabled={far}
-          title={far ? t('memory.newFar') : t('memory.newTip')}
+          class={`btn danger ${newOn ? 'arm' : ''}`} type="button" id="newcoord" data-act="new-coordinator"
+          title={t('memory.newTip')}
           onClick={() => newCoordinator()}
         >{newOn ? t('memory.confirm') : t('memory.new')}</button>
       </div>
@@ -60,8 +55,6 @@ export function Memory(props: { compact?: boolean } = {}): JSX.Element {
 
 export function QuasarFocus(): JSX.Element {
   const s = snap.value;
-  const far = galaxyId.value !== '';
-  const g = far ? galaxies.value.find((x) => x.label === galaxyId.value) : null;
   const c = s?.coordinator;
   const list = requests.value.filter((r) => r.type !== 'coordinator-options');
   const moons = c?.subagents ?? [];
@@ -69,33 +62,26 @@ export function QuasarFocus(): JSX.Element {
     <div class="fbody" data-focus="quasar">
       <div class="fhd">
         <span class="lbl">{t('quasar.label')}</span>
-        <span class={`badge s-${c?.busy ? 'working' : c?.dialog ? 'waiting' : 'queued'}`}><Gl n="quasar" />{far ? (g?.coordinator.status || '—') : (c?.status || '—')}</span>
+        <span class={`badge s-${c?.busy ? 'working' : c?.dialog ? 'waiting' : 'queued'}`}><Gl n="quasar" />{c?.status || '—'}</span>
       </div>
       <h2>{t('quasar.voice')}</h2>
-      <p class="hint">{far ? t('quasar.farText') : (c?.status_line ?? '')}</p>
+      <p class="hint">{c?.status_line ?? ''}</p>
       <Memory />
-      <MemoryPanel galaxy={galaxyId.value} repo="" />
+      <MemoryPanel repo="" />
       <h3>{t('quasar.waits', { n: list.length })}</h3>
       {list.length === 0 ? <div class="hint">{t('wait.none')}</div> : list.map((r, i) => (
         <button class="qrow" type="button" key={r.key} onClick={() => void openRequest(i)}>
           <Gl n={r.task?.status ?? 'waiting'} /><b>{r.tag}</b><span>{r.text || r.title}</span>
         </button>
       ))}
-      {!far && (
-        <>
-          <h3>{t('focus.subagents')} {moons.length > 0 && <span class="cnt">{moons.length}</span>}</h3>
-          {moons.map((m) => (
-            <div class={`moonl s-${m.state}`} key={m.id} role="button" tabIndex={0} onClick={() => void navigateTo({ kind: 'moon', galaxy: '', id: `quasar#${m.id}` })}>
-              <span class="dotc" /><span class="role">{m.role}</span><span class="doing">{m.doing || m.title}</span>
-            </div>
-          ))}
-          {moons.length === 0 && <div class="hint">{c?.subagents_note || t('quasar.noMoons')}</div>}
-          <div class="row"><button class="btn" type="button" onClick={() => { panels.limits.value = true; }}><Gl n="limit" />{t('limits.title')}</button></div>
-        </>
-      )}
-      {far && g && g.coordinator.reply && (
-        <><h3>{t('quasar.lastWords')}</h3><div class="desc"><Translatable text={g.coordinator.reply} /></div></>
-      )}
+      <h3>{t('focus.subagents')} {moons.length > 0 && <span class="cnt">{moons.length}</span>}</h3>
+      {moons.map((m) => (
+        <div class={`moonl s-${m.state}`} key={m.id} role="button" tabIndex={0} onClick={() => void navigateTo({ kind: 'moon', id: `quasar#${m.id}` })}>
+          <span class="dotc" /><span class="role">{m.role}</span><span class="doing">{m.doing || m.title}</span>
+        </div>
+      ))}
+      {moons.length === 0 && <div class="hint">{c?.subagents_note || t('quasar.noMoons')}</div>}
+      <div class="row"><button class="btn" type="button" onClick={() => { panels.limits.value = true; }}><Gl n="limit" />{t('limits.title')}</button></div>
     </div>
   );
 }
@@ -174,14 +160,14 @@ function ForkBlock(props: { repo: string }): JSX.Element | null {
 }
 
 export function UniverseFocus(props: { entity: Entity }): JSX.Element {
-  useEffect(() => { if (galaxyId.value === '') void loadInfo(props.entity.id); }, [props.entity.id]);
+  useEffect(() => { void loadInfo(props.entity.id); }, [props.entity.id]);
   const view = currentView.value;
   const p = view.projects.find((x) => x.name === props.entity.id);
   const tasks = view.tasks.filter((x) => x.repo === props.entity.id);
   if (!p) return <div class="fbody"><h2>{props.entity.id}</h2><p class="hint">{t('universe.gone')}</p></div>;
   const counts = STATUS_ORDER.map((s) => [s, tasks.filter((x) => x.status === s).length] as const).filter(([, n]) => n > 0);
   const lag = p.lag;
-  const here = galaxyId.value === '' ? snap.value?.host ?? '' : galaxyId.value;
+  const here = snap.value?.host ?? '';
   const key = `suggest:${p.name}`;
   const on = armed.value?.key === key;
   const behind = lag?.behind ?? 0;
@@ -217,12 +203,6 @@ export function UniverseFocus(props: { entity: Entity }): JSX.Element {
                 <td>{here}</td><td>{lag.main}</td>
                 <td>{!lag.known ? t('universe.lagUnknown') : lag.behind === 0 ? t('universe.level') : t('universe.behind', { n: lag.behind })}{lag.ahead > 0 ? ` · +${lag.ahead}` : ''}</td>
               </tr>
-              {lag.vs.map((v) => (
-                <tr key={v.galaxy}>
-                  <td>{v.galaxy || here}</td><td>—</td>
-                  <td>{v.state === 'same' ? t('universe.level') : v.state === 'behind' ? t('universe.behind', { n: v.behind }) : v.state === 'ahead' ? t('universe.ahead', { n: v.ahead }) : v.state === 'diverged' ? t('universe.diverged') : t('universe.aheadOrDiverged')}</td>
-                </tr>
-              ))}
             </tbody>
           </table>
           {lag.as_of_ms > 0 && <div class="hint">{t('universe.asOf', { when: dayTimeOf(lag.as_of_ms) })}</div>}
@@ -235,61 +215,8 @@ export function UniverseFocus(props: { entity: Entity }): JSX.Element {
           <div class="hint">{t('universe.noSilent')}</div>
         </section>
       )}
-      {galaxyId.value === '' && <ForkBlock repo={p.name} />}
-      <MemoryPanel galaxy={galaxyId.value} repo={p.name} />
-    </div>
-  );
-}
-
-export function GalaxyFocus(props: { entity: Entity }): JSX.Element {
-  const label = props.entity.id;
-  const home = label === '';
-  const g = galaxies.value.find((x) => x.label === label);
-  const ls = linkStatus.value;
-  if (home) {
-    const s = snap.value;
-    return (
-      <div class="fbody" data-focus="galaxy">
-        <div class="fhd"><span class="lbl">{t('galaxy.title')}</span><span class="badge s-working"><Gl n="galaxy" />{t('galaxy.here')}</span></div>
-        <h2>{s?.host}</h2>
-        <div class="kv">
-          <span>{t('focus.universes')}</span><b>{s?.summary.projects ?? 0}</b>
-          <span>{t('focus.tasks')}</span><b>{s?.summary.tasks ?? 0}</b>
-          <span>{t('focus.waiting')}</span><b>{attention.value}</b>
-        </div>
-        <p class="hint">{t('galaxy.homeHint')}</p>
-        <div class="row"><button class="btn" type="button" onClick={() => void goHome()}>{t('galaxy.toCentre')}</button></div>
-      </div>
-    );
-  }
-  const why = g?.why ?? (ls.label === label && ls.state === 'offline' ? { line: ls.why ?? '', detail: ls.detail ?? [] } : null);
-  const ok = !!g?.ok;
-  return (
-    <div class="fbody" data-focus="galaxy">
-      <div class="fhd">
-        <span class="lbl">{t('galaxy.title')}</span>
-        <span class={`badge s-${ok ? 'working' : 'failed'}`}><Gl n="galaxy" />{ok ? t('galaxy.online') : t('galaxy.off')}</span>
-      </div>
-      <h2>{label}</h2>
-      <div class="kv">
-        <span>{t('galaxy.target')}</span><b>{g?.target ?? '—'}</b>
-        {g?.version && <><span>herdr-projects</span><b>{g.version}</b></>}
-        {g && <><span>{t('focus.tasks')}</span><b>{g.tasks.length}</b></>}
-        {g && g.fetched_at_ms > 0 && <><span>{t('galaxy.read')}</span><b>{dayTimeOf(g.fetched_at_ms)}</b></>}
-      </div>
-      {!ok && why && (
-        <div class="req s-failed">
-          <div class="rh"><Gl n="failed" />{why.line}</div>
-          <ul class="why">{(why.detail ?? []).map((d, i) => <li key={i}>{d}</li>)}</ul>
-        </div>
-      )}
-      <div class="row">
-        <button class="btn primary" type="button" id="galaxy-fly" disabled={ls.state === 'connecting'} onClick={() => void enterGalaxy(label)}>
-          {ls.state === 'connecting' && ls.label === label ? t('galaxy.connecting') : ok ? t('galaxy.fly') : t('galaxy.retry')}
-        </button>
-        <button class="btn" type="button" id="galaxy-station" onClick={() => openStation(label)}><Gl n="universe" />{t('menu.stationOf', { g: label })}</button>
-      </div>
-      <p class="hint">{t('galaxy.sshHint')}</p>
+      <ForkBlock repo={p.name} />
+      <MemoryPanel repo={p.name} />
     </div>
   );
 }
@@ -318,5 +245,3 @@ export function ArchiveFocus(): JSX.Element {
     </div>
   );
 }
-
-void taskOf; void removeLink;

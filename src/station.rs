@@ -1,13 +1,10 @@
-//! The Station of a galaxy («Станция»): its crew (the program that runs the Coordinator, the planner, the reviewer,
-//! the workers and the spares), the settings of its own board, and the «light tasks» preset the planner keeps for
-//! it. The home galaxy (`galaxy` empty) is read and written through `app::run_board`; a far galaxy through the
-//! board's ssh form (`machines::ssh_ended`, in its login shell). The ship's own settings live in `ship.rs`.
+//! The Station of the Galaxy («Станция»): its crew (the program that runs the Coordinator, the planner, the reviewer,
+//! the workers and the spares), the settings of this machine's board, and the «light tasks» preset the planner keeps
+//! for it. The board is read and written through `app::run_board`. The ship's own settings live in `ship.rs`.
 
-use crate::api;
 use crate::app::{self, run_board, Shared};
 use crate::board::{Status, Task};
 use crate::config::AppConfig;
-use crate::machines::{self, Galaxy, MachineRef, Why};
 use crate::models;
 use crate::server::{clip, error, same_origin, valid_agent};
 use crate::taskmeta;
@@ -38,8 +35,6 @@ pub const PROGRAMS: &[&str] = &[
 ];
 pub(crate) const BOARD_WAIT: Duration = Duration::from_secs(30);
 const DOCTOR_WAIT: Duration = Duration::from_secs(60);
-const MODELS_WAIT: Duration = Duration::from_secs(100);
-const SSH_WAIT: Duration = Duration::from_secs(25);
 const MAX_VALUE: usize = 4000;
 const SHOWN_NAMES: usize = 12;
 
@@ -66,12 +61,11 @@ pub struct Program {
     pub line: String,
 }
 
-/// A failed call: the status, the words for the page, and the machine's reason when it could not be reached.
+/// A failed call: the status and the words for the page.
 #[derive(Debug)]
 pub struct Fail {
     status: StatusCode,
     message: String,
-    why: Option<Why>,
 }
 
 impl Fail {
@@ -79,26 +73,12 @@ impl Fail {
         Self {
             status: StatusCode::from_u16(status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),
             message: message.into(),
-            why: None,
         }
     }
 
-    /// A far galaxy that did not answer: the reason the planner gives for it (`why_not`), as a 502.
-    pub(crate) fn unreachable(why: Why) -> Self {
-        let message = std::iter::once(why.line.clone())
-            .chain(why.detail.first().cloned())
-            .collect::<Vec<_>>()
-            .join(": ");
-        Self {
-            status: StatusCode::BAD_GATEWAY,
-            message,
-            why: Some(why),
-        }
-    }
-
-    /// A board that answered with an error is a refusal (422), not a machine that did not answer (502).
+    /// A board that answered with an error is a refusal (422), not a board that did not answer (502).
     pub fn refused(mut self) -> Self {
-        if self.why.is_none() && self.status == StatusCode::BAD_GATEWAY {
+        if self.status == StatusCode::BAD_GATEWAY {
             self.status = StatusCode::UNPROCESSABLE_ENTITY;
         }
         self
@@ -109,15 +89,11 @@ impl Fail {
     }
 
     pub fn into_response(self) -> Response {
-        let mut body = json!({ "error": self.message });
-        if let Some(why) = self.why {
-            body["why"] = json!(why);
-        }
-        (self.status, Json(body)).into_response()
+        (self.status, Json(json!({ "error": self.message }))).into_response()
     }
 }
 
-/// What a board command printed and how it ended. A home board's failure has its words in both fields.
+/// What a board command printed and how it ended. A failure has its words in both fields.
 #[derive(Debug, Default)]
 pub(crate) struct Out {
     code: Option<i32>,
@@ -144,13 +120,6 @@ impl Out {
         };
         clip(text.to_string())
     }
-}
-
-/// Where a station's board runs.
-#[derive(Debug, Clone)]
-pub(crate) enum Place {
-    Home,
-    Far(MachineRef),
 }
 
 /* ───────── pure parsers and validators (unit-tested) ───────── */
@@ -183,7 +152,7 @@ fn setting_of(s: &Value) -> Option<Setting> {
     })
 }
 
-/// The JSON object of a board answer, after whatever a far machine's login shell printed. `show --json` is
+/// The JSON object of a board answer, after whatever the shell printed before it. `show --json` is
 /// pretty-printed over several lines, so the first line that starts an object and parses as one wins.
 pub fn object_in(stdout: &str) -> Option<Value> {
     let mut at = 0;
@@ -300,24 +269,6 @@ pub fn on_path(path_var: &str, program: &str) -> bool {
     })
 }
 
-/// The shell loop that prints the crew's programs found on the far machine (`command -v`), one per line.
-pub fn command_v_script() -> String {
-    format!(
-        "for p in {}; do command -v \"$p\" >/dev/null 2>&1 && echo \"$p\"; done; true",
-        PROGRAMS.join(" ")
-    )
-}
-
-/// The crew's programs in a far machine's answer. Login banners and other lines are not programs and are skipped.
-pub fn available_far(stdout: &str) -> Vec<String> {
-    stdout
-        .lines()
-        .map(str::trim)
-        .filter(|l| PROGRAMS.contains(l))
-        .map(String::from)
-        .collect()
-}
-
 /// A setting's name: a letter, then letters, digits and dots (`worker.agent`, `review.mustFix`).
 pub fn valid_name(name: &str) -> bool {
     name.len() <= 80
@@ -383,31 +334,26 @@ pub fn check_effort(value: &str, levels: &[String], program: &str) -> Result<(),
     ))
 }
 
-/// The light-task preset of a galaxy (`""` = this machine) in the planner's crew file.
-pub fn light_of(doc: &Map<String, Value>, label: &str) -> String {
-    doc.get(label)
+/// The light-task preset is kept in the planner's crew file under the empty name, as it always was.
+const LIGHT_ENTRY: &str = "";
+
+/// The light-task preset in the planner's crew file.
+pub fn light_of(doc: &Map<String, Value>) -> String {
+    doc.get(LIGHT_ENTRY)
         .and_then(|e| e.get("light"))
         .and_then(Value::as_str)
         .unwrap_or("")
         .to_string()
 }
 
-/// Sets (or, for `""`, clears) the light-task preset of a galaxy, keeping the other entries.
-pub fn set_light_in(doc: &mut Map<String, Value>, label: &str, agent: &str) {
+/// Sets (or, for `""`, clears) the light-task preset. Entries of other names (the machines an older planner
+/// kept presets for) are dropped.
+pub fn set_light_in(doc: &mut Map<String, Value>, agent: &str) {
+    doc.retain(|name, _| name == LIGHT_ENTRY);
     if agent.is_empty() {
-        let empty = match doc.get_mut(label).and_then(Value::as_object_mut) {
-            Some(entry) => {
-                entry.remove("light");
-                entry.is_empty()
-            }
-            None => false,
-        };
-        if empty {
-            doc.remove(label);
-        }
+        doc.remove(LIGHT_ENTRY);
     } else {
-        let entry = doc.entry(label.to_string()).or_insert_with(|| json!({}));
-        entry["light"] = json!(agent);
+        doc.insert(LIGHT_ENTRY.to_string(), json!({ "light": agent }));
     }
 }
 
@@ -427,16 +373,16 @@ fn read_crew(path: &Path) -> Map<String, Value> {
         .unwrap_or_default()
 }
 
-fn read_light(cfg: &AppConfig, label: &str) -> String {
+fn read_light(cfg: &AppConfig) -> String {
     let _guard = CREW_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    light_of(&read_crew(&crew_file(cfg)), label)
+    light_of(&read_crew(&crew_file(cfg)))
 }
 
-fn write_light(cfg: &AppConfig, label: &str, agent: &str) -> Result<(), String> {
+fn write_light(cfg: &AppConfig, agent: &str) -> Result<(), String> {
     let _guard = CREW_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let path = crew_file(cfg);
     let mut doc = read_crew(&path);
-    set_light_in(&mut doc, label, agent);
+    set_light_in(&mut doc, agent);
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }
@@ -448,69 +394,20 @@ fn write_light(cfg: &AppConfig, label: &str, agent: &str) -> Result<(), String> 
 
 /* ───────── running the board ───────── */
 
-pub(crate) async fn galaxy_of(app: &Shared, label: &str) -> Option<Galaxy> {
-    app.galaxies
-        .lock()
-        .await
-        .iter()
-        .find(|g| g.label == label)
-        .cloned()
-}
-
-pub(crate) async fn place_of(galaxy: &str) -> Result<Place, Fail> {
-    if galaxy.is_empty() {
-        return Ok(Place::Home);
-    }
-    if !machines::valid_label(galaxy) {
-        return Err(Fail::new(400, "bad machine label"));
-    }
-    machines::resolve_with(&machines::herdr_bin(), galaxy)
-        .await
-        .map(Place::Far)
-        .map_err(|e| Fail::new(404, e))
-}
-
-/// `herdr-projects ARGS` where the place is. A far machine that does not answer is a 502 with its reason; a board
-/// that answers with an error comes back as `Out` with that error's code.
-pub(crate) async fn board_run(
-    cfg: &AppConfig,
-    place: &Place,
-    args: &[String],
-    wait: Duration,
-) -> Result<Out, Fail> {
-    match place {
-        Place::Home => {
-            let refs: Vec<&str> = args.iter().map(String::as_str).collect();
-            Ok(match run_board(cfg, &refs, wait).await {
-                Ok(stdout) => Out {
-                    code: Some(0),
-                    stdout,
-                    stderr: String::new(),
-                },
-                Err(e) => Out {
-                    code: Some(1),
-                    stdout: e.clone(),
-                    stderr: e,
-                },
-            })
-        }
-        Place::Far(m) => {
-            let line = std::iter::once("herdr-projects".to_string())
-                .chain(args.iter().map(|a| machines::sh_quote(a)))
-                .collect::<Vec<_>>()
-                .join(" ");
-            let end = machines::ssh_ended(cfg, m, &line, wait)
-                .await
-                .map_err(|e| Fail::new(502, e))?;
-            if end.timed_out || !end.error.is_empty() || matches!(end.code, Some(255) | Some(127)) {
-                return Err(Fail::unreachable(machines::why_not(&end, m)));
-            }
-            Ok(Out {
-                code: end.code,
-                stdout: end.stdout,
-                stderr: end.stderr,
-            })
-        }
+/// `herdr-projects ARGS` on this machine. A board that answers with an error comes back as `Out` with that error's code.
+pub(crate) async fn board_run(cfg: &AppConfig, args: &[String], wait: Duration) -> Out {
+    let refs: Vec<&str> = args.iter().map(String::as_str).collect();
+    match run_board(cfg, &refs, wait).await {
+        Ok(stdout) => Out {
+            code: Some(0),
+            stdout,
+            stderr: String::new(),
+        },
+        Err(e) => Out {
+            code: Some(1),
+            stdout: e.clone(),
+            stderr: e,
+        },
     }
 }
 
@@ -518,15 +415,15 @@ fn read_failed(out: &Out) -> Fail {
     Fail::new(502, out.words())
 }
 
-/// The board's settings at a level: the galaxy's (`repo` empty) or one repository's (with the inherited ones).
-pub(crate) async fn read_settings(cfg: &AppConfig, place: &Place, repo: &str) -> Result<Vec<Setting>, Fail> {
+/// The board's settings at a level: the Galaxy's (`repo` empty) or one repository's (with the inherited ones).
+pub(crate) async fn read_settings(cfg: &AppConfig, repo: &str) -> Result<Vec<Setting>, Fail> {
     let mut args = vec!["show".to_string()];
     if !repo.is_empty() {
         args.push("--repo".into());
         args.push(repo.into());
     }
     args.push("--json".into());
-    let out = board_run(cfg, place, &args, BOARD_WAIT).await?;
+    let out = board_run(cfg, &args, BOARD_WAIT).await;
     if !out.ok() {
         return Err(read_failed(&out));
     }
@@ -534,35 +431,22 @@ pub(crate) async fn read_settings(cfg: &AppConfig, place: &Place, repo: &str) ->
 }
 
 /// `herdr-projects doctor`'s text. The board exits non-zero when a check fails, and its lines still matter.
-async fn read_doctor(cfg: &AppConfig, place: &Place) -> Result<String, Fail> {
-    let out = board_run(cfg, place, &["doctor".to_string()], DOCTOR_WAIT).await?;
+async fn read_doctor(cfg: &AppConfig) -> Result<String, Fail> {
+    let out = board_run(cfg, &["doctor".to_string()], DOCTOR_WAIT).await;
     if out.stdout.trim().is_empty() {
         return Err(read_failed(&out));
     }
     Ok(out.stdout)
 }
 
-/// The crew's programs that are installed there.
-async fn available(cfg: &AppConfig, place: &Place) -> Result<Vec<String>, Fail> {
-    match place {
-        Place::Home => {
-            let path = std::env::var("PATH").unwrap_or_default();
-            Ok(PROGRAMS
-                .iter()
-                .filter(|p| on_path(&path, p))
-                .map(|p| p.to_string())
-                .collect())
-        }
-        Place::Far(m) => {
-            let end = machines::ssh_ended(cfg, m, &command_v_script(), SSH_WAIT)
-                .await
-                .map_err(|e| Fail::new(502, e))?;
-            if end.timed_out || !end.error.is_empty() || end.code == Some(255) {
-                return Err(Fail::unreachable(machines::why_not(&end, m)));
-            }
-            Ok(available_far(&end.stdout))
-        }
-    }
+/// The crew's programs that are installed here.
+fn available() -> Vec<String> {
+    let path = std::env::var("PATH").unwrap_or_default();
+    PROGRAMS
+        .iter()
+        .filter(|p| on_path(&path, p))
+        .map(|p| p.to_string())
+        .collect()
 }
 
 /// A program's models and effort levels, as its `models` answer gives them.
@@ -573,62 +457,27 @@ struct Listed {
     loading: bool,
 }
 
-async fn models_of(app: &Shared, place: &Place, program: &str) -> Result<Listed, Fail> {
-    match place {
-        Place::Home => {
-            let m = models::get(&app.cfg, program).await;
-            Ok(Listed {
-                names: m.names,
-                effort: m.effort,
-                note: m.note,
-                loading: m.loading,
-            })
-        }
-        Place::Far(_) => {
-            let out = board_run(
-                &app.cfg,
-                place,
-                &["models".to_string(), program.to_string()],
-                MODELS_WAIT,
-            )
-            .await?;
-            if !out.ok() {
-                return Err(read_failed(&out));
-            }
-            let (names, note) = models::parse(program, &out.stdout);
-            Ok(Listed {
-                names,
-                effort: models::parse_effort(&out.stdout),
-                note,
-                loading: false,
-            })
-        }
+async fn models_of(app: &Shared, program: &str) -> Listed {
+    let m = models::get(&app.cfg, program).await;
+    Listed {
+        names: m.names,
+        effort: m.effort,
+        note: m.note,
+        loading: m.loading,
     }
 }
 
-/// The repositories of the galaxy's board, by name.
-async fn repos_of(app: &Shared, place: &Place) -> Vec<String> {
-    match place {
-        Place::Home => taskmeta::repos(&app.cfg.data_dir)
-            .into_iter()
-            .map(|r| r.name)
-            .collect(),
-        Place::Far(m) => galaxy_of(app, &m.label)
-            .await
-            .map(|g| g.projects.into_iter().map(|p| p.name).collect())
-            .unwrap_or_default(),
-    }
+/// The repositories of the board, by name.
+fn repos_of(app: &Shared) -> Vec<String> {
+    taskmeta::repos(&app.cfg.data_dir)
+        .into_iter()
+        .map(|r| r.name)
+        .collect()
 }
 
-/// The live tasks of the galaxy (of the repository, when one is named): not done, not archived.
-async fn affects_of(app: &Shared, place: &Place, repo: &str) -> Vec<Value> {
-    let tasks: Vec<Task> = match place {
-        Place::Home => app.snapshot.read().await.tasks.clone(),
-        Place::Far(m) => galaxy_of(app, &m.label)
-            .await
-            .map(|g| g.tasks)
-            .unwrap_or_default(),
-    };
+/// The live tasks (of the repository, when one is named): not done, not archived.
+async fn affects_of(app: &Shared, repo: &str) -> Vec<Value> {
+    let tasks: Vec<Task> = app.snapshot.read().await.tasks.clone();
     tasks
         .iter()
         .filter(|t| !t.archived && t.status != Status::Done)
@@ -641,49 +490,30 @@ async fn affects_of(app: &Shared, place: &Place, repo: &str) -> Vec<Value> {
 
 #[derive(Deserialize)]
 pub struct StationQuery {
-    galaxy: Option<String>,
     repo: Option<String>,
 }
 
 async fn station_read(app: &Shared, q: StationQuery) -> Result<Value, Fail> {
-    let galaxy = q.galaxy.unwrap_or_default();
     let repo = q.repo.unwrap_or_default();
     if !repo.is_empty() && !taskmeta::valid_repo(&repo) {
         return Err(Fail::new(400, "bad universe name"));
     }
-    let place = place_of(&galaxy).await?;
-    let (settings, doctor, avail) = tokio::join!(
-        read_settings(&app.cfg, &place, &repo),
-        read_doctor(&app.cfg, &place),
-        available(&app.cfg, &place),
-    );
+    let (settings, doctor) = tokio::join!(read_settings(&app.cfg, &repo), read_doctor(&app.cfg));
     let settings = settings?;
     let doctor = doctor?;
-    let avail = avail?;
-    let mut version = doctor_version(&doctor);
-    if version.is_empty() {
-        if let Place::Far(m) = &place {
-            version = galaxy_of(app, &m.label)
-                .await
-                .map(|g| g.version)
-                .unwrap_or_default();
-        }
-    }
-    let repos = repos_of(app, &place).await;
     Ok(json!({
         "ok": true,
-        "galaxy": galaxy,
         "level": if repo.is_empty() { "you" } else { "repo" },
         "repo": repo,
-        "repos": repos,
-        "version": version,
+        "repos": repos_of(app),
+        "version": doctor_version(&doctor),
         "settings": settings,
-        "programs": programs_of(&doctor, &avail),
-        "light": read_light(&app.cfg, &galaxy),
+        "programs": programs_of(&doctor, &available()),
+        "light": read_light(&app.cfg),
     }))
 }
 
-/// `GET /api/station?galaxy=L&repo=R`: the crew, the board's settings and the light preset of one galaxy.
+/// `GET /api/station?repo=R`: the crew, the board's settings and the light preset.
 pub async fn station_get(State(app): State<Shared>, Query(q): Query<StationQuery>) -> Response {
     match station_read(&app, q).await {
         Ok(v) => Json(v).into_response(),
@@ -693,7 +523,6 @@ pub async fn station_get(State(app): State<Shared>, Query(q): Query<StationQuery
 
 #[derive(Deserialize)]
 pub struct ModelsQuery {
-    galaxy: Option<String>,
     program: String,
 }
 
@@ -701,8 +530,7 @@ async fn models_read(app: &Shared, q: ModelsQuery) -> Result<Value, Fail> {
     if !models::valid_program(&q.program) {
         return Err(Fail::new(400, "такой программы нет"));
     }
-    let place = place_of(q.galaxy.as_deref().unwrap_or("")).await?;
-    let listed = models_of(app, &place, &q.program).await?;
+    let listed = models_of(app, &q.program).await;
     Ok(json!({
         "ok": true,
         "program": q.program,
@@ -713,7 +541,7 @@ async fn models_read(app: &Shared, q: ModelsQuery) -> Result<Value, Fail> {
     }))
 }
 
-/// `GET /api/station/models?galaxy=L&program=P`: the model names and effort levels a program takes there.
+/// `GET /api/station/models?program=P`: the model names and effort levels a program takes.
 pub async fn station_models(State(app): State<Shared>, Query(q): Query<ModelsQuery>) -> Response {
     match models_read(&app, q).await {
         Ok(v) => Json(v).into_response(),
@@ -723,8 +551,6 @@ pub async fn station_models(State(app): State<Shared>, Query(q): Query<ModelsQue
 
 #[derive(Deserialize)]
 pub struct ChangeBody {
-    #[serde(default)]
-    galaxy: String,
     #[serde(default)]
     name: String,
     value: Option<String>,
@@ -742,7 +568,7 @@ struct Change {
     value: Option<String>,
 }
 
-async fn prepare(body: &ChangeBody) -> Result<(Place, Change), Fail> {
+fn prepare(body: &ChangeBody) -> Result<Change, Fail> {
     if !valid_name(&body.name) {
         return Err(Fail::new(400, "недопустимое имя настройки"));
     }
@@ -760,15 +586,11 @@ async fn prepare(body: &ChangeBody) -> Result<(Place, Change), Fail> {
         valid_value(v).map_err(|e| Fail::new(400, e))?;
         Some(v.to_string())
     };
-    let place = place_of(&body.galaxy).await?;
-    Ok((
-        place,
-        Change {
-            name: body.name.clone(),
-            repo,
-            value,
-        },
-    ))
+    Ok(Change {
+        name: body.name.clone(),
+        repo,
+        value,
+    })
 }
 
 /// The board's own check of a value the planner can check itself: `*.agent` against the program's models, and
@@ -776,17 +598,13 @@ async fn prepare(body: &ChangeBody) -> Result<(Place, Change), Fail> {
 /// nothing; the board decides then.
 async fn check(
     app: &Shared,
-    place: &Place,
     settings: &[Setting],
     name: &str,
     value: &str,
 ) -> Result<(), String> {
     if name.ends_with(".agent") {
         let program = agent_program(value)?;
-        return match models_of(app, place, &program).await {
-            Ok(listed) => check_agent(value, &listed.names),
-            Err(_) => Ok(()),
-        };
+        return check_agent(value, &models_of(app, &program).await.names);
     }
     if let Some(role) = name.strip_suffix(".effort") {
         let Some(agent) = find(settings, &format!("{role}.agent")).map(|s| s.value.clone()) else {
@@ -796,10 +614,7 @@ async fn check(
             return Ok(());
         };
         let program = program.to_string();
-        return match models_of(app, place, &program).await {
-            Ok(listed) => check_effort(value, &listed.effort, &program),
-            Err(_) => Ok(()),
-        };
+        return check_effort(value, &models_of(app, &program).await.effort, &program);
     }
     Ok(())
 }
@@ -814,12 +629,12 @@ pub async fn station_preview(
         return error(StatusCode::FORBIDDEN, "cross-origin request refused");
     }
     let result = async {
-        let (place, change) = prepare(&body).await?;
-        let settings = read_settings(&app.cfg, &place, &change.repo)
+        let change = prepare(&body)?;
+        let settings = read_settings(&app.cfg, &change.repo)
             .await
             .map_err(Fail::refused)?;
         let problem = match &change.value {
-            Some(v) => check(&app, &place, &settings, &change.name, v)
+            Some(v) => check(&app, &settings, &change.name, v)
                 .await
                 .err()
                 .unwrap_or_default(),
@@ -835,7 +650,7 @@ pub async fn station_preview(
             "now": change.value,
             "valid": problem.is_empty(),
             "error": problem,
-            "affects": affects_of(&app, &place, &change.repo).await,
+            "affects": affects_of(&app, &change.repo).await,
             "note": entry.map(|s| s.note.clone()).unwrap_or_default(),
         }))
     }
@@ -846,7 +661,7 @@ pub async fn station_preview(
     }
 }
 
-/// `POST /api/station/set`: `herdr-projects set|unset` on the galaxy's board, after the same checks as the preview.
+/// `POST /api/station/set`: `herdr-projects set|unset` on this board, after the same checks as the preview.
 pub async fn station_set(
     State(app): State<Shared>,
     headers: HeaderMap,
@@ -859,12 +674,12 @@ pub async fn station_set(
         if body.confirm != Some(true) {
             return Err(Fail::new(400, "нужно подтверждение: было → стало"));
         }
-        let (place, change) = prepare(&body).await?;
-        let settings = read_settings(&app.cfg, &place, &change.repo)
+        let change = prepare(&body)?;
+        let settings = read_settings(&app.cfg, &change.repo)
             .await
             .map_err(Fail::refused)?;
         if let Some(v) = &change.value {
-            if let Err(problem) = check(&app, &place, &settings, &change.name, v).await {
+            if let Err(problem) = check(&app, &settings, &change.name, v).await {
                 return Err(Fail::new(422, problem));
             }
         }
@@ -882,16 +697,11 @@ pub async fn station_set(
             args.push("--repo".into());
             args.push(change.repo.clone());
         }
-        let out = board_run(&app.cfg, &place, &args, BOARD_WAIT).await?;
+        let out = board_run(&app.cfg, &args, BOARD_WAIT).await;
         if !out.ok() {
             return Err(Fail::new(422, out.words()));
         }
-        match &place {
-            Place::Home => app::refresh(&app).await,
-            Place::Far(m) => {
-                let _ = api::ask_galaxy(&app, &m.label).await;
-            }
-        }
+        app::refresh(&app).await;
         Ok::<Value, Fail>(json!({
             "ok": true,
             "name": change.name,
@@ -910,15 +720,13 @@ pub async fn station_set(
 
 #[derive(Deserialize)]
 pub struct LightBody {
-    #[serde(default)]
-    galaxy: String,
     /// `program/model`; empty clears the preset.
     #[serde(default)]
     agent: String,
     confirm: Option<bool>,
 }
 
-/// `POST /api/station/light`: the «Лёгкие задачи» preset of a galaxy, kept in the planner's own crew file.
+/// `POST /api/station/light`: the «Лёгкие задачи» preset, kept in the planner's own crew file.
 pub async fn station_light(
     State(app): State<Shared>,
     headers: HeaderMap,
@@ -930,19 +738,14 @@ pub async fn station_light(
     if body.confirm != Some(true) {
         return error(StatusCode::BAD_REQUEST, "нужно подтверждение: было → стало");
     }
-    if !body.galaxy.is_empty() && !machines::valid_label(&body.galaxy) {
-        return error(StatusCode::BAD_REQUEST, "bad machine label");
-    }
     if !body.agent.is_empty() && !valid_agent(&body.agent) {
         return error(
             StatusCode::BAD_REQUEST,
             "нужно «программа/модель», например codex/gpt-5.5",
         );
     }
-    match write_light(&app.cfg, &body.galaxy, &body.agent) {
-        Ok(()) => {
-            Json(json!({"ok": true, "galaxy": body.galaxy, "light": body.agent})).into_response()
-        }
+    match write_light(&app.cfg, &body.agent) {
+        Ok(()) => Json(json!({"ok": true, "light": body.agent})).into_response(),
         Err(e) => error(StatusCode::INTERNAL_SERVER_ERROR, e),
     }
 }
@@ -982,7 +785,7 @@ mod tests {
 
     #[test]
     fn a_settings_answer_after_a_login_banner_still_parses() {
-        let out = format!("Welcome to vm-a\n{SHOW}\n");
+        let out = format!("Welcome to the shell\n{SHOW}\n");
         assert_eq!(parse_settings(&out).unwrap().len(), 3);
         let one_line = format!("Welcome {{x}}\n{}\n", SHOW.replace('\n', " "));
         assert_eq!(parse_settings(&one_line).unwrap().len(), 3);
@@ -1021,13 +824,6 @@ mod tests {
         let gemini = list.iter().find(|p| p.name == "gemini").unwrap();
         assert_eq!(gemini.signed_in, None);
         assert_eq!(gemini.line, "");
-    }
-
-    #[test]
-    fn far_availability_takes_only_program_names() {
-        let out = "Welcome to vm-a (Ubuntu)\nclaude\ncodex\n  omp  \nnot-a-program\n";
-        assert_eq!(available_far(out), vec!["claude", "codex", "omp"]);
-        assert!(command_v_script().contains("cursor-agent"));
     }
 
     #[test]
@@ -1102,17 +898,27 @@ mod tests {
     }
 
     #[test]
-    fn the_light_preset_is_kept_per_galaxy_and_cleared_by_an_empty_agent() {
+    fn the_light_preset_is_kept_and_cleared_by_an_empty_agent() {
         let mut doc = Map::new();
-        set_light_in(&mut doc, "", "omp/deepseek/deepseek-v4-flash");
-        set_light_in(&mut doc, "vm-a", "codex/gpt-5.5");
-        assert_eq!(light_of(&doc, ""), "omp/deepseek/deepseek-v4-flash");
-        assert_eq!(light_of(&doc, "vm-a"), "codex/gpt-5.5");
-        assert_eq!(light_of(&doc, "vm-b"), "");
-        set_light_in(&mut doc, "vm-a", "");
-        assert_eq!(light_of(&doc, "vm-a"), "");
-        assert!(!doc.contains_key("vm-a"), "an empty galaxy entry goes away");
-        assert_eq!(light_of(&doc, ""), "omp/deepseek/deepseek-v4-flash");
+        set_light_in(&mut doc, "omp/deepseek/deepseek-v4-flash");
+        assert_eq!(light_of(&doc), "omp/deepseek/deepseek-v4-flash");
+        set_light_in(&mut doc, "codex/gpt-5.5");
+        assert_eq!(light_of(&doc), "codex/gpt-5.5");
+        set_light_in(&mut doc, "");
+        assert_eq!(light_of(&doc), "");
+        assert!(doc.is_empty());
+    }
+
+    #[test]
+    fn the_presets_of_other_machines_in_an_old_crew_file_are_forgotten() {
+        let mut doc = read_crew_text(r#"{"": {"light": "codex/gpt-5.5"}, "vm-a": {"light": "omp/x/y"}}"#);
+        assert_eq!(light_of(&doc), "codex/gpt-5.5");
+        set_light_in(&mut doc, "codex/gpt-5.5");
+        assert_eq!(doc.len(), 1, "{doc:?}");
+    }
+
+    fn read_crew_text(text: &str) -> Map<String, Value> {
+        serde_json::from_str::<Value>(text).unwrap().as_object().cloned().unwrap()
     }
 
     #[test]
