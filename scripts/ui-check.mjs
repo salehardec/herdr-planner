@@ -947,6 +947,15 @@ section('hints', async () => {
   check('omp gets its own commands (compact, model, new, resume, settings)', ompRows.ok, JSON.stringify(ompRows.labels.slice(0, 34)));
   const ompApi = await evalJs(`fetch('/api/hints/slash?program=omp&dir=').then((r) => r.json())`);
   check('omp skill commands are named skill:<name>, not bare names', Array.isArray(ompApi?.commands) && ompApi.commands.filter((c) => c.kind !== 'builtin').every((c) => c.name.startsWith('skill:')), JSON.stringify((ompApi?.commands || []).filter((c) => c.kind !== 'builtin').slice(0, 5)));
+  // The row a person picks inserts a command omp knows: `/skill:<name> ` with the space for its words.
+  const ompSkill = (ompApi?.commands || []).find((c) => c.kind === 'skill');
+  if (ompSkill) {
+    const cmd = `/${ompSkill.name}`;
+    await evalJs(`(() => { const el = document.querySelector("#tell"); el.focus(); el.value = ${JSON.stringify(cmd)}; el.setSelectionRange(el.value.length, el.value.length); el.dispatchEvent(new Event("input", { bubbles: true })); return true; })()`);
+    const offered = await waitFor(`[...document.querySelectorAll("#tell-complete .cmpl-row .cmpl-name")].some((n) => n.innerText === ${JSON.stringify(cmd)})`, 8000);
+    await press('Enter');
+    check('Enter inserts the whole skill command, as the program calls it', offered && (await evalJs('document.querySelector("#tell").value')) === `${cmd} `, JSON.stringify({ cmd, value: await evalJs('document.querySelector("#tell").value') }));
+  }
   const piApi = await evalJs(`fetch('/api/hints/slash?program=pi&dir=').then((r) => r.json())`);
   check('pi does the same, and has its own commands', Array.isArray(piApi?.commands) && piApi.commands.filter((c) => c.kind !== 'builtin').every((c) => c.name.startsWith('skill:')) && ['settings', 'model', 'thinking', 'new', 'resume', 'compact'].every((n) => piApi.commands.some((c) => c.name === n && c.kind === 'builtin')), JSON.stringify((piApi?.commands || []).slice(0, 6)));
   await evalJs('(() => { const el = document.querySelector("#tell"); el.value = ""; el.dispatchEvent(new Event("input", { bubbles: true })); return true; })()');
