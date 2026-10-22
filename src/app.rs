@@ -656,6 +656,7 @@ pub async fn rebuild_runners(app: &Shared) {
     let file = crate::runners::load(&app.cfg.runners_file()).unwrap_or_default();
     for st in &mut states {
         crate::runners::classify(&mut st.containers, &st.protected, &index);
+        crate::runners::fill_shared(st, &index);
         if let Some(r) = file.get(&st.id) {
             st.auto = r.auto.clone();
         }

@@ -1344,11 +1344,25 @@ mod tests {
         assert!(st.save(Entry { id: "../x".into(), ..Entry::default() }).is_err());
     }
 
+    /// Puts a file's modification time `secs` seconds into the past (so a later write is surely newer).
+    fn aged(path: &Path, secs: u64) {
+        let t = std::time::SystemTime::now() - std::time::Duration::from_secs(secs);
+        std::fs::File::options()
+            .write(true)
+            .open(path)
+            .unwrap()
+            .set_modified(t)
+            .unwrap();
+    }
+
     #[test]
     fn listed_files_are_read_again_when_they_change_even_to_the_same_size() {
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("a.md");
         std::fs::write(&file, "---\ntitle: Раз\n---\n\nпервый вариант\n").unwrap();
+        // The first write is aged by hand: a coarse filesystem clock (overlay2 grains mtime to a tick) can give two
+        // writes in a row the same stamp. What is checked here is a changed file of the same size, not a stopped clock.
+        aged(&file, 2);
         assert_eq!(read_dir_entries(dir.path())[0].body, "первый вариант");
         assert_eq!(read_dir_entries(dir.path())[0].body, "первый вариант", "the second look comes from the cache");
         std::fs::write(&file, "---\ntitle: Раз\n---\n\nвторой вариант\n").unwrap();

@@ -6,9 +6,15 @@
 #   PAGE_ONLY=1 scripts/run-checks.sh   only the page checks, on the binary and the page already built
 #   SHARDS="ui2 big" scripts/run-checks.sh   only these parts of the page checks (ui1 … ui9, big, auth; default: all; ui6–ui9 are the layout at every scale);
 #                                      CI runs each part on a runner of its own
+#   SECTIONS="runners todo" scripts/run-checks.sh   one screen: one fixture, one server, one browser, only these sections
+#                                      of the Galaxy (no builds: the page and the binary are taken as they are). Scripts/yard.sh
+#                                      section uses it to look at one screen while working on it.
+# When HERDR_PROJECTS_PROGRESS is set (the board's file, see docs/check-progress.md), every finished part reports «k/N parts».
 # The builds live outside the repository (NTFS): ~/.cache/herdr-planner/{target,web}.
 set -eu
 cd "$(dirname "$0")/.."
+# One screen is a look at the page, never a build: the same rule as PAGE_ONLY for the whole Galaxy.
+[ -z "${SECTIONS:-}" ] || PAGE_ONLY=1
 TARGET="${HERDR_PLANNER_TARGET_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/herdr-planner/target}"
 export CARGO_TARGET_DIR="$TARGET"
 CARGO="${CARGO:-cargo}"
@@ -112,39 +118,80 @@ while [ "$i" -lt "$MAX_JOBS" ]; do printf 'x\n' >&9; i=$((i + 1)); done
 job_slot() { read -r _ <&9 || true; }
 job_release() { printf 'x\n' >&9; }
 
+# The parts this run has to do: the page checks split in nine, the big world and the login (or the one screen of SECTIONS).
+PARTS_TOTAL=0
+if [ -n "${SECTIONS:-}" ]; then
+  PARTS_TOTAL=1
+else
+  for n in 1 2 3 4 5 6 7 8 9; do if want "ui$n"; then PARTS_TOTAL=$((PARTS_TOTAL + 1)); fi; done
+  if want big; then PARTS_TOTAL=$((PARTS_TOTAL + 1)); fi
+  if want auth; then PARTS_TOTAL=$((PARTS_TOTAL + 1)); fi
+fi
+
+# A part is over: the board shows «k/N parts» (its file is HERDR_PROJECTS_PROGRESS; the words are docs/check-progress.md).
+# Several parts end at once, so the count is taken under a lock and the file is replaced in one go.
+done_part() {
+  [ -n "${HERDR_PROJECTS_PROGRESS:-}" ] || return 0
+  (
+    flock 8 || exit 0
+    printf '%s\n' "$1" >>"$OUT/done"
+    n=$(wc -l <"$OUT/done" | tr -d ' ')
+    if printf '%s/%s parts\n' "$n" "$PARTS_TOTAL" >"$HERDR_PROJECTS_PROGRESS.new"; then
+      mv "$HERDR_PROJECTS_PROGRESS.new" "$HERDR_PROJECTS_PROGRESS" || true
+    fi
+  ) 8>"$OUT/.lock"
+}
+# From the first moment the board knows how many parts this run has.
+if [ -n "${HERDR_PROJECTS_PROGRESS:-}" ]; then
+  if printf '0/%s parts\n' "$PARTS_TOTAL" >"$HERDR_PROJECTS_PROGRESS.new"; then
+    mv "$HERDR_PROJECTS_PROGRESS.new" "$HERDR_PROJECTS_PROGRESS" || true
+  fi
+fi
+
 # The Galaxy: sections split in four, each with a fresh board (a section that needs another's state is a bug).
+# One screen (SECTIONS) is a single part: one fixture, one server, one browser.
 n=0
-for only in "boot,live,navigator,buttons,autopilot,manual,stack,queue,search" \
-            "chat,todo,hints" \
-            "lag,universes,framing,remote,scale,runners,menu card" \
-            "station,crew,ship,theme,simple,planet states,narrow,top cards" \
-            "focus,agent screen,requests,links,archive,load,top bar,limits,memory,layout narrow" \
-            "layout 1280" "layout 1920,layout 1600" "layout 2560" "layout 1366,layout big"; do
-  n=$((n + 1))
-  want "ui$n" || continue
-  start_server "ui$n"
+if [ -n "${SECTIONS:-}" ]; then
+  start_server "sections"
   job_slot
   ( set +e
-    t0=$(date +%s)
-    FIXTURE="$D" HERDR_PLANNER_TARGET_DIR="$TARGET" ONLY="$only" limited node scripts/ui-check.mjs "http://127.0.0.1:$P" ${SHOTS:+"$SHOTS"} >"$OUT/ui$n.txt" 2>&1
-    rc=$?; echo "(ui$n took $(($(date +%s) - t0)) s)" >>"$OUT/ui$n.txt"; job_release; exit "$rc"
+    FIXTURE="$D" HERDR_PLANNER_TARGET_DIR="$TARGET" ONLY="$SECTIONS" limited node scripts/ui-check.mjs "http://127.0.0.1:$P" ${SHOTS:+"$SHOTS"} >"$OUT/sections.txt" 2>&1
+    rc=$?; done_part sections; job_release; exit "$rc"
   ) &
-  JOBS="$JOBS $!:ui$n"
-done
+  JOBS="$JOBS $!:sections"
+else
+  for only in "boot,live,navigator,buttons,autopilot,manual,stack,queue,search" \
+              "chat,todo,hints" \
+              "lag,universes,framing,remote,scale,runners,menu card" \
+              "station,crew,ship,theme,simple,planet states,narrow,top cards" \
+              "focus,agent screen,requests,links,archive,load,top bar,limits,memory,layout narrow" \
+              "layout 1280" "layout 1920,layout 1600" "layout 2560" "layout 1366,layout big"; do
+    n=$((n + 1))
+    want "ui$n" || continue
+    start_server "ui$n"
+    job_slot
+    ( set +e
+      t0=$(date +%s)
+      FIXTURE="$D" HERDR_PLANNER_TARGET_DIR="$TARGET" ONLY="$only" limited node scripts/ui-check.mjs "http://127.0.0.1:$P" ${SHOTS:+"$SHOTS"} >"$OUT/ui$n.txt" 2>&1
+      rc=$?; echo "(ui$n took $(($(date +%s) - t0)) s)" >>"$OUT/ui$n.txt"; done_part "ui$n"; job_release; exit "$rc"
+    ) &
+    JOBS="$JOBS $!:ui$n"
+  done
+fi
 
 # A big world: 50 universes / 500 planets must stay orderly and cheap (the scale fixture).
-if want big; then
+if [ -z "${SECTIONS:-}" ] && want big; then
   start_server big --scale 50x500
   job_slot
   ( set +e
     FIXTURE="$D" limited node scripts/perf-check.mjs "http://127.0.0.1:$P" ${SHOTS:+"$SHOTS"} >"$OUT/big.txt" 2>&1
-    rc=$?; job_release; exit "$rc"
+    rc=$?; done_part big; job_release; exit "$rc"
   ) &
   JOBS="$JOBS $!:big"
 fi
 
 # A server with a password: the login, the cookie and the limit; the ship's computer behind it.
-if want auth; then
+if [ -z "${SECTIONS:-}" ] && want auth; then
   PASSWORD=secret start_server auth
   AUTH_D="$D"; AUTH_P="$P"
   job_slot
@@ -153,7 +200,7 @@ if want auth; then
     # before auth-check's limit test: a wrong old password is refused in the server's words
     SHIP_LOGIN="me:secret" ONLY="ship login" FIXTURE="$AUTH_D" limited node scripts/ui-check.mjs "http://127.0.0.1:$AUTH_P" ${SHOTS:+"$SHOTS"} &&
       FIXTURE="$AUTH_D" AUTH_BASE="http://127.0.0.1:$AUTH_P" limited node scripts/auth-check.mjs
-    rc=$?; job_release; exit "$rc"
+    rc=$?; done_part auth; job_release; exit "$rc"
   ) >"$OUT/auth.txt" 2>&1 &
   JOBS="$JOBS $!:auth"
 fi

@@ -264,7 +264,15 @@ export interface RunnerContainer {
   block_io: string;
   gpu_mem_mib: number | null;
   task: RunnerTaskRef | null;
-  class: 'active' | 'forgotten' | 'unsure' | 'foreign';
+  class: 'active' | 'forgotten' | 'unsure' | 'foreign' | 'shared';
+}
+
+/** One thing of a board repository's build cache (`herdr.shared=<repo>` on the yard, scripts/yard.sh). */
+export interface RunnerShared {
+  kind: 'container' | 'image' | 'volume';
+  name: string;
+  repo: string;
+  size_bytes: number | null;
 }
 
 export interface RunnerBlock {
@@ -292,6 +300,8 @@ export interface Runner {
   containers: RunnerContainer[];
   networks: { id: string; name: string; driver: string; labels: Record<string, string> }[];
   volumes: { name: string; driver: string; labels: Record<string, string> }[];
+  /** The build caches of the board's repositories: never a task's, never forgotten, never touched here. */
+  shared: RunnerShared[];
   auto: RunnerAuto;
   auto_stats: RunnerAutoStats;
 }

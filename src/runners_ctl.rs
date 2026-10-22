@@ -67,10 +67,13 @@ fn running(state: &str) -> bool {
     matches!(state, "running" | "restarting" | "paused")
 }
 
-/// Who may be read: every container of a board task (also a forgotten one), never a foreign one.
+/// Who may be read: every container of a board task (also a forgotten one), never a foreign one or a shared cache.
 pub fn logs_gate(c: &Container) -> Result<(), String> {
     if c.class == Class::Foreign {
         return Err("чужой контейнер (не задачи доски или под маской защиты): его логи не читаются".into());
+    }
+    if c.class == Class::Shared {
+        return Err("общий кэш сборок верфи (herdr.shared): им не управляют с доски".into());
     }
     Ok(())
 }
@@ -83,6 +86,9 @@ pub fn gate(c: &Container, act: Act, scope: &str) -> Result<(), String> {
         }
         Class::Unsure => {
             return Err("неясно, какой задаче принадлежит контейнер: его не трогаю".into());
+        }
+        Class::Shared => {
+            return Err("общий кэш сборок верфи (herdr.shared): его не трогаю".into());
         }
         Class::Active => {
             let own = c.task.as_ref().filter(|t| !scope.is_empty() && t.id == scope);
@@ -217,6 +223,15 @@ mod tests {
         assert!(logs_gate(&f).is_err());
         for a in [Act::Stop, Act::Restart, Act::Delete] {
             assert!(gate(&f, a, "t1").is_err());
+        }
+    }
+
+    #[test]
+    fn a_shared_build_cache_is_neither_read_nor_touched() {
+        let s = c(Class::Shared, "running", "");
+        assert!(logs_gate(&s).is_err(), "the cache is not a task: its logs are not read from here");
+        for a in [Act::Stop, Act::Restart, Act::Delete] {
+            assert!(gate(&s, a, "").is_err());
         }
     }
 

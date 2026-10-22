@@ -2768,11 +2768,19 @@ section('ship', async () => {
 
   // the folder: live, after «было → стало» and two presses
   const dir = join(fixture, 'projects-new');
-  await typeIn('#ship-dir', dir);
-  // The page enables «Далее» when its state has the typed folder: a click before that hits a disabled button.
-  await waitFor('!document.querySelector("#ship-dir-save").disabled', 3000);
-  await click('#ship-dir-save');
-  check('the folder change shows was → now before anything is saved', await waitFor('!!document.querySelector("#ship-change")', 4000) && await hasText('#ship-change', dir), await text('#ship-change'));
+  // The page enables «Далее» when its state has the typed folder: a click before that hits a disabled button. The
+  // typing itself is a synthetic event, and now and then it was lost (the button stayed disabled); a human would type
+  // it again, and so does this. Opening the card changes nothing until its second press, so trying twice is safe.
+  let card = false;
+  for (let go = 1; go <= 3 && !card; go++) {
+    await typeIn('#ship-dir', dir);
+    if (!(await waitFor('!document.querySelector("#ship-dir-save").disabled', 3000))) continue;
+    await pageTurn();
+    await click('#ship-dir-save');
+    card = await waitFor('!!document.querySelector("#ship-change")', 4000);
+  }
+  const folderLook = await evalJs('JSON.stringify({v:document.querySelector("#ship-dir")?.value,d:document.querySelector("#ship-dir-save")?.disabled,card:!!document.querySelector("#ship-change")})');
+  check('the folder change shows was → now before anything is saved', card && await hasText('#ship-change', dir), `${folderLook} ${await text('#ship-change')}`);
   await twoPresses('#ship-confirm');
   check('the new folder takes effect at once, in the page’s state too', await waitFor(`plannerSnap().server.projects_dir === ${JSON.stringify(dir)}`, 8000), await evalJs('plannerSnap().server.projects_dir'));
 
@@ -4119,6 +4127,17 @@ section('runners', async () => {
   const unsure = await evalJs('document.querySelectorAll("#rf-forgotten tbody tr[data-class=unsure]").length');
   check('two containers of live tasks, one forgotten, one unsure, two foreign', active === 2 && forgotten === 2 && unsure === 1 && (await hasText('#rf-foreign', 'Чужие: 2')), `${active}/${forgotten}/${unsure} ${await text('#rf-foreign')}`);
   check('a key with a digit finds its task: pg-AL9-4 is alpha/4', await hasText('#rf-tasks', 'pg-ALP-3') && await hasText('#rf-tasks', 'pg-AL9-4') && await hasText('#rf-tasks', 'ALP-4') && await hasText('#rf-forgotten', 'ALP-15'), await text('#rf-tasks'));
+  // The build caches of the board's repositories (herdr.shared=alpha, scripts/yard.sh): apart from the tasks, never foreign.
+  check('the build cache is a table of its own: the image with its size, the volume, the cache container',
+    await waitFor('!!document.querySelector("#rf-shared")', 8000)
+      && (await evalJs('document.querySelectorAll("#rf-shared tbody tr").length')) === 3
+      && (await evalJs('[...document.querySelectorAll("#rf-shared tbody tr")].every((r) => r.dataset.shared)'))
+      && await hasText('#rf-shared', 'herdr-planner-yard:0123456789ab') && await hasText('#rf-shared', 'hp-yard-cache')
+      && await hasText('#rf-shared', 'yard-cache-1') && await hasText('#rf-shared', '2.5 GB') && await hasText('#rf-shared', 'alpha'),
+    await text('#rf-shared'));
+  check('the cache container is neither a task container nor a foreign one',
+    await evalJs('!document.querySelector("#rf-tasks tbody").innerText.includes("yard-cache-1") && !document.querySelector("#rf-forgotten tbody").innerText.includes("yard-cache-1") && !document.querySelector("#rf-foreign").innerText.includes("yard-cache-1")'),
+    await text('#focus'));
   check('the unsure one is grey and has no default tick', await hasText('#rf-forgotten', 'неясно'), await text('#rf-forgotten'));
   // The planet's own line: the yard and its containers.
   await go('alpha/3');
@@ -4427,6 +4446,18 @@ section('menu card', async () => {
 // window's edge), folded or wide, at every window and scale; the folded chat is as wide as the room allows up to 54 rem (and 40 % of a
 // big window), never over a neighbour. The measuring takes the panels as they are drawn.
 const chatCenter = async (w, h, scales) => {
+  // The panels slide to their places; the chat's width follows where the navigator and the focus card *end up*, so the
+  // measuring waits until their boxes stop moving (a frame taken mid-slide read a narrower navigator and failed by pixels).
+  const stillPanels = async () => {
+    let prev = null;
+    for (let i = 0; i < 40; i++) {
+      const now = JSON.stringify([await rectOf('#chat'), await rectOf('#nav'), await rectOf('#focus')]);
+      if (now === prev) return true;
+      prev = now;
+      await sleep(100);
+    }
+    return false;
+  };
   await resetUi();
   const wideKeys = 'try { localStorage.removeItem("herdr-planner.chatWide"); localStorage.removeItem("herdr-planner.chatWideTodo"); localStorage.removeItem("herdr-planner.navW"); } catch {} true';
   const open = (sel) => evalJs(`(() => { const e = document.querySelector(${JSON.stringify(sel)}); return !!e && !e.classList.contains('off'); })()`);
@@ -4465,11 +4496,13 @@ const chatCenter = async (w, h, scales) => {
           if (wide !== isWide) { await click('#cwide'); await waitFor(`${wide ? '' : '!'}document.querySelector("#win").classList.contains("chat-wide")`, 4000); }
           // the todos beside the wide chat are not part of this: their column is left out of the free space
           if (wide && await exists('#win.todo-open')) await click('#cwide-todo');
-          const [ok, r] = await settled({ chat: '#chat', nav: '#nav', focus: '#focus' }, (x) => {
+          const [ok] = await settled({ chat: '#chat', nav: '#nav', focus: '#focus' }, (x) => {
             if (!x.chat) return false;
             const f = free(x, w);
             return Math.abs((x.chat.l + x.chat.r) / 2 - (f.l + f.r) / 2) <= 3;
           }, 6000);
+          await stillPanels();
+          const r = { chat: await rectOf('#chat'), nav: await rectOf('#nav'), focus: await rectOf('#focus') };
           const f = free(r, w);
           const what = `${at}, ${wide ? 'wide' : 'folded'} chat, navigator ${navOn ? 'open' : 'closed'}, focus ${focusOn ? 'open' : 'closed'}`;
           check(`${what}: the chat is in the middle of the free space (centre ${Math.round((r.chat.l + r.chat.r) / 2)}, space ${Math.round(f.l)}–${Math.round(f.r)}, centre ${Math.round((f.l + f.r) / 2)})`, ok, JSON.stringify({ ...r, f }));
@@ -4530,7 +4563,7 @@ section('runners disk', async () => {
   check('build cache is counted', (await part('cache')).includes('2.4 ГБ'), await part('cache'));
   check('stopped: the forgotten one is ticked, the unsure one is not', (await tickOf('#rf-disk tr[data-key="' + 'b'.repeat(64) + '"] input')) === true && (await tickOf('#rf-disk tr[data-key="' + 'c'.repeat(64) + '"] input')) === false && (await part('stopped')).includes('web-ALP-15') && (await part('stopped')).includes('x-ALP-99') && !(await part('stopped')).includes('neighbor-db-1'), await part('stopped'));
   check('builders: all under the yard’s buildx_* mask, so none is ticked beforehand; the running one is locked', (await tickOf('#rf-disk tr[data-key="b:old"] input')) === false && (await tickOf('#rf-disk tr[data-key="s:buildx_buildkit_gone0_state"] input')) === false && (await tickOf('#rf-disk tr[data-key="b:x"] input')) === false && (await evalJs('document.querySelector("#rf-disk tr[data-key=\\"b:x\\"] input").disabled')) === true && (await part('builders')).includes('запущен — не трогаю'), await part('builders'));
-  check('volumes: unticked, a warning above them, the neighbour’s used ones are not offered', (await evalJs('document.querySelector("#dk-vol-warn")?.innerText || ""')).includes('Осторожно') && (await tickOf('#rf-disk tr[data-key="v:chroma_data"] input')) === false && (await evalJs('!document.querySelector("#rf-disk tr[data-key=\\"v:neighbor_data\\"]") && !document.querySelector("#rf-disk tr[data-key=\\"v:work-3_pgdata\\"]")')), await part('volumes'));
+  check('volumes: unticked, a warning above them, the neighbour’s used ones and the shared cache are not offered', (await evalJs('document.querySelector("#dk-vol-warn")?.innerText || ""')).includes('Осторожно') && (await tickOf('#rf-disk tr[data-key="v:chroma_data"] input')) === false && (await evalJs('!document.querySelector("#rf-disk tr[data-key=\\"v:neighbor_data\\"]") && !document.querySelector("#rf-disk tr[data-key=\\"v:work-3_pgdata\\"]") && !document.querySelector("#rf-disk tr[data-key=\\"v:hp-yard-cache\\"]")')), await part('volumes'));
   check('the card says how much disk is free now and after', (await text('#dk-was')).includes('Свободно на диске: 300 ГБ →'), await text('#dk-was'));
   const was0 = await text('#dk-was');
   await clickBox('#rf-disk input[data-kind=cache]');

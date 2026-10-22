@@ -1,0 +1,271 @@
+#!/bin/sh
+# Checks scripts/yard.sh without a shipyard: stand-ins for docker, rsync and cargo record every call, and the wrapper is
+# run the way an agent, the board and the human run it. What is checked: the task's tag from TMPDIR / the board's id, the
+# container's name, labels and limits (no published ports, no bind mounts, the target inside /work), the image tag from
+# the Dockerfile's hash, the rsync arguments (--exclude .git, never -a or -t), the exit code passed through, the progress
+# file of the board, YARD=local, and «верфь не отвечает» with code 3.
+#   scripts/check-yard.sh
+set -eu
+cd "$(dirname "$0")/.."
+REPO=$(pwd)
+T=$(mktemp -d)
+trap 'rm -rf "$T"' EXIT INT TERM
+ST=$T/state
+export ST
+BIN=$T/bin
+mkdir -p "$ST" "$BIN" "$T/logs" "$T/home/.herdr-projects/settings"
+fails=0
+ok() { echo "ok   $*"; }
+bad() { echo "FAIL $*"; fails=$((fails + 1)); }
+
+expect() { # description, pattern, file
+  if grep -qE -- "$2" "$3" 2>/dev/null; then ok "$1"; else bad "$1: /$2/ не найдено в $3"; sed -n "1,6p" "$3" 2>/dev/null; fi
+}
+refuse() { # description, pattern, file
+  if grep -qE -- "$2" "$3" 2>/dev/null; then bad "$1: /$2/ не должно быть в $3"; else ok "$1"; fi
+}
+after() { # description, the line that must come first, the line that must come later, file
+  if awk -v a="$2" -v b="$3" 'index($0, a) { seen = 1 } index($0, b) { if (!seen) exit 1; hit = 1 } END { exit hit ? 0 : 1 }' "$4" 2>/dev/null; then
+    ok "$1"
+  else
+    bad "$1: /$3/ не идёт после /$2/ в $4"
+  fi
+}
+
+cat >"$BIN/docker" <<'EOF'
+#!/bin/sh
+printf '%s\n' "$*" >>"$ST/docker.log"
+case "$1" in
+  version) [ -e "$ST/down" ] && exit 1; echo 28.3.0; exit 0 ;;
+  image)
+    case "$2" in
+      inspect)
+        if [ "${3:-}" = "-f" ]; then echo "sha256:aaaaaaaaaaaaaaaa"; exit 0; fi
+        [ -e "$ST/image" ] && exit 0 || exit 1 ;;
+      ls) [ -e "$ST/stale-image" ] && echo "herdr-planner-yard:000000000000"; exit 0 ;;
+    esac
+    exit 0 ;;
+  build) : >"$ST/image"; exit 0 ;;
+  volume)
+    case "$2" in
+      inspect) [ -e "$ST/volume" ] && exit 0 || exit 1 ;;
+      create) : >"$ST/volume"; exit 0 ;;
+      rm) : ;;
+    esac
+    exit 0 ;;
+  container)
+    case "$2" in inspect) [ -e "$ST/container" ] && exit 0 || exit 1 ;; esac
+    exit 0 ;;
+  inspect)
+    case "$2" in
+      '{{.Image}}') echo "sha256:aaaaaaaaaaaaaaaa" ;;
+      '{{.State.Running}}') echo true ;;
+      *) echo running ;;
+    esac
+    exit 0 ;;
+  run) : >"$ST/container"; echo container-id; exit 0 ;;
+  start) : >"$ST/container"; exit 0 ;;
+  rm) rm -f "$ST/container"; exit 0 ;;
+  exec)
+    case "$*" in
+      *"cat /work/progress."*) cat "$ST/progress" 2>/dev/null; exit 0 ;;
+      *"test -d /work/out"*) [ -d "$ST/out" ] && exit 0 || exit 1 ;;
+    esac
+    exit "${YARD_STUB_RC:-0}" ;;
+  cp) exit 0 ;;
+  ps) exit 0 ;;
+esac
+exit 0
+EOF
+cat >"$BIN/rsync" <<'EOF'
+#!/bin/sh
+printf '%s\n' "$*" >>"$ST/rsync.log"
+exit 0
+EOF
+cat >"$BIN/cargo" <<'EOF'
+#!/bin/sh
+printf '%s\n' "$*" >>"$ST/cargo.log"
+exit 0
+EOF
+chmod +x "$BIN/docker" "$BIN/rsync" "$BIN/cargo"
+
+fresh() {
+  rm -f "$ST"/docker.log "$ST"/rsync.log "$ST"/cargo.log "$ST"/container "$ST"/image "$ST"/volume \
+    "$ST"/down "$ST"/progress "$ST"/stale-image
+  rm -rf "$ST/out"
+  : >"$ST/docker.log"; : >"$ST/rsync.log"; : >"$ST/cargo.log"
+}
+
+# Runs the wrapper as an agent/board/human would; sets $status and $out.
+yard() { # TMPDIR, then the arguments
+  tmp=$1
+  shift
+  set +e
+  env PATH="$BIN:$PATH" HOME="$T/home" TMPDIR="$tmp" DOCKER_HOST="ssh://vm-r" \
+    HERDR_PROJECTS_ID= HERDR_PROJECTS_TAG= YARD= YARD_STUB_RC="${YARD_STUB_RC:-0}" \
+    HERDR_PROJECTS_PROGRESS="${HERDR_PROJECTS_PROGRESS:-}" \
+    HERDR_YARD_LOG_DIR="$T/logs" /bin/sh "$REPO/scripts/yard.sh" "$@" >"$T/out" 2>&1
+  status=$?
+  set -e
+}
+
+HASH=$( (sha256sum scripts/yard/Dockerfile 2>/dev/null || shasum -a 256 scripts/yard/Dockerfile) | cut -c1-12)
+
+# ── the tag from TMPDIR, the image, the container ──
+fresh
+mkdir -p "$T/pln/PLN-7"
+yard "$T/pln/PLN-7" up
+[ "$status" = 0 ] || bad "up: код $status ($(cat "$T/out"))"
+expect "образ собран из Dockerfile, тег — его хеш" "build .* -t herdr-planner-yard:$HASH" "$ST/docker.log"
+expect "образ помечен herdr.shared=herdr-planner" "build --label herdr.shared=herdr-planner" "$ST/docker.log"
+expect "том кэша создан с той же меткой" "volume create --label herdr.shared=herdr-planner hp-yard-cache" "$ST/docker.log"
+expect "контейнер задачи назван по TMPDIR и помечен herdr.task" "run -d --name yard-PLN-7 --label herdr.task=PLN-7" "$ST/docker.log"
+expect "лимиты контейнера: 8 ЦП, 12 ГБ, 4096 процессов, no-new-privileges" "--cpus 8 --memory 12g --pids-limit 4096 --security-opt no-new-privileges" "$ST/docker.log"
+expect "том кэша смонтирован в /cache" "-v hp-yard-cache:/cache" "$ST/docker.log"
+expect "target сборки — внутри /work, не в общем кэше" "-e CARGO_TARGET_DIR=/work/target" "$ST/docker.log"
+refuse "ни одного опубликованного порта" " -p [0-9]" "$ST/docker.log"
+refuse "ни одного bind-mount хостового пути" " -v /" "$ST/docker.log"
+refuse "без --privileged и без --network host" "--privileged|--network host" "$ST/docker.log"
+
+# The image and the volume are not built twice; a started container is not made again.
+: >"$ST/docker.log"
+yard "$T/pln/PLN-7" up
+expect "образ не собирается, когда он есть" "image inspect" "$ST/docker.log"
+refuse "повторный up не собирает образ" "build --label" "$ST/docker.log"
+
+# ── the working copy, the run, the exit code ──
+fresh
+yard "$T/pln/PLN-7" test memory
+[ "$status" = 0 ] || bad "test: код $status ($(cat "$T/out"))"
+expect "rsync копирует в контейнер" "yard-PLN-7:/work/in/" "$ST/rsync.log"
+expect "rsync считает содержимое, а не время" "^-rlc " "$ST/rsync.log"
+expect "rsync берёт .gitignore, а .git исключает руками" "--exclude .git --filter=:- .gitignore" "$ST/rsync.log"
+refuse "rsync без -a и без -t" "(^| )-(a|t)( |$)" "$ST/rsync.log"
+expect "замок на всю команду и копию под ним" "flock /work/.lock sh -c" "$ST/docker.log"
+expect "cargo test с аргументом" "cargo test memory" "$ST/docker.log"
+refuse "сборки и тесты не занимают слот полного прогона" "YARD_SLOT_USE=1" "$ST/docker.log"
+
+fresh
+YARD_STUB_RC=7
+yard "$T/pln/PLN-7" test
+[ "$status" = 7 ] || bad "код выхода команды доходит до агента (получено $status, ждали 7)"
+YARD_STUB_RC=0
+
+# ── the board's id and the repository's key ──
+printf '{"repos":{"alpha":{"repo":{"key":"ALP"}}}}' >"$T/home/.herdr-projects/settings/config.json"
+fresh
+mkdir -p "$T/none"
+set +e
+env PATH="$BIN:$PATH" HOME="$T/home" TMPDIR="$T/none" DOCKER_HOST="ssh://vm-r" \
+  HERDR_PROJECTS_ID=alpha/7 HERDR_PROJECTS_TAG= YARD= YARD_STUB_RC=0 HERDR_YARD_LOG_DIR="$T/logs" \
+  /bin/sh "$REPO/scripts/yard.sh" up >"$T/out" 2>&1
+status=$?
+set -e
+[ "$status" = 0 ] || bad "up с HERDR_PROJECTS_ID: код $status ($(cat "$T/out"))"
+expect "тег из HERDR_PROJECTS_ID и ключа репозитория" "run -d --name yard-ALP-7 --label herdr.task=ALP-7" "$ST/docker.log"
+rm -f "$T/home/.herdr-projects/settings/config.json"
+
+# ── the board's progress file, the slots and the run's own folder ──
+fresh
+printf '3/11 parts\n' >"$ST/progress"
+mkdir -p "$ST/out"
+HERDR_PROJECTS_PROGRESS="$T/progress"
+yard "$T/pln/PLN-7" pages ui2
+[ "$status" = 0 ] || bad "pages: код $status ($(cat "$T/out"))"
+expect "полный прогон берёт слот" "YARD_SLOT_USE=1" "$ST/docker.log"
+expect "прогресс доски переписан из контейнера" "^3/11 parts$" "$T/progress"
+expect "путь прогресса прокинут всему exec — семафор тоже его видит" "-e HERDR_PROJECTS_PROGRESS=/work/progress\." "$ST/docker.log"
+refuse "прогресс — свой у каждого прогона, не общий /work/out/progress" "/work/out/progress" "$ST/docker.log"
+expect "страница собирается перед показом части" "sh scripts/web-build.sh" "$ST/docker.log"
+expect "и бинарник тоже" "cargo build --quiet" "$ST/docker.log"
+expect "/work/out готовится внутри команды" "^rm -rf /work/out " "$ST/docker.log"
+expect "и старые папки прогонов убираются там же" "/work/out\\.\\*" "$ST/docker.log"
+after "очистка /work/out идёт только под замком" "flock /work/.lock" "rm -rf /work/out" "$ST/docker.log"
+refuse "нет отдельной очистки /work/out вне замка" "sh -c rm -rf /work/out && mkdir" "$ST/docker.log"
+expect "результат прогона уезжает в свою папку" "mv /work/out \"/work/out\." "$ST/docker.log"
+expect "прогон держит замок, пока папку не заберут: ждёт .fetched" "while \[ ! -e \"/work/out\..*\.fetched\"" "$ST/docker.log"
+expect "снимки забираются из своей папки, а не из общей" "cp yard-PLN-7:/work/out\." "$ST/docker.log"
+after "ждём готовности папки раньше копирования" ".ready" "cp yard-PLN-7:/work/out." "$ST/docker.log"
+after "копия — раньше, чем отпускаем прогон" "cp yard-PLN-7:/work/out." "touch /work/out." "$ST/docker.log"
+
+fresh
+HERDR_PROJECTS_PROGRESS="$T/progress2"
+yard "$T/pln/PLN-7" check
+[ "$status" = 0 ] || bad "check: код $status ($(cat "$T/out"))"
+expect "check идёт по всему run-checks.sh со снимками в /work/out" "sh scripts/run-checks.sh /work/out/shots" "$ST/docker.log"
+expect "check тоже готовит /work/out под замком" "^mkdir -p /work/out$" "$ST/docker.log"
+
+fresh
+yard "$T/pln/PLN-7" section runners
+[ "$status" = 0 ] || bad "section: код $status ($(cat "$T/out"))"
+expect "section передаёт секции" "SECTIONS=runners" "$ST/docker.log"
+expect "section собирает страницу и бинарник" "sh scripts/web-build.sh" "$ST/docker.log"
+refuse "section не занимает слот полного прогона" "YARD_SLOT_USE=1" "$ST/docker.log"
+
+# ── a run waiting for a slot says so (the INNER loop, on a rewritten copy of its paths) ──
+fresh
+ROOT=$T/inner
+mkdir -p "$ROOT/work/src" "$ROOT/work/in" "$ROOT/work/out" "$ROOT/cache/slots"
+awk '/^INNER=\$\(cat <<.INNER_EOF.$/ { f = 1; next } /^INNER_EOF$/ { f = 0 } f' scripts/yard.sh |
+  sed "s|/work|$ROOT/work|g; s|/cache|$ROOT/cache|g" >"$T/inner.sh"
+( flock 9; sleep 20 ) 9>"$ROOT/cache/slots/1" &
+HOLD=$!
+sleep 0.5
+set +e
+env HERDR_PROJECTS_PROGRESS="$T/inner-progress" YARD_SLOT_USE=1 YARD_SLOTS=1 timeout 5 sh "$T/inner.sh" yard true >/dev/null 2>&1
+set -e
+kill "$HOLD" 2>/dev/null || true
+wait "$HOLD" 2>/dev/null || true
+expect "ожидающий слот пишет состояние ожидания" '"state":"waiting"' "$T/inner-progress"
+
+# ── down keeps the cache ──
+fresh
+yard "$T/pln/PLN-7" up
+: >"$ST/docker.log"
+yard "$T/pln/PLN-7" down
+expect "down убирает контейнер по точному имени" "rm -f -v yard-PLN-7" "$ST/docker.log"
+refuse "down не трогает том кэша" "volume rm" "$ST/docker.log"
+
+# ── a yard that does not answer ──
+fresh
+: >"$ST/down"
+yard "$T/pln/PLN-7" check
+[ "$status" = 3 ] || bad "молчащая верфь: код $status (ждали 3)"
+expect "и слова о том, что верфь не отвечает" "верфь vm-r не отвечает" "$T/out"
+refuse "и никакой сборки на этой машине" "cargo|run-checks" "$T/out"
+rm -f "$ST/down"
+
+# ── YARD=local: the same commands here, no container ──
+fresh
+set +e
+env PATH="$BIN:$PATH" HOME="$T/home" TMPDIR="$T/pln/PLN-7" DOCKER_HOST= HERDR_PROJECTS_ID= \
+  HERDR_PROJECTS_TAG= YARD=local HERDR_YARD_LOG_DIR="$T/logs" \
+  /bin/sh "$REPO/scripts/yard.sh" build --release >"$T/out" 2>&1
+status=$?
+set -e
+[ "$status" = 0 ] || bad "YARD=local build: код $status ($(cat "$T/out"))"
+expect "YARD=local зовёт cargo на этой машине" "^build --release$" "$ST/cargo.log"
+refuse "YARD=local не говорит с docker" "run -d" "$ST/docker.log"
+
+# ── prune: stale images, only with -y ──
+fresh
+: >"$ST/stale-image"
+: >"$ST/image"
+yard "$T/pln/PLN-7" prune
+refuse "prune без -y ничего не удаляет" "image rm" "$ST/docker.log"
+expect "prune показывает старый образ" "herdr-planner-yard:000000000000" "$T/out"
+fresh
+: >"$ST/stale-image"
+: >"$ST/image"
+yard "$T/pln/PLN-7" prune -y
+expect "prune -y убирает образ не текущего хеша" "image rm herdr-planner-yard:000000000000" "$ST/docker.log"
+
+if command -v shellcheck >/dev/null 2>&1 && shellcheck --version >/dev/null 2>&1; then
+  if shellcheck -s sh scripts/yard.sh scripts/check-yard.sh; then ok "shellcheck"; else bad "shellcheck"; fi
+fi
+
+if [ "$fails" -ne 0 ]; then
+  echo "check-yard: $fails failed"
+  exit 1
+fi
+echo "check-yard: ok"
