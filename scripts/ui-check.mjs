@@ -572,9 +572,10 @@ section('chat', async () => {
     };
     requestAnimationFrame(tick);
   })`);
+  // A history step is 70 px; a few pixels are the log settling after the field grew.
   await press('ArrowUp');
   const afterUp = await evalJs('(() => { const ta = document.querySelector("#ask-in"); return { start: ta.selectionStart, top: document.querySelector("#clog").scrollTop }; })()');
-  check('ArrowUp inside a wrapped paragraph moves the caret, not the history', afterUp.start < beforeUp.start && afterUp.top === beforeUp.top && wrapped.lines > 60, JSON.stringify({ wrapped, beforeUp, afterUp }));
+  check('ArrowUp inside a wrapped paragraph moves the caret, not the history', afterUp.start < beforeUp.start && Math.abs(afterUp.top - beforeUp.top) < 40 && wrapped.lines > 60, JSON.stringify({ wrapped, beforeUp, afterUp }));
   // The other way: from the start of the paragraph the caret goes down a visual line, the history stays.
   await evalJs('(() => { const t = document.querySelector("#ask-in"); t.focus(); t.setSelectionRange(0, 0); })()');
   await frames(1);
