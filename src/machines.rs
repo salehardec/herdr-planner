@@ -21,7 +21,19 @@ const MACHINES_WAIT: Duration = Duration::from_secs(25);
 const LIST_WAIT: Duration = Duration::from_secs(25);
 const ACTION_WAIT: Duration = Duration::from_secs(60);
 /// The longest free text sent to another machine (a message to its Coordinator, a reply to a task).
-pub const MAX_TEXT: usize = 20_000;
+/// Bytes, not characters: the text travels base64 in one ssh argument, and Linux caps an argument at
+/// 128 KiB. 60 000 bytes leave room for the base64 text and the small JSON around it.
+pub const MAX_TEXT: usize = 60_000;
+
+/// Why a text cannot go to another machine, if it cannot — with the real limit, not «слишком длинный».
+pub fn text_limit_error(text: &str) -> Option<String> {
+    (text.len() > MAX_TEXT).then(|| {
+        format!(
+            "сообщение для далёкой галактики не помещается: {} байт, предел — {MAX_TEXT} байт",
+            text.len()
+        )
+    })
+}
 pub const OLD_PLUGIN_LINE: &str = "там старый herdr-projects: обновите";
 /// The actions `herdr-projects remote do` answers (plan §4.7; `approve` with `anyway` covers the forced yes).
 const DO_ACTIONS: &[&str] = &[
@@ -883,8 +895,8 @@ pub(crate) fn do_payload(action: &Value) -> Result<Value, String> {
         .filter(|a| DO_ACTIONS.contains(a))
         .ok_or("такого действия над задачей на другой машине нет")?;
     if let Some(text) = action.get("text").and_then(Value::as_str) {
-        if text.chars().count() > MAX_TEXT {
-            return Err("текст слишком длинный".into());
+        if let Some(e) = text_limit_error(text) {
+            return Err(e);
         }
     }
     if let Some(letter) = action.get("letter").and_then(Value::as_str) {
@@ -935,8 +947,11 @@ pub(crate) async fn remote_dispatch_with(
     {
         return Err(format!("недопустимое имя адресата: {to:?}"));
     }
-    if text.trim().is_empty() || text.chars().count() > MAX_TEXT {
-        return Err("текст пуст или слишком длинный".into());
+    if text.trim().is_empty() {
+        return Err("текст пуст".into());
+    }
+    if let Some(e) = text_limit_error(text) {
+        return Err(e);
     }
     let mut payload = json!({ "to": to, "text": text, "delegate": delegate });
     if let Some(a) = about {
@@ -1071,6 +1086,14 @@ mod tests {
     use super::*;
     use crate::config::AppConfig;
     use std::path::{Path, PathBuf};
+
+    #[test]
+    fn a_remote_text_is_bounded_in_bytes_and_says_the_limit() {
+        assert!(text_limit_error(&"x".repeat(25_000)).is_none());
+        assert!(text_limit_error(&"ж".repeat(30_000)).is_none(), "60 000 bytes fit");
+        let e = text_limit_error(&"ж".repeat(30_001)).unwrap();
+        assert!(e.contains("60000") && e.contains("60002"), "{e}");
+    }
 
     /// A stand-in for ssh. It logs its arguments (one call, one line group) and answers by the target (the
     /// argument before the remote command): `good` lists and acts, `down` fails as ssh does, `old` is a plugin

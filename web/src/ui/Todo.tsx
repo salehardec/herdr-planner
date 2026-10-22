@@ -86,8 +86,9 @@ export function Todo(): JSX.Element {
   const submit = async (): Promise<void> => {
     const el = inputRef.current;
     if (!el) return;
-    let text = el.value.trim();
-    if (!text && !shelf.files.value.length) return;
+    // The server trims blank edges; leading indentation of the lines is what a person typed.
+    let text = el.value;
+    if (!text.trim() && !shelf.files.value.length) return;
     const got = await shelf.settled();
     if (!got.ok) { return; }
     // Only a file: the item is named after it.
@@ -202,8 +203,8 @@ function TodoRow(props: {
   /** Enter (or leaving the field) keeps the words; Shift+Enter is a new line. A refused save stays open. */
   const commitEdit = async (text: string): Promise<void> => {
     if (editing.value !== it.id) return;
-    const v = text.trim();
-    if (!v || v === it.text || (await todoUpdate(it.id, { text: v }))) editing.value = null;
+    const v = text;
+    if (!v.trim() || v === it.text || (await todoUpdate(it.id, { text: v }))) editing.value = null;
   };
   return (
     <li

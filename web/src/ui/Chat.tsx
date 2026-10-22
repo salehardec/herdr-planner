@@ -57,6 +57,9 @@ function caretLines(ta: HTMLTextAreaElement): { first: boolean; last: boolean } 
   marker.textContent = '\u200b';
   mirror.appendChild(marker);
   mirror.appendChild(document.createTextNode(ta.value.slice(ta.selectionStart)));
+  // A textarea shows an empty line after a trailing break; a div with `pre-wrap` gives it no box,
+  // so a zero-width character keeps that line measurable and the caret above it is not «last».
+  if (ta.value.endsWith('\n')) mirror.appendChild(document.createTextNode('\u200b'));
   document.body.appendChild(mirror);
   const box = mirror.getBoundingClientRect();
   const at = marker.getBoundingClientRect();

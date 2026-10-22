@@ -505,26 +505,36 @@ fn todo_text(text: &str) -> Result<String, String> {
     if let Some(e) = text_limit_error(&t, "дело") {
         return Err(e);
     }
-    if t.trim_start().starts_with('-') {
-        return Err("дело не может начинаться с «-»".into());
-    }
+    // A pasted markdown list starts with «-» and is kept as it is: only the task title of
+    // `todo-create` reaches the board as a bare argument, and it is made safe there.
     Ok(t)
 }
 
-/// A task's title from the first line of a todo: one line, and short enough (by bytes, which keeps
-/// it under the board's 60 columns even for wide letters) that herdr-projects never rewrites it and
-/// the full text stays in the description exactly as it was typed, line breaks included.
+/// A task's title from the first line of a todo: one line, without a list marker, and short enough
+/// for the board's 60 columns in ordinary letters. A wider script may be shortened by the board;
+/// the full text is in `--desc` anyway, so its line breaks are kept.
 fn task_title(text: &str) -> String {
     let first = text.lines().find(|l| !l.trim().is_empty()).unwrap_or("").trim();
-    let mut out = String::new();
-    for ch in first.chars() {
-        if out.len() + ch.len_utf8() > 40 {
-            out.push('…');
+    // A markdown list item (`- milk`, `* milk`, `- [ ] milk`) is a title in words: the board reads
+    // the first word as a flag when it starts with «-», and the whole text stays in the description.
+    let mut first = first
+        .trim_start_matches(|c: char| matches!(c, '-' | '*' | '+'))
+        .trim_start();
+    for box_ in ["[ ] ", "[x] ", "[X] "] {
+        if let Some(rest) = first.strip_prefix(box_) {
+            first = rest.trim_start();
             break;
         }
-        out.push(ch);
     }
-    out
+    let mut out: String = first.chars().take(55).collect();
+    if first.chars().count() > 55 {
+        out.push('…');
+    }
+    if out.is_empty() {
+        "Дело".into()
+    } else {
+        out
+    }
 }
 
 fn valid_key(k: &str) -> bool {
@@ -741,6 +751,9 @@ async fn api_chat(
         }
         if text.is_empty() {
             return error(StatusCode::BAD_REQUEST, "empty message");
+        }
+        if let Some(e) = crate::machines::text_limit_error(text) {
+            return error(StatusCode::BAD_REQUEST, e);
         }
         return match crate::machines::remote_dispatch(&app.cfg, g, "", text, false, None).await {
             Ok(out) => {
@@ -1188,10 +1201,11 @@ async fn api_action(
             // The board's `add` cleans the title (every line break becomes a space) and keeps it as
             // the description only when it had to shorten it: a multi-line todo is sent as a short
             // one-line title plus the whole text as `--desc`, which is kept as it is.
-            let (title, desc) = if text.contains('\n') {
-                (task_title(&text), attachments::message(&text, &paths))
+            let title = task_title(&text);
+            let desc = if title == text {
+                attachments::message("", &paths)
             } else {
-                (text, attachments::message("", &paths))
+                attachments::message(&text, &paths)
             };
             if let Some(e) = bytes_limit_error(&desc, "дело с вложениями") {
                 return error(StatusCode::BAD_REQUEST, e);
@@ -1385,6 +1399,9 @@ async fn remote_action(app: &Shared, galaxy: &str, body: &ActionBody) -> Respons
             let text = body.text.as_deref().unwrap_or("").trim().to_string();
             if text.is_empty() {
                 return error(StatusCode::BAD_REQUEST, "empty message");
+            }
+            if let Some(e) = machines::text_limit_error(&text) {
+                return error(StatusCode::BAD_REQUEST, e);
             }
             machines::remote_do(&app.cfg, galaxy, &json!({"id": id, "action": "tell", "text": text})).await
         }
@@ -1596,7 +1613,11 @@ mod tests {
         assert_eq!(todo_text("\n  first\n\nsecond  \n\n").unwrap(), "  first\n\nsecond");
         assert!(todo_text("").is_err());
         assert!(todo_text("\n \n").is_err());
-        assert!(todo_text("--all").is_err());
+        assert_eq!(todo_text("--all").unwrap(), "--all");
+        assert_eq!(
+            todo_text("- купить молоко\n- позвонить в банк").unwrap(),
+            "- купить молоко\n- позвонить в банк"
+        );
         assert!(todo_text(&"x".repeat(401)).is_ok());
         assert!(todo_text(&"x".repeat(MAX_TEXT_CHARS)).is_ok());
         assert!(todo_text(&"x".repeat(MAX_TEXT_CHARS + 1)).is_err());
@@ -1617,8 +1638,12 @@ mod tests {
             .unwrap()
             .contains("130000"));
         assert_eq!(task_title("  Первая строка дела\nвторая строка"), "Первая строка дела");
+        assert_eq!(task_title("- купить молоко\n- позвонить в банк"), "купить молоко");
+        assert_eq!(task_title("- [ ] купить молоко"), "купить молоко");
+        assert_eq!(task_title("---"), "Дело");
         assert_eq!(task_title("коротко"), "коротко");
-        assert_eq!(task_title(&"ж".repeat(50)), format!("{}…", "ж".repeat(20)));
+        assert_eq!(task_title(&"ж".repeat(50)), "ж".repeat(50));
+        assert_eq!(task_title(&"ж".repeat(60)), format!("{}…", "ж".repeat(55)));
         assert!(!task_title(&"x".repeat(50)).starts_with('\n'));
         assert!(valid_todo_id("t1792407710774-1"));
         assert!(!valid_todo_id("../../etc"));

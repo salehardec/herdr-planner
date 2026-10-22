@@ -553,7 +553,7 @@ section('chat', async () => {
   const beforeDown = await evalJs('(() => { const ta = document.querySelector("#ask-in"); return { start: ta.selectionStart, top: document.querySelector("#clog").scrollTop }; })()');
   await press('ArrowDown');
   const afterDown = await evalJs('(() => { const ta = document.querySelector("#ask-in"); return { start: ta.selectionStart, top: document.querySelector("#clog").scrollTop }; })()');
-  check('ArrowDown inside a wrapped paragraph moves the caret down, not the history', afterDown.start > beforeDown.start && afterDown.top === beforeDown.top, JSON.stringify({ beforeDown, afterDown }));
+  check('ArrowDown inside a wrapped paragraph moves the caret down, not the history', afterDown.start > beforeDown.start && Math.abs(afterDown.top - beforeDown.top) < 40, JSON.stringify({ beforeDown, afterDown }));
   // Three lines made with Shift+Enter: ArrowDown goes from the first to the second.
   await evalJs(`(() => { const t = document.querySelector('#ask-in'); t.value = 'Первая\\nВторая\\nТретья'; t.dispatchEvent(new Event('input', { bubbles: true })); t.focus(); t.setSelectionRange(0, 0); })()`);
   const linesBefore = await evalJs(`new Promise((done) => {
@@ -567,7 +567,22 @@ section('chat', async () => {
   })`);
   await press('ArrowDown');
   const linesAfter = await evalJs('(() => { const ta = document.querySelector("#ask-in"); return { start: ta.selectionStart, top: document.querySelector("#clog").scrollTop }; })()');
-  check('ArrowDown moves the caret to the next line of a multi-line message', linesAfter.start > 0 && linesAfter.top === linesBefore.top, JSON.stringify({ linesBefore, linesAfter }));
+  // A history step is 70 px; a few pixels are the log settling after the field grew.
+  check('ArrowDown moves the caret to the next line of a multi-line message', linesAfter.start > 0 && Math.abs(linesAfter.top - linesBefore.top) < 40, JSON.stringify({ linesBefore, linesAfter }));
+  // A trailing empty line is a line too: ArrowDown from the line above it reaches it.
+  await evalJs(`(() => { const t = document.querySelector('#ask-in'); t.value = 'abcde\\n'; t.dispatchEvent(new Event('input', { bubbles: true })); t.focus(); t.setSelectionRange(5, 5); })()`);
+  const emptyBefore = await evalJs(`new Promise((done) => {
+    const l = document.querySelector('#clog'); const ta = document.querySelector('#ask-in');
+    let last = l.scrollTop; let still = 0;
+    const tick = () => {
+      if (l.scrollTop === last) still++; else { last = l.scrollTop; still = 0; }
+      if (still >= 3) done({ start: ta.selectionStart, top: l.scrollTop }); else requestAnimationFrame(tick);
+    };
+    requestAnimationFrame(tick);
+  })`);
+  await press('ArrowDown');
+  const emptyAfter = await evalJs('(() => { const ta = document.querySelector("#ask-in"); return { start: ta.selectionStart, top: document.querySelector("#clog").scrollTop }; })()');
+  check('ArrowDown reaches a trailing empty line', emptyAfter.start === 6 && Math.abs(emptyAfter.top - emptyBefore.top) < 40, JSON.stringify({ emptyBefore, emptyAfter }));
   await evalJs('(() => { const t = document.querySelector("#ask-in"); t.value = ""; t.dispatchEvent(new Event("input", { bubbles: true })); })()');
   // send: Shift+Enter keeps the line, Enter sends both lines
   await evalJs('(() => { const t = document.querySelector("#ask-in"); t.value = ""; t.dispatchEvent(new Event("input", { bubbles: true })); t.focus(); })()');
@@ -930,6 +945,22 @@ section('todo', async () => {
   const addCall = calls().filter((c) => c.argv[0] === 'add').at(-1);
   check('a multi-line todo becomes a task with a one-line title', made[0] === 200 && addCall?.argv[1] === 'Первая строка дела', JSON.stringify({ made, argv: addCall?.argv.slice(0, 4) }));
   check('and its whole text, line breaks kept, is the description', addCall?.argv.includes('--desc') && addCall.argv[addCall.argv.indexOf('--desc') + 1] === mlText, JSON.stringify(addCall?.argv.slice(-2)));
+  // A pasted markdown list is a todo like any other; only the task title is made safe for the board.
+  const dashText = '- купить молоко\n- позвонить в банк';
+  await evalJs(`(() => { const t = document.querySelector('#todo-in'); t.value = ${JSON.stringify(dashText)}; t.dispatchEvent(new Event('input', { bubbles: true })); t.focus(); })()`);
+  await press('Enter');
+  check('a pasted markdown list becomes a todo', await waitFor(`fetch('/api/state').then(r=>r.json()).then(s => s.todo.some(x => x.text === ${JSON.stringify(dashText)}))`, 6000));
+  const dashId = await evalJs(`fetch('/api/state').then(r=>r.json()).then(s => s.todo.find(x => x.text === ${JSON.stringify(dashText)})?.id)`);
+  const dashTask = dashId ? await post('/api/action', { action: 'todo-create', id: dashId, repo: 'alpha' }) : [0, { error: 'the list was not added' }];
+  const dashCall = calls().filter((c) => c.argv[0] === 'add').at(-1);
+  check('a list becomes a task: the title has no leading dash, the whole list is the description', dashTask[0] === 200 && dashCall?.argv[1] === 'купить молоко' && dashCall.argv[dashCall.argv.indexOf('--desc') + 1] === dashText, JSON.stringify({ made: dashTask, argv: dashCall?.argv.slice(0, 4) }));
+  // The indentation of the first line typed on the page is kept, not trimmed by the page.
+  const indText = '    def f():\n        return 1';
+  await evalJs(`(() => { const t = document.querySelector('#todo-in'); t.value = ${JSON.stringify(indText)}; t.dispatchEvent(new Event('input', { bubbles: true })); t.focus(); })()`);
+  await press('Enter');
+  check('a todo typed on the page keeps the indentation of its first line', await waitFor(`fetch('/api/state').then(r=>r.json()).then(s => s.todo.some(x => x.text === ${JSON.stringify(indText)}))`, 6000));
+  const indId = await evalJs(`fetch('/api/state').then(r=>r.json()).then(s => s.todo.find(x => x.text === ${JSON.stringify(indText)})?.id)`);
+  if (indId) await post('/api/action', { action: 'todo-remove', id: indId });
   await shot('todo.png');
   await resetUi();
 });
@@ -1467,6 +1498,11 @@ section('far', async () => {
   await press('Enter');
   check('the chat goes to that machine\'s Coordinator (dispatch)', await waitLog(() => calls('remote.jsonl').some((c) => JSON.stringify(c).includes('привет, vm-a')), 12000), JSON.stringify(calls('remote.jsonl').slice(-1)).slice(0, 300));
   check('and says honestly there is no transcript', await waitFor('(document.querySelector("#clog")?.innerText || "").includes("нет стенограммы") || (document.querySelector("#clog")?.innerText || "").includes("привет")', 5000));
+  // The far path travels base64 in one ssh argument: 25 000 bytes fit, and a bigger text is refused in words.
+  const farLong = await post('/api/chat', { text: 'x'.repeat(25000), galaxy: 'vm-a' });
+  check('a long message to a far galaxy goes through within the ssh limit', farLong[0] === 200, JSON.stringify(farLong));
+  const farTooLong = await post('/api/chat', { text: 'x'.repeat(70000), galaxy: 'vm-a' });
+  check('a message over the far-galaxy limit is a clear 400, not a vague 502', farTooLong[0] === 400 && String(farTooLong[1]?.error).includes('60000'), JSON.stringify(farTooLong));
   // the chat is closed with Esc; if it is still open (a key that went to something else first), once more — and the output says so
   const chatShut = 'document.querySelector("#chat").classList.contains("off") && !document.activeElement?.matches("textarea,input")';
   for (let i = 0; i < 3 && !(await evalJs(chatShut)); i++) {
