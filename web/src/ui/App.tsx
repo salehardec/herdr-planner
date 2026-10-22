@@ -20,6 +20,7 @@ import { Cockpit } from './Cockpit';
 import { Station, StationAuto } from './Station';
 import { Ship } from './Ship';
 import { RememberDialog } from './MemoryPanel';
+import { MemoryWindow } from './MemoryWindow';
 import { Gl } from './Gl';
 import { t } from '../i18n';
 import { unreadCount } from './unread';
@@ -69,6 +70,7 @@ export function App(): JSX.Element {
       <Dialogs />
       <Station />
       <Ship />
+      <MemoryWindow />
       <RememberDialog />
       <StationAuto />
       <Toasts />

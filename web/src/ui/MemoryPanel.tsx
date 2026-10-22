@@ -10,7 +10,7 @@ import { toast } from '../toast';
 import { dayTimeOf } from '../util/dates';
 import { Gl } from './Gl';
 import {
-  deleteEntry, discardDraft, dismissSuggestion, keepSuggestion, KINDS, kindLabel, loadMemory, memFocus, memoryOf, previewSend, sendMemory,
+  deleteEntry, discardDraft, dismissSuggestion, keepSuggestion, KINDS, kindLabel, loadMemory, memoryOf, openMemory, previewSend, sendMemory, stateOf,
   previewDelete, previewDiscard, previewSave, previewSuggestion, rememberDlg, saveEntry, connectMemory, setSuggest,
   type Accept, type MemData, type MemEntry, type MemPreview, type MemSuggestion, type SaveBody, type SentTask, forgetSent,
 } from './memory-api';
@@ -18,26 +18,37 @@ import { ChangeCard } from './MemoryChange';
 import { parseDocId } from './memory-ids';
 import './memory.css';
 
-const failWords = (e: unknown): string => (e as Error)?.message || t('mem.failed');
+export const failWords = (e: unknown): string => (e as Error)?.message || t('mem.failed');
 
-/** One entry: its line, and (opened) its text with Edit and Delete. */
-function Row(props: {
+/** One entry: its line, and (opened) its text with Edit and Delete. The state badge sits beside the title, never inside
+ *  the title's column: on a narrow row it drops to its own line instead of squeezing the title. */
+export function Row(props: {
   e: MemEntry; open: boolean; editable: boolean; hot: boolean; onToggle: () => void; onEdit: () => void; onDelete: () => void; onDiscard?: () => void;
+  /** Goes to the board task a «waits for the merge» entry is in (the badge is a link then). */
+  onTask?: (id: string) => void;
 }): JSX.Element {
   const { e } = props;
   const gone = e.draft === 'deleted';
   const frozen = gone || !!e.draft?.startsWith('sent');   // a board task has it: change it after the merge
   const ref = useRef<HTMLDivElement>(null);
   useEffect(() => { if (props.hot) ref.current?.scrollIntoView({ block: 'center' }); }, [props.hot]);
+  const badge = e.draft ? t(`mem.draft.${e.draft}`, { task: e.task ?? '' }) : '';
+  const task = e.draft?.startsWith('sent') && e.task && props.onTask ? currentView.value.tasks.find((x) => x.tag === e.task) : undefined;
   return (
     <div ref={ref} class={`mm-row ${props.open ? 'open' : ''} ${props.hot ? 'hot' : ''} ${e.draft ? `draft d-${e.draft}` : ''}`} data-mem={e.id} data-draft={e.draft || undefined}>
-      <button class="mm-line" type="button" aria-expanded={props.open} onClick={props.onToggle}>
-        <Gl n={props.open ? 'chev' : 'chev-r'} cls="mm-chev" />
-        <span class={`mm-kind k-${e.kind || 'note'}`}>{kindLabel(e.kind)}</span>
-        <b class="mm-title">{e.title}</b>
-        {e.draft && <span class={`mm-draft d-${e.draft}`} title={t('mem.draftTip')}>{t(`mem.draft.${e.draft}`, { task: e.task ?? '' })}</span>}
-        {!props.open && e.description && e.description !== e.title && <span class="mm-desc">{e.description}</span>}
-      </button>
+      <div class="mm-head">
+        <button class="mm-line" type="button" aria-expanded={props.open} onClick={props.onToggle}>
+          <Gl n={props.open ? 'chev' : 'chev-r'} cls="mm-chev" />
+          <span class={`mm-kind k-${e.kind || 'note'}`}>{kindLabel(e.kind)}</span>
+          <span class="mm-text">
+            <b class="mm-title" title={e.title}>{e.title}</b>
+            {!props.open && e.description && e.description !== e.title && <span class="mm-desc">{e.description}</span>}
+          </span>
+        </button>
+        {e.draft && (task
+          ? <button type="button" class={`mm-draft mm-task d-${e.draft}`} data-act="mem-task" data-task={task.id} title={t('mem.taskTip', { task: task.tag })} onClick={() => props.onTask?.(task.id)}>{badge}</button>
+          : <span class={`mm-draft d-${e.draft}`} title={t('mem.draftTip')}>{badge}</span>)}
+      </div>
       {props.open && (
         <div class="mm-more">
           {e.description && e.description !== e.title && <div class="mm-lead">{e.description}</div>}
@@ -61,9 +72,9 @@ function Row(props: {
   );
 }
 
-interface Draft { id: string; title: string; kind: string; description: string; body: string }
+export interface Draft { id: string; title: string; kind: string; description: string; body: string }
 
-function Form(props: { repo: string; draft: Draft; onDone: () => void }): JSX.Element {
+export function Form(props: { repo: string; draft: Draft; onDone: () => void }): JSX.Element {
   const [d, setD] = useState(props.draft);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
@@ -290,7 +301,7 @@ function Connect(props: { data: MemData }): JSX.Element | null {
 /** The universe's memory that is not in git yet: drafts (kept outside the checkout, so the board can still merge into it).
  *  Sending shows «было → стало», checks the text for personal data once more and hands it to a board task: the planner
  *  never writes or commits into the checkout. The task's id stays on the panel. */
-function Git(props: { repo: string; data: MemData }): JSX.Element | null {
+export function Git(props: { repo: string; data: MemData }): JSX.Element | null {
   const g = props.data.git;
   const [busy, setBusy] = useState(false);
   const [card, setCard] = useState<MemPreview | null>(null);
@@ -341,24 +352,19 @@ function Git(props: { repo: string; data: MemData }): JSX.Element | null {
   );
 }
 
-const matches = (e: MemEntry, q: string): boolean => {
+export const matches = (e: MemEntry, q: string): boolean => {
   const n = q.trim().toLowerCase();
   return !n || `${e.title} ${e.description} ${e.body} ${e.id}`.toLowerCase().includes(n);
 };
 
-/** The memory of one level: the Galaxy's (`repo` empty) or a universe's. Entries are Markdown files; edits go to the files. */
+/** The memory of one level in the narrow column of the Focus: a summary (how many entries, how many wait for a merge or are
+ *  drafts), a search and the button that opens the list in a window (`MemoryWindow`). The Galaxy's level (`repo` empty)
+ *  also holds the Coordinator's wiring; a universe's, the lines the model proposed after a task. */
 export function MemoryPanel(props: { repo: string }): JSX.Element {
   const { repo } = props;
   const st = memoryOf(repo);
   const data = st.data;
   const [q, setQ] = useState('');
-  const [openIds, setOpen] = useState<Record<string, boolean>>({});
-  const [editing, setEditing] = useState<Draft | null>(null);
-  const [delCard, setDelCard] = useState<{ p: MemPreview; id: string; discard?: boolean } | null>(null);
-  const [delBusy, setDelBusy] = useState(false);
-  const [delErr, setDelErr] = useState('');
-  const focus = memFocus.value;
-  const hot = focus && focus.repo === repo ? focus.id : '';
   const seq = snap.value?.seq ?? 0;
   const lastLoad = useRef(0);
 
@@ -367,21 +373,14 @@ export function MemoryPanel(props: { repo: string }): JSX.Element {
   useEffect(() => {
     if (Date.now() - lastLoad.current > 6000) { lastLoad.current = Date.now(); void loadMemory(repo); }
   }, [seq]);
-  useEffect(() => {
-    if (hot) {
-      setOpen((o) => ({ ...o, [hot]: true }));
-      const id = window.setTimeout(() => { memFocus.value = null; }, 2500);
-      return () => window.clearTimeout(id);
-    }
-    return undefined;
-  }, [hot]);
 
   const title = repo ? t('mem.titleUniverse', { repo }) : t('mem.titleGalaxy', { g: snap.value?.host || '' });
   const entries = data?.entries ?? [];
-  const shown = entries.filter((e) => matches(e, q));
-  const editable = !!data?.writable;
-  const defaultKind = repo ? 'decision' : 'rule';
+  const waiting = entries.filter((e) => stateOf(e) === 'waiting').length;
+  const drafts = entries.filter((e) => stateOf(e) === 'draft').length;
+  const foreign = repo ? [] : (data?.foreign ?? []).filter((f) => f.entries.length > 0);
   const universeSug = repo ? (data?.suggestions ?? []) : [];
+  const open = (w: { q?: string; program?: string } = {}): void => openMemory({ repo, ...w });
 
   return (
     <section class="mm" id={repo ? 'mem-universe' : 'mem-galaxy'} data-mem-level={repo ? 'universe' : 'galaxy'} aria-label={title}>
@@ -406,69 +405,23 @@ export function MemoryPanel(props: { repo: string }): JSX.Element {
         </div>
       )}
 
-      {delCard && (
-        <ChangeCard
-          p={delCard.p} busy={delBusy} error={delErr} confirmLabel={delCard.discard ? t('mem.discard') : t('mem.delete')} onCancel={() => setDelCard(null)}
-          onConfirm={(a) => {
-            setDelBusy(true);
-            const done = delCard.discard
-              ? discardDraft(repo, delCard.id, delCard.p.token).then(() => toast(t('mem.discarded')))
-              : deleteEntry(repo, delCard.id, delCard.p.token, a).then(() => toast(t(delCard.p.draft ? 'mem.deletedDraft' : 'mem.deleted')));
-            done
-              .then(() => setDelCard(null))
-              .catch((er) => setDelErr(failWords(er)))
-              .finally(() => setDelBusy(false));
-          }}
+      <div class="mm-sum" id="mem-summary">
+        <div class="mm-stats">
+          <span class="mm-stat" id="mem-stat-all">{tn('mem.statEntries', entries.length)}</span>
+          {waiting > 0 && <span class="mm-stat warn" id="mem-stat-waiting">{t('mem.statWaiting', { n: waiting })}</span>}
+          {drafts > 0 && <span class="mm-stat warn" id="mem-stat-drafts">{t('mem.statDrafts', { n: drafts })}</span>}
+          {foreign.map((f) => <span class="mm-stat" key={f.program} data-foreign-stat={f.program}>{t('mem.statForeign', { p: f.label, n: f.entries.length })}</span>)}
+        </div>
+        {data && entries.length === 0 && foreign.length === 0 && <div class="hint mm-empty">{repo ? t('mem.emptyUniverse') : t('mem.emptyGalaxy')}</div>}
+        <input
+          class="field" id="mem-filter" type="search" value={q} placeholder={t('mem.filterOpen')} aria-label={t('mem.filter')}
+          onInput={(e) => setQ((e.target as HTMLInputElement).value)}
+          onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); open({ q }); } }}
         />
-      )}
-      {entries.length > 5 && (
-        <input class="field" id="mem-filter" type="search" value={q} placeholder={t('mem.filter')} aria-label={t('mem.filter')} onInput={(e) => setQ((e.target as HTMLInputElement).value)} />
-      )}
-      <div class="mm-list" id={repo ? 'mem-universe-list' : 'mem-galaxy-list'}>
-        {data && entries.length === 0 && !editing && <div class="hint mm-empty">{repo ? t('mem.emptyUniverse') : t('mem.emptyGalaxy')}</div>}
-        {shown.map((e) => (
-          editing && editing.id === e.id
-            ? <Form key={e.id} repo={repo} draft={editing} onDone={() => setEditing(null)} />
-            : (
-              <Row
-                key={e.id} e={e} open={!!openIds[e.id]} editable={editable} hot={hot === e.id}
-                onToggle={() => setOpen({ ...openIds, [e.id]: !openIds[e.id] })}
-                onEdit={() => setEditing({ id: e.id, title: e.title, kind: e.kind || defaultKind, description: e.description === e.title ? '' : e.description, body: e.body })}
-                // deleting shows «было → стало» first, like any change
-                onDelete={() => {
-                  setDelErr('');
-                  previewDelete(repo, e.id).then((p) => setDelCard({ p, id: e.id })).catch((er) => toast(failWords(er), { icon: 'failed' }));
-                }}
-                // throwing a draft away shows «было → стало» too (the draft → what git has)
-                onDiscard={() => {
-                  setDelErr('');
-                  previewDiscard(repo, e.id).then((p) => setDelCard({ p, id: e.id, discard: true })).catch((er) => toast(failWords(er), { icon: 'failed' }));
-                }}
-              />
-            )
-        ))}
-        {entries.length > 0 && shown.length === 0 && <div class="hint">{t('mem.noMatch')}</div>}
-      </div>
-      {editing && editing.id === '' && <Form repo={repo} draft={editing} onDone={() => setEditing(null)} />}
-      {editable && !editing && (
         <div class="row">
-          <button class="btn sm" type="button" id="mem-add" onClick={() => setEditing({ id: '', title: '', kind: defaultKind, description: '', body: '' })}><Gl n="plus" />{t('mem.add')}</button>
+          <button class="btn primary" type="button" id="mem-open" onClick={() => open({ q })}><Gl n="expand" />{t('mem.open')}</button>
         </div>
-      )}
-      {repo && data && <Git repo={repo} data={data} />}
-
-      {!repo && (data?.foreign ?? []).map((f) => (
-        <div class="mm-foreign" key={f.program} data-foreign={f.program}>
-          <h4>{t('mem.foreign', { p: f.label })} <span class="cnt">{f.entries.length}</span></h4>
-          <div class="hint">{t('mem.foreignNote')}</div>
-          {f.entries.map((e) => (
-            <Row
-              key={e.id} e={e} open={!!openIds[`@${f.program}|${e.id}`] || hot === `@${f.program}|${e.id}`} editable={false} hot={hot === `@${f.program}|${e.id}`}
-              onToggle={() => setOpen({ ...openIds, [`@${f.program}|${e.id}`]: !openIds[`@${f.program}|${e.id}`] })} onEdit={() => {}} onDelete={() => {}}
-            />
-          ))}
-        </div>
-      ))}
+      </div>
     </section>
   );
 }
@@ -587,12 +540,12 @@ export function RememberDialog(): JSX.Element | null {
   );
 }
 
-/** Opens a found memory entry: its panel on the Quasar (Galaxy level) or on the universe. */
+/** Opens a found memory entry: flies to the Quasar (Galaxy level) or the universe and opens the memory window on it. */
 export function openMemoryEntry(docId: string): void {
-  const { repo, focus } = parseDocId(docId);
-  memFocus.value = { repo, id: focus };
+  const { repo, foreign, focus } = parseDocId(docId);
   if (repo) void navigateTo({ kind: 'universe', id: repo });
   else void navigateTo({ kind: 'quasar', id: 'quasar' });
+  openMemory({ repo, program: foreign || undefined, open: focus });
 }
 
 /** The suggestions waiting for a task's universe, for the task's own panel. */
