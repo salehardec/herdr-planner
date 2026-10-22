@@ -139,7 +139,7 @@ yard_candidates() { # file, task id, repo, wanted yard (empty — the rule)
     | .[] as $r
     | select($want == "" or $r.id == $want)
     | select(($need | length) == 0 or ($need | all(. as $n | (($r.tags // []) | map(ascii_downcase) | index($n | ascii_downcase)) != null)))
-    | [$r.id, $r.target, ($r.busy_pct // $f.busy_pct // 0), (($r.tags // []) | join(","))] | @tsv
+    | [$r.id, $r.target, ($r.busy_pct // $f.busy_pct // 85), (($r.tags // []) | join(","))] | @tsv
   ' "$1" 2>/dev/null
 }
 
@@ -181,14 +181,22 @@ resolve_yard() {
       task=
       [ -n "$repo" ] && task="$repo/$n"
       cands=$(yard_candidates "$f" "$task" "$repo" "${YARD_RUNNER:-}")
-      [ -n "$cands" ] || die 3 "yard: в $f нет верфи под правило задачи ${task:-$TAG} (метки: ${YARD_RUNNER:-нет})"
+      if [ -z "$cands" ]; then
+        need=$(jq -r --arg task "$task" --arg repo "$repo" '
+          . as $f
+          | ($f.tasks[$task] // null) as $t
+          | (($t != null) and ((($t.runner // "") != "") or ((($t.tags // []) | length) > 0))) as $any
+          | (if $any then ($t.tags // []) else ($f.need[$repo] // []) end) | join(", ")
+        ' "$f" 2>/dev/null || true)
+        die 3 "yard: в $f нет верфи под правило задачи ${task:-$TAG} (нужные метки: ${need:-нет})"
+      fi
       best=
       low=
       low_load=
       seen=
       while IFS="$(printf '\t')" read -r id addr pct tags; do
         [ -n "$id" ] || continue
-        seen="$seen $id"
+        seen="$seen $id${tags:+[$tags]}"
         probe=$(ssh_load "$addr" || true)
         [ -n "$probe" ] || continue
         load1=${probe% *}

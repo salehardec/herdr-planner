@@ -483,7 +483,7 @@ export const en: Record<string, string | string[]> = {
   'runner.busyPct': 'Busy threshold, %',
   'runner.busyPlaceholder': 'as for the list: {pct}',
   'runner.busyHint': 'The yard counts as busy when load1 is at or above this share of its CPUs; a task then takes the next suitable yard. 0 — do not check, empty — the list’s own threshold (85 % by default).',
-  'runner.busyLine': 'Busy at a load of {pct} % of its CPUs or more',
+  'runner.busyLine': 'Busy at a load of {pct} % of its CPUs or more', 'runner.busyLineOff': 'Busy is not checked (threshold 0)',
   /* which yard a task gets (PLN-45) */
   'runner.pick.change': 'Choose the shipyard…',
   'runner.pick.cardTitle': 'The task’s and the repository’s shipyard',
@@ -501,7 +501,7 @@ export const en: Record<string, string | string[]> = {
   'runner.pick.clear': 'Drop the rule',
   'runner.pick.clearConfirm': 'Drop for sure',
   'runner.pick.cleared': 'The shipyard rule is dropped',
-  'runner.pick.noOwn': 'No rule of its own: the task follows the repository’s rule.',
+  'runner.pick.noOwn': 'No rule of its own: the task follows the repository’s rule or the default shipyard.', 'runner.pick.noOwnRepo': 'The repository has no rule of its own: its tasks use the default shipyard.',
   'runner.pick.reason.task': 'the task’s rule',
   'runner.pick.reason.repo': 'the repository’s rule',
   'runner.pick.reason.default': 'by default',

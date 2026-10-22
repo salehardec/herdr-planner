@@ -394,7 +394,9 @@ export function RunnerFocus(props: { entity: Entity }): JSX.Element {
         })}
       </p>
       <p class="hint" id="rf-busy-line">
-        {t('runner.busyLine', { pct: r.busy_pct ?? snap.value?.runner_rules?.busy_pct ?? 85 })}
+        {(r.busy_pct ?? snap.value?.runner_rules?.busy_pct ?? 85) === 0
+          ? t('runner.busyLineOff')
+          : t('runner.busyLine', { pct: r.busy_pct ?? snap.value?.runner_rules?.busy_pct ?? 85 })}
       </p>
       {r.alerts.length > 0 && (
         <section class="rf-alerts" id="rf-alerts">

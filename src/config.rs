@@ -209,6 +209,20 @@ impl AppConfig {
 
     /// The shipyards («верфи»): one file next to the board's own settings, the same path on every
     /// machine. `HERDR_PLANNER_RUNNERS` points the checks at another one.
+    /// The board's own settings (`settings/config.json`): the level files the CLI writes. The planner reads a scope's
+    /// own instructions here, not from `show`, whose value is already joined with the broader places (PLN-45).
+    pub fn settings_file(&self) -> PathBuf {
+        if let Ok(v) = env::var("HERDR_PROJECTS_CONFIG_DIR") {
+            if !v.trim().is_empty() {
+                return expand_home(v.trim()).join("config.json");
+            }
+        }
+        self.data_dir
+            .parent()
+            .map(|p| p.join("settings/config.json"))
+            .unwrap_or_else(|| home().join(".herdr-projects/settings/config.json"))
+    }
+
     pub fn runners_file(&self) -> PathBuf {
         if let Ok(v) = env::var("HERDR_PLANNER_RUNNERS") {
             if !v.trim().is_empty() {

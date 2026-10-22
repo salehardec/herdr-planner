@@ -306,28 +306,34 @@ yard_pick() { # TMPDIR, then the arguments
 mkdir -p "$T/pln/ALP-7"
 yard_pick "$T/pln/ALP-7" where
 [ "$status" = 0 ] || bad "where: код $status ($(cat "$T/out"))"
-[ "$(cat "$T/out")" = "vm-g" ] && ok "the repository's tags choose the yard that carries them" || bad "метки репозитория: $(cat "$T/out")"
+if [ "$(cat "$T/out")" = "vm-g" ]; then ok "the repository's tags choose the yard that carries them"; else bad "метки репозитория: $(cat "$T/out")"; fi
 # A task's own rule replaces the repository's, tags and all.
 jq '.tasks = {"alpha/7": {"runner": "vm-r"}}' "$YFILE" >"$YFILE.new" && mv "$YFILE.new" "$YFILE"
 yard_pick "$T/pln/ALP-7" where
-[ "$(cat "$T/out")" = "vm-r" ] && ok "the task's own yard wins over the repository's tags" || bad "правило задачи: $(cat "$T/out")"
+if [ "$(cat "$T/out")" = "vm-r" ]; then ok "the task's own yard wins over the repository's tags"; else bad "правило задачи: $(cat "$T/out")"; fi
 # No rule: the default; a busy default gives way to the next one the list allows.
 write_yards
 printf '7.50' >"$ST/load-vm-r"
 yard_pick "$T/pln/PLN-7" where
-[ "$(cat "$T/out")" = "vm-g" ] && ok "a busy default yard gives way to the next" || bad "занятая верфь: $(cat "$T/out")"
+if [ "$(cat "$T/out")" = "vm-g" ]; then ok "a busy default yard gives way to the next"; else bad "занятая верфь: $(cat "$T/out")"; fi
 yard_pick "$T/pln/PLN-7" where
 expect "and the busy one was really checked over ssh" "vm-r" "$ST/ssh.log"
+# A list without busy_pct (the real file now) means 85 %, as in the planner, not «never busy».
+jq 'del(.busy_pct) | .runners |= map(del(.busy_pct))' "$YFILE" >"$YFILE.new" && mv "$YFILE.new" "$YFILE"
+printf '7.50' >"$ST/load-vm-r"
+yard_pick "$T/pln/PLN-7" where
+if [ "$(cat "$T/out")" = "vm-g" ]; then ok "a list without busy_pct uses the 85 % threshold"; else bad "порог по умолчанию: $(cat "$T/out")"; fi
+write_yards
 # All busy: the least loaded one is still named.
 printf '7.20' >"$ST/load-vm-g"
 yard_pick "$T/pln/PLN-7" where
-[ "$(cat "$T/out")" = "vm-g" ] && ok "all busy: the least loaded is taken" || bad "все заняты: $(cat "$T/out")"
+if [ "$(cat "$T/out")" = "vm-g" ]; then ok "all busy: the least loaded is taken"; else bad "все заняты: $(cat "$T/out")"; fi
 expect "and the wrapper says so" "наименее загруженную" "$T/err"
 # A silent yard is skipped; with none answering the wrapper stops with code 3 and local work is not run.
 printf '0.10' >"$ST/load-vm-r"
 : >"$ST/down-vm-g"
 yard_pick "$T/pln/PLN-7" where
-[ "$status" = 0 ] && [ "$(cat "$T/out")" = "vm-r" ] && ok "a silent yard is skipped for one that answers" || bad "молчащая верфь: код $status ($(cat "$T/out"))"
+if [ "$status" = 0 ] && [ "$(cat "$T/out")" = "vm-r" ]; then ok "a silent yard is skipped for one that answers"; else bad "молчащая верфь: код $status ($(cat "$T/out"))"; fi
 : >"$ST/down-vm-r"
 yard_pick "$T/pln/PLN-7" where
 [ "$status" = 3 ] || bad "ни одна верфь не отвечает: код $status (ждали 3)"
@@ -335,7 +341,7 @@ expect "and no yard is named" "не отвечает" "$T/err"
 rm -f "$ST/down-vm-r" "$ST/down-vm-g"
 # YARD_RUNNER names one outright.
 YARD_RUNNER=vm-r yard_pick "$T/pln/PLN-7" where
-[ "$(cat "$T/out")" = "vm-r" ] && ok "YARD_RUNNER names the yard outright" || bad "YARD_RUNNER: $(cat "$T/out")"
+if [ "$(cat "$T/out")" = "vm-r" ]; then ok "YARD_RUNNER names the yard outright"; else bad "YARD_RUNNER: $(cat "$T/out")"; fi
 YARD_RUNNER=
 
 if command -v shellcheck >/dev/null 2>&1 && shellcheck --version >/dev/null 2>&1; then

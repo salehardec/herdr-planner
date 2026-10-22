@@ -91,7 +91,7 @@ export function PickYard(props: { task: Task; onClose: () => void }): JSX.Elemen
           : pick ? (pick.need.length ? t('runner.pick.noneTags', { tags: pick.need.join(', ') }) : t('runner.pick.none')) : '—'}
       </p>
       {pick && pick.chain.length > 1 && <p class="hint">{t('runner.pick.chain', { chain: pick.chain.join(' → ') })}</p>}
-      {!own && <p class="hint">{t('runner.pick.noOwn')}</p>}
+      {!own && <p class="hint">{scope === 'task' ? t('runner.pick.noOwn') : t('runner.pick.noOwnRepo')}</p>}
       {err && <p class="hint bad">{err}</p>}
       <div class="act">
         <button class={`btn primary ${armed.value?.key === key ? 'arm' : ''}`} type="button" id="rp-save" onClick={() => save(false)}>

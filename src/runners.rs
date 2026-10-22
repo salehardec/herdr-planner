@@ -821,6 +821,7 @@ impl RunnersFile {
         }
         let mut saw_busy = false;
         let mut saw_offline = false;
+        let mut first_skip = "";
         let mut least: Option<&Runner> = None;
         let mut least_load = f64::MAX;
         let mut chosen: Option<&Runner> = None;
@@ -828,10 +829,16 @@ impl RunnersFile {
             let st = state_of(&r.id);
             if offline(st) {
                 saw_offline = true;
+                if first_skip.is_empty() {
+                    first_skip = "offline";
+                }
                 continue;
             }
             if busy(st, busy_pct_of(self, r)) {
                 saw_busy = true;
+                if first_skip.is_empty() {
+                    first_skip = "busy";
+                }
                 if let Some(s) = st {
                     let load = if s.host.cpus > 0 { s.host.load1 / s.host.cpus as f64 } else { f64::MAX };
                     if load < least_load {
@@ -861,7 +868,6 @@ impl RunnersFile {
             } else {
                 first.ports_host.clone()
             };
-            out.shifted = "offline".into();
             out.why = "ни одна подходящая верфь не отвечает".into();
             return out;
         };
@@ -872,14 +878,20 @@ impl RunnersFile {
         } else {
             r.ports_host.clone()
         };
-        if shifted_fallback || saw_busy {
-            out.shifted = "busy".into();
-            if shifted_fallback {
-                out.why = "все подходящие верфи заняты: названа наименее загруженная".into();
-            }
+        // The chip says that a spare was really taken; when the first allowed yard is still the one named (every yard
+        // busy, or every one silent), there is no spare to speak of.
+        let chosen_i = chain.iter().position(|x| x.id == r.id).unwrap_or(0);
+        if chosen_i > 0 {
+            out.shifted = first_skip.to_string();
+        }
+        if shifted_fallback {
+            out.why = "все подходящие верфи заняты: названа наименее загруженная".into();
+        } else if saw_offline && chosen_i == 0 {
+            out.why = "ни одна подходящая верфь не отвечает".into();
         } else if saw_offline {
-            out.shifted = "offline".into();
             out.why = "первая подходящая верфь не отвечает".into();
+        } else if saw_busy {
+            out.why = "первая подходящая верфь занята".into();
         }
         out
     }
@@ -2259,7 +2271,14 @@ pub fn scope_block_text(
         "repo" => "правило репозитория",
         _ => "верфь по умолчанию",
     };
-    let Some(chosen) = file.get(&pick.runner).or_else(|| file.get(&pick.chain[0])) else {
+    // The rule's own yard first, not the live pick: a block written while that yard is busy must not name the fallback
+    // as the task's yard until the next sync. The spare list after it carries the rest of the rule's chain.
+    let chosen_id = if !pick.preferred.is_empty() && pick.chain.iter().any(|id| id == &pick.preferred) {
+        pick.preferred.clone()
+    } else {
+        pick.chain[0].clone()
+    };
+    let Some(chosen) = file.get(&chosen_id) else {
         return String::new();
     };
     let host_of = |r: &Runner| {
@@ -2374,25 +2393,45 @@ pub fn has_old_docker_paragraph(text: &str) -> bool {
 
 /* ───────── the agents' block ───────── */
 
+/// One scope's own text of a setting, read from the board's level files. `herdr-projects show` joins the broader
+/// places into the value (and still says `own: true` when the scope has any own words), so it cannot be used here: a
+/// joined value saved back as the scope's own would duplicate the global block and the repository's text, and an old
+/// yard's block could never be taken out. `None` — no such file or no own key.
+fn own_instructions(
+    settings: &Path,
+    data: &Path,
+    repo: &str,
+    task: Option<&str>,
+    name: &str,
+) -> Option<String> {
+    let value = if let Some(id) = task {
+        let (repo, n) = id.split_once('/')?;
+        let text = std::fs::read_to_string(data.join("tasks").join(repo).join(n).join("task.json")).ok()?;
+        let v: Value = serde_json::from_str(&text).ok()?;
+        v.get("settings")?.get(name)?.as_str()?.to_string()
+    } else {
+        let text = std::fs::read_to_string(settings).ok()?;
+        let v: Value = serde_json::from_str(&text).ok()?;
+        let mut node = v.get("repos")?.get(repo)?;
+        let parts: Vec<&str> = name.split('.').collect();
+        for part in parts {
+            node = node.get(part)?;
+        }
+        node.as_str()?.to_string()
+    };
+    Some(if value.trim() == "none" { String::new() } else { value })
+}
+
 /// Puts the block of one repository (`task` is `None`) or one task into its own instructions, keeping the human's text
 /// there. An empty block takes the planner's block out (the setting is unset when nothing else is left). The caller
 /// has the human's consent (the global block is connected); nothing is written here otherwise.
 pub async fn sync_scope_block(app: &Shared, repo: &str, task: Option<&str>, block: &str) -> bool {
-    let settings = match task {
-        Some(id) => crate::station::read_task_settings(&app.cfg, id).await,
-        None => crate::station::read_settings(&app.cfg, repo).await,
-    };
-    let settings = match settings {
-        Ok(s) => s,
-        Err(_) => return false,
-    };
+    let settings = app.cfg.settings_file();
+    let data = &app.cfg.data_dir;
     let mut changed = false;
     for name in ["worker.instructions", "reviewer.instructions"] {
-        let Some(setting) = crate::station::find(&settings, name) else {
-            continue;
-        };
         // Only this place's own words: an inherited value belongs to a broader place and is never copied down.
-        let current = if setting.own { setting.value.clone() } else { String::new() };
+        let current = own_instructions(&settings, data, repo, task, name).unwrap_or_default();
         if block.is_empty() && !has_any_block(&current) {
             continue;
         }
@@ -3575,7 +3614,7 @@ mod tests {
             "beta",
             None,
         );
-        assert_eq!((p.runner.as_str(), p.shifted.as_str()), ("vm-r", "offline"));
+        assert_eq!((p.runner.as_str(), p.shifted.as_str()), ("vm-r", ""), "no spare was taken: no chip");
         assert!(p.why.contains("не отвечает"));
         // 0 turns the threshold off: a loaded yard is not skipped.
         file.busy_pct = 0;
@@ -3644,5 +3683,71 @@ mod tests {
         let global = block_text(&file);
         assert!(global.contains("Верфь задачи задаётся правилом"), "{global}");
         assert!(global.contains("85 % числа ядер"), "{global}");
+    }
+
+    #[test]
+    fn a_scope_block_names_the_rules_yard_even_when_the_live_pick_moved_on() {
+        let mut file = yard_file();
+        file.tasks.insert("alpha/3".into(), TaskRule { runner: "vm-g".into(), tags: vec![] });
+        // vm-g is busy, so the live pick is vm-r; the rule's block still names vm-g and lists vm-r as its spare.
+        let states = [yard_state("vm-r", true, 0.1, 8), yard_state("vm-g", true, 7.5, 8)];
+        assert_eq!(file.pick(&states, "alpha", Some("alpha/3")).runner, "vm-r");
+        let block = scope_block_text(&file, &states, "alpha", Some("alpha/3"));
+        assert!(block.contains("Верфь задачи alpha/3: vm-g"), "{block}");
+        assert!(block.contains("следующая подходящая: vm-r"), "{block}");
+    }
+
+    #[test]
+    fn the_scopes_own_instructions_are_read_from_the_level_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let data = dir.path();
+        let settings = data.join("settings/config.json");
+        std::fs::create_dir_all(settings.parent().unwrap()).unwrap();
+        // The board's own shape: the repository's entry holds only its own words, not the joined value `show` prints.
+        std::fs::write(
+            &settings,
+            r#"{"worker":{"instructions":"Общие правила."},"repos":{"alpha":{"worker":{"instructions":"Проверки в alpha."},"reviewer":{"instructions":"Ревью alpha."}}}}"#,
+        )
+        .unwrap();
+        let task_dir = data.join("tasks/alpha/3");
+        std::fs::create_dir_all(&task_dir).unwrap();
+        std::fs::write(
+            task_dir.join("task.json"),
+            r#"{"settings":{"worker.instructions":"Своё у задачи.","reviewer.instructions":"none"}}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            own_instructions(&settings, data, "alpha", None, "worker.instructions").as_deref(),
+            Some("Проверки в alpha.")
+        );
+        assert_eq!(
+            own_instructions(&settings, data, "alpha", Some("alpha/3"), "worker.instructions").as_deref(),
+            Some("Своё у задачи.")
+        );
+        assert_eq!(
+            own_instructions(&settings, data, "alpha", Some("alpha/3"), "reviewer.instructions").as_deref(),
+            Some("")
+        );
+        assert_eq!(own_instructions(&settings, data, "beta", None, "worker.instructions"), None);
+        // A block put in and replaced keeps the human's own words once and only the newest block.
+        let own = own_instructions(&settings, data, "alpha", None, "worker.instructions").unwrap();
+        let mut file_a = yard_file();
+        file_a.assign.insert("alpha".into(), "vm-r".into());
+        let block_a = scope_block_text(&file_a, &[], "alpha", None);
+        let first = connect_value(&own, &block_a, true).unwrap().unwrap();
+        std::fs::write(
+            &settings,
+            serde_json::json!({"repos":{"alpha":{"worker":{"instructions":first}}}}).to_string(),
+        )
+        .unwrap();
+        let own = own_instructions(&settings, data, "alpha", None, "worker.instructions").unwrap();
+        let mut file = yard_file();
+        file.assign.insert("alpha".into(), "vm-g".into());
+        let block_b = scope_block_text(&file, &[], "alpha", None);
+        let second = connect_value(&own, &block_b, true).unwrap().unwrap();
+        assert_eq!(second.matches("Проверки в alpha.").count(), 1, "{second}");
+        assert_eq!(second.matches(BLOCK_BEGIN).count(), 1, "{second}");
+        assert!(!second.contains("Верфь для задач репозитория alpha: vm-r"), "the old yard is gone: {second}");
+        assert!(second.contains("Верфь для задач репозитория alpha: vm-g"), "{second}");
     }
 }

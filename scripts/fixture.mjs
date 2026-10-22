@@ -162,6 +162,37 @@ function common(DATA, mods) {
     // A level is the home board (''), one repository, or one task (`@task:repo/n`); instructions add up, so the
     // inherited levels are listed after the own ones.
     const levelOf = (repo, task) => (task ? '@task:' + task : (repo || ''));
+    // The board's real level files, which the planner reads for a scope's own instructions (its `show` joins levels):
+    // settings/config.json for you and the repositories, board/tasks/<repo>/<n>/task.json for a task.
+    const settingsFile = path.join(D, 'settings', 'config.json');
+    const mirror = () => {
+      const store = load();
+      const out = {};
+      for (const [level, vals] of Object.entries(store)) {
+        if (level.startsWith('@task:')) continue;
+        const target = level ? ((out.repos ??= {})[level] ??= {}) : out;
+        for (const [name, value] of Object.entries(vals)) {
+          const parts = name.split('.');
+          let node = target;
+          for (const p of parts.slice(0, -1)) node = node[p] ??= {};
+          node[parts.at(-1)] = value;
+        }
+      }
+      fs.mkdirSync(path.dirname(settingsFile), { recursive: true });
+      fs.writeFileSync(settingsFile, JSON.stringify(out, null, 1));
+      for (const [level, vals] of Object.entries(store)) {
+        if (!level.startsWith('@task:')) continue;
+        const [repo, n] = level.slice(6).split('/');
+        const tf = path.join(D, 'board', 'tasks', repo, n, 'task.json');
+        if (!fs.existsSync(tf)) continue;
+        const rec = readJson(tf, { settings: {} });
+        rec.settings = rec.settings || {};
+        delete rec.settings['worker.instructions'];
+        delete rec.settings['reviewer.instructions'];
+        for (const [name, value] of Object.entries(vals)) rec.settings[name] = value;
+        fs.writeFileSync(tf, JSON.stringify(rec, null, 1));
+      }
+    };
     const show = (repo, task) => {
       const store = load();
       const home = store[''] || {};
@@ -170,10 +201,37 @@ function common(DATA, mods) {
       const where = task ? 'this task' : repo ? 'repo' : 'you';
       const place = task ? 'task' : repo ? 'repo' : 'you';
       if (repo && !task && cfg.keys[repo]) list.push({ name: 'repo.key', kind: 'board', value: cfg.keys[repo], from: 'repo', place: 'repo', own: true, note: '' });
-      for (const [name, value] of Object.entries(own)) list.push({ name, kind: kindOf(name), value, from: where, place, own: true, note: '' });
+      // Instructions add up, broadest first: the real `show` gives the joined value and still says `own: true` when
+      // the scope itself has words. The planner must not take that joined value as the scope's own text (PLN-45).
+      const INSTR = new Set(['worker.instructions', 'reviewer.instructions']);
+      const levels = task ? ['', repo, levelOf(repo, task)] : repo ? ['', repo] : [''];
+      const label = (l) => (task && l === levelOf(repo, task) ? 'this task' : l === repo && repo ? 'repo' : 'you');
+      for (const name of INSTR) {
+        const parts = [];
+        for (const l of levels) {
+          const v = (store[l] || {})[name];
+          if (v === undefined) continue;
+          if (v === 'none') { parts.length = 0; continue; }
+          parts.push({ l, v });
+        }
+        if (!parts.length && own[name] === undefined) continue;
+        const value = parts.length ? parts.map((p) => p.v).join('\n\n') : 'none';
+        const ownHere = own[name] !== undefined;
+        const near = parts[parts.length - 1];
+        list.push({
+          name, kind: kindOf(name), value, own: ownHere,
+          place: ownHere ? place : (near?.l ? (near.l === repo ? 'repo' : 'task') : 'you'),
+          from: parts.map((p) => label(p.l)).join(' + ') || where,
+          note: '',
+        });
+      }
+      for (const [name, value] of Object.entries(own)) {
+        if (INSTR.has(name)) continue;
+        list.push({ name, kind: kindOf(name), value, from: where, place, own: true, note: '' });
+      }
       for (const level of task ? [repo, ''] : repo ? [''] : []) {
         for (const [name, value] of Object.entries(store[level] || {})) {
-          if (list.some((x) => x.name === name)) continue;
+          if (INSTR.has(name) || list.some((x) => x.name === name)) continue;
           list.push({ name, kind: kindOf(name), value, from: level ? 'repo' : 'you', place: level ? 'repo' : 'you', own: false, note: '' });
         }
       }
@@ -208,6 +266,7 @@ function common(DATA, mods) {
       store[level] = store[level] || {};
       store[level][name] = value;
       fs.writeFileSync(file, JSON.stringify(store, null, 1));
+      mirror();
       return { ok: true };
     };
     const unset = (name, repo, task) => {
@@ -215,6 +274,7 @@ function common(DATA, mods) {
       const level = levelOf(repo, task);
       if (store[level]) delete store[level][name];
       fs.writeFileSync(file, JSON.stringify(store, null, 1));
+      mirror();
       return { ok: true };
     };
     return { show, set, unset };
@@ -1505,6 +1565,8 @@ const old = new Date(usageAt - 2 * 3600 * 1000);
 fs.utimesSync(path.join(usageDir, 'pi.json'), old, old);
 // The board's own settings (show, set and unset read and write this file): the board with its repo alpha.
 write(path.join(dir, 'state', 'board-settings.json'), JSON.stringify({ '': BOARD.seed.home, alpha: BOARD.seed.alpha }, null, 1));
+// The same levels in the board's real shape (settings/config.json), as the planner reads a scope's own instructions.
+write(path.join(dir, 'settings', 'config.json'), '{}');
 // The planner's own list of shipyards, at the path it reads: <data>/../settings/runners.json.
 write(path.join(dir, 'settings', 'runners.json'), JSON.stringify({
   version: 1, updated_at_ms: NOW, default: 'vm-r',

@@ -497,7 +497,7 @@ export const ru: Record<string, string | string[]> = {
   'runner.busyPct': 'Порог занятости, %',
   'runner.busyPlaceholder': 'как у всех: {pct}',
   'runner.busyHint': 'Верфь считается занятой, когда load1 не ниже этого процента числа ядер; тогда задача берёт следующую подходящую верфь. 0 — не проверять, пусто — общий порог списка (по умолчанию 85 %).',
-  'runner.busyLine': 'Занята при нагрузке от {pct} % ядер',
+  'runner.busyLine': 'Занята при нагрузке от {pct} % ядер', 'runner.busyLineOff': 'Занятость не проверяется (порог 0)',
   /* выбор верфи задачи (PLN-45) */
   'runner.pick.change': 'Выбрать верфь…',
   'runner.pick.cardTitle': 'Верфь задачи и репозитория',
@@ -515,7 +515,7 @@ export const ru: Record<string, string | string[]> = {
   'runner.pick.clear': 'Снять правило',
   'runner.pick.clearConfirm': 'Точно снять',
   'runner.pick.cleared': 'Правило верфи снято',
-  'runner.pick.noOwn': 'Своего правила нет: задача идёт по правилу репозитория.',
+  'runner.pick.noOwn': 'Своего правила нет: задача идёт по правилу репозитория или по верфи по умолчанию.', 'runner.pick.noOwnRepo': 'У репозитория своего правила нет: его задачи идут по верфи по умолчанию.',
   'runner.pick.reason.task': 'правило задачи',
   'runner.pick.reason.repo': 'правило репозитория',
   'runner.pick.reason.default': 'по умолчанию',
