@@ -479,13 +479,10 @@ fn req_clone(r: &Req) -> Req {
     }
 }
 
-/// What the human's word allows: refuses a write that the preview did not show, or that holds personal data without
-/// their word for it.
-fn allowed(plan: &Plan, gate: &Gate) -> Result<(), Fail> {
-    if gate.token.as_deref() != Some(plan.token().as_str()) {
-        return Err(Fail::new(409, "запись изменилась с тех пор, как вы смотрели «было → стало»: посмотрите ещё раз"));
-    }
-    match plan.risk() {
+/// What the human's word allows for a text with findings: nothing in a public (or unknown) repository unless they say it
+/// explicitly, an ordinary «да» elsewhere.
+fn risk_allowed(risk: &str, gate: &Gate) -> Result<(), Fail> {
+    match risk {
         "block" if gate.accept_public != Some(true) => Err(Fail::new(
             403,
             "в тексте найдены персональные данные или секреты, а репозиторий публичный (или это неизвестно): по умолчанию в него не пишем",
@@ -496,6 +493,15 @@ fn allowed(plan: &Plan, gate: &Gate) -> Result<(), Fail> {
         )),
         _ => Ok(()),
     }
+}
+
+/// What the human's word allows: refuses a write that the preview did not show, or that holds personal data without
+/// their word for it.
+fn allowed(plan: &Plan, gate: &Gate) -> Result<(), Fail> {
+    if gate.token.as_deref() != Some(plan.token().as_str()) {
+        return Err(Fail::new(409, "запись изменилась с тех пор, как вы смотрели «было → стало»: посмотрите ещё раз"));
+    }
+    risk_allowed(plan.risk(), gate)
 }
 
 /// Writes a plan: files for the Galaxy (and a folder that is not in git), drafts for a universe in a git checkout.
@@ -686,32 +692,18 @@ pub async fn memory_discard(State(app): State<Shared>, headers: HeaderMap, Json(
 }
 
 #[derive(Deserialize)]
-pub struct CommitBody {
+pub struct SendBody {
     repo: String,
     #[serde(flatten)]
     gate: Gate,
 }
 
-fn read_text(path: &std::path::Path) -> Option<String> {
-    use std::io::Read;
-    let mut buf = Vec::new();
-    std::fs::File::open(path).ok()?.take(200_000).read_to_end(&mut buf).ok()?;
-    Some(String::from_utf8_lossy(&buf).into_owned())
-}
-
-/// What a commit of a universe's memory would put into git: the drafts, and whatever else in `docs/memory` is uncommitted
-/// in the checkout (the human's or an agent's own files). Nothing is written.
-fn commit_plan(cfg: &crate::config::AppConfig, repo: &str) -> Result<(String, Vec<Change>), Fail> {
+/// What goes to the repository with a send: the drafts, as files (`add`, `change`) and removals (`delete`). Nothing is
+/// written; the checkout is not even looked at (a file the human edited there by hand is theirs).
+fn send_plan(cfg: &crate::config::AppConfig, repo: &str) -> Result<(String, Vec<Change>), Fail> {
     let root = memory::repo_root(cfg, repo).ok_or_else(|| Fail::new(404, "у этой вселенной нет папки на этой машине"))?;
-    let dirty = memory::git_dirty(&root).ok_or_else(|| Fail::new(422, "это не git-репозиторий"))?;
+    memory::git_dirty(&root).ok_or_else(|| Fail::new(422, "это не git-репозиторий"))?;
     let drafts = memory::Drafts::new(cfg, repo);
-    let conflicts = memory::draft_conflicts(&root, &drafts);
-    if !conflicts.is_empty() {
-        return Err(Fail::new(
-            409,
-            format!("в чекауте есть незакоммиченные правки тех же файлов: {}. Закоммитьте или отмените их, потом коммитьте память.", conflicts.join(", ")),
-        ));
-    }
     let mut changes: Vec<Change> = Vec::new();
     let rel = |id: &str| format!("{}/{id}.md", memory::UNIVERSE_DIR);
     for e in drafts.puts() {
@@ -729,26 +721,86 @@ fn commit_plan(cfg: &crate::config::AppConfig, repo: &str) -> Result<(String, Ve
         let before = memory::git_head_text(&root, &rel(&id));
         changes.push(Change { op: "delete", id: id.clone(), file: rel(&id), before, after: None, entry: None });
     }
-    let index = format!("{}/{}", memory::UNIVERSE_DIR, memory::INDEX);
-    for (state, file) in dirty {
-        if file == index || changes.iter().any(|c| c.file == file) {
-            continue;
-        }
-        let id = file.rsplit('/').next().unwrap_or(&file).trim_end_matches(".md").to_string();
-        let before = memory::git_head_text(&root, &file);
-        let after = read_text(&std::path::Path::new(&root).join(&file));
-        let op = if state.contains('D') || after.is_none() { "delete" } else if before.is_some() { "change" } else { "add" };
-        changes.push(Change { op, id, file, before, after: if op == "delete" { None } else { after }, entry: None });
-    }
     if changes.is_empty() {
-        return Err(Fail::new(422, "в docs/memory нечего коммитить"));
+        return Err(Fail::new(422, "нечего отправлять: черновиков нет"));
     }
     Ok((root, changes))
 }
 
-/// `POST /api/memory/commit`: puts a universe's drafts into `docs/memory/` and commits them (and only that folder). The
-/// same preview, check and confirmation as a save: the text goes into git here, so it is looked at once more.
-pub async fn memory_commit(State(app): State<Shared>, headers: HeaderMap, Json(body): Json<CommitBody>) -> Response {
+/// What the check finds in the files that go to the repository, as a whole (header and body).
+fn scan_files(changes: &[Change], own: &[String]) -> Vec<FindingOut> {
+    let mut findings = Vec::new();
+    for c in changes {
+        if let Some(after) = &c.after {
+            for f in memory_guard::scan(after, "text", own) {
+                // the summary is cut from the body when the human wrote none: one hit, listed once
+                if !findings.iter().any(|o: &FindingOut| o.file == c.file && o.f.kind == f.kind && o.f.text == f.text) {
+                    findings.push(FindingOut { file: c.file.clone(), f });
+                }
+            }
+        }
+    }
+    findings
+}
+
+/// A Markdown fence that the text cannot close early.
+fn fenced(text: &str, lang: &str) -> String {
+    let mut run = 0;
+    let mut longest = 0;
+    for c in text.chars() {
+        run = if c == '`' { run + 1 } else { 0 };
+        longest = longest.max(run);
+    }
+    let fence = "`".repeat((longest + 1).max(3));
+    format!("{fence}{lang}\n{}\n{fence}", text.trim_end_matches('\n'))
+}
+
+/// The board task for a send: its title, and a description with the texts of the files and the lines of `MEMORY.md` as
+/// they are to be written, so the agent has nothing to invent.
+fn task_text(repo: &str, changes: &[Change]) -> (String, String) {
+    let titles: Vec<String> = changes
+        .iter()
+        .filter_map(|c| c.entry.as_ref().map(|e| e.title.clone()).or_else(|| c.before.as_deref().map(|b| memory::parse_entry(&c.id, b).title)))
+        .collect();
+    let title = format!("Запомнить в docs/memory: {}", memory::cut(&titles.join("; "), 100));
+    let index = format!("{}/{}", memory::UNIVERSE_DIR, memory::INDEX);
+    let mut d = format!(
+        "Записать в память вселенной «{repo}» (папка `{}/`) то, что человек подтвердил в планировщике («было → стало»). \
+Тексты готовы: ничего не придумывай и не переписывай, только положи их в репозиторий.\n\n## 1. Файлы\n",
+        memory::UNIVERSE_DIR
+    );
+    for c in changes {
+        match (c.op, &c.after) {
+            ("delete", _) | (_, None) => d.push_str(&format!("\n### Удалить `{}`\n", c.file)),
+            (op, Some(after)) => {
+                let what = if op == "add" { "новый файл" } else { "заменить файл целиком" };
+                d.push_str(&format!("\n### `{}` — {what}\n\n{}\n", c.file, fenced(after, "markdown")));
+            }
+        }
+    }
+    d.push_str(&format!(
+        "\n## 2. Оглавление `{index}`\nПо одной строке на запись, по порядку id. Нет файла — создай его с заголовком `# Память вселенной {repo}` и этими строками.\n"
+    ));
+    for c in changes {
+        match (c.op, &c.entry) {
+            ("add", Some(e)) => d.push_str(&format!("\nДобавить строку:\n\n{}\n", fenced(&memory::index_line(e), ""))),
+            ("change", Some(e)) => {
+                d.push_str(&format!("\nЗаменить строку со ссылкой `({}.md)`:\n\n{}\n", c.id, fenced(&memory::index_line(e), "")))
+            }
+            _ => d.push_str(&format!("\nУбрать строку со ссылкой `({}.md)`.\n", c.id.replace(' ', "%20"))),
+        }
+    }
+    d.push_str("\n## 3. Дальше\nБольше в репозитории ничего не меняй. Коммит и слияние — как у любой задачи этого репозитория.\n");
+    (title, d)
+}
+
+/// The most that goes into one task description: it travels as one command-line argument.
+const MAX_TASK_TEXT: usize = 100_000;
+
+/// `POST /api/memory/send`: hands a universe's drafts to a board task («Запомнить в docs/memory: …»). The task has its own
+/// working copy and is merged like any other: the planner never writes or commits into the human's checkout. The same
+/// preview, check and confirmation as a save: the text goes into git through the task, so it is looked at once more.
+pub async fn memory_send(State(app): State<Shared>, headers: HeaderMap, Json(body): Json<SendBody>) -> Response {
     if !same_origin(&headers) {
         return error(StatusCode::FORBIDDEN, "cross-origin request refused");
     }
@@ -757,60 +809,38 @@ pub async fn memory_commit(State(app): State<Shared>, headers: HeaderMap, Json(b
             return Err(Fail::new(400, "bad universe name"));
         }
         let (cfg, repo) = (app.cfg.clone(), body.repo.clone());
-        let (root, changes) = tokio::task::spawn_blocking(move || commit_plan(&cfg, &repo))
+        let (root, changes) = tokio::task::spawn_blocking(move || send_plan(&cfg, &repo))
             .await
             .map_err(|e| Fail::new(500, e.to_string()))??;
         // what goes into git is checked as a whole, header and body
-        let own = memory_guard::own_terms();
-        let mut findings = Vec::new();
-        for c in &changes {
-            if let Some(after) = &c.after {
-                for f in memory_guard::scan(after, "text", &own) {
-                    findings.push(FindingOut { file: c.file.clone(), f });
-                }
-            }
-        }
+        let findings = scan_files(&changes, &memory_guard::own_terms());
         let vis = if findings.is_empty() { None } else { Some(visibility_of(&app, &root).await) };
         let token = token_of(&changes, &findings);
         let risk = risk_of(&findings, vis);
         if body.gate.confirm != Some(true) {
             return Ok(json!({
-                "ok": true, "preview": true, "token": token, "level": "universe", "repo": body.repo, "commit": true,
+                "ok": true, "preview": true, "token": token, "level": "universe", "repo": body.repo, "send": true,
                 "changes": changes, "findings": findings, "risk": risk, "visibility": vis, "redacted": [],
             }));
         }
         if body.gate.token.as_deref() != Some(token.as_str()) {
             return Err(Fail::new(409, "память изменилась с тех пор, как вы смотрели список: посмотрите ещё раз"));
         }
-        match risk {
-            "block" if body.gate.accept_public != Some(true) => {
-                return Err(Fail::new(403, "в файлах найдены персональные данные или секреты, а репозиторий публичный (или это неизвестно): по умолчанию в него не коммитим"));
-            }
-            "confirm" if body.gate.accept_risk != Some(true) && body.gate.accept_public != Some(true) => {
-                return Err(Fail::new(422, "в файлах найдены персональные данные или секреты: нужно явное «да»"));
-            }
-            _ => {}
+        risk_allowed(risk, &body.gate)?;
+        let (title, desc) = task_text(&body.repo, &changes);
+        if desc.len() > MAX_TASK_TEXT {
+            return Err(Fail::new(422, "черновиков слишком много для одной задачи: отправьте часть, остальное потом"));
         }
-        let titles: Vec<String> = changes
-            .iter()
-            .filter_map(|c| c.entry.as_ref().map(|e| e.title.clone()).or_else(|| c.before.as_deref().map(|b| memory::parse_entry(&c.id, b).title)))
-            .collect();
-        let message = if titles.is_empty() {
-            "Память вселенной".to_string()
-        } else {
-            format!("Память вселенной: {}", memory::cut(&titles.join("; "), 100))
-        };
-        let (cfg, repo, msg) = (app.cfg.clone(), body.repo.clone(), message.clone());
-        let n = changes.len();
-        let hash = tokio::task::spawn_blocking(move || {
-            let drafts = memory::Drafts::new(&cfg, &repo);
-            memory::commit_drafts(&root, &repo, &drafts, &msg)
-        })
-        .await
-        .map_err(|e| Fail::new(500, e.to_string()))?
-        .map_err(|e| Fail::new(422, e))?;
-        app::index_snapshot(&app).await;
-        Ok(json!({"ok": true, "commit": hash, "message": message, "files": n}))
+        let out = app::run_board(&app.cfg, &["add", &title, "--repo", &body.repo, "--desc", &desc], Duration::from_secs(60))
+            .await
+            .map_err(|e| Fail::new(502, e))?;
+        // `PLN-35: added`
+        let tag = out.lines().find_map(|l| l.split_once(':').map(|(t, _)| t.trim().to_string())).unwrap_or_default();
+        let id = tag.rsplit_once('-').and_then(|(_, n)| n.parse::<u64>().ok()).map(|n| format!("{}/{n}", body.repo));
+        // the texts are in the task now: the drafts are done
+        memory::Drafts::new(&app.cfg, &body.repo).clear();
+        app::refresh(&app).await;
+        Ok(json!({"ok": true, "task": tag, "id": id, "title": title, "files": changes.len()}))
     }
     .await;
     respond(result)
@@ -1085,6 +1115,92 @@ mod tests {
 
     fn gate(token: &str, risk: bool, public: bool) -> Gate {
         Gate { confirm: Some(true), token: Some(token.into()), accept_risk: Some(risk).filter(|r| *r), accept_public: Some(public).filter(|p| *p) }
+    }
+
+    fn add_change(id: &str, title: &str, body: &str) -> Change {
+        let mut e = memory::complete(Entry { title: title.into(), body: body.into(), ..Entry::default() }, "convention", 0).unwrap();
+        e.id = id.into();
+        change_of(id, format!("docs/memory/{id}.md"), None, Some(e))
+    }
+
+    #[test]
+    fn a_send_makes_a_task_with_the_ready_files_and_index_lines() {
+        let before = Entry { id: "old".into(), title: "Старое".into(), body: "было".into(), kind: "pitfall".into(), ..Entry::default() };
+        let gone = change_of("gone", "docs/memory/gone.md".into(), Some(&Entry { id: "gone".into(), title: "Лишнее".into(), ..Entry::default() }), None);
+        let mut edited = add_change("old", "Старое", "стало ``` вот так");
+        edited.before = Some(memory::render_entry(&before));
+        edited.op = "change";
+        let changes = vec![add_change("squash", "Слияние squash", "Сливаем squash."), edited, gone];
+        let (title, desc) = task_text("demo", &changes);
+        assert!(title.starts_with("Запомнить в docs/memory: Слияние squash; Старое"), "{title}");
+        assert!(desc.contains("### `docs/memory/squash.md` — новый файл") && desc.contains("Сливаем squash."), "{desc}");
+        assert!(desc.contains("type: convention") && desc.contains("name: squash"), "the whole file is there, header included: {desc}");
+        assert!(desc.contains("### `docs/memory/old.md` — заменить файл целиком"), "{desc}");
+        assert!(desc.contains("````markdown"), "a fence longer than the backticks in the text: {desc}");
+        assert!(desc.contains("### Удалить `docs/memory/gone.md`"), "{desc}");
+        assert!(desc.contains("docs/memory/MEMORY.md") && desc.contains("- [Слияние squash](squash.md)"), "the index lines: {desc}");
+        assert!(desc.contains("Убрать строку со ссылкой `(gone.md)`") && desc.contains("Заменить строку со ссылкой `(old.md)`"), "{desc}");
+        assert!(desc.contains("# Память вселенной demo"), "{desc}");
+    }
+
+    #[test]
+    fn a_send_is_checked_for_machine_names_and_a_public_repository_forbids_it() {
+        let changes = vec![add_change("stand", "Стенд", "Стенд поднят на app-semantics, ключ на salehost.")];
+        let own: Vec<String> = ["host:app-semantics", "host:salehost", "host:dokploymain"].iter().map(|s| s.to_string()).collect();
+        let found = scan_files(&changes, &own);
+        let hosts: Vec<&str> = found.iter().filter(|f| f.f.kind == "host").map(|f| f.f.text.as_str()).collect();
+        assert_eq!(hosts, ["app-semantics", "salehost"], "{found:?}");
+        assert!(scan_files(&changes, &[]).is_empty(), "without the machine names in the list it is a plain word");
+        // no word of the human: not for a public or unknown repository, an ordinary «да» only for a private one
+        for vis in [Some(Visibility::Public), Some(Visibility::Unknown), None] {
+            let risk = risk_of(&found, vis);
+            assert_eq!(risk, "block", "{vis:?}");
+            assert_eq!(format!("{:?}", risk_allowed(risk, &Gate::default()).unwrap_err()).contains("403"), true);
+            assert!(risk_allowed(risk, &gate("t", true, false)).is_err(), "the ordinary «да» is not enough for {vis:?}");
+            assert!(risk_allowed(risk, &gate("t", false, true)).is_ok());
+        }
+        let private = risk_of(&found, Some(Visibility::Private));
+        assert_eq!(private, "confirm");
+        assert!(risk_allowed(private, &Gate::default()).is_err() && risk_allowed(private, &gate("t", true, false)).is_ok());
+        assert!(risk_allowed(risk_of(&[], Some(Visibility::Public)), &Gate::default()).is_ok(), "clean text needs no word");
+    }
+
+    #[test]
+    fn a_send_does_not_look_at_or_write_into_the_checkout() {
+        let (proj, state) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let root = proj.path().to_str().unwrap().to_string();
+        let git = |args: &[&str]| {
+            let o = std::process::Command::new("git")
+                .args(["-c", "user.name=t", "-c", "user.email=t@example.invalid", "-c", "commit.gpgsign=false", "-C", &root])
+                .args(args)
+                .output()
+                .unwrap();
+            assert!(o.status.success(), "git {args:?}");
+            String::from_utf8_lossy(&o.stdout).into_owned()
+        };
+        git(&["init", "--quiet", "-b", "main"]);
+        std::fs::write(proj.path().join("a.txt"), "a").unwrap();
+        git(&["add", "a.txt"]);
+        git(&["commit", "--quiet", "-m", "first"]);
+        let mut cfg = crate::testutil::test_cfg(state.path());
+        cfg.data_dir = state.path().join("data");
+        std::fs::create_dir_all(&cfg.data_dir).unwrap();
+        std::fs::write(cfg.data_dir.join("repos.json"), serde_json::json!({"demo": root}).to_string()).unwrap();
+        let drafts = memory::Drafts::new(&cfg, "demo");
+        assert!(send_plan(&cfg, "demo").is_err(), "nothing drafted, nothing to send");
+        let mut e = memory::complete(Entry { title: "Раз".into(), body: "текст".into(), ..Entry::default() }, "decision", 0).unwrap();
+        e.id = "raz".into();
+        drafts.put(&e).unwrap();
+        // a file the human edited by hand in the checkout is theirs: not a part of the send
+        std::fs::create_dir_all(proj.path().join("docs/memory")).unwrap();
+        std::fs::write(proj.path().join("docs/memory/mine.md"), "моё\n").unwrap();
+        let status = git(&["status", "--porcelain", "--untracked-files=all"]);
+        let head = git(&["rev-parse", "HEAD"]);
+        let (_, changes) = send_plan(&cfg, "demo").unwrap();
+        assert_eq!(changes.iter().map(|c| c.file.as_str()).collect::<Vec<_>>(), ["docs/memory/raz.md"]);
+        assert_eq!(git(&["status", "--porcelain", "--untracked-files=all"]), status, "the checkout is as it was");
+        assert_eq!(git(&["rev-parse", "HEAD"]), head, "and has no new commit");
+        assert!(!proj.path().join("docs/memory/raz.md").exists());
     }
 
     #[test]

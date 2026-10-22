@@ -59,7 +59,7 @@ start_server() {
     # The stand-ins of the other programs: claude (translation), gh/glab, codex sessions.
     env HERDR_PLANNER_HOST=orion CODEX_HOME="$D/codex" HERDR_PLANNER_CLAUDE="$D/bin/claude" HERDR_PLANNER_GH="$D/bin/gh" \
       HERDR_PLANNER_GLAB="$D/bin/glab" HERDR_BIN="$D/bin/herdr" HERDR_PLANNER_TERMINAL="$D/bin/xdg-terminal-exec" \
-      HERDR_PLANNER_OWN_TERMS=bob-the-builder-host FIXTURE_DIR="$D" HERDR_PROJECTS_BIN="$D/bin/herdr-projects" HERDR_SOCKET_PATH="$D/herdr.sock" \
+      HERDR_PLANNER_OWN_TERMS=bob-the-builder-host,host:app-semantics,host:salehost FIXTURE_DIR="$D" HERDR_PROJECTS_BIN="$D/bin/herdr-projects" HERDR_SOCKET_PATH="$D/herdr.sock" \
       OMARCHY_THEME_DIR="$D/theme" CLAUDE_CONFIG_DIR="$D/claude" PATH="$D/bin:$PATH" \
       XDG_STATE_HOME="$D/$STATE_NAME" XDG_CONFIG_HOME="$D/cfg" XDG_CACHE_HOME="$D/cache" \
       "$TARGET/debug/herdr-planner" --port "$P" --data "$D/board" >"$D/server.log" 2>&1 &

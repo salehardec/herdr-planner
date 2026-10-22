@@ -10,9 +10,9 @@ import { toast } from '../toast';
 import { dayTimeOf } from '../util/dates';
 import { Gl } from './Gl';
 import {
-  commitMemory, deleteEntry, discardDraft, dismissSuggestion, keepSuggestion, KINDS, kindLabel, loadMemory, memFocus, memoryOf, previewCommit,
+  deleteEntry, discardDraft, dismissSuggestion, keepSuggestion, KINDS, kindLabel, loadMemory, memFocus, memoryOf, previewSend, sendMemory,
   previewDelete, previewDiscard, previewSave, previewSuggestion, rememberDlg, saveEntry, connectMemory, setSuggest,
-  type Accept, type MemData, type MemEntry, type MemPreview, type MemSuggestion, type SaveBody,
+  type Accept, type MemData, type MemEntry, type MemPreview, type MemSuggestion, type SaveBody, type SentTask,
 } from './memory-api';
 import { ChangeCard } from './MemoryChange';
 import { parseDocId } from './memory-ids';
@@ -286,20 +286,21 @@ function Connect(props: { data: MemData }): JSX.Element | null {
   );
 }
 
-/** The universe's memory that is not in git yet: drafts (kept outside the checkout, so the board can still merge into it)
- *  and files already changed there. The commit is shown as «было → стало» and checked for personal data once more. */
+/** The universe's memory that is not in git yet: drafts (kept outside the checkout, so the board can still merge into it).
+ *  Sending shows «было → стало», checks the text for personal data once more and hands it to a board task: the planner
+ *  never writes or commits into the checkout. The task's id stays on the panel. */
 function Git(props: { repo: string; data: MemData }): JSX.Element | null {
   const g = props.data.git;
   const [busy, setBusy] = useState(false);
   const [card, setCard] = useState<MemPreview | null>(null);
   const [err, setErr] = useState('');
+  const [sent, setSent] = useState<SentTask | null>(null);
   if (!g) return null;
   if (!g.checkout) return <div class="hint" id="mem-git">{t('mem.notGit')}</div>;
-  if (g.dirty.length === 0 && g.drafts === 0) return <div class="hint" id="mem-git">{t('mem.gitClean')}</div>;
   const ask = async (): Promise<void> => {
     setBusy(true);
     setErr('');
-    try { setCard(await previewCommit(props.repo)); } catch (e) { toast(failWords(e), { icon: 'failed' }); }
+    try { setCard(await previewSend(props.repo)); } catch (e) { toast(failWords(e), { icon: 'failed' }); }
     setBusy(false);
   };
   const confirm = async (a: Accept): Promise<void> => {
@@ -307,25 +308,30 @@ function Git(props: { repo: string; data: MemData }): JSX.Element | null {
     setBusy(true);
     setErr('');
     try {
-      const r = await commitMemory(props.repo, card.token, a);
-      toast(t('mem.committed', { h: r.commit }));
+      const r = await sendMemory(props.repo, card.token, a);
+      setSent(r);
+      toast(t('mem.sent', { tag: r.task }));
       setCard(null);
     } catch (e) { setErr(failWords(e)); }
     setBusy(false);
   };
+  const sentNote = sent && <div class="hint ok" id="mem-sent" data-task={sent.id ?? ''}>{t('mem.sentNote', { tag: sent.task, n: sent.files })}</div>;
+  if (g.dirty.length === 0 && g.drafts === 0) return <div class="hint" id="mem-git">{t('mem.gitClean')}{sentNote}</div>;
   return (
     <div class="mm-git" id="mem-git">
       {g.drafts > 0 && <div class="hint warn" id="mem-drafts">{tn('mem.gitDrafts', g.drafts)}</div>}
       {g.dirty.length > 0 && <div class="hint warn">{tn('mem.gitDirty', g.dirty.length)}</div>}
       {g.dirty.length > 0 && <ul class="mm-files">{g.dirty.map((d) => <li key={d.file}><code>{d.state || 'M'}</code> <code>{d.file}</code></li>)}</ul>}
+      {g.dirty.length > 0 && <div class="hint" id="mem-dirty-own">{t('mem.gitDirtyOwn')}</div>}
       {card ? (
-        <ChangeCard p={card} busy={busy} error={err} onConfirm={(a) => void confirm(a)} onCancel={() => { setCard(null); setErr(''); }} confirmLabel={t('mem.commit')} />
-      ) : (
+        <ChangeCard p={card} busy={busy} error={err} onConfirm={(a) => void confirm(a)} onCancel={() => { setCard(null); setErr(''); }} confirmLabel={t('mem.send')} />
+      ) : g.drafts > 0 && (
         <div class="row">
-          <button class="btn sm" type="button" id="mem-commit" disabled={busy} onClick={() => void ask()}>{t('mem.commit')}</button>
+          <button class="btn sm" type="button" id="mem-send" disabled={busy} onClick={() => void ask()}>{t('mem.send')}</button>
         </div>
       )}
-      <div class="hint">{g.drafts > 0 ? t('mem.commitNoteDrafts') : t('mem.commitNote')}</div>
+      {g.drafts > 0 && <div class="hint">{t('mem.sendNote')}</div>}
+      {sentNote}
     </div>
   );
 }
