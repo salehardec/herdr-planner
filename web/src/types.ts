@@ -259,6 +259,10 @@ export interface RunnerContainer {
   cpu_pct: number | null;
   mem_bytes: number | null;
   mem_limit: number | null;
+  /** The CPU limit in cores; null — no limit at all. */
+  cpu_limit?: number | null;
+  /** A container of a live task that has no limit the yard's rule asks for (PLN-43). */
+  no_limits?: boolean;
   pids: number | null;
   net_io: string;
   block_io: string;
@@ -306,6 +310,12 @@ export interface RunnerAlert {
 /** When a shipyard is worth an alarm, as `runners.json` has it. */
 export interface RunnerAlertRules { disk_free_pct: number; offline_min: number }
 
+/** What a task's container may take on a shipyard (PLN-43); zero asks for no limit of that kind. */
+export interface RunnerLimits { cpus: number; mem_mb: number; per_task: number }
+
+/** A live task that keeps more containers than the shipyard allows. */
+export interface RunnerOver { task: string; tag: string; containers: number; max: number }
+
 export interface Runner {
   id: string;
   target: string;
@@ -328,6 +338,10 @@ export interface Runner {
   alerts: RunnerAlert[];
   /** The thresholds as the list file has them now. */
   alert_rules: RunnerAlertRules;
+  /** The limits of a task's containers, as the list file has them now. */
+  limits: RunnerLimits;
+  /** Live tasks that keep more containers than the yard allows. */
+  over: RunnerOver[];
   /** When the yard stopped answering (ms); 0 while it answers. */
   down_since_ms: number;
 }

@@ -663,7 +663,10 @@ pub async fn rebuild_runners(app: &Shared) {
         if let Some(r) = file.get(&st.id) {
             st.auto = r.auto.clone();
             st.alert_rules = r.alerts.clone();
+            st.limits = r.effective_limits(Some(&st.host));
         }
+        // The marks of the rule (PLN-43) come after the classes and the limits of the list file.
+        crate::runners::apply_limits(st);
         st.auto_stats = crate::runners_auto::stats_of(app, &st.id);
     }
     // The alarms are derived here, from the classes just set, for both the poll and a board read (PLN-42).

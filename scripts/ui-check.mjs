@@ -4139,6 +4139,40 @@ section('runners', async () => {
   const unsure = await evalJs('document.querySelectorAll("#rf-forgotten tbody tr[data-class=unsure]").length');
   check('two containers of live tasks, one forgotten, one unsure, two foreign', active === 2 && forgotten === 2 && unsure === 1 && (await hasText('#rf-foreign', 'Чужие: 2')), `${active}/${forgotten}/${unsure} ${await text('#rf-foreign')}`);
   check('a key with a digit finds its task: pg-AL9-4 is alpha/4', await hasText('#rf-tasks', 'pg-ALP-3') && await hasText('#rf-tasks', 'pg-AL9-4') && await hasText('#rf-tasks', 'ALP-4') && await hasText('#rf-forgotten', 'ALP-15'), await text('#rf-tasks'));
+  // The limits of a task's container on the yard (PLN-43): a share of the machine, filled from its first read.
+  check('the yard states the limits of a task container: a quarter of the cores and an eighth of the memory',
+    await waitFor('!!document.querySelector("#rf-limits") && plannerSnap().runners[0].limits?.cpus === 2 && plannerSnap().runners[0].limits?.mem_mb === 2048', 15000)
+      && await hasText('#rf-limits', 'ЦП 2') && await hasText('#rf-limits', '2 ГБ') && await hasText('#rf-limits', 'без ограничения'),
+    await text('#rf-limits'));
+  check('the machine’s share reaches the list file on the first read', await waitLog(() => {
+    try { const r = JSON.parse(readFileSync(join(fixture, 'settings', 'runners.json'), 'utf8')).runners.find((x) => x.id === 'vm-r'); return r?.limits?.cpus === 2 && r?.limits?.mem_mb === 2048 && r?.limits?.per_task === 0; } catch { return false; }
+  }, 10000), readFileSync(join(fixture, 'settings', 'runners.json'), 'utf8').slice(0, 400));
+  check('a live container without the limits is marked, one with them is not',
+    await evalJs(`(() => {
+      const rows = [...document.querySelectorAll('#rf-tasks tbody tr')];
+      const marked = (n) => { const r = rows.find((x) => x.innerText.includes(n)); return !!r && !!r.querySelector('[data-nolimit]'); };
+      return marked('pg-AL9-4') && !marked('pg-ALP-3') && !!document.querySelector('#rf-tasks [data-nolimit]');
+    })()`), await text('#rf-tasks'));
+  // The human's own numbers: the form, the file, the yard, and the most containers one task may keep.
+  await click('#rf-edit-open');
+  check('the settings form shows the limits in force', await waitFor('!!document.querySelector("#rf-lim-cpus")', 5000)
+    && (await evalJs('document.querySelector("#rf-lim-cpus").value')) === '2'
+    && (await evalJs('document.querySelector("#rf-lim-mem").value')) === '2'
+    && (await evalJs('document.querySelector("#rf-lim-per").value')) === '0', await text('#rf-edit'));
+  await evalJs('(() => { const set = (id, v) => { const i = document.querySelector(id); i.value = v; i.dispatchEvent(new Event("input", { bubbles: true })); }; set("#rf-lim-cpus", "3"); set("#rf-lim-mem", "3"); set("#rf-lim-per", "1"); return true; })()');
+  await twoPresses('#rf-set');
+  check('saving keeps them and the maximum in the list file', await waitLog(() => {
+    try { const r = JSON.parse(readFileSync(join(fixture, 'settings', 'runners.json'), 'utf8')).runners.find((x) => x.id === 'vm-r'); return r?.limits?.cpus === 3 && r?.limits?.mem_mb === 3072 && r?.limits?.per_task === 1; } catch { return false; }
+  }, 10000), readFileSync(join(fixture, 'settings', 'runners.json'), 'utf8').slice(0, 400));
+  check('the yard shows the new numbers at once', await waitFor('(() => { const e = document.querySelector("#rf-limits"); const s = e?.innerText || ""; return !!e && s.includes("ЦП 3") && s.includes("3 ГБ") && s.includes("на задачу не больше 1 контейнера"); })()', 8000), await text('#rf-limits'));
+  // An emptied field is «leave it as it is», not 0: zero would turn the maximum off.
+  await click('#rf-edit-open');
+  await waitFor('!!document.querySelector("#rf-lim-per")', 5000);
+  await evalJs('(() => { const i = document.querySelector("#rf-lim-per"); i.value = ""; i.dispatchEvent(new Event("input", { bubbles: true })); return true; })()');
+  await twoPresses('#rf-set');
+  check('an emptied limit field keeps the value in force, not 0', await waitLog(() => {
+    try { const r = JSON.parse(readFileSync(join(fixture, 'settings', 'runners.json'), 'utf8')).runners.find((x) => x.id === 'vm-r'); return r?.limits?.cpus === 3 && r?.limits?.mem_mb === 3072 && r?.limits?.per_task === 1; } catch { return false; }
+  }, 10000), readFileSync(join(fixture, 'settings', 'runners.json'), 'utf8').slice(0, 400));
   // The build caches of the board's repositories (herdr.shared=alpha, scripts/yard.sh): apart from the tasks, never foreign.
   check('the build cache is a table of its own: the image with its size, the volume, the cache container',
     await waitFor('!!document.querySelector("#rf-shared")', 8000)
@@ -4195,6 +4229,9 @@ section('runners', async () => {
   check('the yard is ready and offers the agents', await waitFor('!!document.querySelector("#r-connect")', 8000) && await hasText('#addr', 'готова'), await text('#addr'));
   await twoPresses('#r-connect');
   check('the block reaches this machine’s agent instructions', await waitLog(() => { try { const t = readFileSync(join(fixture, 'state', 'board-settings.json'), 'utf8'); return t.includes('herdr-planner:runners') && t.includes('me@192.0.2.29') && !t.includes('herdr.galaxy'); } catch { return false; } }, 20000), 'board-settings');
+  check('and it carries the yard’s limits: the docker run and compose examples, the containers’ maximum',
+    (() => { try { const t = readFileSync(join(fixture, 'state', 'board-settings.json'), 'utf8'); return t.includes('--cpus 3 --memory 3g') && t.includes('docker run -d --name pg-PLN-26') && t.includes('deploy:') && t.includes('не больше одного контейнера на задачу'); } catch { return false; } })(),
+    (() => { try { return readFileSync(join(fixture, 'state', 'board-settings.json'), 'utf8').match(/Лимиты[^\n]*/)?.[0] || ''; } catch { return ''; } })());
   check('no copy of the block goes to another machine', (() => { try { return !readFileSync(join(fixture, 'state', 'vm-a-settings.json'), 'utf8').includes('herdr-planner:runners'); } catch { return true; } })());
   // The Station card shows the block and its «было → стало» text.
   await resetUi();
@@ -4245,6 +4282,20 @@ section('runners', async () => {
   const rm = await post('/api/runner/remove', { id: 'vm-r2', confirm: true, force: true });
   check('the second yard can be removed from the list', rm[0] === 200 && rm[1]?.ok, JSON.stringify(rm));
   check('and the navigator forgets it', await waitFor('plannerSnap().runners.every((r) => r.id !== "vm-r2")', 8000), JSON.stringify((await stateApi())?.journal?.slice(-2)));
+  // A live task that keeps more containers than the yard allows (PLN-43): the machine gets a second one of ALP-3.
+  yardReset({ containers: [{
+    id: '7'.repeat(64), name: 'redis-ALP-3', image: 'redis:7', state: 'running', status: 'Up 1 hour',
+    created: new Date(Date.now() - 3_600_000).toISOString().replace('T', ' ').slice(0, 19) + ' +0000 UTC',
+    labels: 'herdr.task=ALP-3', ports: '', networks: 'work-3_default', mounts: '', size: '4MB', cpu: '0.10%', mem: '20MiB / 2GiB', pids: '5',
+    nano: 2000000000, memLimit: 2147483648,
+  }] });
+  await post('/api/runner/ask', { id: 'vm-r' });
+  check('a live task over the container maximum is counted', await waitFor('(plannerSnap().runners.find((r) => r.id === "vm-r")?.over ?? []).some((o) => o.task === "alpha/3" && o.containers === 2 && o.max === 1)', 15000), JSON.stringify((await stateApi())?.runners?.find((r) => r.id === 'vm-r')?.over));
+  await click('#nav [data-nav="run|vm-r"]');
+  check('and the focus names it with the task', await waitFor('!!document.querySelector("#rf-over")', 12000) && (await text('#rf-over')).includes('ALP-3') && (await text('#rf-over')).includes('контейнеров 2 из 1'), await text('#rf-over'));
+  yardReset();
+  await post('/api/runner/ask', { id: 'vm-r' });
+  check('the extra container gone: the yard is quiet again', await waitFor('(plannerSnap().runners.find((r) => r.id === "vm-r")?.over ?? []).length === 0', 15000), JSON.stringify((await stateApi())?.runners?.find((r) => r.id === 'vm-r')?.over));
   await shot('shipyard.png');
 }, { retry: false });
 
@@ -4748,7 +4799,7 @@ section('runners alerts', async () => {
   await openYard();
   check('the focus shows it with its task', await waitFor('!!document.querySelector("#rf-alerts")', 8000) && (await text('#rf-alerts')).includes('web-ALP-15') && (await text('#rf-alerts')).includes('ALP-15'), await text('#rf-alerts'));
   // ── the thresholds are set by the human, in the yard's own card
-  await evalJs('[...document.querySelectorAll("#focus button")].find((b) => b.innerText.includes("Метки и защита"))?.click(); true');
+  await click('#rf-edit-open');
   await waitFor('!!document.querySelector("#rf-edit")', 5000);
   check('the card shows the thresholds in force', (await evalJs('document.querySelector("#rf-disk-pct").value')) === '10' && (await evalJs('document.querySelector("#rf-offline-min").value')) === '10');
   await evalJs('(() => { const d = document.querySelector("#rf-disk-pct"); d.value = "15"; d.dispatchEvent(new Event("input", { bubbles: true })); const m = document.querySelector("#rf-offline-min"); m.value = "3"; m.dispatchEvent(new Event("input", { bubbles: true })); return true; })()');
@@ -4756,7 +4807,7 @@ section('runners alerts', async () => {
   check('saving keeps them in the list file', await waitLog(() => { try { const r = JSON.parse(readFileSync(join(fixture, 'settings', 'runners.json'), 'utf8')).runners.find((x) => x.id === 'vm-r'); return r?.alerts?.disk_free_pct === 15 && r?.alerts?.offline_min === 3; } catch { return false; } }, 10000), readFileSync(join(fixture, 'settings', 'runners.json'), 'utf8').slice(0, 300));
   // An emptied field is «leave it as it is», not «zero»: Number('') is 0, and that would turn the disk alarm off.
   await waitFor('!document.querySelector("#rf-edit")', 8000);
-  await evalJs('[...document.querySelectorAll("#focus button")].find((b) => b.innerText.includes("Метки и защита"))?.click(); true');
+  await click('#rf-edit-open');
   await waitFor('!!document.querySelector("#rf-disk-pct") && !!document.querySelector("#rf-offline-min")', 8000);
   await evalJs('(() => { for (const id of ["#rf-disk-pct", "#rf-offline-min"]) { const i = document.querySelector(id); i.value = ""; i.dispatchEvent(new Event("input", { bubbles: true })); } return true; })()');
   await twoPresses('#rf-set');

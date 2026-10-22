@@ -752,15 +752,15 @@ const DATA = {
     host: '192.0.2.29',
     ports: '192.0.2.29',
     containers: [
-      { id: 'a'.repeat(64), name: 'pg-ALP-3', image: 'postgres:16', state: 'running', status: 'Up 1 hour', created: utc(NOW - 60 * 60 * 1000), labels: 'herdr.task=ALP-3,com.docker.compose.project=work-3', ports: '0.0.0.0:15432->5432/tcp', networks: 'work-3_default', mounts: 'work-3_pgdata:/var/lib/postgresql/data', size: '28MB', cpu: '0.40%', mem: '96MiB / 1GiB', pids: '7' },
+      { id: 'a'.repeat(64), name: 'pg-ALP-3', image: 'postgres:16', state: 'running', status: 'Up 1 hour', created: utc(NOW - 60 * 60 * 1000), labels: 'herdr.task=ALP-3,com.docker.compose.project=work-3', ports: '0.0.0.0:15432->5432/tcp', networks: 'work-3_default', mounts: 'work-3_pgdata:/var/lib/postgresql/data', size: '28MB', cpu: '0.40%', mem: '96MiB / 1GiB', pids: '7', nano: 2000000000, memLimit: 1073741824 },
       { id: '4'.repeat(64), name: 'pg-AL9-4', image: 'postgres:16', state: 'running', status: 'Up 3 hours', created: utc(NOW - 3 * 60 * 60 * 1000), labels: 'herdr.task=AL9-4,com.docker.compose.project=work-4', ports: '0.0.0.0:15433->5432/tcp', networks: 'work-4_default', mounts: '', size: '31MB', cpu: '0.10%', mem: '72MiB / 1GiB', pids: '6' },
-      { id: 'b'.repeat(64), name: 'web-ALP-15', image: 'nginx:1.27', state: 'exited', status: 'Exited (0) 2 hours ago', created: utc(NOW - 2 * 24 * 60 * 60 * 1000), labels: 'herdr.task=ALP-15', ports: '', networks: 'bridge', mounts: '', size: '12MB', cpu: '0.00%', mem: '0B / 0B', pids: '0' },
+      { id: 'b'.repeat(64), name: 'web-ALP-15', image: 'nginx:1.27', state: 'exited', status: 'Exited (0) 2 hours ago', created: utc(NOW - 2 * 24 * 60 * 60 * 1000), labels: 'herdr.task=ALP-15', ports: '', networks: 'bridge', mounts: '', size: '12MB', cpu: '0.00%', mem: '0B / 0B', pids: '0', nano: 1000000000, memLimit: 536870912 },
       { id: 'c'.repeat(64), name: 'x-ALP-99', image: 'alpine:3', state: 'exited', status: 'Exited (0) 5 days ago', created: utc(NOW - 5 * 24 * 60 * 60 * 1000), labels: 'herdr.task=ALP-99', ports: '', networks: 'bridge', mounts: '', size: '4MB', cpu: '0.00%', mem: '0B / 0B', pids: '0' },
-      { id: 'd'.repeat(64), name: 'neighbor-db-1', image: 'postgres:15', state: 'running', status: 'Up 3 days', created: utc(NOW - 3 * 24 * 60 * 60 * 1000), labels: 'com.docker.compose.project=neighbor', ports: '5432/tcp', networks: 'neighbor_default', mounts: 'neighbor_data:/var/lib/postgresql/data', size: '1.2GB', cpu: '1.20%', mem: '210MiB / 512MiB', pids: '9' },
+      { id: 'd'.repeat(64), name: 'neighbor-db-1', image: 'postgres:15', state: 'running', status: 'Up 3 days', created: utc(NOW - 3 * 24 * 60 * 60 * 1000), labels: 'com.docker.compose.project=neighbor', ports: '5432/tcp', networks: 'neighbor_default', mounts: 'neighbor_data:/var/lib/postgresql/data', size: '1.2GB', cpu: '1.20%', mem: '210MiB / 512MiB', pids: '9', nano: 2000000000, memLimit: 536870912 },
       { id: 'e'.repeat(64), name: 'buildx_buildkit_x0', image: 'moby/buildkit:latest', state: 'running', status: 'Up 2 months', created: utc(NOW - 60 * 24 * 60 * 60 * 1000), labels: '', ports: '', networks: 'host', mounts: '', size: '0B', cpu: '0.10%', mem: '34MiB / 0B', pids: '4' },
       // The board's build cache (scripts/yard.sh): a container of no task, an image and a volume, all with
       // herdr.shared=alpha. The planner shows them apart from the tasks and from other people's containers.
-      { id: '6'.repeat(64), name: 'yard-cache-1', image: 'herdr-planner-yard:0123456789ab', state: 'running', status: 'Up 1 hour', created: utc(NOW - 60 * 60 * 1000), labels: 'herdr.shared=alpha', ports: '', networks: 'bridge', mounts: 'hp-yard-cache:/cache', size: '0B', cpu: '0.00%', mem: '12MiB / 12GiB', pids: '1' },
+      { id: '6'.repeat(64), name: 'yard-cache-1', image: 'herdr-planner-yard:0123456789ab', state: 'running', status: 'Up 1 hour', created: utc(NOW - 60 * 60 * 1000), labels: 'herdr.shared=alpha', ports: '', networks: 'bridge', mounts: 'hp-yard-cache:/cache', size: '0B', cpu: '0.00%', mem: '12MiB / 12GiB', pids: '1', nano: 8000000000, memLimit: 12884901888 },
     ],
     networks: [
       { id: 'f'.repeat(64), name: 'work-3_default', driver: 'bridge' },
@@ -1321,6 +1321,8 @@ function sshMain(C, DATA) {
     allContainers.filter((c) => !gone.has(c.id)).forEach((c) => out.push(JSON.stringify({
       ID: c.id.slice(0, 12), CPUPerc: c.cpu, MemUsage: c.mem, PIDs: c.pids, NetIO: '1kB / 2kB', BlockIO: '0B / 0B',
     })));
+    out.push('== lim');
+    allContainers.filter((c) => !gone.has(c.id)).forEach((c) => out.push([c.id, c.nano || 0, c.memLimit || 0, 0, 0].join('|')));
     out.push('== net');
     allNetworks.filter((n) => !goneNet.has(n.id) && !goneNet.has(n.name)).forEach((n) => out.push(JSON.stringify({ ID: n.id, Name: n.name, Driver: n.driver, Labels: n.labels || '' })));
     out.push('== vol');

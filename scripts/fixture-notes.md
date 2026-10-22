@@ -162,6 +162,8 @@ The planner works with its own board only. The stand-ins still answer as a board
 
 - `settings/runners.json` (next to `board/`, where the planner reads it): one yard `vm-r`, target `me@192.0.2.29`,
   ports on `192.0.2.29`, tags `docker28 gpu x86_64`, masks `buildx_*` and `neighbor` (the compose project next door).
+  The file has no `limits`: the first read writes the machine's share (8 cores, 16 GiB → `--cpus 2 --memory 2g`), and the
+  `runners` section then sets its own numbers.
 - `state/runner.json`: ids, networks and volume names already removed, builders removed, whether the images and the cache
   were pruned; the probe leaves them out. Its `extra` (`containers`, `networks`, `volumes`, in the shape of
   `DATA.runnerR`) is what a check adds to the yard: the `runners auto` section writes it (a container, a network and a
@@ -171,6 +173,9 @@ The planner works with its own board only. The stand-ins still answer as a board
   repository's older key `AL9`, from `repo-keys.json` `had`), `web-ALP-15` (task ALP-15 is done → forgotten),
   `x-ALP-99` (tag with no such task → unsure), `neighbor-db-1` (compose project `neighbor`) and
   `buildx_buildkit_x0` (protected by mask). Two networks and two volumes belong to the first and the neighbour project.
+  Their `nano` (cores) and `memLimit` (bytes) are what `docker inspect` reports in the probe's `== lim` section; `pg-AL9-4`
+  has none of either on purpose — the `runners` section wants a live container marked «без лимитов», and a second one of
+  ALP-3 over the per-task maximum.
 - The disk card's yard: four images (two without containers, «2.0GB» reclaimable), a build cache of 2.4 GB, two buildx
   builders (`old`, stopped, state volume 3.1 GB; `x`, running), an orphan builder state `buildx_buildkit_gone0_state`
   (8 GB) and one unused volume of somebody else (`chroma_data`, compose project `chroma`).

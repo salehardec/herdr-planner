@@ -38,6 +38,13 @@ fn classify_now(app: &Shared, snap: &app::Snapshot, state: &mut RunnerState) {
     let idx = runners::TaskIndex::build(&snap.tasks, &snap.archived, &repos);
     runners::classify(&mut state.containers, &state.protected, &idx);
     runners::fill_shared(state, &idx);
+    // The rule of the list file speaks for the marks (PLN-43): a fresh read has no word on it.
+    if let Ok(file) = runners::load(&app.cfg.runners_file()) {
+        if let Some(r) = file.get(&state.id) {
+            state.limits = r.effective_limits(Some(&state.host));
+        }
+    }
+    runners::apply_limits(state);
 }
 
 async fn state_now(app: &Shared, id: &str) -> Option<RunnerState> {
@@ -95,6 +102,8 @@ pub async fn runner_ask(State(app): State<Shared>, headers: HeaderMap, Json(body
         return fail(404, "такой верфи нет в списке");
     };
     let fresh = runners::probe(&app.cfg, &r).await;
+    // The first read of a yard gives it the limits of the machine's share (PLN-43) before the marks are made of them.
+    runners::learn_limits(&app, std::slice::from_ref(&fresh)).await;
     let state = {
         let prev = state_now(&app, &body.id).await;
         let mut kept = runners::keep_last(prev.as_ref(), fresh);
@@ -276,6 +285,7 @@ pub async fn runner_probe(State(app): State<Shared>, headers: HeaderMap, Json(bo
         capacity: None,
         auto: Default::default(),
         alerts: Default::default(),
+        limits: None,
     };
     let local = local_checks(&app.cfg, &target).await;
     let state = runners::probe(&app.cfg, &r).await;
@@ -402,6 +412,7 @@ pub async fn runner_add(State(app): State<Shared>, headers: HeaderMap, Json(body
         capacity: None,
         auto: Default::default(),
         alerts: Default::default(),
+        limits: None,
     };
     if file.runners.is_empty() || body.default {
         file.default = label.clone();
@@ -440,6 +451,9 @@ pub struct SetBody {
     /// How many minutes of silence are too long (PLN-42).
     #[serde(default)]
     offline_min: Option<u64>,
+    /// The defaults of a task's containers on this yard (PLN-43): `--cpus`, memory in MiB, most containers per task.
+    #[serde(default)]
+    limits: Option<runners::Limits>,
     confirm: Option<bool>,
 }
 
@@ -478,6 +492,9 @@ pub async fn runner_set(State(app): State<Shared>, headers: HeaderMap, Json(body
         if let Some(m) = body.offline_min {
             r.alerts.offline_min = m;
         }
+        if let Some(l) = body.limits {
+            r.limits = Some(l);
+        }
     }
     if body.default == Some(true) {
         file.default = body.id.clone();
@@ -496,7 +513,9 @@ pub async fn runner_set(State(app): State<Shared>, headers: HeaderMap, Json(body
                 s.protected = r.protected.clone();
                 s.note = r.note.clone();
                 s.alert_rules = r.alerts.clone();
+                s.limits = r.effective_limits(Some(&s.host));
             }
+            runners::apply_limits(s);
         }
     }
     spawn_after_change(app.clone(), false);

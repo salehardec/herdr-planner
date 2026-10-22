@@ -2,7 +2,7 @@ import type { JSX } from 'preact';
 import { armed, currentView, panels, requests, runners, snap } from '../store';
 import { archiveAllDone, compactCoordinator, confirmStep, newCoordinator, runTaskAction, sendAction } from '../actions';
 import { navigateTo, openRequest } from '../nav';
-import { t } from '../i18n';
+import { t, tn } from '../i18n';
 import { alertText } from '../requests';
 import { dayTimeOf } from '../util/dates';
 import { Gl } from './Gl';
@@ -14,7 +14,7 @@ import { RunnerAuto } from './RunnerAuto';
 import { RichText } from './RichText';
 import { toast } from '../toast';
 import { STATUS_ORDER } from '../types';
-import type { Entity } from '../types';
+import type { Entity, RunnerLimits } from '../types';
 import { signal } from '@preact/signals';
 import { useEffect, useState } from 'preact/hooks';
 import { api, post } from '../api';
@@ -264,6 +264,9 @@ export function RunnerFocus(props: { entity: Entity }): JSX.Element {
   const [note, setNote] = useState('');
   const [alertDiskPct, setAlertDiskPct] = useState('10');
   const [alertOfflineMin, setAlertOfflineMin] = useState('10');
+  const [limCpus, setLimCpus] = useState('0');
+  const [limMem, setLimMem] = useState('0');
+  const [limPer, setLimPer] = useState('0');
   const [makeDefault, setMakeDefault] = useState(false);
   const [err, setErr] = useState('');
   const local = ['127.0.0.1', '::1', '[::1]', 'localhost'].includes(location.hostname);
@@ -272,6 +275,7 @@ export function RunnerFocus(props: { entity: Entity }): JSX.Element {
   const unsure = r.containers.filter((c) => c.class === 'unsure');
   const forgotten = r.containers.filter((c) => c.class === 'forgotten');
   const foreign = r.containers.filter((c) => c.class === 'foreign');
+  const limits: RunnerLimits = r.limits ?? { cpus: 0, mem_mb: 0, per_task: 0 };
   const host = r.host;
   const cpuPct = host.cpus > 0 ? (host.load1 / host.cpus) * 100 : 0;
   const memUsed = Math.max(0, host.mem_total - host.mem_avail);
@@ -286,11 +290,25 @@ export function RunnerFocus(props: { entity: Entity }): JSX.Element {
     setNote(r.note);
     setAlertDiskPct(String(r.alert_rules?.disk_free_pct ?? 10));
     setAlertOfflineMin(String(r.alert_rules?.offline_min ?? 10));
+    setLimCpus(String(limits.cpus));
+    // The form takes GiB; the file keeps MiB.
+    setLimMem(String(Math.round((limits.mem_mb / 1024) * 100) / 100));
+    setLimPer(String(limits.per_task));
     setMakeDefault(false);
     setErr('');
     setEditOpen(true);
   };
   const saveEdit = (): void => {
+    // An emptied field is «leave it as it is»; 0 is the human's own «no limit».
+    const cpus = limCpus.trim() === '' ? limits.cpus : Number(limCpus);
+    const memGb = limMem.trim() === '' ? limits.mem_mb / 1024 : Number(limMem);
+    const per = limPer.trim() === '' ? limits.per_task : Number(limPer);
+    if (!Number.isInteger(cpus) || cpus < 0 || cpus > 1024
+      || !Number.isFinite(memGb) || memGb < 0 || memGb > 1024
+      || !Number.isInteger(per) || per < 0 || per > 1024) {
+      setErr(t('runner.limitsBad'));
+      return;
+    }
     confirmStep(`rset:${r.id}`, async () => {
       setErr('');
       try {
@@ -301,6 +319,7 @@ export function RunnerFocus(props: { entity: Entity }): JSX.Element {
           ports_host: ports.trim(), note, default: makeDefault || undefined,
           disk_free_pct: alertDiskPct.trim() === '' ? undefined : Number(alertDiskPct),
           offline_min: alertOfflineMin.trim() === '' ? undefined : Number(alertOfflineMin),
+          limits: { cpus, mem_mb: Math.round(memGb * 1024), per_task: per },
         });
         toast(t('runner.saved'));
         setEditOpen(false);
@@ -359,6 +378,15 @@ export function RunnerFocus(props: { entity: Entity }): JSX.Element {
         {host.gpu.map((g) => yardGauge(`GPU ${g.name}`, g.mem_total_mib ? ((g.mem_used_mib ?? 0) / g.mem_total_mib) * 100 : 0,
           `${(((g.mem_used_mib ?? 0) / 1024)).toFixed(1)} / ${(((g.mem_total_mib ?? 0) / 1024)).toFixed(0)} GB`))}
       </section>
+      <p class="hint" id="rf-limits">
+        {t('runner.limitsLine', {
+          cpus: limits.cpus > 0 ? String(limits.cpus) : t('runner.noLimit'),
+          mem: limits.mem_mb > 0
+            ? (limits.mem_mb % 1024 === 0 ? t('runner.gb', { n: limits.mem_mb / 1024 }) : t('runner.mb', { n: limits.mem_mb }))
+            : t('runner.noLimit'),
+          per: limits.per_task > 0 ? tn('runner.perTask', limits.per_task, { n: limits.per_task }) : t('runner.noLimit'),
+        })}
+      </p>
       {r.alerts.length > 0 && (
         <section class="rf-alerts" id="rf-alerts">
           <h3>{t('runner.alerts')} <span class="cnt">{r.alerts.length}</span></h3>
@@ -380,7 +408,11 @@ export function RunnerFocus(props: { entity: Entity }): JSX.Element {
           <tbody>
             {active.map((c) => (
               <tr key={c.id} data-class={c.class}>
-                <td><code>{c.name}</code><div class="ctl-row"><ContainerButtons runner={r.id} c={c} /></div></td>
+                <td>
+                  <code>{c.name}</code>
+                  {c.no_limits && <span class="chip hot" data-nolimit="1" title={t('runner.noLimitHint')}>{t('runner.noLimitMark')}</span>}
+                  <div class="ctl-row"><ContainerButtons runner={r.id} c={c} /></div>
+                </td>
                 <td>{c.task
                   ? <button class="k" type="button" onClick={() => void navigateTo({ kind: 'planet', id: c.task!.id })}>{c.task.tag}</button>
                   : <span class="hint">{t('runner.unsureShort')}</span>}</td>
@@ -392,6 +424,17 @@ export function RunnerFocus(props: { entity: Entity }): JSX.Element {
             ))}
           </tbody>
         </table>
+      )}
+      {r.over.length > 0 && (
+        <section class="rf-over" id="rf-over">
+          <h3>{t('runner.overTitle')} <span class="cnt">{r.over.length}</span></h3>
+          {r.over.map((o) => (
+            <div class="rf-over-row" key={o.task} data-over={o.task}>
+              <button class="k" type="button" onClick={() => void navigateTo({ kind: 'planet', id: o.task })}>{o.tag}</button>
+              <span>{t('runner.overLine', { n: o.containers, max: o.max })}</span>
+            </div>
+          ))}
+        </section>
       )}
       <h3>{t('runner.shared')} <span class="cnt">{r.shared.length}</span></h3>
       <p class="hint">{t('runner.sharedHint')}</p>
@@ -444,7 +487,7 @@ export function RunnerFocus(props: { entity: Entity }): JSX.Element {
         <button class="btn" type="button" id="rf-disk-open" onClick={() => setDiskOpen(true)}>{t('runner.df')}</button>
       </div>
       <div class="act">
-        <button class="btn" type="button" onClick={openEdit}>{t('runner.edit')}</button>
+        <button class="btn" type="button" id="rf-edit-open" onClick={openEdit}>{t('runner.edit')}</button>
         <button class="btn" type="button" onClick={() => setConnectOpen(!connectOpen)}>{t('runner.connect')}</button>
         <button class="btn danger" type="button" onClick={() => remove(false)}>{armed.value?.key === `rrm:${r.id}:n` ? t('runner.removeConfirm') : t('runner.remove')}</button>
       </div>
@@ -464,6 +507,10 @@ export function RunnerFocus(props: { entity: Entity }): JSX.Element {
           <label>{t('runner.masks')}<input class="field" value={masks} onInput={(e) => setMasks((e.target as HTMLInputElement).value)} /></label>
           <label>{t('runner.portsHost')}<input class="field" value={ports} onInput={(e) => setPorts((e.target as HTMLInputElement).value)} /></label>
           <label>{t('runner.note')}<input class="field" value={note} onInput={(e) => setNote((e.target as HTMLInputElement).value)} /></label>
+          <label>{t('runner.limitsCpus')}<input class="field" id="rf-lim-cpus" inputMode="numeric" value={limCpus} onInput={(e) => setLimCpus((e.target as HTMLInputElement).value)} /></label>
+          <label>{t('runner.limitsMem')}<input class="field" id="rf-lim-mem" inputMode="decimal" value={limMem} onInput={(e) => setLimMem((e.target as HTMLInputElement).value)} /></label>
+          <label>{t('runner.limitsPer')}<input class="field" id="rf-lim-per" inputMode="numeric" value={limPer} onInput={(e) => setLimPer((e.target as HTMLInputElement).value)} /></label>
+          <p class="hint" id="rf-lim-hint">{t('runner.limitsHint')}</p>
           <label>{t('runner.diskPct')}<input class="field" id="rf-disk-pct" inputMode="numeric" value={alertDiskPct} onInput={(e) => setAlertDiskPct((e.target as HTMLInputElement).value)} /></label>
           <label>{t('runner.offlineMin')}<input class="field" id="rf-offline-min" inputMode="numeric" value={alertOfflineMin} onInput={(e) => setAlertOfflineMin((e.target as HTMLInputElement).value)} /></label>
           <label class="rf-check"><input type="checkbox" checked={makeDefault} onChange={(e) => setMakeDefault((e.target as HTMLInputElement).checked)} />{t('runner.makeDefault')}</label>

@@ -37,6 +37,63 @@ pub struct Capacity {
     pub gpu: Vec<Gpu>,
 }
 
+/// What a task's container may take on a yard (PLN-43): `--cpus` and `--memory` per container, and the most containers
+/// one task may keep at once. Zero means «no limit of this kind»: the agents' rule leaves it out, and the Focus does not
+/// mark containers that have none.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct Limits {
+    #[serde(default)]
+    pub cpus: u64,
+    /// Memory per container, MiB, as `--memory` takes it (whole GiB when it divides).
+    #[serde(default)]
+    pub mem_mb: u64,
+    /// The most containers one task may keep on the yard at once; 0 — no maximum.
+    #[serde(default)]
+    pub per_task: u64,
+}
+
+impl Limits {
+    /// The share of a machine one container may take: a quarter of its cores (1 … 8) and an eighth of its memory
+    /// (rounded to half a GiB, 512 MiB … 8 GiB). No maximum of containers per task until the human sets one.
+    pub fn for_host(host: &HostState) -> Limits {
+        if host.cpus == 0 && host.mem_total == 0 {
+            return Limits::fallback();
+        }
+        let cpus = if host.cpus == 0 { 2 } else { (host.cpus / 4).clamp(1, 8) };
+        let mem_mb = if host.mem_total == 0 {
+            2048
+        } else {
+            let eighth = host.mem_total / (1024 * 1024) / 8;
+            (((eighth + 256) / 512) * 512).clamp(512, 8192)
+        };
+        Limits { cpus, mem_mb, per_task: 0 }
+    }
+
+    /// Until the machine has been read: enough for a database and the application beside it.
+    pub fn fallback() -> Limits {
+        Limits { cpus: 2, mem_mb: 2048, per_task: 0 }
+    }
+
+    /// Whether the rule asks for any limit at all.
+    pub fn any(&self) -> bool {
+        self.cpus > 0 || self.mem_mb > 0
+    }
+
+    /// The CPU share as `docker run --cpus` has it: `4`.
+    pub fn cpu_text(&self) -> String {
+        self.cpus.to_string()
+    }
+
+    /// The memory as `docker run --memory` has it: `4g`, `1536m`.
+    pub fn mem_text(&self) -> String {
+        if self.mem_mb % 1024 == 0 {
+            format!("{}g", self.mem_mb / 1024)
+        } else {
+            format!("{}m", self.mem_mb)
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct Gpu {
     #[serde(default)]
@@ -69,6 +126,20 @@ pub struct Runner {
     /// When a yard is worth an alarm: little disk, a long silence (PLN-42).
     #[serde(default)]
     pub alerts: crate::runners_alert::AlertRules,
+    /// The defaults of a task's containers (PLN-43): absent until the machine is first read, then its share.
+    #[serde(default)]
+    pub limits: Option<Limits>,
+}
+
+impl Runner {
+    /// The limits the rule talks about: the list file's own, else the machine's share once it has been read, else the
+    /// fallback; a human who set zeros said «no limits» and gets them.
+    pub fn effective_limits(&self, host: Option<&HostState>) -> Limits {
+        match self.limits {
+            Some(l) => l,
+            None => host.map(Limits::for_host).unwrap_or_else(Limits::fallback),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -160,6 +231,17 @@ pub fn validate(file: &RunnersFile) -> Result<(), String> {
         if let Err(e) = r.alerts.validate() {
             return Err(format!("runners.json: {e} (верфь {})", r.id));
         }
+        if let Some(l) = &r.limits {
+            if l.cpus > 1024 {
+                return Err(format!("runners.json: ЦП на контейнер у верфи {} — не больше 1024", r.id));
+            }
+            if l.mem_mb > 1024 * 1024 {
+                return Err(format!("runners.json: память на контейнер у верфи {} — не больше 1 ТиБ", r.id));
+            }
+            if l.per_task > 1024 {
+                return Err(format!("runners.json: контейнеров на задачу у верфи {} — не больше 1024", r.id));
+            }
+        }
         for t in &r.tags {
             if t.len() > 32
                 || !t
@@ -242,6 +324,11 @@ if command -v nvidia-smi >/dev/null; then
 fi
 echo '== ps';    docker ps -a --no-trunc --format '{{json .}}'
 echo '== stats'; docker stats --no-stream --format '{{json .}}'
+# The limits the containers really have (PLN-43): `docker ps` and `docker stats` cannot tell a limit from the whole
+# machine. One inspect for all of them, one line each; a container that vanished in between simply has no line.
+echo '== lim'
+ids=$(docker ps -aq 2>/dev/null)
+[ -z "$ids" ] || docker inspect --format '{{.Id}}|{{.HostConfig.NanoCpus}}|{{.HostConfig.Memory}}|{{.HostConfig.CpuQuota}}|{{.HostConfig.CpuPeriod}}' $ids 2>/dev/null || true
 echo '== net';   docker network ls --format '{{json .}}'
 echo '== vol';   docker volume ls --format '{{json .}}'
 # The build caches of the board's repositories (scripts/yard.sh labels them herdr.shared=<repo>): images first by their
@@ -332,7 +419,14 @@ pub struct Container {
     pub size_bytes: u64,
     pub cpu_pct: Option<f64>,
     pub mem_bytes: Option<u64>,
+    /// The memory limit the container really has (`HostConfig.Memory`); `None` — no limit at all.
     pub mem_limit: Option<u64>,
+    /// The CPU limit in cores (`HostConfig.NanoCpus`, else the quota over the period); `None` — no limit.
+    #[serde(default)]
+    pub cpu_limit: Option<f64>,
+    /// A container of a live task that has no limit the yard's rule asks for (PLN-43): a mark in the Focus.
+    #[serde(default)]
+    pub no_limits: bool,
     pub pids: Option<u64>,
     pub net_io: String,
     pub block_io: String,
@@ -387,6 +481,18 @@ pub struct SharedItem {
     pub size_bytes: Option<u64>,
 }
 
+/// A live task that keeps more containers on the yard than the rule allows (PLN-43).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct OverCount {
+    /// The task on the board.
+    pub task: String,
+    pub tag: String,
+    /// Containers of the task found on the yard.
+    pub containers: u64,
+    /// The maximum the rule sets.
+    pub max: u64,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct BlockState {
     pub connected: bool,
@@ -427,6 +533,12 @@ pub struct RunnerState {
     /// The alarms of this yard, from the last read (PLN-42).
     #[serde(default)]
     pub alerts: Vec<crate::runners_alert::Alert>,
+    /// The limits of a task's containers on this yard, as the list file has them now (PLN-43).
+    #[serde(default)]
+    pub limits: Limits,
+    /// Live tasks that keep more containers than the yard allows (PLN-43).
+    #[serde(default)]
+    pub over: Vec<OverCount>,
     /// When the yard stopped answering (ms); 0 while it answers.
     #[serde(default)]
     pub down_since_ms: u64,
@@ -447,6 +559,7 @@ impl RunnerState {
             tags: r.tags.clone(),
             protected: r.protected.clone(),
             note: r.note.clone(),
+            limits: r.effective_limits(None),
             ..Self::default()
         }
     }
@@ -464,6 +577,8 @@ pub fn parse_probe(
     let mut nets: Vec<Net> = Vec::new();
     let mut vols: Vec<Vol> = Vec::new();
     let mut images: Vec<ImageInfo> = Vec::new();
+    // One `== lim` line: the container, its CPU share in nano-cores, memory in bytes, quota and period in µs.
+    let mut lims: Vec<(String, u64, u64, i64, u64)> = Vec::new();
     let mut section = "";
     let mut gpu_procs: Vec<(String, u64)> = Vec::new();
     let mut mem_kb: HashMap<String, u64> = HashMap::new();
@@ -477,6 +592,20 @@ pub fn parse_probe(
         if !section.is_empty() {
             let t = line.trim();
             if t.is_empty() {
+                continue;
+            }
+            // The limits are `|`-separated, not JSON (one inspect line per container).
+            if section == "lim" {
+                let p: Vec<&str> = t.split('|').collect();
+                if p.len() >= 5 && !p[0].trim().is_empty() {
+                    lims.push((
+                        p[0].trim().to_string(),
+                        p[1].trim().parse().unwrap_or(0),
+                        p[2].trim().parse().unwrap_or(0),
+                        p[3].trim().parse().unwrap_or(0),
+                        p[4].trim().parse().unwrap_or(0),
+                    ));
+                }
                 continue;
             }
             let v: Value = match serde_json::from_str(t) {
@@ -630,6 +759,23 @@ pub fn parse_probe(
         c.pids = s_of(s, "PIDs").trim().parse().ok();
         c.net_io = s_of(s, "NetIO");
         c.block_io = s_of(s, "BlockIO");
+    }
+    // The inspect's word wins over the stats': `docker stats` shows the whole machine where there is no limit, and has
+    // no word on the CPU at all.
+    for (id, nano, mem, quota, period) in lims {
+        let Some(c) = containers.iter_mut().find(|c| {
+            c.id == id || c.id.starts_with(&id[..id.len().min(c.id.len())])
+        }) else {
+            continue;
+        };
+        c.cpu_limit = if nano > 0 {
+            Some(nano as f64 / 1_000_000_000.0)
+        } else if quota > 0 && period > 0 {
+            Some(quota as f64 / period as f64)
+        } else {
+            None
+        };
+        c.mem_limit = (mem > 0).then_some(mem);
     }
     for c in &mut containers {
         c.gpu_mem_mib = gpu_procs
@@ -1069,6 +1215,56 @@ pub fn fill_shared(state: &mut RunnerState, index: &TaskIndex) {
     state.shared = shared_of(&state.containers, &state.volumes, &state.images, index);
 }
 
+/// Marks what the yard's rule asks for and the read does not show (PLN-43): a container of a live task without the
+/// CPU or the memory limit, and a live task that keeps more containers than the rule allows. Runs after `classify`
+/// and the limits of the list file; a rule of zeros asks for nothing and marks nothing.
+pub fn apply_limits(state: &mut RunnerState) {
+    let rules = state.limits;
+    let mut counts: BTreeMap<String, OverCount> = BTreeMap::new();
+    for c in state.containers.iter_mut() {
+        let live = c.class == Class::Active;
+        c.no_limits = live
+            && ((rules.cpus > 0 && c.cpu_limit.is_none())
+                || (rules.mem_mb > 0 && c.mem_limit.is_none()));
+        if !live || rules.per_task == 0 {
+            continue;
+        }
+        if let Some(t) = c.task.as_ref() {
+            let e = counts.entry(t.id.clone()).or_insert_with(|| OverCount {
+                task: t.id.clone(),
+                tag: t.tag.clone(),
+                containers: 0,
+                max: rules.per_task,
+            });
+            e.containers += 1;
+        }
+    }
+    state.over = counts
+        .into_values()
+        .filter(|o| o.containers > o.max)
+        .collect();
+}
+
+/// Writes the machine's share into the runners that have no limits of their own yet (PLN-43); a yard that has not
+/// answered keeps its absence. True when the file changed.
+pub fn fill_limits(file: &mut RunnersFile, states: &[RunnerState]) -> bool {
+    let mut changed = false;
+    for r in &mut file.runners {
+        if r.limits.is_some() {
+            continue;
+        }
+        let Some(s) = states.iter().find(|s| s.id == r.id && s.ok) else {
+            continue;
+        };
+        if s.host.cpus == 0 && s.host.mem_total == 0 {
+            continue;
+        }
+        r.limits = Some(Limits::for_host(&s.host));
+        changed = true;
+    }
+    changed
+}
+
 /* ───────── polling ───────── */
 
 /// The planner's words for a runner whose ssh call failed: the hand check is the agents' own command.
@@ -1152,6 +1348,7 @@ pub async fn probe(cfg: &AppConfig, r: &Runner) -> RunnerState {
         Ok((host, containers, networks, volumes, images)) => {
             state.ok = true;
             state.host = host;
+            state.limits = r.effective_limits(Some(&state.host));
             state.containers = containers;
             state.networks = networks;
             state.volumes = volumes;
@@ -1200,12 +1397,37 @@ pub async fn poll_all(app: &Shared) {
         old.retain(|s| s.id != kept.id);
         fresh.push(kept);
     }
+    // A yard read for the first time gives its limits to the list (PLN-43), and the agents' block learns them.
+    learn_limits(app, &fresh).await;
     old.extend(fresh);
     old.sort_by(|a, b| a.id.cmp(&b.id));
     *app.runners.lock().await = old;
     crate::app::rebuild_runners(app).await;
     crate::app::publish(app).await;
     crate::app::index_snapshot(app).await;
+}
+
+/// Writes the machine's share into the list for the yards that have no limits of their own yet (PLN-43), then brings
+/// the agents' block up to date. Nothing is written for a yard that did not answer. True when the file changed.
+pub async fn learn_limits(app: &Shared, states: &[RunnerState]) -> bool {
+    let path = app.cfg.runners_file();
+    let mut file = match load(&path) {
+        Ok(f) => f,
+        Err(e) => {
+            eprintln!("herdr-planner: runners.json: {e}");
+            return false;
+        }
+    };
+    if !fill_limits(&mut file, states) {
+        return false;
+    }
+    file.updated_at_ms = now_ms();
+    if let Err(e) = save(&path, &file) {
+        eprintln!("herdr-planner: runners.json: {e}");
+        return false;
+    }
+    sync_blocks(app).await;
+    true
 }
 
 /* ───────── the «было → стало» plan ───────── */
@@ -1483,6 +1705,10 @@ pub fn block_text(file: &RunnersFile) -> String {
         def.id, def_target, check, host_of(def)
     ));
     s.push_str("Каждому контейнеру, сети и тому давай имя с id своей задачи (например pg-PLN-26) и метку --label herdr.task=PLN-26; для docker compose — имя проекта с id задачи (docker compose -p pln-26 …) и та же метка в labels каждого сервиса; после себя всегда останавливай и удаляй их (docker rm -f -v, docker network rm, docker volume rm, docker compose -p pln-26 down -v), даже если работа прервалась.\n");
+    let def_limits = def.effective_limits(None);
+    if let Some(limits) = limits_paragraph(&def_limits) {
+        s.push_str(&limits);
+    }
     let masks = file.protected_all();
     if !masks.is_empty() {
         s.push_str(&format!(
@@ -1500,8 +1726,15 @@ pub fn block_text(file: &RunnersFile) -> String {
                 } else {
                     format!(", {}", r.tags.join(", "))
                 };
+                // A yard with limits of its own says so here; the rest follow the default yard's.
+                let limits = r.effective_limits(None);
+                let differs = if limits == def_limits {
+                    String::new()
+                } else {
+                    format!("; лимиты: {}", limits_words(&limits))
+                };
                 format!(
-                    "{} (ssh://{}, порты {}{tags})",
+                    "{} (ssh://{}, порты {}{tags}{differs})",
                     r.id,
                     ssh::normalize_target(&r.target),
                     host_of(r)
@@ -1518,6 +1751,49 @@ pub fn block_text(file: &RunnersFile) -> String {
     s.push_str(BLOCK_END);
     s.push('\n');
     s
+}
+
+/// The limits as the agents' commands take them: `--cpus 4 --memory 4g`, and the containers' maximum when it is set.
+fn limits_words(l: &Limits) -> String {
+    let mut flags: Vec<String> = Vec::new();
+    if l.cpus > 0 {
+        flags.push(format!("--cpus {}", l.cpu_text()));
+    }
+    if l.mem_mb > 0 {
+        flags.push(format!("--memory {}", l.mem_text()));
+    }
+    let mut s = flags.join(" ");
+    if l.per_task == 1 {
+        s.push_str(", не больше одного контейнера на задачу");
+    } else if l.per_task > 1 {
+        s.push_str(&format!(", не больше {} контейнеров на задачу", l.per_task));
+    }
+    s
+}
+
+/// The paragraph of the agents' rule about the limits of a task's container (PLN-43), or `None` when the yard asks
+/// for none. The examples carry the very values of the rule: `docker run` and one compose service.
+fn limits_paragraph(l: &Limits) -> Option<String> {
+    if !l.any() {
+        return None;
+    }
+    let mut flags: Vec<String> = Vec::new();
+    let mut yaml = String::new();
+    if l.cpus > 0 {
+        flags.push(format!("--cpus {}", l.cpu_text()));
+        yaml.push_str(&format!("          cpus: \"{}\"\n", l.cpu_text()));
+    }
+    if l.mem_mb > 0 {
+        flags.push(format!("--memory {}", l.mem_text()));
+        yaml.push_str(&format!("          memory: {}\n", l.mem_text()));
+    }
+    let flags = flags.join(" ");
+    Some(format!(
+        "Лимиты контейнера задачи: {words}. Так: docker run -d --name pg-PLN-26 --label herdr.task=PLN-26 {flags} postgres:16. В compose — те же значения каждому сервису:\n```yaml\nservices:\n  db:\n    image: postgres:16\n    labels: [\"herdr.task=PLN-26\"]\n    deploy:\n      resources:\n        limits:\n{yaml}```\nКонтейнер задачи без этих лимитов помечается в «Фокусе» верфи.\n",
+        words = limits_words(l),
+        flags = flags,
+        yaml = yaml
+    ))
 }
 
 pub fn connect_value(
@@ -1950,13 +2226,23 @@ mod tests {
     fn the_probe_declares_every_section_its_output_has() {
         // parse_probe keys on the '== name' markers: JSON printed without its own marker is read as the previous
         // section's rows (the shared image once came out as a nameless volume, so «Кэш сборок» never saw it).
-        for section in ["ps", "stats", "net", "vol", "img"] {
+        for section in ["ps", "stats", "lim", "net", "vol", "img"] {
             assert!(PROBE_SCRIPT.contains(&format!("== {section}'")), "no '== {section}' marker in the probe");
         }
         let images = PROBE_SCRIPT.find("== img'").expect("the image marker");
         assert!(
             PROBE_SCRIPT[images..].contains("docker image inspect"),
             "the image JSON must come after its own marker"
+        );
+        // The limits come from one inspect of every container: `docker ps` and `docker stats` have no word on them.
+        let limits = PROBE_SCRIPT.find("== lim'").expect("the limits marker");
+        assert!(
+            PROBE_SCRIPT[limits..].contains("docker inspect --format"),
+            "the limits must be read from the container's HostConfig"
+        );
+        assert!(
+            PROBE_SCRIPT[limits..].contains("HostConfig.NanoCpus") && PROBE_SCRIPT[limits..].contains("HostConfig.Memory"),
+            "the CPU and the memory limit of a container"
         );
     }
 
@@ -1984,13 +2270,15 @@ mod tests {
              {{\"ID\":\"{}\",\"Names\":\"pg-ALP-3\",\"Image\":\"postgres\",\"State\":\"running\",\"Status\":\"Up 1 hour\",\"CreatedAt\":\"2026-10-22 09:00:00 +0000 UTC\",\"Labels\":\"herdr.task=ALP-3,com.docker.compose.project=work-3\",\"Ports\":\"0.0.0.0:15432->5432/tcp\",\"Networks\":\"work-3_default\",\"Mounts\":\"work-3_pgdata:/var/lib/postgresql/data\",\"Size\":\"28MB\"}}\n\
              == stats\n\
              {{\"ID\":\"aaaaaaaaaaaa\",\"CPUPerc\":\"0.40%\",\"MemUsage\":\"96MiB / 1GiB\",\"PIDs\":\"7\",\"NetIO\":\"1kB / 2kB\",\"BlockIO\":\"0B / 0B\"}}\n\
+             == lim\n\
+             {}|4000000000|1073741824|0|0\n\
              == net\n\
              {{\"ID\":\"net1\",\"Name\":\"work-3_default\",\"Driver\":\"bridge\",\"Labels\":\"\"}}\n\
              == vol\n\
              {{\"Name\":\"work-3_pgdata\",\"Driver\":\"local\",\"Labels\":\"\"}}\n\
              == img\n\
              {{\"Id\":\"{}\",\"RepoTags\":[\"herdr-planner-yard:0123456789ab\"],\"Size\":2500000000,\"Config\":{{\"Labels\":{{\"herdr.shared\":\"alpha\"}}}}}}\n",
-            "a".repeat(64), "b".repeat(64)
+            "a".repeat(64), "a".repeat(64), "b".repeat(64)
         );
         let (host, containers, nets, vols, images) = parse_probe(&out).unwrap();
         assert_eq!(host.cpus, 16);
@@ -2003,6 +2291,9 @@ mod tests {
         assert_eq!(c.name, "pg-ALP-3");
         assert_eq!(c.cpu_pct, Some(0.4));
         assert_eq!(c.mem_bytes, Some(96 * 1024 * 1024));
+        // The inspect's word, not the stats': 4 cores and 1 GiB, though the stats show the same limit this time.
+        assert_eq!(c.cpu_limit, Some(4.0));
+        assert_eq!(c.mem_limit, Some(1024 * 1024 * 1024));
         assert_eq!(c.gpu_mem_mib, Some(1337));
         assert_eq!(c.created_ms, 1792659600000);
         assert_eq!(nets[0].name, "work-3_default");
@@ -2011,6 +2302,164 @@ mod tests {
         assert_eq!(images[0].names, vec!["herdr-planner-yard:0123456789ab"]);
         assert_eq!(images[0].size, Some(2_500_000_000));
         assert_eq!(images[0].labels.get("herdr.shared").map(String::as_str), Some("alpha"));
+    }
+
+    #[test]
+    fn the_default_limits_are_a_share_of_the_machine() {
+        // A 16-core yard with 32 GiB: a quarter of the cores, an eighth of the memory (rounded to half a GiB).
+        let host = HostState {
+            cpus: 16,
+            mem_total: 32 * 1024 * 1024 * 1024,
+            ..HostState::default()
+        };
+        assert_eq!(Limits::for_host(&host), Limits { cpus: 4, mem_mb: 4096, per_task: 0 });
+        // A small yard: never below one core and half a GiB; never above eight of either.
+        let small = HostState { cpus: 2, mem_total: 2 * 1024 * 1024 * 1024, ..HostState::default() };
+        assert_eq!(Limits::for_host(&small), Limits { cpus: 1, mem_mb: 512, per_task: 0 });
+        let big = HostState {
+            cpus: 128,
+            mem_total: 512 * 1024 * 1024 * 1024,
+            ..HostState::default()
+        };
+        assert_eq!(Limits::for_host(&big), Limits { cpus: 8, mem_mb: 8192, per_task: 0 });
+        // A machine never read: the fallback, not a share of zero cores.
+        assert_eq!(Limits::for_host(&HostState::default()), Limits::fallback());
+    }
+
+    #[test]
+    fn the_limits_of_the_list_file_win_over_the_machines_share() {
+        let host = HostState { cpus: 16, mem_total: 32 * 1024 * 1024 * 1024, ..HostState::default() };
+        let mut r = Runner {
+            id: "vm-r".into(),
+            target: "me@192.0.2.29".into(),
+            ports_host: String::new(),
+            tags: vec![],
+            protected: vec![],
+            note: String::new(),
+            added_at_ms: 0,
+            capacity: None,
+            auto: AutoClean::default(),
+            alerts: Default::default(),
+            limits: None,
+        };
+        assert_eq!(r.effective_limits(Some(&host)).cpus, 4, "no word in the file: the machine's share");
+        assert_eq!(r.effective_limits(None), Limits::fallback());
+        r.limits = Some(Limits { cpus: 3, mem_mb: 1536, per_task: 2 });
+        assert_eq!(r.effective_limits(Some(&host)), Limits { cpus: 3, mem_mb: 1536, per_task: 2 });
+        // A human who set zeros meant «no limits», not «use the defaults again».
+        r.limits = Some(Limits::default());
+        assert_eq!(r.effective_limits(Some(&host)), Limits::default());
+    }
+
+    #[test]
+    fn a_task_container_without_the_rules_limits_is_marked() {
+        let mut state = RunnerState::default();
+        state.id = "vm-r".into();
+        state.limits = Limits { cpus: 2, mem_mb: 2048, per_task: 0 };
+        let mut full = cont("pg-ALP-3", &[]);
+        full.id = "1".repeat(64);
+        full.class = Class::Active;
+        full.task = Some(TaskRef { id: "alpha/3".into(), tag: "ALP-3".into(), ..TaskRef::default() });
+        full.cpu_limit = Some(2.0);
+        full.mem_limit = Some(2 * 1024 * 1024 * 1024);
+        let mut no_cpu = cont("pg-ALP-4", &[]);
+        no_cpu.id = "2".repeat(64);
+        no_cpu.class = Class::Active;
+        no_cpu.task = Some(TaskRef { id: "alpha/4".into(), tag: "ALP-4".into(), ..TaskRef::default() });
+        no_cpu.mem_limit = Some(1024 * 1024 * 1024);
+        let mut foreign = cont("neighbor-db-1", &[]);
+        foreign.id = "3".repeat(64);
+        foreign.class = Class::Foreign;
+        state.containers = vec![full, no_cpu, foreign];
+        apply_limits(&mut state);
+        assert!(!state.containers[0].no_limits, "both limits there: no mark");
+        assert!(state.containers[1].no_limits, "no CPU limit: marked");
+        assert!(!state.containers[2].no_limits, "a foreign container is nobody's business");
+        // A rule that asks for nothing marks nothing.
+        state.limits = Limits::default();
+        apply_limits(&mut state);
+        assert!(state.containers.iter().all(|c| !c.no_limits));
+    }
+
+    #[test]
+    fn a_live_task_over_the_container_maximum_is_named() {
+        let mut state = RunnerState::default();
+        state.id = "vm-r".into();
+        state.limits = Limits { cpus: 2, mem_mb: 2048, per_task: 2 };
+        let mk = |id: char, name: &str, task: &str, tag: &str, class: Class| {
+            let mut c = cont(name, &[]);
+            c.id = id.to_string().repeat(64);
+            c.class = class;
+            c.task = (class == Class::Active)
+                .then(|| TaskRef { id: task.into(), tag: tag.into(), ..TaskRef::default() });
+            c
+        };
+        state.containers = vec![
+            mk('1', "pg-ALP-3", "alpha/3", "ALP-3", Class::Active),
+            mk('2', "web-ALP-3", "alpha/3", "ALP-3", Class::Active),
+            mk('3', "redis-ALP-3", "alpha/3", "ALP-3", Class::Active),
+            mk('4', "pg-ALP-4", "alpha/4", "ALP-4", Class::Active),
+            mk('5', "web-ALP-1", "alpha/1", "ALP-1", Class::Forgotten),
+        ];
+        apply_limits(&mut state);
+        assert_eq!(state.over.len(), 1);
+        assert_eq!(state.over[0].task, "alpha/3");
+        assert_eq!(state.over[0].tag, "ALP-3");
+        assert_eq!(state.over[0].containers, 3);
+        assert_eq!(state.over[0].max, 2);
+        // No maximum asked for: nothing is over.
+        state.limits.per_task = 0;
+        apply_limits(&mut state);
+        assert!(state.over.is_empty());
+    }
+
+    #[test]
+    fn the_machines_share_is_written_once_into_the_list() {
+        let mut file = RunnersFile {
+            default: "vm-r".into(),
+            runners: vec![
+                Runner {
+                    id: "vm-r".into(),
+                    target: "me@192.0.2.29".into(),
+                    ports_host: String::new(),
+                    tags: vec![],
+                    protected: vec![],
+                    note: String::new(),
+                    added_at_ms: 0,
+                    capacity: None,
+                    auto: AutoClean::default(),
+                    alerts: Default::default(),
+                    limits: None,
+                },
+                Runner {
+                    id: "silent".into(),
+                    target: "me@192.0.2.30".into(),
+                    ports_host: String::new(),
+                    tags: vec![],
+                    protected: vec![],
+                    note: String::new(),
+                    added_at_ms: 0,
+                    capacity: None,
+                    auto: AutoClean::default(),
+                    alerts: Default::default(),
+                    limits: None,
+                },
+            ],
+            ..RunnersFile::default()
+        };
+        let mut read = RunnerState::default();
+        read.id = "vm-r".into();
+        read.ok = true;
+        read.host = HostState { cpus: 8, mem_total: 16 * 1024 * 1024 * 1024, ..HostState::default() };
+        let mut down = RunnerState::default();
+        down.id = "silent".into();
+        down.ok = false;
+        assert!(fill_limits(&mut file, &[read.clone(), down]));
+        assert_eq!(file.runners[0].limits, Some(Limits { cpus: 2, mem_mb: 2048, per_task: 0 }));
+        assert_eq!(file.runners[1].limits, None, "a yard that did not answer teaches nothing");
+        // A human's own numbers are never overwritten, and a second pass writes nothing.
+        assert!(!fill_limits(&mut file, &[read]));
+        assert_eq!(file.runners[0].limits, Some(Limits { cpus: 2, mem_mb: 2048, per_task: 0 }));
     }
 
     #[test]
@@ -2031,6 +2480,7 @@ mod tests {
                 capacity: None,
                 auto: AutoClean::default(),
                 alerts: Default::default(),
+                limits: Some(Limits { cpus: 3, mem_mb: 1536, per_task: 2 }),
             }],
             assign: BTreeMap::new(),
             version: FILE_VERSION,
@@ -2046,6 +2496,15 @@ mod tests {
         bad = file.clone();
         bad.runners[0].protected = vec!["a;b".into()];
         assert!(save(&path, &bad).is_err());
+        for l in [
+            Limits { cpus: 1025, ..Limits::default() },
+            Limits { mem_mb: 1024 * 1024 + 1, ..Limits::default() },
+            Limits { per_task: 1025, ..Limits::default() },
+        ] {
+            bad = file.clone();
+            bad.runners[0].limits = Some(l);
+            assert!(save(&path, &bad).is_err(), "{l:?}");
+        }
     }
 
     #[test]
@@ -2063,6 +2522,7 @@ mod tests {
                 capacity: None,
                 auto: AutoClean::default(),
                 alerts: Default::default(),
+                limits: None,
             }],
             ..RunnersFile::default()
         };
@@ -2070,10 +2530,58 @@ mod tests {
         assert!(block.contains("DOCKER_HOST=ssh://me@192.0.2.29"));
         assert!(block.contains("порты 192.0.2.29") || block.contains("на 192.0.2.29"));
         assert!(block.contains("buildx_*, neighbor") || block.contains("buildx_*, neighbor"));
+        // Without a word in the list the rule carries the fallback's numbers (a yard not read yet).
+        assert!(block.contains("--cpus 2 --memory 2g"), "{block}");
+        assert!(block.contains("docker run -d --name pg-PLN-26 --label herdr.task=PLN-26 --cpus 2 --memory 2g"), "{block}");
+        assert!(block.contains("deploy:") && block.contains("cpus: \"2\"") && block.contains("memory: 2g"), "{block}");
+        assert!(!block.contains("на задачу"), "no maximum is asked for: none is mentioned");
         let on = connect_value("Мои правила.", &block, true).unwrap().unwrap();
         assert!(on.starts_with("Мои правила.") && on.contains(BLOCK_BEGIN));
         assert_eq!(connect_value(&on, &block, false).unwrap().as_deref(), Some("Мои правила."));
         assert!(has_old_docker_paragraph("Мои правила.\n\nСтавьте DOCKER_HOST=ssh://x сюда.\n"));
+    }
+
+    #[test]
+    fn the_block_carries_the_limits_of_the_yard() {
+        let runner = |id: &str, target: &str, limits: Option<Limits>| Runner {
+            id: id.into(),
+            target: target.into(),
+            ports_host: String::new(),
+            tags: vec![],
+            protected: vec![],
+            note: String::new(),
+            added_at_ms: 0,
+            capacity: None,
+            auto: AutoClean::default(),
+            alerts: Default::default(),
+            limits,
+        };
+        let file = RunnersFile {
+            default: "vm-r".into(),
+            runners: vec![
+                runner("vm-r", "me@192.0.2.29", Some(Limits { cpus: 4, mem_mb: 1536, per_task: 2 })),
+                // A second yard with limits of its own says them; one with the same numbers does not.
+                runner("vm-g", "me@192.0.2.30", Some(Limits { cpus: 1, mem_mb: 1024, per_task: 0 })),
+                runner("vm-h", "me@192.0.2.31", Some(Limits { cpus: 4, mem_mb: 1536, per_task: 2 })),
+            ],
+            ..RunnersFile::default()
+        };
+        let block = block_text(&file);
+        assert!(block.contains("Лимиты контейнера задачи: --cpus 4 --memory 1536m, не больше 2 контейнеров на задачу."), "{block}");
+        assert!(block.contains("docker run -d --name pg-PLN-26 --label herdr.task=PLN-26 --cpus 4 --memory 1536m postgres:16"), "{block}");
+        assert!(block.contains("cpus: \"4\"") && block.contains("memory: 1536m"), "{block}");
+        assert!(block.contains("vm-g (ssh://me@192.0.2.30, порты 192.0.2.30; лимиты: --cpus 1 --memory 1g)"), "{block}");
+        assert!(!block.contains("vm-h (ssh://me@192.0.2.31, порты 192.0.2.31; лимиты"), "the same share as the default yard: no words wasted");
+        // A yard whose human asked for no limits at all: no paragraph, no mark promise.
+        let none = RunnersFile {
+            default: "vm-r".into(),
+            runners: vec![runner("vm-r", "me@192.0.2.29", Some(Limits::default()))],
+            ..RunnersFile::default()
+        };
+        let block = block_text(&none);
+        assert!(!block.contains("--cpus"), "{block}");
+        assert!(!block.contains("--memory"), "{block}");
+        assert!(!block.contains("Фокусе"), "{block}");
     }
 
     #[test]
@@ -2091,6 +2599,7 @@ mod tests {
                 capacity: None,
                 auto: AutoClean::default(),
                 alerts: Default::default(),
+                limits: None,
             }],
             ..RunnersFile::default()
         };
