@@ -9,7 +9,7 @@
 .chat .cq{flex:1;min-width:3.75rem;height:1.625rem;border:1px solid var(--pl-line);border-radius:0.8125rem;background:var(--pl-tile);padding:0 0.625rem;font-size:0.75rem;outline:none;appearance:none}
 .chat .cq:focus{border-color:var(--pl-focus)}
 .chat .cq::-webkit-search-cancel-button{display:none}
-.chat .log{overflow:auto;padding:0.625rem 1rem;scrollbar-width:thin;overscroll-behavior:contain;min-height:5.75rem;flex:1}
+.chat .log{overflow-x:hidden;overflow-y:auto;padding:0.625rem 1rem;scrollbar-width:thin;overscroll-behavior:contain;min-height:5.75rem;flex:1}
 .chat .older{display:block;margin:0 auto 0.625rem;font-size:0.75rem;color:var(--pl-accent-ink);background:none;border:0}
 .chat .older:hover{text-decoration:underline}
 .chat .meta{color:var(--pl-faint);font-size:0.6875rem;display:flex;gap:0.375rem;flex-wrap:wrap}
@@ -19,9 +19,11 @@
 .chat .who{font-size:0.6875rem;color:var(--pl-faint);margin-right:0.5rem;white-space:nowrap}
 .chat .q{display:flex;gap:0.25rem;cursor:pointer;color:var(--pl-title);padding:2px 0}
 .chat .q:hover .txt{text-decoration:underline dotted}
-.chat .q .txt{white-space:pre-wrap;word-break:break-word;min-width:0}
+.chat .q .txt{white-space:pre-wrap;overflow-wrap:anywhere;min-width:0;max-width:100%}
 .chat .a{display:flex;gap:0.25rem;padding:0.1875rem 0 0.1875rem 0.625rem;border-left:2px solid color-mix(in srgb,var(--pl-accent) 50%,transparent);margin:0.1875rem 0}
-.chat .a .txt{white-space:pre-wrap;word-break:break-word;min-width:0;color:var(--pl-text)}
+.chat .a .txt{white-space:pre-wrap;overflow-wrap:anywhere;min-width:0;max-width:100%;color:var(--pl-text)}
+.chat .turn,.chat .a,.chat .q{min-width:0;max-width:100%}
+.chat .log img,.chat .log pre,.chat .log table{max-width:100%}
 .chat .a .txt.clamp{max-height:10em;overflow:hidden;-webkit-mask-image:linear-gradient(#000 70%,transparent);mask-image:linear-gradient(#000 70%,transparent)}
 .chat .a.err .txt{color:var(--pl-danger)}
 .chat .a.empty .txt{color:var(--pl-faint)}

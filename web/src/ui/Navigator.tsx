@@ -6,6 +6,7 @@ import { buildTree, type NavNode } from './navtree';
 import { Gl } from './Gl';
 import { t } from '../i18n';
 import { enterGalaxy, navigateTo } from '../nav';
+import { NAV_W_MIN, dragNav, navMax, navWidthNow, setNavWidth } from '../nav-width';
 import { addDialogs } from '../dialogs';
 import { openAddUniverse } from './AddUniverse';
 import './navigator.css';
@@ -40,6 +41,37 @@ function icon(n: NavNode): JSX.Element {
     case 'addUniverse': case 'addGalaxy': return <Gl n="plus" />;
     default: return <span class="tw" />;
   }
+}
+
+/** The tooltip of a row: the whole name (the row shows it as far as it fits) and the whole status. */
+function tip(n: NavNode): string {
+  if (n.kind === 'planet') return n.sub && n.sub !== n.label ? `${n.label}\n${n.sub}` : n.label;
+  if (n.kind === 'moon') return [n.label, n.sub].filter(Boolean).join('\n');
+  return n.sub && n.kind !== 'group' && n.kind !== 'quiet' ? `${n.label} · ${n.sub}` : n.label;
+}
+
+/** The short word after a task's name: the glyph in front of it already says the status. */
+const shortStatus = (n: NavNode): string => (n.status ? t(`status.${n.status}.short`) : '');
+
+/** The edge of the panel: dragged with the mouse, moved with the arrow keys, double click for the default. */
+function Grip(): JSX.Element {
+  const key = (e: KeyboardEvent): void => {
+    const step = e.shiftKey ? 4 : 1;
+    if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
+      e.preventDefault(); e.stopPropagation();
+      setNavWidth(navWidthNow() + (e.key === 'ArrowRight' ? step : -step));
+    } else if (e.key === 'Home' || e.key === 'Enter') {
+      e.preventDefault(); e.stopPropagation();
+      setNavWidth(null);
+    }
+  };
+  return (
+    <div
+      class="nav-grip" role="separator" aria-orientation="vertical" aria-label={t('nav.resize')} title={t('nav.resizeTip')} tabIndex={0}
+      aria-valuemin={NAV_W_MIN} aria-valuemax={Math.round(navMax())} aria-valuenow={Math.round(navWidthNow())}
+      onPointerDown={(e) => dragNav(e as unknown as PointerEvent)} onDblClick={() => setNavWidth(null)} onKeyDown={key}
+    />
+  );
 }
 
 export function Navigator(): JSX.Element {
@@ -84,7 +116,7 @@ export function Navigator(): JSX.Element {
               key={n.key} role="treeitem" tabIndex={focusKey.value === n.key || (!focusKey.value && sel) ? 0 : -1}
               data-nav={n.key} data-kind={n.kind} aria-selected={sel} aria-expanded={n.expandable ? n.open : undefined}
               class={`ti ${n.kind} ${n.status ? `s-${n.status}` : ''} ${sel ? 'sel' : ''} ${here ? 'here' : ''} ${n.dim ? 'dim' : ''} ${n.off ? 'off' : ''} ${n.attention ? 'attn' : ''}`}
-              style={`padding-left:${(6 + n.depth * 14) / 16}rem`}
+              style={`padding-left:${(6 + n.depth * 14) / 16}rem`} title={tip(n)}
               onFocus={() => { focusKey.value = n.key; }}
               onClick={() => activate(n)}
             >
@@ -95,13 +127,14 @@ export function Navigator(): JSX.Element {
               <span class="lab">{n.label}{n.sub && n.kind !== 'planet' ? <em>{n.sub}</em> : null}</span>
               {n.count !== undefined && <span class="cnt">{n.count}</span>}
               {n.badge ? <span class={n.kind === 'universe' ? 'lag' : 'cnt hot'}>{n.badge}</span> : null}
-              {n.kind === 'planet' && n.sub ? <span class="meta">{n.sub}</span> : null}
+              {n.kind === 'planet' && n.status && n.status !== 'done' ? <span class="meta st">{shortStatus(n)}</span> : null}
               {n.kind === 'moon' && n.sub ? <span class="meta">{n.sub}</span> : null}
               {n.kind === 'galaxy' && n.sub ? <span class="meta">{n.sub}</span> : null}
             </div>
           );
         })}
       </div>
+      <Grip />
     </aside>
   );
 }
