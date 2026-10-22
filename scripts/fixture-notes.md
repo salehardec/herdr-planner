@@ -124,7 +124,10 @@ The planner works with its own board only. The stand-ins still answer as a board
   --model M --app A --desc D]`. `add` with an absolute path registers a git folder (name = folder
   name, key from it) and makes `KEY-1`; the new task's `task.json` is written with `created` now.
   Commands are logged in `log/commands.jsonl` (`coordinator.jsonl`, `lists.jsonl`, `details.jsonl`…).
-- `herdr`: `machine list --json`, `agent list`, `agent read`, `agent send-keys`.
+- `herdr`: `machine list --json`, `agent list`, `agent read`, `agent send-keys`. `agent read` prints what
+  `state/dialog.txt` holds (or a default question); with `--format ansi` every line comes coloured, as a
+  terminal would show it. `alpha/8` carries `exitedAt` (its agent has left) for the screen that must stop
+  reading it; `state/dialog.txt` with many lines is the long screen the window must keep the end of.
 - `claude`: translation. Reads `<<< … >>>` on stdin, prints `ПЕРЕВОД: ` and the first 60 characters
   (`…` when cut). Logs argv and whether `--tools` was empty to `log/claude.jsonl`.
 - `gh`: `auth status` ok; `repo view acme/mine` → WRITE, `acme/theirs` → READ, others not found;

@@ -2,10 +2,10 @@ import { signal } from '@preact/signals';
 import type { JSX } from 'preact';
 import { useEffect, useState } from 'preact/hooks';
 import {
-  currentView, details, linkSel, panels, requests, runners, screens, selected, snap, taskOf,
+  currentView, details, linkSel, panels, requests, runners, selected, snap, taskOf,
 } from '../store';
 import { api } from '../api';
-import { openFiles, removeLink, archiveAllDone, fetchScreen } from '../actions';
+import { openFiles, removeLink, archiveAllDone } from '../actions';
 import { fetchDetails, navigateTo } from '../nav';
 import { closing, loadClosing } from '../closing';
 import { addDialogs } from '../dialogs';
@@ -13,7 +13,7 @@ import { t } from '../i18n';
 import { Gl, Badge } from './Gl';
 import { RichText } from './RichText';
 import { Translatable } from './Translatable';
-import { RequestBlock, Screen } from './Request';
+import { RequestBlock } from './Request';
 import { TaskActionButtons, TellBox } from './AgentActions';
 import { CleanCard } from './CleanCard';
 import { dayTimeOf } from '../util/dates';
@@ -97,12 +97,11 @@ function TaskFocus(props: { task: Task }): JSX.Element {
           <>
             <button class="btn" type="button" data-act="files" data-id={task.id} onClick={() => void openFiles(task, 'worktree')}><Gl n="folder" />{t('focus.worktreeBtn')}</button>
             <button class="btn" type="button" data-act="reports" data-id={task.id} onClick={() => void openFiles(task, 'reports')}><Gl n="folder" />{t('focus.reports')}</button>
-            <button class="btn" type="button" data-act="screen" data-target={task.id} onClick={() => void fetchScreen(task.id)}><Gl n="screen" />{t('focus.agentScreen')}</button>
+            <button class="btn" type="button" data-act="screen" data-target={task.id} onClick={() => { addDialogs.screen.value = { task: task.id }; }}><Gl n="screen" />{t('focus.agentScreen')}</button>
           </>
         )}
       </div>
       {!local && <div class="remote">{t('focus.remoteFiles', { path: worktree || d?.reports_dir || t('focus.none') })}</div>}
-      {screens.value[task.id] && <Screen target={task.id} label={t('focus.agentScreen')} />}
       {yard.length > 0 && (
         <section class="rf-task" id="rf-task">
           <h3>{t('runner.taskTitle')}</h3>

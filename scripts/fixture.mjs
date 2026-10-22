@@ -230,7 +230,7 @@ task('alpha', 4, { state: 'blocked', kind: 'permission', stage: 'approval', titl
 task('alpha', 5, { state: 'blocked', kind: 'permission', stage: 'approval', title: 'Кэш отчётов', msg: 'Review failed · 1 critical, 1 major', review: failedReview, reviewRound: 2 });
 task('alpha', 6, { app: 'omp', state: 'working', stage: 'working', title: 'Миграция базы', msg: 'Writing migration', progress: 40, eta: 12 });
 task('alpha', 7, { app: 'pi', state: 'working', stage: 'reviewing', title: 'Документация', msg: 'Under review', progress: 55, reviewRound: 1 });
-task('alpha', 8, { state: 'error', stage: 'working', title: 'Сбой сборки', msg: 'The build failed' });
+task('alpha', 8, { state: 'error', stage: 'working', title: 'Сбой сборки', msg: 'The build failed', exitedAt: NOW - 5 * MIN });
 task('alpha', 9, { state: 'working', stage: 'queued', title: 'Очередь за слотом', msg: 'Waiting for a free slot', queue: 1 });
 task('alpha', 10, { state: 'working', stage: 'after', title: 'После девятой', msg: 'queued after ALP-9' });
 task('alpha', 11, { state: 'idle', stage: 'todo', title: 'Заметка на потом', msg: '' });
@@ -437,7 +437,7 @@ for (const r of rows) {
     session: C0.uuid('session ' + r.id),
     worktree: path.join(dir, 'worktrees', `${repo}-${n}`),
     branch: `work/${n}`,
-    exitedAt: r.state === 'done' || r.archivedAt ? Math.min(NOW, created + 40 * MIN) : null,
+    exitedAt: r.exitedAt ?? (r.state === 'done' || r.archivedAt ? Math.min(NOW, created + 40 * MIN) : null),
     afterDone: m.afterDone || [],
   };
 }
@@ -1025,7 +1025,13 @@ function herdrMain(C, DATA) {
     log('herdr.jsonl', { argv: process.argv.slice(2) });
     const name = rest[0];
     if (!namesOf(world()).includes(name)) { console.error('no such agent: ' + name); process.exit(1); }
-    console.log(fs.existsSync(join('state', 'dialog.txt')) ? fs.readFileSync(join('state', 'dialog.txt'), 'utf8') : '❯ May I continue?\n  1. Yes\n  2. No');
+    const dialog = fs.existsSync(join('state', 'dialog.txt')) ? fs.readFileSync(join('state', 'dialog.txt'), 'utf8') : '❯ May I continue?\n  1. Yes\n  2. No';
+    // A terminal screen, as `--format ansi` gives it: the prompt bright, the choices yellow.
+    if (rest.includes('ansi')) {
+      console.log(dialog.split('\n').map((line, i) => `\x1b[${i === 0 ? '1;36' : '33'}m${line}\x1b[0m`).join('\n'));
+      return;
+    }
+    console.log(dialog);
     return;
   }
   if (cmd === 'agent' && sub === 'send-keys') {
