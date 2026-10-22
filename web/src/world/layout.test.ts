@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { computeLayout, planetPosition, R_BOUND, universeRadius } from './layout';
+import { dockPositions } from './docks';
 import type { GalaxyView, Project, Status, Task } from '../types';
 
 const proj = (name: string, folder: string, quiet = false): Project => ({
@@ -75,5 +76,17 @@ describe('galaxy layout', () => {
 
   it('can hide the quiet universes', () => {
     expect(computeLayout(big(9, 2), { showQuiet: false }).universes.every((u) => !u.quiet)).toBe(true);
+  });
+
+  it('puts the shipyards just outside the Galaxy boundary, apart from each other', () => {
+    const bound = 800;
+    const ids = ['yard-a', 'yard-b', 'yard-c', 'yard-d', 'yard-e'];
+    const docks = [...dockPositions(ids, bound + 200).values()];
+    for (const d of docks) expect(Math.hypot(d.x, d.z)).toBeCloseTo(bound + 200, 6);
+    let min = Infinity;
+    for (let i = 0; i < docks.length; i++) {
+      for (let j = i + 1; j < docks.length; j++) min = Math.min(min, docks[i].distanceTo(docks[j]));
+    }
+    expect(min).toBeGreaterThanOrEqual(120);
   });
 });

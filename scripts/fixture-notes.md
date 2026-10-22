@@ -124,13 +124,39 @@ The planner works with its own board only. The stand-ins still answer as a board
   --model M --app A --desc D]`. `add` with an absolute path registers a git folder (name = folder
   name, key from it) and makes `KEY-1`; the new task's `task.json` is written with `created` now.
   Commands are logged in `log/commands.jsonl` (`coordinator.jsonl`, `lists.jsonl`, `details.jsonl`…).
-- `herdr`: `machine list --json`, `agent list`, `agent read`, `agent send-keys`.
+- `herdr`: `machine list --json`, `agent list`, `agent read`, `agent send-keys`. `agent read` prints what
+  `state/dialog.txt` holds (or a default question); with `--format ansi` every line comes coloured, as a
+  terminal would show it. `alpha/8` carries `exitedAt` (its agent has left) for the screen that must stop
+  reading it; `state/dialog.txt` with many lines is the long screen the window must keep the end of.
 - `claude`: translation. Reads `<<< … >>>` on stdin, prints `ПЕРЕВОД: ` and the first 60 characters
   (`…` when cut). Logs argv and whether `--tools` was empty to `log/claude.jsonl`.
 - `gh`: `auth status` ok; `repo view acme/mine` → WRITE, `acme/theirs` → READ, others not found;
   `api user` → `fixture-user`.
 - `glab`: `auth status --hostname gitlab.example.com` → not logged in (exit 1, the hint); `api` → 401.
 - `xdg-terminal-exec`: logs `terminal.jsonl`.
+- `nvidia-smi`: a shell script that prints `DIR/load/nvidia.csv` (the lines the real one prints with
+  `--query-gpu=name,utilization.gpu,memory.used,memory.total --format=csv,noheader,nounits`) and, with no such file,
+  fails like a machine without the driver (exit 9). The load bars' own checks write and remove that file.
+  `HERDR_PLANNER_LOAD_FILE=DIR/load/load.json` (set by `run-checks.sh`, together with `HERDR_PLANNER_LOAD_MS=400`)
+  replaces the planner's reading of `/proc`: a JSON `Load` (`{ok, cpu:{percent,cores}, mem:{used,total,percent},
+  gpus:[…], at}`); `{"ok": false}` is a machine that cannot be read; no file means the real machine.
+
+## The shipyard vm-r (`me@192.0.2.29`)
+
+`192.0.2.0/24` is a documentation address: no real host. The ssh stand-in answers for it with one fixed probe
+(`herdr-planner-runner 1`), `ssh -G`, `true`, `docker version`, `docker system df`, and the exact-id removals the
+planner may ask for.
+
+- `settings/runners.json` (next to `board/`, where the planner reads it): one yard `vm-r`, target `me@192.0.2.29`,
+  ports on `192.0.2.29`, tags `docker28 gpu x86_64`, masks `buildx_*` and `neighbor` (the compose project next door).
+- `state/runner.json`: ids, networks and volume names already removed; the probe leaves them out.
+- Six containers: `pg-ALP-3` (a live task, compose project `work-3`), `pg-AL9-4` (the same task alpha/4 under the
+  repository's older key `AL9`, from `repo-keys.json` `had`), `web-ALP-15` (task ALP-15 is done → forgotten),
+  `x-ALP-99` (tag with no such task → unsure), `neighbor-db-1` (compose project `neighbor`) and
+  `buildx_buildkit_x0` (protected by mask). Two networks and two volumes belong to the first and the neighbour project.
+- `log/ssh.jsonl` gets a line with `runner: "vm-r"` for every such call. No copy of the list goes to another machine.
+- The wizard's local check: `ssh -G me@192.0.2.29` prints its `hostname`, `bin/docker` exists, and the stand-in ssh
+  answers `true` and `docker version` with `28.3.0`.
 
 ## The scale world (`--scale 50x500`)
 

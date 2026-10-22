@@ -690,54 +690,32 @@ pub fn coordinator_block(galaxy_dir: &str) -> String {
     )
 }
 
-fn block_range(text: &str) -> Option<(usize, usize)> {
-    let a = text.find(BLOCK_BEGIN)?;
-    let b = text[a..].find(BLOCK_END)? + a + BLOCK_END.len();
-    // the line break after the end marker goes with the block
-    let b = if text[b..].starts_with('\n') { b + 1 } else { b };
-    Some((a, b))
-}
+/// The markers of the memory block in the Coordinator's instructions.
+pub const MARKERS: crate::blocks::Markers = crate::blocks::Markers {
+    begin: BLOCK_BEGIN,
+    end: BLOCK_END,
+};
 
 /// `text` with the planner's block put in (replacing the one there) or, for `None`, taken out. Everything outside the
 /// block, and the board's own marked region, stays as it was.
+#[allow(dead_code)]
 pub fn apply_block(text: &str, block: Option<&str>) -> String {
-    match (block_range(text), block) {
-        (Some((a, b)), Some(block)) => format!("{}{}{}", &text[..a], block, &text[b..]),
-        (Some((a, b)), None) => {
-            let head = text[..a].trim_end_matches('\n');
-            let tail = &text[b..];
-            if head.is_empty() {
-                tail.to_string()
-            } else if tail.is_empty() {
-                format!("{head}\n")
-            } else {
-                format!("{head}\n\n{tail}")
-            }
-        }
-        (None, Some(block)) => {
-            let head = text.trim_end_matches('\n');
-            if head.is_empty() {
-                block.to_string()
-            } else {
-                format!("{head}\n\n{block}")
-            }
-        }
-        (None, None) => text.to_string(),
-    }
+    crate::blocks::apply(text, MARKERS, block)
 }
 
 pub fn has_block(text: &str, block: &str) -> bool {
-    block_range(text).is_some_and(|(a, b)| text[a..b].trim_end() == block.trim_end())
+    crate::blocks::has_block(text, MARKERS, block)
 }
 
 pub fn has_any_block(text: &str) -> bool {
-    block_range(text).is_some()
+    crate::blocks::has_any_block(text, MARKERS)
 }
 
 /// The human's `coordinator.instructions` with the memory block added at the end (or the old block replaced). The
 /// text they wrote stays as it is.
+#[allow(dead_code)]
 pub fn instructions_with(current: &str, block: &str) -> String {
-    apply_block(current.trim_end(), Some(block)).trim_end().to_string()
+    crate::blocks::with_block(current, MARKERS, block)
 }
 
 /// The value `herdr-projects set coordinator.instructions` is given to switch the block on or off, from the instructions
@@ -745,24 +723,13 @@ pub fn instructions_with(current: &str, block: &str) -> String {
 /// anything but a space (`-x`, `--x`) could be read as an option, so that is refused with a reason (a Markdown list,
 /// «- …», is fine).
 pub fn connect_value(current: &str, block: &str, on: bool) -> Result<Option<String>, String> {
-    let value = if on {
-        Some(instructions_with(current, block))
-    } else {
-        instructions_without(current)
-    };
-    if let Some(v) = &value {
-        let mut chars = v.chars();
-        if chars.next() == Some('-') && chars.next().is_some_and(|c| !c.is_whitespace()) {
-            return Err("инструкции начинаются с «-» и слова после него: доска могла бы принять их за параметр. Начните первую строку иначе (например, с «Мои правила:»).".into());
-        }
-    }
-    Ok(value)
+    crate::blocks::connect_value(current, MARKERS, block, on)
 }
 
 /// The instructions without the memory block; `None` when nothing else is left (the setting is then unset).
+#[allow(dead_code)]
 pub fn instructions_without(current: &str) -> Option<String> {
-    let text = apply_block(current, None).trim_end().to_string();
-    (!text.trim().is_empty()).then_some(text)
+    crate::blocks::without_block(current, MARKERS)
 }
 
 /* ───────── the index in SQLite ───────── */

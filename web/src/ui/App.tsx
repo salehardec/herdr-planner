@@ -4,6 +4,7 @@ import { Top } from './Top';
 import { Navigator } from './Navigator';
 import { Focus } from './Focus';
 import { AgentSummary } from './AgentSummary';
+import { AgentScreen } from './AgentScreen';
 import { Chat } from './Chat';
 import { Todo } from './Todo';
 import { Wait } from './Wait';
@@ -49,6 +50,7 @@ export function App(): JSX.Element {
       <Log />
       <Focus />
       <AgentSummary />
+      <AgentScreen />
       <Todo />
       <Chat />
       <Kanban />

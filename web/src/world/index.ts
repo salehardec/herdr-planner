@@ -6,7 +6,7 @@
 
 import {
   NoToneMapping, Color, Group, Mesh, MeshBasicMaterial, PerspectiveCamera, Quaternion, Scene,
-  TorusGeometry, Vector3, WebGLRenderer, HalfFloatType, Line, BufferGeometry, LineDashedMaterial,
+  TorusGeometry, Vector3, WebGLRenderer, HalfFloatType, Line, BufferGeometry, LineBasicMaterial, LineDashedMaterial,
 } from 'three';
 import { BloomEffect, EffectComposer, EffectPass, RenderPass } from 'postprocessing';
 import type { Entity, GalaxyView, Level, Link, Status, Usage, CoordinatorState } from '../types';
@@ -19,6 +19,7 @@ import {
 import { Labels, type LabelCandidate } from './labels';
 import { computeLayout, QUASAR_R, type Layout } from './layout';
 import { Links } from './links';
+import { Docks, type DockEntry } from './docks';
 import { Nebulae } from './nebulae';
 import { DEFAULT_COLORS, makePalette, type Palette } from './palette';
 import { Quasar } from './quasar';
@@ -48,6 +49,8 @@ export interface WorldHooks {
 
 export interface WorldData {
   view: GalaxyView;
+  runners: DockEntry[];
+  dockLinks: { task: string; runner: string }[];
   limits: Usage | null;
   coordinator: CoordinatorState | null;
   attention: number;
@@ -184,10 +187,11 @@ export function createWorld(opts: WorldOptions): World {
   const bodies = new Bodies();
   const quasar = new Quasar();
   const links = new Links();
+  const docks = new Docks();
   const ship = new Ship();
   const warp = new WarpTunnel();
   const fxGroup = new Group();
-  root.add(backdrop.group, nebulae.points, bodies.group, quasar.group, links.group, fxGroup);
+  root.add(backdrop.group, nebulae.points, bodies.group, quasar.group, links.group, docks.group, fxGroup);
   camera.add(ship.group, warp.lines);
 
   const selRing = new Mesh(new TorusGeometry(1, 0.06, 6, 40), new MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.9, depthWrite: false }));
@@ -218,6 +222,8 @@ export function createWorld(opts: WorldOptions): World {
   const bound = (): number => layout.bound;
   let sig = '';
   let universeSig = '';
+  let dockSig = '';
+  let dockLines: { task: string; runner: string; line: Line }[] = [];
   let mode: 'auto' | 'manual' = 'auto';
   let level: Level = 'galaxy';
   let focusUniverse: string | null = null;
@@ -319,10 +325,35 @@ export function createWorld(opts: WorldOptions): World {
       const r = layout.positions.get(id);
       return !r || !d.filter || d.filter.includes(r.p.status);
     });
+    const dsig = JSON.stringify([d.runners, d.dockLinks]);
+    if (dsig !== dockSig) {
+      dockSig = dsig;
+      docks.build(d.runners, pal, bound() + 200);
+      buildDockLinks(d.dockLinks);
+    }
     quasar.setCoordinator(d.coordinator);
     quasar.setLimits(d.limits);
     selRing.visible = !!selected;
     requestRender();
+  }
+
+  /** Thin lines from the planets with containers to their yard (no running dash, as a done link). */
+  function buildDockLinks(pairs: { task: string; runner: string }[]): void {
+    for (const l of dockLines) {
+      docks.group.remove(l.line);
+      l.line.geometry.dispose();
+      (l.line.material as LineBasicMaterial).dispose();
+    }
+    dockLines = [];
+    for (const p of pairs) {
+      const dock = docks.sprites.get(p.runner);
+      const planet = bodies.positionOf(p.task, new Vector3());
+      if (!dock || !planet) continue;
+      const geom = new BufferGeometry().setFromPoints([planet, dock.pos]);
+      const line = new Line(geom, new LineBasicMaterial({ color: pal.accent, transparent: true, opacity: 0.28, depthWrite: false }));
+      docks.group.add(line);
+      dockLines.push({ task: p.task, runner: p.runner, line });
+    }
   }
 
   function setPalette(colors: Record<string, string>, m: 'dark' | 'light'): void {
@@ -364,6 +395,7 @@ export function createWorld(opts: WorldOptions): World {
         return u ? out.set(u.center.x, u.center.y, u.center.z) : null;
       }
       case 'planet': case 'moon': return bodies.positionOf(e.id, out);
+      case 'runner': return docks.sprites.get(e.id)?.pos.clone() ?? null;
     }
   }
 
@@ -408,6 +440,8 @@ export function createWorld(opts: WorldOptions): World {
           out.rig = { focus: p, yaw: outward + 0.3, pitch: 0.5, dist: 36 }; out.follow = e.id; out.enter = u; out.leave = false; break;
         case 'moon':
           out.rig = { focus: p, yaw: outward + 0.3, pitch: 0.4, dist: 15 }; out.follow = e.id; out.enter = u; out.leave = !u; break;
+        case 'runner':
+          out.rig = { focus: p, yaw: keepYaw, pitch: 0.45, dist: 90 }; out.follow = null; out.enter = null; out.leave = true; break;
       }
     }
     const rp = rigPosition(out.rig);
@@ -612,13 +646,20 @@ export function createWorld(opts: WorldOptions): World {
     nebulae.update(time, dt, scale, camera.position);
     bodies.update(time, camera.position, scale, focusUniverse, fxGroup);
     quasar.update(time, camera.position);
+    docks.update(time);
+    for (const l of dockLines) {
+      const dock = docks.sprites.get(l.runner);
+      const planet = bodies.positionOf(l.task, tmp);
+      if (!dock || !planet) continue;
+      l.line.geometry.setFromPoints([planet, dock.pos]);
+    }
     links.setMoving(!simple);
     links.update(time, resolveRef);
     // The selection ring follows its thing.
     if (selected && selRing.visible) {
       const p = entityPos(selected, tmp2);
       if (p) {
-        const r = selected.kind === 'planet' ? bodies.radiusOf(selected.id) : selected.kind === 'moon' ? 0.9 : selected.kind === 'universe' ? (layout.byName.get(selected.id)?.radius ?? 20) : 4;
+        const r = selected.kind === 'planet' ? bodies.radiusOf(selected.id) : selected.kind === 'moon' ? 0.9 : selected.kind === 'universe' ? (layout.byName.get(selected.id)?.radius ?? 20) : selected.kind === 'runner' ? 60 : 4;
         const rr = selected.kind === 'universe' ? r * 1.05 : Math.max(r * 1.7, (Math.max(1, camera.position.distanceTo(p)) / scale) * 11);
         selRing.position.copy(p);
         selRing.scale.setScalar(rr);
@@ -676,7 +717,13 @@ export function createWorld(opts: WorldOptions): World {
 
   function project(w: number, h: number): void {
     projs = [];
-    const items: Item[] = [quasarItem, ...universeItems, ...bodies.planetItems, ...bodies.moonItems];
+    const dockItems: Item[] = [...docks.sprites.entries()].map(([id, rec]) => {
+      const it = mkItem('runner', id, 60, 60);
+      it.pos.copy(rec.pos);
+      it.label = id;
+      return it;
+    });
+    const items: Item[] = [quasarItem, ...universeItems, ...bodies.planetItems, ...bodies.moonItems, ...dockItems];
     quasarItem.pos.set(0, 0, 0);
     camera.updateMatrixWorld();
     for (const item of items) {
@@ -716,6 +763,7 @@ export function createWorld(opts: WorldOptions): World {
         case 'moon': reach = far ? 0 : Math.max(10, p.rpx * 1.8); bias = 0; break;
         case 'planet': reach = far ? Math.max(4, p.rpx * 1.1) : Math.max(11, p.rpx * 1.6); bias = 1; break;
         case 'quasar': reach = Math.max(18, p.rpx * 1.2); bias = 2; break;
+        case 'runner': reach = Math.max(18, p.rpx); bias = 3; break;
         default: reach = Math.max(16, p.rpx); bias = 4; break;
       }
       if (d > reach * scaleK()) continue;
@@ -799,6 +847,14 @@ export function createWorld(opts: WorldOptions): World {
           sub: full ? rec.p.title : '', line: full ? firstSentence(task?.msg || task?.board_label || '', 90) : undefined,
           full, selected: isSel, hovered: isHover, drop: isDrop, dim: data?.filter ? !data.filter.includes(rec.p.status) : false,
           badge: full && rec.p.app ? rec.p.app.split('/')[0] : '',
+        });
+      } else if (e.kind === 'runner') {
+        const rec = data?.runners.find((x) => x.id === e.id);
+        cands.push({
+          key: it.key, kind: 'runner', x: p.x, y: p.y, lift: Math.max(12, p.rpx + 8),
+          priority: isSel ? 100 : isHover ? 92 : 60, force: isSel || isHover,
+          text: it.label, sub: rec ? (rec.ok ? `CPU ${Math.round(rec.load * 100)} %` : t('runner.offline')) : '',
+          badge: rec && rec.forgotten > 0 ? `⚑ ${rec.forgotten}` : '', selected: isSel, hovered: isHover, dim: rec ? !rec.ok : false,
         });
       } else if (e.kind === 'moon') {
         if (!isSel && !isHover && p.depth > 70) continue;
@@ -1086,6 +1142,7 @@ export function createWorld(opts: WorldOptions): World {
         universes: layout.universes.length, quiet: layout.universes.filter((u) => u.quiet).length,
         links: (data?.view.links ?? []).map((l) => ({ from: l.from, to: l.to, kind: l.kind })),
         selected, hovered,
+        docks: Object.fromEntries([...docks.sprites.entries()].map(([id, y]) => [id, { x: Math.round(y.pos.x), y: Math.round(y.pos.y), z: Math.round(y.pos.z), ok: y.ok }])),
         updateMs: Math.round(updateMs * 100) / 100, fps, frameMs: sorted.length ? Math.round((sorted[Math.floor(sorted.length / 2)] ?? 0) * 10) / 10 : 0,
         labels: labels.count, collisions: labels.collisions, overlaps: labels.overlaps,
         limitArcs: quasar.limitArcs, limitCrit: quasar.limitCrit, quasar: { color: quasar.colorNow, state: quasar.stateNow },
@@ -1093,8 +1150,8 @@ export function createWorld(opts: WorldOptions): World {
         camera: { x: Math.round(camera.position.x), y: Math.round(camera.position.y), z: Math.round(camera.position.z), fov: Math.round(camera.fov) },
         ship: { x: Math.round(shipS.pos.x), y: Math.round(shipS.pos.y), z: Math.round(shipS.pos.z), yaw: shipS.yaw, pitch: shipS.pitch, speed: Math.round(shipS.vel.length()), cruise: Math.round(shipS.cruise), roll: shipS.roll },
         flight: flight ? flight.phase : 'idle', locked, edge: edgeOn, bloom: !!composer, aimed: aimed ? aimed.entity : null,
-        positionOf: (id: string) => { const p = bodies.positionOf(id); return p ? { x: p.x, y: p.y, z: p.z } : null; },
-        project: (id: string) => { const p = bodies.positionOf(id); return p ? projectPoint(p) : null; },
+        positionOf: (id: string) => { const p = bodies.positionOf(id) ?? docks.sprites.get(id)?.pos; return p ? { x: p.x, y: p.y, z: p.z } : null; },
+        project: (id: string) => { const p = bodies.positionOf(id) ?? docks.sprites.get(id)?.pos; return p ? projectPoint(p) : null; },
       };
     },
     connect(from, to) { if (from && to && from !== to) hooks.onConnect(from, to); },

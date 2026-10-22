@@ -321,6 +321,94 @@ section('navigator', async () => {
   await send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: 700, y: 400 });
 }, { retry: true });
 
+section('buttons', async () => {
+  await resetUi();
+  // Every visible button of the interface: its label starts with a capital letter. A value (the
+  // machine's host in the crumbs, a program's name in a picker, the load reading «orion CPU 92%…»,
+  // a runner's id «vm-r») is not a label, so those are left out; a label that starts with an arrow
+  // or a digit has no first letter to capitalise.
+  const smallLabels = () => evalJs(`(() => {
+    const skip = '#crumbs, [data-prog], .prog, #load-chip, .rf-task .k';
+    const bad = [];
+    for (const b of document.querySelectorAll('button')) {
+      const r = b.getBoundingClientRect();
+      if (r.width < 2 || r.height < 2) continue;
+      if (b.closest('[aria-hidden="true"]') || b.closest(skip)) continue;
+      const label = (b.innerText || '').replace(/\\s+/g, ' ').trim();
+      const first = label.match(/\\p{L}/u)?.[0];
+      if (first && first !== first.toUpperCase()) bad.push(label.slice(0, 40));
+    }
+    return bad;
+  })()`);
+  const labelsSay = async (where) => {
+    const bad = await smallLabels();
+    check(`every visible button label starts with a capital (${where})`, Array.isArray(bad) && bad.length === 0, JSON.stringify(bad));
+  };
+  await labelsSay('the Galaxy');
+  await click('#btodo');
+  check('the todos are open for the check', await waitFor('document.querySelector("#todo")?.getAttribute("aria-hidden") === "false"', 4000));
+  await labelsSay('the todos');
+  await click('#btodo');
+  await click('#bchat');
+  check('the chat is open for the check', await waitFor('document.querySelector("#chat")?.getAttribute("aria-hidden") === "false"', 4000));
+  await labelsSay('the chat');
+  await click('#bchat');
+  await evalJs('document.querySelector("#menu-btn").click(); true');
+  check('the menu is open for the check', await waitFor('!!document.querySelector(".menupop")', 3000));
+  await labelsSay('the menu');
+  await evalJs('document.querySelector("#menu-btn").click(); true');
+  // The Station: its own buttons (the scope, the crew, the settings of the board).
+  await evalJs('document.querySelector("#menu-btn").click(); true');
+  await waitFor('!!document.querySelector(".menupop")', 3000);
+  await evalJs(`(() => { const b = [...document.querySelectorAll('.menupop button')].find((x) => x.innerText.trim().startsWith('Станция')); if (b) b.click(); return !!b; })()`);
+  check('the Station is open for the check', await waitFor('!!document.querySelector("#station")', 8000));
+  await labelsSay('the Station');
+  await press('Escape');
+  await waitFor('!document.querySelector("#station")', 4000);
+  await go('alpha/4');
+  await labelsSay('the Focus of a task');
+  await go('alpha/15');
+  await click('#closing [data-act="summary-open"]');
+  check('the result window is open for the check', await waitFor('!!document.querySelector("#summary")', 5000));
+  await labelsSay('the result window');
+  await press('Escape');
+  await waitFor('!document.querySelector("#summary")', 4000);
+  await go('alpha/6');
+  await click('#focus [data-act="screen"]');
+  check('the agent screen is open for the check', await waitFor('!!document.querySelector("#agent-screen")', 6000));
+  await labelsSay('the agent screen');
+  await press('Escape');
+  await waitFor('!document.querySelector("#agent-screen")', 4000);
+  // The same in English.
+  await evalJs('window.setLang("en"); true');
+  check('the interface is in English', await waitFor('document.documentElement.lang === "en" && [...document.querySelectorAll("button")].some((b) => b.innerText.includes("Chat"))', 4000));
+  await labelsSay('the Galaxy (English)');
+  await click('#btodo');
+  await waitFor('document.querySelector("#todo")?.getAttribute("aria-hidden") === "false"', 4000);
+  await labelsSay('the todos (English)');
+  await click('#btodo');
+  await click('#bchat');
+  await waitFor('document.querySelector("#chat")?.getAttribute("aria-hidden") === "false"', 4000);
+  await labelsSay('the chat (English)');
+  await click('#bchat');
+  await go('alpha/4');
+  await labelsSay('the Focus of a task (English)');
+  await go('alpha/15');
+  await click('#closing [data-act="summary-open"]');
+  await waitFor('!!document.querySelector("#summary")', 5000);
+  await labelsSay('the result window (English)');
+  await press('Escape');
+  await waitFor('!document.querySelector("#summary")', 4000);
+  await go('alpha/6');
+  await click('#focus [data-act="screen"]');
+  await waitFor('!!document.querySelector("#agent-screen")', 6000);
+  check('the agent screen has its English title', (await text('#agent-screen header')).includes('Agent screen'), (await text('#agent-screen header')).slice(0, 80));
+  await labelsSay('the agent screen (English)');
+  await press('Escape');
+  // The checks above went through the whole Galaxy: a fresh page is where the next section starts from.
+  await resetPage();
+}, { retry: true });
+
 section('autopilot', async () => {
   await resetUi();
   const cam0 = (await debug()).camera;
@@ -871,9 +959,9 @@ section('todo', async () => {
   const cyrTooLongTodo = await post('/api/action', { action: 'todo-add', text: 'ж'.repeat(70000) });
   check('a Cyrillic todo over the byte limit is refused clearly, not a 502', cyrTooLongTodo[0] === 400 && String(cyrTooLongTodo[1]?.error).includes('130000'), JSON.stringify(cyrTooLongTodo));
   const clamp = await evalJs(`(() => { const e = document.querySelector('#todo-list .titem[data-todo="${longId}"] .txt'); return { h: e.clientHeight, full: e.scrollHeight, more: document.querySelector('#todo-list .titem[data-todo="${longId}"] .more')?.innerText || '' }; })()`);
-  check('a long todo is three lines with «ещё», not one clipped line', clamp.h < clamp.full && clamp.h > 30 && clamp.more === 'ещё', JSON.stringify(clamp));
+  check('a long todo is three lines with «Ещё», not one clipped line', clamp.h < clamp.full && clamp.h > 30 && clamp.more === 'Ещё', JSON.stringify(clamp));
   await click(`#todo-list .titem[data-todo="${longId}"] .more`);
-  check('«ещё» opens the whole todo', await waitFor(`(() => { const e = document.querySelector('#todo-list .titem[data-todo="${longId}"] .txt'); return e.classList.contains('open') && e.clientHeight >= e.scrollHeight - 1; })()`, 3000) && (await evalJs(`document.querySelector('#todo-list .titem[data-todo="${longId}"] .more')?.innerText`)) === 'свернуть');
+  check('«Ещё» opens the whole todo', await waitFor(`(() => { const e = document.querySelector('#todo-list .titem[data-todo="${longId}"] .txt'); return e.classList.contains('open') && e.clientHeight >= e.scrollHeight - 1; })()`, 3000) && (await evalJs(`document.querySelector('#todo-list .titem[data-todo="${longId}"] .more')?.innerText`)) === 'Свернуть');
   for (const txt of ['Дело в две строки\nвторая строка', longText, bigText]) {
     const id = await todoIdByText(txt);
     if (id) await click(`[data-act="todo-del"][data-todo-id="${id}"]`);
@@ -1423,6 +1511,97 @@ section('focus', async () => {
   await resetUi();
 });
 
+section('agent screen', async () => {
+  await resetUi();
+  const reads = () => evalJs('window.__net.log.filter((u) => u.includes("/api/coordinator/screen")).length');
+  const at = () => evalJs('Number(document.querySelector("#screen-updated")?.dataset.at || 0)');
+  const term = () => text('#screen-term');
+  await go('alpha/6');
+  await click('#focus [data-act="screen"]');
+  check('«Экран агента» opens a window over the page', await waitFor('!!document.querySelector("#agent-screen")', 6000));
+  const box = await evalJs(`(() => {
+    const s = document.querySelector("#agent-screen .agent-screen"); const sc = document.querySelector("#agent-screen");
+    if (!s || !sc) return null;
+    const r = s.getBoundingClientRect();
+    return { w: r.width, h: r.height, l: r.left, t: r.top, r: r.right, b: r.bottom, vw: innerWidth, vh: innerHeight, bg: getComputedStyle(sc).backgroundColor };
+  })()`);
+  check('the window is centred with margins and dims the background', box && box.w < box.vw - 100 && box.h < box.vh - 60 && Math.abs(box.l - (box.vw - box.r)) < 3 && Math.abs(box.t - (box.vh - box.b)) < 3 && box.bg !== 'rgba(0, 0, 0, 0)', JSON.stringify(box));
+  const font = await evalJs(`(() => {
+    const el = document.querySelector("#screen-term"); if (!el) return null;
+    const s = getComputedStyle(el);
+    return { family: s.fontFamily, size: parseFloat(s.fontSize), white: s.whiteSpace, overflow: getComputedStyle(el.closest(".term-wrap")).overflowY };
+  })()`);
+  check('the terminal is monospaced, large and scrolls', /mono/i.test(font?.family || '') && font.size >= 14 && font.white === 'pre' && ['auto', 'scroll'].includes(font.overflow), JSON.stringify(font));
+  check('herdr is asked for the screen with its colours', await waitLog(() => calls('herdr.jsonl').some((c) => c.argv[0] === 'agent' && c.argv[1] === 'read' && c.argv[2] === 'sw-alpha-6' && c.argv.includes('ansi')), 8000), JSON.stringify(calls('herdr.jsonl').slice(-1)));
+  check('the colours of the screen are drawn', await waitFor('!!document.querySelector("#screen-term span[style*=\\"color\\"]")', 6000), String(await evalJs('document.querySelectorAll("#screen-term span").length')));
+  check('the screen shows what the agent shows', await hasText('#screen-term', 'May I continue?'), (await term()).slice(0, 80));
+  check('the time of the last refresh is shown', await waitFor('/\\d\\d:\\d\\d:\\d\\d/.test(document.querySelector("#screen-updated")?.innerText || "")', 6000), await text('#screen-updated'));
+  await shot('agent-screen.png');
+  const at0 = await at();
+  // A real coloured screen is longer than the planner sends whole: the window must keep its bottom.
+  const longScreen = ['НАЧАЛО-ЭКРАНА', ...Array.from({ length: 400 }, (_, i) => `строка ${String(i).padStart(3, '0')} ${'·'.repeat(60)}`), 'СВЕЖАЯ-СТРОКА', 'КОНЕЦ-ЭКРАНА'].join('\n');
+  writeFileSync(join(fixture, 'state', 'dialog.txt'), longScreen);
+  check('the window reads the screen again by itself', await waitFor('(document.querySelector("#screen-term")?.innerText || "").includes("КОНЕЦ-ЭКРАНА")', 10000), (await term()).slice(-80));
+  check('a long screen keeps its newest lines, not only its first', !(await term()).includes('НАЧАЛО-ЭКРАНА') && (await term()).includes('СВЕЖАЯ-СТРОКА'), `${(await term()).slice(0, 40)} … ${(await term()).slice(-40)}`);
+  check('the cut of a long screen is marked', (await term()).trimStart().startsWith('…'), (await term()).slice(0, 10));
+  const at1 = await at();
+  check('the time of the last refresh moves with it', at1 > at0, `${at0} → ${at1}`);
+  // Words from the window: the same multiline line and `tell` as the Focus, and the window stays.
+  check('the window has the multiline line to the agent', (await evalJs('document.querySelector("#screen-tell")?.tagName === "TEXTAREA"')) && (await text('#screen-tell-hint')).includes('Shift+Enter'), await text('#screen-tell-hint'));
+  await evalJs('(() => { const i = document.querySelector("#screen-tell"); if (!i) return false; i.value = "Продолжай"; i.dispatchEvent(new Event("input", { bubbles: true })); i.focus(); return true; })()');
+  await press('Enter');
+  check('Enter in the window sends the words to the agent', await waitLog(() => calls().some((c) => c.argv[0] === 'tell' && c.argv[1] === 'alpha/6' && c.argv[3] === 'Продолжай'), 10000), JSON.stringify(lastCall()));
+  check('the window stays open and reads the screen again after sending', await waitFor(`!!document.querySelector("#agent-screen") && Number(document.querySelector("#screen-updated")?.dataset.at || 0) > ${at1}`, 8000));
+  // A stopped agent is read once, not again: there is no screen to watch.
+  await press('Escape');
+  check('one Esc closes the window', await waitFor('!document.querySelector("#agent-screen")', 4000));
+  await go('alpha/15');
+  await click('#focus [data-act="screen"]');
+  check('a stopped agent is marked as stopped', await waitFor('document.querySelector("#agent-screen .agent-screen")?.dataset.paused === "stopped"', 6000) && await hasText('#agent-screen', 'не обновляется'), await text('#screen-paused'));
+  await waitFor(`Number(document.querySelector("#screen-updated")?.dataset.at || 0) > 0`, 6000);
+  const stoppedReads = await reads();
+  await evalJs('new Promise((r) => setTimeout(r, 3600))');
+  await quiet();
+  check('the screen of a stopped agent is not read again', (await reads()) === stoppedReads, `${stoppedReads} → ${await reads()}`);
+  await press('Escape');
+  await waitFor('!document.querySelector("#agent-screen")', 4000);
+  // A failed task whose agent has exited (`exited_at`) is not watched either.
+  await go('alpha/8');
+  await click('#focus [data-act="screen"]');
+  check('an agent that has exited is marked as stopped', await waitFor('document.querySelector("#agent-screen .agent-screen")?.dataset.paused === "stopped"', 6000) && await hasText('#agent-screen', 'не обновляется'), await text('#screen-paused'));
+  await waitFor(`Number(document.querySelector("#screen-updated")?.dataset.at || 0) > 0`, 6000);
+  const exitedReads = await reads();
+  await evalJs('new Promise((r) => setTimeout(r, 3600))');
+  await quiet();
+  check('the screen of an exited agent is not read again', (await reads()) === exitedReads, `${exitedReads} → ${await reads()}`);
+  await press('Escape');
+  await waitFor('!document.querySelector("#agent-screen")', 4000);
+  // «Свернуть» and a click on the background close it as well.
+  await go('alpha/6');
+  await click('#focus [data-act="screen"]');
+  await waitFor('!!document.querySelector("#agent-screen")', 6000);
+  await click('#agent-screen [data-act="screen-close"]');
+  check('«Свернуть» closes the window', await waitFor('!document.querySelector("#agent-screen")', 4000));
+  await click('#focus [data-act="screen"]');
+  await waitFor('!!document.querySelector("#agent-screen")', 6000);
+  const behind = await evalJs('(() => { const e = document.elementFromPoint(12, 12); return e === document.querySelector("#agent-screen") ? "agent-screen" : (e?.id || e?.className || ""); })()');
+  await send('Input.dispatchMouseEvent', { type: 'mousePressed', x: 12, y: 12, button: 'left', clickCount: 1 });
+  await send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: 12, y: 12, button: 'left', clickCount: 1 });
+  check('a click on the background closes the window', behind === 'agent-screen' && await waitFor('!document.querySelector("#agent-screen")', 4000), String(behind));
+  // The polling stops with the window: nothing is asked after it is closed.
+  await click('#focus [data-act="screen"]');
+  await waitFor('!!document.querySelector("#agent-screen") && Number(document.querySelector("#screen-updated")?.dataset.at || 0) > 0', 8000);
+  await press('Escape');
+  await waitFor('!document.querySelector("#agent-screen")', 4000);
+  await quiet();
+  const closedReads = await reads();
+  await evalJs('new Promise((r) => setTimeout(r, 3600))');
+  await quiet();
+  check('the window stops reading the screen once closed', (await reads()) === closedReads, `${closedReads} → ${await reads()}`);
+  try { unlinkSync(join(fixture, 'state', 'dialog.txt')); } catch { /* already gone */ }
+  await resetUi();
+});
+
 section('requests', async () => {
   await resetUi();
   // A confirmation belongs to one task and one command.
@@ -1483,15 +1662,18 @@ section('requests', async () => {
   await go('sigma/2');
   check('a reviewneeds request offers the reviewer screen', await waitFor('!!document.querySelector(\'#focus [data-act="screen"][data-target="sigma/2"]\')', 6000));
   await click('#focus [data-act="screen"][data-target="sigma/2"]');
+  check('the reviewer’s screen opens in the window over the page', await waitFor('!!document.querySelector("#agent-screen")', 6000));
   check('the reviewer screen is read from the -r agent', await waitLog(() => calls('herdr.jsonl').some((c) => c.argv[0] === 'agent' && c.argv[1] === 'read' && c.argv[2] === 'sw-sigma-2-r'), 8000), JSON.stringify(calls('herdr.jsonl').slice(-2)));
   // the key buttons come with the screen: wait for them, and press again if the first press found nothing yet
-  await waitFor('!!document.querySelector(\'#focus [data-act="keys"][data-keys="enter"]\')', 15000);
+  await waitFor('!!document.querySelector(\'#agent-screen [data-act="keys"][data-keys="enter"]\')', 15000);
   let keyed = false;
   for (let i = 0; i < 3 && !keyed; i++) {
-    await click('#focus [data-act="keys"][data-keys="enter"]');
+    await click('#agent-screen [data-act="keys"][data-keys="enter"]');
     keyed = await waitLog(() => calls('keys.jsonl').some((c) => c.target === 'sw-sigma-2-r' && c.keys.includes('enter')), 8000);
   }
   check('reviewer send-keys names the -r agent', keyed, JSON.stringify(calls('keys.jsonl').slice(-2)));
+  await press('Escape');
+  check('one Esc closes the reviewer’s window', await waitFor('!document.querySelector("#agent-screen")', 4000));
   // yazi is local
   await go('alpha/6');
   await click('#focus [data-act="files"]');
@@ -1544,6 +1726,170 @@ section('archive', async () => {
   check('the archive closes', await waitFor('document.querySelectorAll(".arc-row").length === 0', 3000));
   await post('/api/action', { action: 'archive', id: 'gamma/2' });
 });
+
+// The load of this machine in the top bar. The server reads the real machine unless load/load.json stands in for it
+// (HERDR_PLANNER_LOAD_FILE) and asks `nvidia-smi`, which on the fixture's PATH is a stand-in that prints load/nvidia.csv.
+const loadFile = () => join(fixture, 'load', 'load.json');
+const nvidiaFile = () => join(fixture, 'load', 'nvidia.csv');
+const setLoad = (o) => writeFileSync(loadFile(), JSON.stringify(o));
+const loadGone = () => { for (const f of [loadFile(), nvidiaFile()]) { try { unlinkSync(f); } catch { /* not there */ } } };
+const GB = 1073741824;
+const reading = (cpu, mem, gpus = [], extra = {}) => ({ ok: true, cpu: { percent: cpu, cores: 24 }, mem: { used: Math.round(32 * GB * mem / 100), total: 32 * GB, percent: mem }, gpus, ...extra });
+const card = (name, util, usedGb, totalGb) => ({ name, util, mem_used: usedGb * GB, mem_total: totalGb * GB });
+const meter = (k) => evalJs(`(() => { const m = document.querySelector('#loadbar .ld-m[data-k="${k}"]'); return m ? { level: m.dataset.level, v: m.querySelector('.ld-v').textContent, w: m.querySelector('.ld-bar i').getAttribute('style') } : null; })()`);
+const hoverLoad = (on) => evalJs(`document.querySelector('#load-chip').dispatchEvent(new MouseEvent('${on ? 'mouseenter' : 'mouseleave'}')); true`);
+
+section('load', async () => {
+  await resetUi();
+  loadGone();
+  // the real machine: this machine's three... two bars (no card on the fixture), numbers in range, the exact values in the tooltip
+  check('the top bar has the load of this machine between the crumbs and the search', await waitFor('!!document.querySelector("#loadbar #load-chip")', 8000)
+    && await evalJs(`(() => { const c = document.querySelector('#crumbs').getBoundingClientRect(); const l = document.querySelector('#load-chip').getBoundingClientRect(); const q = document.querySelector('#q').getBoundingClientRect(); return l.left >= c.right - 1 && l.right <= q.left + 1; })()`));
+  check('the real machine is read: a CPU and a MEM bar with shares from 0 to 100', await waitFor('document.querySelector("#loadbar")?.dataset.state === "on"', 12000)
+    && await evalJs(`['cpu','mem'].every((k) => { const v = parseInt(document.querySelector('#loadbar .ld-m[data-k="'+k+'"] .ld-v')?.textContent, 10); return v >= 0 && v <= 100; })`), JSON.stringify([await meter('cpu'), await meter('mem')]));
+  const api0 = await api('/api/load');
+  check('/api/load says what the machine has: cores, memory, a reading time', api0[0] === 200 && api0[1].ok && api0[1].cpu.cores > 0 && api0[1].mem.total > 0 && Math.abs(Date.now() - api0[1].at) < 60000, JSON.stringify(api0[1]));
+  check('a machine without a video card has no GPU bar', !(await meter('gpu')));
+  await hoverLoad(true);
+  const tip0 = (await text('#load-pop')).replace(/\s+/g, ' ');
+  check('the tooltip names the machine and gives cores, gigabytes and the time of the reading', await waitFor('getComputedStyle(document.querySelector("#load-pop")).display !== "none"', 3000)
+    && tip0.includes(HOST) && tip0.includes('эта машина') && new RegExp(`${api0[1].cpu.cores} (ядро|ядра|ядер)`).test(tip0) && /занято [\d,]+ из [\d,]+ ГБ/.test(tip0) && /обновлено \d\d:\d\d:\d\d/.test(tip0) && tip0.includes('Видеокарт нет'), tip0);
+  await hoverLoad(false);
+  check('the tooltip goes away with the pointer', await waitFor('getComputedStyle(document.querySelector("#load-pop")).display === "none"', 3000));
+
+  // the colour follows the thresholds: normal below 70 %, high from 70, critical from 90
+  setLoad(reading(69.4, 70.2, [card('Test Card', 89.6, 2, 8)]));
+  check('below 70 % is normal, 70 % is high, 90 % is critical (and the GPU bar appears with a card)', await waitFor('document.querySelector("#loadbar .ld-m[data-k=gpu]")?.dataset.level === "crit"', 8000)
+    && (await meter('cpu')).level === 'ok' && (await meter('mem')).level === 'high', JSON.stringify([await meter('cpu'), await meter('mem'), await meter('gpu')]));
+  setLoad(reading(89.4, 100, [card('Test Card', 0, 0, 8)]));
+  check('89 % is still high, 100 % is critical, an idle card is normal', await waitFor('document.querySelector("#loadbar .ld-m[data-k=mem]")?.dataset.level === "crit"', 8000)
+    && (await meter('cpu')).level === 'high' && (await meter('gpu')).level === 'ok', JSON.stringify([await meter('cpu'), await meter('mem'), await meter('gpu')]));
+  setLoad(reading(23.4, 61.6, [card('Test Card', 8, 2, 8)]));
+  check('the bars show the numbers: width and the written percentage', await waitFor('document.querySelector("#loadbar .ld-m[data-k=cpu] .ld-v")?.textContent === "23%"', 8000)
+    && (await meter('mem')).v === '62%' && /--w:\s*62%/.test((await meter('mem')).w) && (await meter('gpu')).v === '8%', JSON.stringify(await meter('mem')));
+  // the semantic colours are the theme's green, yellow and red, not its accent
+  setLoad(reading(50, 80, [card('Test Card', 95, 2, 8)]));
+  await waitFor('document.querySelector("#loadbar .ld-m[data-k=gpu]")?.dataset.level === "crit"', 8000);
+  const cols = await evalJs(`(() => { const css = getComputedStyle(document.documentElement); const px = (v) => { const d = document.createElement('i'); d.style.color = v; document.body.appendChild(d); const c = getComputedStyle(d).color; d.remove(); return c; };
+    const fill = (k) => getComputedStyle(document.querySelector('#loadbar .ld-m[data-k="'+k+'"] .ld-bar i')).backgroundColor;
+    return { ok: fill('cpu'), high: fill('mem'), crit: fill('gpu'), red: px(css.getPropertyValue('--c-red')), yellow: px(css.getPropertyValue('--c-yellow')), accent: px(css.getPropertyValue('--c-accent')) }; })()`);
+  check('high is yellow, critical is red, normal is neither, none of them is the accent', cols.crit === cols.red && cols.high === cols.yellow && cols.ok !== cols.red && cols.ok !== cols.yellow && ![cols.ok, cols.high, cols.crit].includes(cols.accent), JSON.stringify(cols));
+  check('the level is also in words (the label of the bar and the tooltip), not in colour alone', (await evalJs('document.querySelector("#load-chip").getAttribute("aria-label")')).includes('критическая') && (await evalJs('document.querySelector("#loadbar .ld-m[data-k=mem]").dataset.level')) === 'high');
+  // the tooltip with two cards: each card's share and video memory, the mean on the bar
+  setLoad(reading(50, 80, [card('Card One', 40, 2, 24), card('Card Two', 10, 1.5, 12)]));
+  await waitFor('document.querySelector("#loadbar .ld-m[data-k=gpu] .ld-v")?.textContent === "25%"', 8000);
+  await hoverLoad(true);
+  const tip1 = (await text('#load-pop')).replace(/\s+/g, ' ');
+  check('two cards: the bar is their mean, the tooltip lists each with its video memory', tip1.includes('Card One') && tip1.includes('Card Two') && /видеопамять 2,0 из 24,0 ГБ/.test(tip1) && /видеопамять 1,5 из 12,0 ГБ/.test(tip1) && /занято 25,6 из 32,0 ГБ/.test(tip1) && tip1.includes('средняя загрузка карт: 25 %'), tip1);
+  await shot('load-tooltip.png');
+  await hoverLoad(false);
+
+  // the driver: nvidia-smi (the stand-in) is what the server asks when there is no stand-in for the whole machine
+  loadGone();
+  check('without the file the real machine is read again', await waitFor('document.querySelector("#loadbar")?.dataset.state === "on" && !document.querySelector("#loadbar .ld-m[data-k=gpu]")', 12000));
+  writeFileSync(nvidiaFile(), 'NVIDIA GeForce RTX 4090, 37, 2048, 24564\nNVIDIA A100, SXM4 80GB, 5, 1024, 81920\n');
+  check('nvidia-smi is read: a GPU bar with the mean of its cards', await waitFor('document.querySelector("#loadbar .ld-m[data-k=gpu] .ld-v")?.textContent === "21%"', 12000), JSON.stringify(await meter('gpu')));
+  const gpuApi = await api('/api/load');
+  check('/api/load lists the cards with their video memory in bytes', gpuApi[1].gpus.length === 2 && gpuApi[1].gpus[1].name === 'NVIDIA A100, SXM4 80GB' && gpuApi[1].gpus[0].mem_total === 24564 * 1048576, JSON.stringify(gpuApi[1].gpus));
+  loadGone();
+  check('the card goes away when the driver does', await waitFor('!document.querySelector("#loadbar .ld-m[data-k=gpu]")', 12000));
+
+  // a machine that cannot be read, and a reading that stopped coming
+  setLoad({ ok: false, error: '/proc/stat: broken' });
+  check('an unreadable machine: grey bars with dashes and «нет связи с …»', await waitFor('document.querySelector("#loadbar")?.dataset.state === "off"', 8000)
+    && (await meter('cpu')).level === 'off' && (await meter('cpu')).v === '—' && (await evalJs('document.querySelector("#load-chip").getAttribute("aria-label")')) === `нет связи с ${HOST}`);
+  await hoverLoad(true);
+  const tipOff = (await text('#load-pop')).replace(/\s+/g, ' ');
+  check('and the tooltip says so, with the reason', tipOff.includes(`нет связи с ${HOST}`) && tipOff.includes('/proc/stat: broken'), tipOff);
+  await hoverLoad(false);
+  setLoad(reading(30, 30, [], { at: 1000 }));
+  check('a reading from long ago is not shown as the present: grey as well', await waitFor('document.querySelector("#loadbar")?.dataset.state === "off"', 8000));
+  setLoad(reading(30, 30));
+  check('the bars come back with the next good reading', await waitFor('document.querySelector("#loadbar")?.dataset.state === "on" && document.querySelector("#loadbar .ld-m[data-k=cpu] .ld-v")?.textContent === "30%"', 8000));
+
+  // a browser whose clock is ahead (or behind) the machine's: the age of a reading is the machine's own, so the bars stay on
+  await evalJs('window.__realNow = Date.now; Date.now = () => window.__realNow() + 20000; true');
+  await evalJs('new Promise((done) => setTimeout(() => done(true), 4600))');   // the page checks its readings every 2 s: let it do so twice
+  check('a browser clock 20 s ahead does not grey the bars: fresh readings keep arriving', (await evalJs('document.querySelector("#loadbar").dataset.state')) === 'on' && (await evalJs('document.querySelector("#load-chip").getAttribute("aria-label")')).includes('CPU 30'), await evalJs('document.querySelector("#load-chip").getAttribute("aria-label")'));
+  await evalJs('Date.now = window.__realNow; true');
+  // a system that cannot be read at all (no /proc): no bars, not grey ones that say «нет связи»
+  setLoad({ ok: false, unsupported: true, error: 'no /proc on this system' });
+  check('a system without a way to read the load shows no bars at all', await waitFor('getComputedStyle(document.querySelector("#loadbar")).display === "none" && !document.querySelector("#load-pop")', 8000));
+  setLoad(reading(30, 30));
+  check('and they are back when it can be read', await waitFor('getComputedStyle(document.querySelector("#loadbar")).display !== "none" && document.querySelector("#loadbar").dataset.state === "on"', 8000));
+
+  // English
+  await evalJs('setLang("en"); true');
+  setLoad({ ok: false, error: 'x' });
+  await waitFor('document.querySelector("#loadbar")?.dataset.state === "off"', 8000);
+  await hoverLoad(true);
+  check('English: «no connection with …»', (await text('#load-pop')).includes(`no connection with ${HOST}`) && (await evalJs('document.querySelector("#load-chip").getAttribute("aria-label")')) === `no connection with ${HOST}`, await text('#load-pop'));
+  await hoverLoad(false);
+  setLoad(reading(42, 64, [card('Test Card', 9, 1, 8)]));
+  await waitFor('document.querySelector("#loadbar")?.dataset.state === "on"', 8000);
+  await hoverLoad(true);
+  const tipEn = (await text('#load-pop')).replace(/\s+/g, ' ');
+  check('English: cores, GB in use, video memory, updated, in English', /24 cores/.test(tipEn) && /20\.5 of 32\.0 GB in use/.test(tipEn) && /video memory 1\.0 of 8\.0 GB/.test(tipEn) && /updated \d\d:\d\d:\d\d/.test(tipEn) && tipEn.includes('this machine'), tipEn);
+  await hoverLoad(false);
+  await evalJs('setLang("ru"); true');
+
+  // a click flies to the Galaxy
+  await go('alpha/6');
+  check('a task is selected before the click', (await evalJs('plannerDebug().selected?.kind')) === 'planet');
+  await click('#load-chip');
+  check('a click on the bars flies to the Galaxy (nothing is selected)', await waitFor('plannerDebug().selected === null', 8000));
+  await resetUi();
+
+  // the theme: light and dark, the same semantic colours
+  const colors = join(fixture, 'theme', 'colors.toml');
+  const dark = readFileSync(colors, 'utf8');
+  setLoad(reading(95, 75, [card('Test Card', 10, 1, 8)]));
+  const ink = () => evalJs(`(() => { const f = (s) => getComputedStyle(document.querySelector(s)); return { crit: f('#loadbar .ld-m[data-k=cpu] .ld-bar i').backgroundColor, critText: f('#loadbar .ld-m[data-k=cpu] .ld-v').color, bg: f('#top').backgroundColor, track: f('#loadbar .ld-m[data-k=cpu] .ld-bar').backgroundColor }; })()`);
+  await waitFor('document.querySelector("#loadbar .ld-m[data-k=cpu]")?.dataset.level === "crit"', 8000);
+  const inDark = await ink();
+  writeFileSync(colors, dark.replace('mode = "dark"', 'mode = "light"').replace('background = "#1a120c"', 'background = "#f9f1e8"').replace('foreground = "#ecded6"', 'foreground = "#372b1f"').replace('red = "#e48682"', 'red = "#a54746"'));
+  check('a light theme: the bars are drawn in the theme\'s red, and the text is readable', await waitFor('document.documentElement.dataset.mode === "light"', 20000) && await waitFor(`getComputedStyle(document.querySelector('#loadbar .ld-m[data-k=cpu] .ld-bar i')).backgroundColor !== ${JSON.stringify(inDark.crit)}`, 8000));
+  const inLight = await ink();
+  check('the light text on the bars is dark, the dark theme\'s is light', inLight.critText !== inDark.critText, JSON.stringify({ inDark, inLight }));
+  await shot('load-light.png');
+  writeFileSync(colors, dark);
+  await waitFor('document.documentElement.dataset.mode === "dark"', 20000);
+
+  // the room: crumbs first, then the bars in the form that fits; never over the search or the crumbs, never wider than the window
+  const runs = [[1280, 720, 'auto'], [1920, 1080, 'auto'], [2560, 1440, 'auto'], [1280, 720, 150], [1920, 1080, 150], [1920, 1080, 200], [2560, 1440, 200]];
+  for (const [w, h, scale] of runs) {
+    await send('Emulation.setDeviceMetricsOverride', { width: w, height: h, deviceScaleFactor: 1, mobile: false });
+    await evalJs(`try { localStorage.setItem('herdr-planner.uiScale', ${JSON.stringify(String(scale))}); } catch {} true`);
+    await navigate(base + '/?noauto&nocoach&bloom=0');
+    await resized();
+    await go('alpha/6');   // the longest crumbs: host › project › task
+    setLoad(reading(55, 72, [card('Test Card', 33, 2, 8)]));
+    await waitFor('document.querySelector("#loadbar")?.dataset.state === "on"', 8000);
+    await beat();
+    const at = `${w}×${h}${scale === 'auto' ? '' : ` at ${scale} %`}`;
+    const m = await evalJs(`(() => { const r = (s) => { const e = document.querySelector(s); const b = e && e.getBoundingClientRect(); return b && { l: b.left, t: b.top, r: b.right, b: b.bottom, w: b.width, h: b.height }; };
+      const lb = document.querySelector('#loadbar'); return { tier: lb.dataset.tier, shown: getComputedStyle(lb).display !== 'none', chip: r('#load-chip'), crumbs: r('#crumbs'), q: r('#q'), right: r('#right'), sw: document.documentElement.scrollWidth, root: parseFloat(getComputedStyle(document.documentElement).fontSize),
+        clipped: [...document.querySelectorAll('#load-chip .ld-m, #load-chip .ld-sum')].filter((e) => getComputedStyle(e).display !== 'none').some((e) => e.getBoundingClientRect().right > document.querySelector('#load-chip').getBoundingClientRect().right + 1) }; })()`);
+    if (m.shown) {
+      check(`${at}: the bars (${m.tier}) stand clear of the crumbs, the search and the buttons, inside the window`, m.chip.l >= m.crumbs.r - 1 - 2 && m.chip.r <= w + 1 && apart(m.chip, m.q) && apart(m.chip, m.right) && !m.clipped && m.chip.h > 10, JSON.stringify(m));
+    } else check(`${at}: too narrow for the bars: they step aside and the crumbs stay whole`, m.tier === 'none' && m.crumbs.w > 40, JSON.stringify(m));
+    check(`${at}: the crumbs are whole (not cut for the bars) unless the window is a phone's`, await waitFor(`[...document.querySelectorAll('#crumbs button')].every((b) => b.scrollWidth <= b.clientWidth + 1) || document.documentElement.classList.contains('bp900')`, 4000), JSON.stringify(m));
+    check(`${at}: the page does not scroll sideways`, m.sw <= w + 1, String(m.sw));
+    if (m.shown) {
+      await hoverLoad(true);
+      const pop = await rectOf('#load-pop');
+      check(`${at}: the tooltip is inside the window`, pop && pop.l >= -1 && pop.r <= w + 1 && pop.b <= h + 1, JSON.stringify(pop));
+      await hoverLoad(false);
+    }
+    if (w === 1920 && scale === 'auto') await shot('load-wide.png');
+    if (w === 1280 && scale === 'auto') await shot('load-1280.png');
+    if (w === 1920 && scale === 200) await shot('load-200.png');
+  }
+  await send('Emulation.setDeviceMetricsOverride', { width: 1500, height: 950, deviceScaleFactor: 1, mobile: false });
+  await evalJs('try { localStorage.removeItem("herdr-planner.uiScale"); } catch {} true');
+  loadGone();
+  await navigate(base + '/?noauto&nocoach&bloom=0');
+}, { retry: true });
 
 section('limits', async () => {
   await resetUi();
@@ -1885,7 +2231,7 @@ section('theme and language', async () => {
   // The Russian interface has no English left: every button, label, hint and tooltip of the open panels is read
   // (names of things — tasks, projects, machines — are the operator's own and are left out).
   const english = `(() => {
-    const SAME = new Set(['herdr', 'claude', 'codex', 'omp', 'pi', 'Ctrl', 'Esc', 'Enter', 'Shift', 'Alt', 'Tab', 'Space', 'Home', 'TLS', 'WASD', 'main', 'origin', 'upstream', 'English']);
+    const SAME = new Set(['herdr', 'claude', 'codex', 'omp', 'pi', 'Ctrl', 'Esc', 'Enter', 'Shift', 'Alt', 'Tab', 'Space', 'Home', 'TLS', 'WASD', 'main', 'origin', 'upstream', 'English', 'CPU', 'MEM', 'GPU']);
     const bad = new Set();
     const look = (t, where) => {
       t = String(t || '').replace(/\s+/g, ' ').trim();
@@ -1895,7 +2241,7 @@ section('theme and language', async () => {
       bad.add(where + ': ' + t.slice(0, 60));
     };
     for (const e of document.querySelectorAll('#top button, #kbar button, #chat button, #chat label, #todo button, #todo label, #nav header, #nav button, #focus button, #focus h3, #focus .lbl, .menupop button, .menupop label, .hint, .none, .lbl')) {
-      if (e.closest('#sres, .ti, .lb, .titem .txt, #clog, #crumbs') || e.matches('[data-lang]')) continue;
+      if (e.closest('#sres, .ti, .lb, .titem .txt, #clog, #crumbs, #loadbar') || e.matches('[data-lang]')) continue;
       look(e.innerText, e.id || e.className || e.tagName);
     }
     for (const e of document.querySelectorAll('#top [title], #kbar [title], #chat [title], #todo [title], #nav [title], #focus [title], [placeholder], [aria-label]')) {
@@ -2017,6 +2363,8 @@ const NAV_TITLE_MIN_REM = 10;
 // the rows must be columns (the container query of station.css); undefined: either is right.
 const boardChecks = async (at, stacked) => {
   await waitFor('document.querySelectorAll("#st-board [data-setting]").length > 5', 40000);
+  // The shipyards' card comes from its own request: judged with the rest, not before it (else a long preview is never measured).
+  await waitFor('!!document.querySelector("#st-yards details pre")', 15000);
   const bad = await layoutProblems('#station');
   check(`${at}: the station, after its answer came: nothing wider than its box`, bad.length === 0, bad.join('; '));
   // scrolled inside the dialog only (scrollIntoView would move the page itself, which has overflow:hidden)
@@ -2644,9 +2992,9 @@ section('memory suggestions', async () => {
   await resetUi();
   await quasarOf();
   await waitFor('!!document.querySelector("#mem-suggest-toggle")', 8000);
-  check('the panel says the proposals are on', (await text('#mem-suggest-toggle')) === 'вкл', await text('#mem-suggest-toggle'));
+  check('the panel says the proposals are on', (await text('#mem-suggest-toggle')) === 'Вкл', await text('#mem-suggest-toggle'));
   await click('#mem-suggest-toggle');
-  check('and the switch turns them off', await waitFor('(document.querySelector("#mem-suggest-toggle")?.innerText || "") === "выкл"', 6000) && (await api('/api/memory'))?.[1]?.settings?.suggest === false);
+  check('and the switch turns them off', await waitFor('(document.querySelector("#mem-suggest-toggle")?.innerText || "") === "Выкл"', 6000) && (await api('/api/memory'))?.[1]?.settings?.suggest === false);
   const a1 = asked();
   await post('/api/action', { action: 'approve', id: 'sigma/2', confirm: true });
   await waitFor('fetch("/api/state").then((r) => r.json()).then((s) => s.tasks.some((t) => t.id === "sigma/2" && t.status === "done"))', 12000);
@@ -2836,6 +3184,119 @@ await send('Emulation.setDeviceMetricsOverride', { width: 1500, height: 950, dev
 await navigate(base + '/?noauto&nocoach&bloom=0');
 
 const retried = [];   // [{ name, first: [the checks that failed the first time], passed }]
+
+section('runners', async () => {
+  await resetUi();
+  await evalJs('planner.goHome()');
+  await waitFor('world.debug().flight === "idle"', 8000);
+  check('the navigator has the shipyards group and vm-r', await waitFor('!!document.querySelector("#nav [data-kind=runners]") && !!document.querySelector("#nav [data-nav=\\"run|vm-r\\"]")', 12000), await text('#nav'));
+  const yardDebug = await debug();
+  check('the world draws the yard outside the Galaxy boundary', !!yardDebug?.docks?.['vm-r'] && Math.hypot(yardDebug.docks['vm-r'].x, yardDebug.docks['vm-r'].z) > 760, JSON.stringify(yardDebug?.docks));
+  await click('#nav [data-nav="run|vm-r"]');
+  check('the shipyard focus opens: state, CPU, memory, disk, GPU', await waitFor('!!document.querySelector("[data-focus=runner]")', 12000) && await hasText('#focus', 'vm-r') && await hasText('#focus', 'на связи') && await hasText('#focus', 'CPU') && await hasText('#focus', 'GPU NVIDIA L4-24Q'), await text('#focus'));
+  const active = await evalJs('document.querySelectorAll("#rf-tasks tbody tr").length');
+  const forgotten = await evalJs('document.querySelectorAll("#rf-forgotten tbody tr").length');
+  const unsure = await evalJs('document.querySelectorAll("#rf-forgotten tbody tr[data-class=unsure]").length');
+  check('two containers of live tasks, one forgotten, one unsure, two foreign', active === 2 && forgotten === 2 && unsure === 1 && (await hasText('#rf-foreign', 'Чужие: 2')), `${active}/${forgotten}/${unsure} ${await text('#rf-foreign')}`);
+  check('a key with a digit finds its task: pg-AL9-4 is alpha/4', await hasText('#rf-tasks', 'pg-ALP-3') && await hasText('#rf-tasks', 'pg-AL9-4') && await hasText('#rf-tasks', 'ALP-4') && await hasText('#rf-forgotten', 'ALP-15'), await text('#rf-tasks'));
+  check('the unsure one is grey and has no default tick', await hasText('#rf-forgotten', 'неясно'), await text('#rf-forgotten'));
+  // The planet's own line: the yard and its containers.
+  await go('alpha/3');
+  check('the planet names the shipyard and its containers', await waitFor('!!document.querySelector("#rf-task")', 8000) && await hasText('#rf-task', 'vm-r') && await hasText('#rf-task', 'pg-ALP-3'), await text('#rf-task'));
+  // The search finds the yard, Enter opens it.
+  await press('KeyK', 'k', 2);
+  await waitFor('document.activeElement.id === "q"', 4000);
+  await send('Input.insertText', { text: 'vm-r' });
+  check('the search finds the shipyard', await waitFor('[...document.querySelectorAll("#sres .srow")].some((e) => e.dataset.kind === "runner")', 5000), await text('#sres'));
+  await evalJs('(() => { const e = [...document.querySelectorAll("#sres .srow")].find((x) => x.dataset.kind === "runner"); if (e) e.click(); return !!e; })()');
+  check('a click on the shipyard opens its focus', await waitFor('plannerDebug().selected?.kind === "runner" && !!document.querySelector("[data-focus=runner]")', 15000), JSON.stringify(await pd()));
+  // The terminal button asks this machine's terminal to run ssh in it, not a bare child with no tty.
+  await click('#rf-terminal');
+  check('«Терминал» opens a terminal window with ssh -t', await waitLog(() => calls('terminal.jsonl').some((c) => (c.argv ?? []).includes('-t') && (c.argv ?? []).join(' ').includes('192.0.2.29')), 8000), JSON.stringify(calls('terminal.jsonl').slice(-2)));
+  // «Было → стало»: the card, the two presses, the exact ids.
+  await waitFor('!!document.querySelector("#rf-clean")', 8000);
+  await click('#rf-clean');
+  check('the cleaning card shows was → now for the ticks (only the forgotten one is ticked)', await waitFor('!!document.querySelector("#rf-was")', 8000) && (await text('#rf-was')).includes('контейнеров 6 → 5') && (await evalJs('[...document.querySelectorAll(".rf-clean tbody input")].filter((i) => !i.checked).length')) === 1, await text('#rf-clean'));
+  const tickUnsure = (want) => `(() => { const tr = [...document.querySelectorAll(".rf-clean tbody tr")].find((r) => r.innerText.includes("x-ALP-99")); const i = tr?.querySelector("input"); if (!i) return false; if (i.checked !== ${want}) i.click(); return i.checked === ${want}; })()`;
+  await evalJs(tickUnsure(true));
+  check('ticking the unsure one changes «стало» at once', await waitFor('document.querySelector("#rf-was")?.textContent.includes("контейнеров 6 → 4")', 5000), await text('#rf-was'));
+  await evalJs(tickUnsure(false));
+  check('unticking it takes the numbers and the MB back', await waitFor('document.querySelector("#rf-was")?.textContent.includes("контейнеров 6 → 5")', 5000), await text('#rf-was'));
+  const before = calls('ssh.jsonl').filter((c) => c.runner).length;
+  await twoPresses('#rf-clean-go');
+  check('the clean removes exactly the ticked id and nothing else', await waitLog(() => calls('ssh.jsonl').some((c) => c.runner && c.inner === 'docker rm -f -v ' + 'b'.repeat(64)) && calls('ssh.jsonl').filter((c) => c.runner).length > before, 20000), JSON.stringify(calls('ssh.jsonl').filter((c) => c.runner).slice(-2)));
+  check('the forgotten container leaves the yard; the unsure and the foreign ones stay', await waitFor('plannerSnap().runners[0].containers.every((c) => c.name !== "web-ALP-15") && plannerSnap().runners[0].containers.some((c) => c.name === "x-ALP-99") && plannerSnap().runners[0].containers.some((c) => c.name === "neighbor-db-1") && plannerSnap().runners[0].containers.some((c) => c.name === "buildx_buildkit_x0")', 30000), JSON.stringify((await stateApi())?.runners?.[0]?.containers?.map((c) => c.name)));
+  check('the journal keeps a line about it', await waitFor('plannerSnap().journal.some((j) => j.s === "runner")', 8000), JSON.stringify((await stateApi())?.journal?.slice(-2)));
+  // The wizard: a second yard, the machine and this machine's way in, the list written, the agents connected.
+  await click('#nav [data-nav="addr"]');
+  check('«Добавить верфь…» opens the wizard', await waitFor('!!document.querySelector("#addr #r-go")', 5000) && await hasText('#addr', 'Добавить верфь'), await text('#addr'));
+  await evalJs('(() => { const i = document.querySelector("#r-target"); i.value = "me@192.0.2.29"; i.dispatchEvent(new Event("input", { bubbles: true })); const l = document.querySelector("#r-label"); l.value = "vm-r2"; l.dispatchEvent(new Event("input", { bubbles: true })); })()');
+  await click('#r-go');
+  check('the check shows the machine: Ubuntu, cores, Docker, the containers seen', await waitFor('!!document.querySelector("#r-steps")', 20000) && (await evalJs('document.querySelectorAll("#addr .wstep").length')) === 3 && await hasText('#r-steps', 'Ubuntu 24.04 LTS') && await hasText('#r-steps', 'Docker 28.3.0') && await hasText('#r-steps', 'контейнер'), await text('#addr'));
+  check('the check shows this machine’s own way in: client, ssh, docker over ssh', await waitFor('!!document.querySelector("#r-local")', 20000) && await hasText('#r-local', 'клиент docker') && await hasText('#r-local', 'верфь me@192.0.2.29') && await hasText('#r-local', 'Docker 28.3.0'), await text('#r-local'));
+  await click('#r-check-next');
+  await waitFor('!!document.querySelector("#r-masks")', 5000);
+  check('the suggested masks and tags are there, editable', (await evalJs('document.querySelector("#r-masks").value.includes("neighbor")')) && (await evalJs('document.querySelector("#r-masks").value.includes("buildx_*")')) && (await evalJs('document.querySelector("#r-tags").value.includes("gpu")')), JSON.stringify(await evalJs('[document.querySelector("#r-tags").value, document.querySelector("#r-masks").value]')));
+  await click('#r-add');
+  check('adding asks twice', await hasText('#r-add', 'Точно'));
+  await secondPress('#r-add');
+  check('the list file has vm-r2', await waitLog(() => { try { return JSON.parse(readFileSync(join(fixture, 'settings', 'runners.json'), 'utf8')).runners.some((r) => r.id === 'vm-r2'); } catch { return false; } }, 10000), readFileSync(join(fixture, 'settings', 'runners.json'), 'utf8').slice(0, 200));
+  check('the yard is ready and offers the agents', await waitFor('!!document.querySelector("#r-connect")', 8000) && await hasText('#addr', 'готова'), await text('#addr'));
+  await twoPresses('#r-connect');
+  check('the block reaches this machine’s agent instructions', await waitLog(() => { try { const t = readFileSync(join(fixture, 'state', 'board-settings.json'), 'utf8'); return t.includes('herdr-planner:runners') && t.includes('me@192.0.2.29') && !t.includes('herdr.galaxy'); } catch { return false; } }, 20000), 'board-settings');
+  check('no copy of the block goes to another machine', (() => { try { return !readFileSync(join(fixture, 'state', 'vm-a-settings.json'), 'utf8').includes('herdr-planner:runners'); } catch { return true; } })());
+  // The Station card shows the block and its «было → стало» text.
+  await resetUi();
+  await menuPick('Станция');
+  check('the Station has the shipyards card for the agents', await waitFor('!!document.querySelector("#st-yards details pre")', 20000) && await hasText('#st-yards', 'на месте') && (await evalJs('document.querySelector("#st-yards details pre")?.textContent.includes("herdr-planner:runners")')), await text('#st-yards'));
+  // The card previews what its button will do: connected now, the button disconnects and «Станет» has no block; the
+  // drop-old tick has nothing to do here. (It was once keyed off the current state, showing the opposite.)
+  const stationNext = (name) => `(document.querySelector('#st-yards pre[data-next="${name}"]')?.textContent ?? "")`;
+  check('connected: the button will disconnect, «Станет» has no block and no drop tick',
+    await hasText('#st-yards-btn', 'Отключить')
+      && !(await evalJs('!!document.querySelector("#st-yards-drop")'))
+      && !(await evalJs(`${stationNext('worker.instructions')}.includes("herdr-planner:runners")`)),
+    await text('#st-yards'));
+  // A machine that is not connected, whose instructions hold an old docker line and two rules of the human.
+  const HUMAN = 'Docker-контейнеры: export DOCKER_HOST=ssh://old-yard, порты на 192.0.2.29.\nПроверки: браузер закрывай сразу после них.\nКоммиты подписывай по-русски.';
+  for (const name of ['worker.instructions', 'reviewer.instructions']) {
+    execFileSync(join(fixture, 'bin', 'herdr-projects'), ['set', name, HUMAN]);
+  }
+  await press('Escape');
+  await waitFor('!document.querySelector("#station")', 4000);
+  await menuPick('Станция');
+  check('not connected: the button will connect and «Станет» is the block over the human text',
+    await waitFor(`!!document.querySelector("#st-yards-btn") && ${stationNext('worker.instructions')}.includes("herdr-planner:runners") && ${stationNext('worker.instructions')}.includes("Проверки")`, 20000)
+      && await hasText('#st-yards-btn', 'Подключить')
+      && await evalJs('!!document.querySelector("#st-yards-drop")'),
+    await text('#st-yards'));
+  await evalJs('document.querySelector("#st-yards-drop").click()');
+  check('ticking it previews dropping only the old docker line, the human rules stay',
+    await waitFor(`${stationNext('worker.instructions')}.includes("Проверки") && ${stationNext('worker.instructions')}.includes("Коммиты") && !${stationNext('worker.instructions')}.includes("old-yard")`, 5000),
+    await evalJs(stationNext('worker.instructions')));
+  await twoPresses('#st-yards-btn');
+  const homeValue = (name) => {
+    try {
+      const d = JSON.parse(readFileSync(join(fixture, 'state', 'board-settings.json'), 'utf8'));
+      const v = d?.['']?.[name];
+      return typeof v === 'string' ? v : v?.value ?? '';
+    } catch { return ''; }
+  };
+  check('pressing it wrote the block and kept the human rules',
+    await waitLog(() => {
+      const v = homeValue('worker.instructions');
+      return v.includes('herdr-planner:runners') && v.includes('Проверки') && v.includes('Коммиты') && !v.includes('old-yard');
+    }, 15000),
+    homeValue('worker.instructions'));
+  await press('Escape');
+  await waitFor('!document.querySelector("#station")', 4000);
+  // Clean up after the section: the second yard is removed; its containers never existed on the machine.
+  const rm = await post('/api/runner/remove', { id: 'vm-r2', confirm: true, force: true });
+  check('the second yard can be removed from the list', rm[0] === 200 && rm[1]?.ok, JSON.stringify(rm));
+  check('and the navigator forgets it', await waitFor('plannerSnap().runners.every((r) => r.id !== "vm-r2")', 8000), JSON.stringify((await stateApi())?.journal?.slice(-2)));
+  await shot('shipyard.png');
+}, { retry: false });
+
 for (const [name, fn, opts] of sections) {
   if (only.length && !only.some((o) => name.includes(o))) continue;
   let first = null;

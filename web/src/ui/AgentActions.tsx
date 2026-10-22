@@ -29,7 +29,7 @@ export function TaskActionButtons(props: { task: Task }): JSX.Element {
 }
 
 /** The line that returns words to the agent (a refusal, a correction, an answer). */
-export function TellBox(props: { task: Task; input?: string }): JSX.Element {
+export function TellBox(props: { task: Task; input?: string; onSent?: () => void }): JSX.Element {
   const task = props.task;
   const id = props.input ?? 'tell';
   const dis = !boardOk();
@@ -37,7 +37,7 @@ export function TellBox(props: { task: Task; input?: string }): JSX.Element {
   const submit = async (): Promise<void> => {
     const el = ref.current;
     if (!el) return;
-    await tellTask(task, el.value);
+    if (await tellTask(task, el.value)) props.onSent?.();
   };
   return (
     <div class="tell">

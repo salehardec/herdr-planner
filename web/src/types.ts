@@ -131,6 +131,22 @@ export interface AgentUsage {
   updated_at_ms?: number;
 }
 
+/** How loaded this machine is (GET /api/load, the `load` event). Shares are 0..100, memory is in bytes. */
+export interface LoadGpu { name: string; util: number; mem_used: number; mem_total: number }
+export interface LoadInfo {
+  at: number;
+  ok: boolean;
+  error: string;
+  every_ms: number;
+  /** The server's clock when it sent the reading: how old `at` is is judged by it, not by the browser's clock. */
+  sent: number;
+  /** This system cannot be read (no /proc): no bars at all. */
+  unsupported?: boolean;
+  cpu: { percent: number; cores: number };
+  mem: { used: number; total: number; percent: number };
+  gpus: LoadGpu[];
+}
+
 export interface Usage {
   agents: AgentUsage[];
   stale_after_secs?: number;
@@ -191,6 +207,87 @@ export interface Theme {
   colors: Record<string, string>;
 }
 
+export interface RunnerTaskRef {
+  id: string;
+  tag: string;
+  status: string;
+  title: string;
+}
+
+export interface RunnerHost {
+  hostname: string;
+  os: string;
+  arch: string;
+  cpus: number;
+  load1: number;
+  load5: number;
+  load15: number;
+  mem_total: number;
+  mem_avail: number;
+  swap_total: number;
+  swap_free: number;
+  disk_root: string;
+  disk_size: number;
+  disk_avail: number;
+  docker_version: string;
+  docker_arch: string;
+  compose_version: string;
+  runtimes: string[];
+  docker_cpus: number;
+  docker_mem: number;
+  docker_containers: number;
+  docker_running: number;
+  docker_images: number;
+  gpu: { index: string; name: string; util_pct: number | null; mem_used_mib: number | null; mem_total_mib: number | null; temp_c: number | null }[];
+}
+
+export interface RunnerContainer {
+  id: string;
+  name: string;
+  image: string;
+  state: string;
+  status: string;
+  created_ms: number;
+  labels: Record<string, string>;
+  ports: string;
+  networks: string;
+  mounts: string;
+  size: string;
+  size_bytes: number;
+  cpu_pct: number | null;
+  mem_bytes: number | null;
+  mem_limit: number | null;
+  pids: number | null;
+  net_io: string;
+  block_io: string;
+  gpu_mem_mib: number | null;
+  task: RunnerTaskRef | null;
+  class: 'active' | 'forgotten' | 'unsure' | 'foreign';
+}
+
+export interface RunnerBlock {
+  connected: boolean;
+  stale: boolean;
+  at: number;
+  why: string;
+}
+
+export interface Runner {
+  id: string;
+  target: string;
+  ports_host: string;
+  tags: string[];
+  protected: string[];
+  note: string;
+  ok: boolean;
+  why: { line: string; detail: string[] } | null;
+  fetched_at_ms: number;
+  host: RunnerHost;
+  containers: RunnerContainer[];
+  networks: { id: string; name: string; driver: string; labels: Record<string, string> }[];
+  volumes: { name: string; driver: string; labels: Record<string, string> }[];
+}
+
 export interface Snapshot {
   version: string;
   at: number;
@@ -208,6 +305,10 @@ export interface Snapshot {
   memory_suggestions: { task: string; repo: string; tag: string; title: string; lines: { kind: string; text: string }[]; at: number }[];
   journal: JournalEntry[];
   coordinator: CoordinatorState;
+  /** Shipyards: machines the tasks' containers run on. */
+  runners: Runner[];
+  /** Whether the docker block is in this machine's agent instructions. */
+  runner_block: RunnerBlock;
   theme: Theme;
   herdr: { running: boolean; socket: string };
   auth: { required: boolean; user: string };
@@ -225,7 +326,7 @@ export interface GalaxyView {
 
 export type Level = 'galaxy' | 'nebula';
 
-export type EntityKind = 'quasar' | 'universe' | 'planet' | 'moon';
+export type EntityKind = 'quasar' | 'universe' | 'planet' | 'moon' | 'runner';
 
 /** What is selected. */
 export interface Entity {
@@ -257,7 +358,7 @@ export interface Request {
 }
 
 export interface SearchHit {
-  kind: 'galaxy' | 'quasar' | 'universe' | 'planet' | 'moon' | 'todo' | 'chat' | 'memory' | 'closing';
+  kind: 'galaxy' | 'quasar' | 'universe' | 'planet' | 'moon' | 'runner' | 'todo' | 'chat' | 'memory' | 'closing';
   id: string;
   path: string;
   title: string;

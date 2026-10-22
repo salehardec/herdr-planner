@@ -65,6 +65,7 @@ pub fn router(app: Shared) -> Router {
     let protected = Router::new()
         .route("/api/state", get(api_state))
         .route("/api/summary", get(api_summary))
+        .route("/api/load", get(api_load))
         .route("/api/details", get(api_details))
         .route("/api/coordinator/screen", get(api_coordinator_screen))
         .route("/api/action", post(api_action))
@@ -95,6 +96,17 @@ pub fn router(app: Shared) -> Router {
         .route("/api/memory/settings", post(crate::memory_api::memory_settings))
         .route("/api/memory/connect", post(crate::memory_api::memory_connect))
         .route("/api/memory/suggestion", post(crate::memory_api::memory_suggestion))
+        .route("/api/runners", get(crate::runners_api::runners_get))
+        .route("/api/runner/ask", post(crate::runners_api::runner_ask))
+        .route("/api/runner/probe", post(crate::runners_api::runner_probe))
+        .route("/api/runner/add", post(crate::runners_api::runner_add))
+        .route("/api/runner/set", post(crate::runners_api::runner_set))
+        .route("/api/runner/remove", post(crate::runners_api::runner_remove))
+        .route("/api/runner/connect", get(crate::runners_api::runner_connect_get).post(crate::runners_api::runner_connect))
+        .route("/api/runner/clean/preview", post(crate::runners_api::clean_preview))
+        .route("/api/runner/clean", post(crate::runners_api::runner_clean))
+        .route("/api/runner/df", post(crate::runners_api::runner_df))
+        .route("/api/runner/terminal", post(crate::runners_api::runner_terminal))
         .route("/api/station", get(station::station_get))
         .route("/api/station/models", get(station::station_models))
         .route("/api/station/preview", post(station::station_preview))
@@ -361,6 +373,11 @@ async fn api_limits(
     Json(usage::alert(&snap.limits)).into_response()
 }
 
+/// The machine's load as the bars show it (the page asks when its event stream is down).
+async fn api_load(State(app): State<Shared>) -> Json<crate::load::Load> {
+    Json(crate::load::current(&app).await)
+}
+
 async fn api_summary(State(app): State<Shared>) -> Json<serde_json::Value> {
     let s = app.snapshot.read().await.clone();
     let newest = s
@@ -405,7 +422,16 @@ struct ScreenQuery {
     role: Option<String>,
 }
 
+/// A terminal screen is read deeper than a dialog: the window over the page scrolls through it.
+const SCREEN_LINES: &str = "120";
+/// How much of a terminal screen the page receives: a long log is cut once, with a mark, not per redraw.
+/// The end is what is kept: a terminal's newest output, its input line and a dialog are at the bottom.
+/// 24 000 keeps a coloured 80-line screen whole in most cases while still bounding the answer.
+const SCREEN_MAX_CHARS: usize = 24_000;
+
 /// The text an agent shows in its own terminal, through `herdr agent read`.
+/// The colours come as ANSI when herdr has them; the plain text is always there for the callers
+/// that draw no colours (the Coordinator's dialog in the chat).
 /// Without herdr the planner says so; it never pretends to see the dialog.
 async fn api_coordinator_screen(
     State(app): State<Shared>,
@@ -426,27 +452,36 @@ async fn api_coordinator_screen(
         }))
         .into_response();
     }
-    match run_herdr(
-        &[
-            "agent", "read", &name, "--source", "visible", "--lines", "40", "--format", "text",
-        ],
-        Duration::from_secs(8),
-    )
-    .await
-    {
-        Ok(out) => Json(json!({
-            "ok": true,
-            "running": true,
-            "target": name,
-            "text": clip(out),
-        }))
-        .into_response(),
-        Err(e) => (
-            StatusCode::BAD_GATEWAY,
-            Json(json!({"ok": false, "running": true, "target": name, "error": e})),
-        )
-            .into_response(),
-    }
+    let read = |format: &'static str| {
+        [
+            "agent", "read", &name, "--source", "visible", "--lines", SCREEN_LINES, "--format",
+            format,
+        ]
+    };
+    // Older herdr versions know no `ansi` format: the screen is still shown, without colours.
+    let (out, colored) = match run_herdr_colored(&read("ansi"), Duration::from_secs(8)).await {
+        Ok(out) => (out, true),
+        Err(_) => match run_herdr(&read("text"), Duration::from_secs(8)).await {
+            Ok(out) => (out, false),
+            Err(e) => {
+                return (
+                    StatusCode::BAD_GATEWAY,
+                    Json(json!({"ok": false, "running": true, "target": name, "error": e})),
+                )
+                    .into_response()
+            }
+        },
+    };
+    let tail = clip_tail_to(out, SCREEN_MAX_CHARS);
+    let text = strip_ansi(&tail);
+    Json(json!({
+        "ok": true,
+        "running": true,
+        "target": name,
+        "text": text,
+        "ansi": if colored { tail } else { String::new() },
+    }))
+    .into_response()
 }
 
 /// `sw-coordinator` for the Coordinator, `sw-<repo>-<n>` for a task's agent.
@@ -548,13 +583,27 @@ fn valid_key(k: &str) -> bool {
 
 /// Runs the herdr CLI (`HERDR_BIN` overrides the binary name for checks).
 async fn run_herdr(args: &[&str], wait: Duration) -> Result<String, String> {
+    run_herdr_with(args, wait, false).await
+}
+
+/// The same CLI, with the colours herdr would use in a terminal (`NO_COLOR` is not set).
+async fn run_herdr_colored(args: &[&str], wait: Duration) -> Result<String, String> {
+    run_herdr_with(args, wait, true).await
+}
+
+async fn run_herdr_with(args: &[&str], wait: Duration, color: bool) -> Result<String, String> {
     let bin = std::env::var("HERDR_BIN")
         .ok()
         .filter(|v| !v.is_empty())
         .unwrap_or_else(|| "herdr".to_string());
     let mut cmd = Command::new(&bin);
-    cmd.args(args)
-        .env("NO_COLOR", "1")
+    cmd.args(args);
+    if color {
+        cmd.env_remove("NO_COLOR");
+    } else {
+        cmd.env("NO_COLOR", "1");
+    }
+    cmd
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -1413,12 +1462,111 @@ pub(crate) fn error(status: StatusCode, message: impl Into<String>) -> Response 
 }
 
 pub(crate) fn clip(s: String) -> String {
-    const MAX: usize = 4000;
-    if s.chars().count() <= MAX {
+    clip_to(s, 4000)
+}
+
+fn clip_to(s: String, max: usize) -> String {
+    if s.chars().count() <= max {
         return s;
     }
-    let mut out: String = s.chars().take(MAX).collect();
+    let mut out: String = s.chars().take(max).collect();
     out.push('…');
+    out
+}
+
+/// Keeps the end of a text instead of its start: a terminal's newest output, its input line and a
+/// dialog are at the bottom, so a cut screen with its beginning kept shows the oldest lines only.
+/// The cut falls on a line boundary where it can; a colour sequence cut in two is dropped with its
+/// half line, never drawn as letters.
+fn clip_tail_to(s: String, max: usize) -> String {
+    let total = s.chars().count();
+    if total <= max {
+        return s;
+    }
+    let cut = total - max;
+    let start = s.char_indices().nth(cut).map_or(s.len(), |(i, _)| i);
+    let rest = &s[start..];
+    let from = match rest.find('\n') {
+        Some(i) => start + i + 1,
+        // One line taller than the budget: keep its end, but never from the middle of an escape
+        // sequence (its tail would be drawn as letters).
+        None if cut_inside_escape(&s, start) => {
+            rest.find('\u{1b}').map_or(s.len(), |i| start + i)
+        }
+        None => start,
+    };
+    let mut out = String::from("…");
+    out.push_str(&s[from..]);
+    out
+}
+
+/// Is `start` (a char boundary of `s`) inside an escape sequence rather than after it?
+fn cut_inside_escape(s: &str, start: usize) -> bool {
+    let bytes = s.as_bytes();
+    let mut i = start;
+    // An escape sequence is short; a newline begins a line and no sequence spans it.
+    while i > 0 && start - i < 4096 {
+        i -= 1;
+        if bytes[i] == b'\n' {
+            return false;
+        }
+        if bytes[i] != 0x1b {
+            continue;
+        }
+        let body = &bytes[i + 1..start];
+        return match body.first() {
+            None => true,
+            Some(b'[') => !body[1..].iter().any(|c| (0x40..=0x7e).contains(c)),
+            Some(b']') => !body.windows(2).any(|w| w == b"\x1b\\") && !body.contains(&0x07),
+            Some(_) => false,
+        };
+    }
+    false
+}
+
+/// The text without its escape sequences: `herdr agent read --format ansi` colours the screen for a
+/// terminal, and the plain text is what a caller without colours draws. A sequence cut by the length
+/// limit is dropped too.
+fn strip_ansi(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut chars = s.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c != '\u{1b}' {
+            out.push(c);
+            continue;
+        }
+        match chars.peek().copied() {
+            // CSI: ESC [ … final byte in @…~
+            Some('[') => {
+                chars.next();
+                for c in chars.by_ref() {
+                    if ('@'..='~').contains(&c) {
+                        break;
+                    }
+                }
+            }
+            // OSC: ESC ] … BEL or ESC \
+            Some(']') => {
+                chars.next();
+                while let Some(c) = chars.next() {
+                    if c == '\u{7}' {
+                        break;
+                    }
+                    if c == '\u{1b}' {
+                        if chars.peek() == Some(&'\\') {
+                            chars.next();
+                        }
+                        break;
+                    }
+                }
+            }
+            // Any other two-byte escape.
+            Some(_) => {
+                chars.next();
+            }
+            None => {}
+        }
+    }
     out
 }
 
@@ -1516,6 +1664,46 @@ mod tests {
         assert!(valid_repo("herdr-planner"));
         assert!(valid_repo("vm-str:ela/3") == false);
         assert!(!valid_repo(""));
+    }
+
+    #[test]
+    fn a_terminal_screen_keeps_its_words_and_loses_its_escape_sequences() {
+        assert_eq!(
+            strip_ansi("\u{1b}[1;36m❯\u{1b}[0m May I continue?\n  \u{1b}[33m1.\u{1b}[0m Yes"),
+            "❯ May I continue?\n  1. Yes"
+        );
+        // cursor moves and a window title are not text
+        assert_eq!(strip_ansi("a\u{1b}[2Kb\u{1b}]0;title\u{7}c"), "abc");
+        assert_eq!(strip_ansi("plain text"), "plain text");
+        // a sequence cut by the screen limit is not drawn as text
+        assert_eq!(strip_ansi("line\u{1b}[38;5;"), "line");
+        assert_eq!(clip_to("abcdef".into(), 3), "abc…");
+        assert_eq!(clip_to("abc".into(), 3), "abc");
+    }
+
+    #[test]
+    fn a_long_screen_keeps_its_bottom() {
+        let mut screen = String::new();
+        for i in 0..400 {
+            screen.push_str(&format!("line {i:03} {}\n", "·".repeat(70)));
+        }
+        screen.push_str("❯ the input line\n");
+        let cut = clip_tail_to(screen.clone(), 2_000);
+        assert!(cut.starts_with('…'), "{cut:?}");
+        assert!(cut.ends_with("❯ the input line\n"), "{cut:?}");
+        assert!(!cut.contains("line 000"), "the oldest lines go");
+        assert!(cut.contains("line 399"), "the newest lines stay");
+        assert!(cut.chars().count() <= 2_001, "{}", cut.chars().count());
+        // A cut inside a colour sequence never draws its tail as letters.
+        let coloured = format!("{}line\n\u{1b}[38;5;196mred end", "x".repeat(100));
+        let cut = clip_tail_to(coloured, 90);
+        assert_eq!(cut, "…\u{1b}[38;5;196mred end", "{cut:?}");
+        // …and without a line to cut at the broken sequence goes altogether.
+        let one_line = format!("{}\u{1b}[38;5;196mred end", "x".repeat(100));
+        // 15 keeps the last 15 of 118 characters: the cut is inside `[38;5;196`.
+        assert_eq!(clip_tail_to(one_line, 15), "…");
+        // A whole tail of one line that is only text still keeps its end.
+        assert_eq!(clip_tail_to("abcdefghij".into(), 4), "…ghij");
     }
 
     #[test]

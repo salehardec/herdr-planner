@@ -5,8 +5,8 @@
 //
 // DIR gets:
 //   bin/        stand-ins on PATH: herdr-projects, herdr, claude (translation), gh, glab,
-//               xdg-terminal-exec.
-//               Each is a node script built from the functions below.
+//               xdg-terminal-exec, nvidia-smi (answers from load/nvidia.csv).
+//               Each is a node script built from the functions below (nvidia-smi is a shell script).
 //   state/      the stand-ins' own world: board.json (rows, waits, meta), coordinator.json,
 //               todo.json (the planner's), the Omarchy usage records.
 //   board/      what the planner reads as the board's files: repos.json, repo-keys.json,
@@ -109,6 +109,8 @@ function common(DATA, mods) {
     fs.writeFileSync(path.join(D, 'board', 'repos.json'), JSON.stringify(w.folders, null, 1));
     const had = {};
     for (const [name, key] of Object.entries(w.keys)) had[key] = name;
+    // An older key of alpha, kept in `had`: containers labelled AL9-4 belong to alpha/4 too.
+    had.AL9 = 'alpha';
     fs.writeFileSync(path.join(D, 'board', 'repo-keys.json'), JSON.stringify({ upgraded: true, had }, null, 1));
   };
   // The task's own record: board/tasks/<repo>/<n>/task.json, as the board keeps it.
@@ -228,7 +230,7 @@ task('alpha', 4, { state: 'blocked', kind: 'permission', stage: 'approval', titl
 task('alpha', 5, { state: 'blocked', kind: 'permission', stage: 'approval', title: 'Кэш отчётов', msg: 'Review failed · 1 critical, 1 major', review: failedReview, reviewRound: 2 });
 task('alpha', 6, { app: 'omp', state: 'working', stage: 'working', title: 'Миграция базы', msg: 'Writing migration', progress: 40, eta: 12 });
 task('alpha', 7, { app: 'pi', state: 'working', stage: 'reviewing', title: 'Документация', msg: 'Under review', progress: 55, reviewRound: 1 });
-task('alpha', 8, { state: 'error', stage: 'working', title: 'Сбой сборки', msg: 'The build failed' });
+task('alpha', 8, { state: 'error', stage: 'working', title: 'Сбой сборки', msg: 'The build failed', exitedAt: NOW - 5 * MIN });
 task('alpha', 9, { state: 'working', stage: 'queued', title: 'Очередь за слотом', msg: 'Waiting for a free slot', queue: 1 });
 task('alpha', 10, { state: 'working', stage: 'after', title: 'После девятой', msg: 'queued after ALP-9' });
 task('alpha', 11, { state: 'idle', stage: 'todo', title: 'Заметка на потом', msg: '' });
@@ -435,7 +437,7 @@ for (const r of rows) {
     session: C0.uuid('session ' + r.id),
     worktree: path.join(dir, 'worktrees', `${repo}-${n}`),
     branch: `work/${n}`,
-    exitedAt: r.state === 'done' || r.archivedAt ? Math.min(NOW, created + 40 * MIN) : null,
+    exitedAt: r.exitedAt ?? (r.state === 'done' || r.archivedAt ? Math.min(NOW, created + 40 * MIN) : null),
     afterDone: m.afterDone || [],
   };
 }
@@ -700,6 +702,12 @@ const BOARD = {
   doctorExit: { home: 1 },
 };
 
+const utc = (ms) => {
+  const d = new Date(ms);
+  const p = (n) => String(n).padStart(2, '0');
+  return `${d.getUTCFullYear()}-${p(d.getUTCMonth() + 1)}-${p(d.getUTCDate())} ${p(d.getUTCHours())}:${p(d.getUTCMinutes())}:${p(d.getUTCSeconds())} +0000 UTC`;
+};
+
 const DATA = {
   dir,
   board: BOARD,
@@ -720,6 +728,30 @@ const DATA = {
     { label: 'vm-a', ssh_target: 'deploy@vm-a', remote_session: 'work' },
     { label: 'vm-b', ssh_target: 'deploy@vm-b' },
   ],
+  // The shipyard: a documentation address (192.0.2.0/24 is never a real host); the ssh stand-in answers for it.
+  runnerR: {
+    label: 'vm-r',
+    target: 'me@192.0.2.29',
+    host: '192.0.2.29',
+    ports: '192.0.2.29',
+    containers: [
+      { id: 'a'.repeat(64), name: 'pg-ALP-3', image: 'postgres:16', state: 'running', status: 'Up 1 hour', created: utc(NOW - 60 * 60 * 1000), labels: 'herdr.task=ALP-3,com.docker.compose.project=work-3', ports: '0.0.0.0:15432->5432/tcp', networks: 'work-3_default', mounts: 'work-3_pgdata:/var/lib/postgresql/data', size: '28MB', cpu: '0.40%', mem: '96MiB / 1GiB', pids: '7' },
+      { id: '4'.repeat(64), name: 'pg-AL9-4', image: 'postgres:16', state: 'running', status: 'Up 3 hours', created: utc(NOW - 3 * 60 * 60 * 1000), labels: 'herdr.task=AL9-4,com.docker.compose.project=work-4', ports: '0.0.0.0:15433->5432/tcp', networks: 'work-4_default', mounts: '', size: '31MB', cpu: '0.10%', mem: '72MiB / 1GiB', pids: '6' },
+      { id: 'b'.repeat(64), name: 'web-ALP-15', image: 'nginx:1.27', state: 'exited', status: 'Exited (0) 2 hours ago', created: utc(NOW - 2 * 24 * 60 * 60 * 1000), labels: 'herdr.task=ALP-15', ports: '', networks: 'bridge', mounts: '', size: '12MB', cpu: '0.00%', mem: '0B / 0B', pids: '0' },
+      { id: 'c'.repeat(64), name: 'x-ALP-99', image: 'alpine:3', state: 'exited', status: 'Exited (0) 5 days ago', created: utc(NOW - 5 * 24 * 60 * 60 * 1000), labels: 'herdr.task=ALP-99', ports: '', networks: 'bridge', mounts: '', size: '4MB', cpu: '0.00%', mem: '0B / 0B', pids: '0' },
+      { id: 'd'.repeat(64), name: 'neighbor-db-1', image: 'postgres:15', state: 'running', status: 'Up 3 days', created: utc(NOW - 3 * 24 * 60 * 60 * 1000), labels: 'com.docker.compose.project=neighbor', ports: '5432/tcp', networks: 'neighbor_default', mounts: 'neighbor_data:/var/lib/postgresql/data', size: '1.2GB', cpu: '1.20%', mem: '210MiB / 512MiB', pids: '9' },
+      { id: 'e'.repeat(64), name: 'buildx_buildkit_x0', image: 'moby/buildkit:latest', state: 'running', status: 'Up 2 months', created: utc(NOW - 60 * 24 * 60 * 60 * 1000), labels: '', ports: '', networks: 'host', mounts: '', size: '0B', cpu: '0.10%', mem: '34MiB / 0B', pids: '4' },
+    ],
+    networks: [
+      { id: 'f'.repeat(64), name: 'work-3_default', driver: 'bridge' },
+      { id: '1'.repeat(64), name: 'neighbor_default', driver: 'bridge' },
+      { id: '2'.repeat(64), name: 'bridge', driver: 'bridge' },
+    ],
+    volumes: [
+      { name: 'work-3_pgdata', driver: 'local' },
+      { name: 'neighbor_data', driver: 'local' },
+    ],
+  },
 };
 
 function herdrProjectsMain(C, DATA) {
@@ -993,7 +1025,13 @@ function herdrMain(C, DATA) {
     log('herdr.jsonl', { argv: process.argv.slice(2) });
     const name = rest[0];
     if (!namesOf(world()).includes(name)) { console.error('no such agent: ' + name); process.exit(1); }
-    console.log(fs.existsSync(join('state', 'dialog.txt')) ? fs.readFileSync(join('state', 'dialog.txt'), 'utf8') : '❯ May I continue?\n  1. Yes\n  2. No');
+    const dialog = fs.existsSync(join('state', 'dialog.txt')) ? fs.readFileSync(join('state', 'dialog.txt'), 'utf8') : '❯ May I continue?\n  1. Yes\n  2. No';
+    // A terminal screen, as `--format ansi` gives it: the prompt bright, the choices yellow.
+    if (rest.includes('ansi')) {
+      console.log(dialog.split('\n').map((line, i) => `\x1b[${i === 0 ? '1;36' : '33'}m${line}\x1b[0m`).join('\n'));
+      return;
+    }
+    console.log(dialog);
     return;
   }
   if (cmd === 'agent' && sub === 'send-keys') {
@@ -1080,6 +1118,96 @@ function glabMain(C, DATA) {
   process.exit(2);
 }
 
+// The shipyard's stand-in: one fixed probe, docker version / system df, and exact-id removals. The removed ids are
+// remembered in state/runner.json so the next probe leaves them out; every call is logged to ssh.jsonl.
+function sshMain(C, DATA) {
+  const { fs, path, log } = C;
+  const args = process.argv.slice(2);
+  if (args[0] === '-G') {
+    const t = args[1] || '';
+    const host = t.includes('@') ? t.split('@')[1] : t;
+    console.log(`host ${host}`);
+    console.log(`hostname ${host.split(':')[0]}`);
+    console.log(`user ${t.includes('@') ? t.split('@')[0] : ''}`);
+    return;
+  }
+  const target = args.length >= 2 ? args[args.length - 2] : '';
+  const remote = args.length ? args[args.length - 1] : '';
+  const unwrapped = /^exec "\$\{SHELL:-\/bin\/sh\}" -lc '([\s\S]*)'$/.exec(remote);
+  const inner = unwrapped ? unwrapped[1].split("'\\''").join("'") : remote;
+  const host = target.includes('@') ? target.split('@')[1] : target;
+  const R = DATA.runnerR;
+  if (host !== R.host && host !== R.label) {
+    console.error('ssh: Could not resolve hostname ' + host + ': Name or service not known');
+    process.exit(255);
+  }
+  const stateFile = path.join(C.D, 'state', 'runner.json');
+  const st = C.readJson(stateFile, { ids: [], networks: [], volumes: [] });
+  st.ids = st.ids || []; st.networks = st.networks || []; st.volumes = st.volumes || [];
+  const saveSt = () => fs.writeFileSync(stateFile, JSON.stringify(st));
+  log('ssh.jsonl', { argv: args, target, inner: inner.slice(0, 400), runner: R.label });
+  if (inner === 'true') return;
+  if (inner.startsWith('docker version')) { console.log('28.3.0'); return; }
+  if (inner.startsWith('docker system df')) {
+    console.log(JSON.stringify({ Type: 'Images', TotalCount: '152', Active: '12', Size: '159.7GB', Reclaimable: '153.1GB (96%)' }));
+    console.log(JSON.stringify({ Type: 'Containers', TotalCount: '6', Active: '4', Size: '1.2GB', Reclaimable: '12MB (1%)' }));
+    return;
+  }
+  if (inner.startsWith('docker rm -f -v ')) {
+    const ids = inner.slice('docker rm -f -v '.length).trim().split(/\s+/).filter(Boolean);
+    ids.forEach((id) => st.ids.push(id)); saveSt(); ids.forEach((id) => console.log(id)); return;
+  }
+  if (inner.startsWith('docker network rm ')) {
+    const ids = inner.slice('docker network rm '.length).trim().split(/\s+/).filter(Boolean);
+    ids.forEach((id) => st.networks.push(id)); saveSt(); ids.forEach((id) => console.log(id)); return;
+  }
+  if (inner.startsWith('docker volume rm ')) {
+    const names = inner.slice('docker volume rm '.length).trim().split(/\s+/).filter(Boolean);
+    names.forEach((n) => st.volumes.push(n)); saveSt(); names.forEach((n) => console.log(n)); return;
+  }
+  if (inner.includes('herdr-planner-runner 1')) {
+    const gone = new Set(st.ids);
+    const goneNet = new Set(st.networks);
+    const goneVol = new Set(st.volumes);
+    const out = [];
+    const row = (...f) => out.push(f.join('\t'));
+    out.push('herdr-planner-runner 1');
+    row('now', String(Math.floor(Date.now() / 1000)));
+    row('load', '1.20 0.80 0.50 1/100 2');
+    row('cpus', '8');
+    row('arch', 'x86_64');
+    row('host', 'vm-r');
+    row('os', 'Ubuntu 24.04 LTS');
+    row('mem', 'MemTotal:       16777216 kB');
+    row('mem', 'MemAvailable:   12582912 kB');
+    row('mem', 'SwapTotal:       2097152 kB');
+    row('mem', 'SwapFree:        2097152 kB');
+    row('disk', '/var/lib/docker\t500000000000 300000000000');
+    row('docker', '28.3.0 x86_64');
+    row('compose', 'v2.17.3');
+    row('info', '8|17179869184|6|4|40|Ubuntu 24.04 LTS|runc,nvidia,');
+    row('gpu', '0, NVIDIA L4-24Q, 12, 1337, 24576, 45');
+    row('gpuproc', '4242,1337\tdocker-' + 'a'.repeat(64));
+    out.push('== ps');
+    R.containers.filter((c) => !gone.has(c.id)).forEach((c) => out.push(JSON.stringify({
+      ID: c.id, Names: c.name, Image: c.image, State: c.state, Status: c.status, CreatedAt: c.created,
+      Labels: c.labels, Ports: c.ports, Networks: c.networks, Mounts: c.mounts, Size: c.size,
+    })));
+    out.push('== stats');
+    R.containers.filter((c) => !gone.has(c.id)).forEach((c) => out.push(JSON.stringify({
+      ID: c.id.slice(0, 12), CPUPerc: c.cpu, MemUsage: c.mem, PIDs: c.pids, NetIO: '1kB / 2kB', BlockIO: '0B / 0B',
+    })));
+    out.push('== net');
+    R.networks.filter((n) => !goneNet.has(n.id)).forEach((n) => out.push(JSON.stringify({ ID: n.id, Name: n.name, Driver: n.driver, Labels: '' })));
+    out.push('== vol');
+    R.volumes.filter((v) => !goneVol.has(v.name)).forEach((v) => out.push(JSON.stringify({ Name: v.name, Driver: v.driver, Labels: '' })));
+    process.stdout.write(out.join('\n') + '\n');
+    return;
+  }
+  console.error('ssh fixture: unsupported ' + inner.slice(0, 120));
+  process.exit(2);
+}
+
 function xdgMain(C) {
   const argv = process.argv.slice(2);
   C.log('terminal.jsonl', { argv });
@@ -1102,6 +1230,7 @@ writeBin('herdr', herdrMain);
 writeBin('claude', claudeMain);
 writeBin('gh', ghMain);
 writeBin('glab', glabMain);
+writeBin('ssh', sshMain);
 writeBin('xdg-terminal-exec', xdgMain);
 
 // ---------------------------------------------------------------- the world's state and files
@@ -1213,12 +1342,29 @@ const old = new Date(usageAt - 2 * 3600 * 1000);
 fs.utimesSync(path.join(usageDir, 'pi.json'), old, old);
 // The board's own settings (show, set and unset read and write this file): the board with its repo alpha.
 write(path.join(dir, 'state', 'board-settings.json'), JSON.stringify({ '': BOARD.seed.home, alpha: BOARD.seed.alpha }, null, 1));
+// The planner's own list of shipyards, at the path it reads: <data>/../settings/runners.json.
+write(path.join(dir, 'settings', 'runners.json'), JSON.stringify({
+  version: 1, updated_at_ms: NOW, default: 'vm-r',
+  runners: [{
+    id: 'vm-r', target: DATA.runnerR.target, ports_host: DATA.runnerR.ports,
+    tags: ['docker28', 'gpu', 'x86_64'],
+    protected: ['buildx_*', 'neighbor'],
+    note: '8 ядер, L4 24 ГБ (фикстура)', added_at_ms: NOW, capacity: null,
+  }],
+  assign: {},
+}, null, 1));
+write(path.join(dir, 'state', 'runner.json'), JSON.stringify({ ids: [], networks: [], volumes: [] }));
 // The crew's programs on PATH (the planner looks for them there): stand-ins for codex and omp (claude is above).
 for (const name of ['codex', 'omp']) {
   const p = path.join(dir, 'bin', name);
   fs.writeFileSync(p, '#!/bin/sh\necho "' + name + ' stand-in"\n');
   fs.chmodSync(p, 0o755);
 }
+// The video driver: `nvidia-smi` answers from load/nvidia.csv (the lines it would print) and, with no such file, fails the way a machine
+// without a card does. The planner's own reading of the machine can be replaced by load/load.json (HERDR_PLANNER_LOAD_FILE).
+fs.mkdirSync(path.join(dir, 'load'), { recursive: true });
+fs.writeFileSync(path.join(dir, 'bin', 'nvidia-smi'), '#!/bin/sh\nf="$(dirname "$0")/../load/nvidia.csv"\n[ -f "$f" ] && exec cat "$f"\necho "NVIDIA-SMI has failed because it could not communicate with the NVIDIA driver." >&2\nexit 9\n');
+fs.chmodSync(path.join(dir, 'bin', 'nvidia-smi'), 0o755);
 write(path.join(dir, 'theme.name'), 'Fixture Night');
 write(path.join(dir, 'herdr.sock'), '');
 fs.rmSync(path.join(dir, '.seed'), { recursive: true, force: true });
