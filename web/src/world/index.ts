@@ -16,6 +16,7 @@ import {
   aimedAt, clampPitch, CRUISE_DEFAULT, flightDuration, forwardOf, newRig, newShip, rigFromCamera, rigPosition,
   shipFromCamera, shipQuaternion, stepShip, wheelCruise, type RigState, type ShipState,
 } from './flight';
+import { frameUniverse, wholeView, type Rect } from './framing';
 import { Labels, type LabelCandidate } from './labels';
 import { computeLayout, QUASAR_R, type Layout } from './layout';
 import { Links } from './links';
@@ -76,6 +77,8 @@ export interface WorldOptions {
   autoSimple: boolean;
   sensitivity: number;
   invertY: boolean;
+  /** The part of the window the panels leave free (px of the canvas): a nebula is framed there. Null: all of it. */
+  freeArea?: () => Rect | null;
 }
 
 interface Proj { item: Item; x: number; y: number; depth: number; rpx: number }
@@ -443,7 +446,8 @@ export function createWorld(opts: WorldOptions): World {
         case 'quasar':
           out.rig = { focus: p, yaw: keepYaw, pitch: 0.42, dist: 170 }; out.follow = null; out.enter = null; out.leave = true; break;
         case 'universe':
-          out.rig = { focus: p, yaw: outward + 0.3, pitch: 0.55, dist: Math.max(70, (lay?.radius ?? 20) * 2.9) }; out.follow = null; out.enter = e.id; out.leave = false; break;
+          out.rig = lay ? universeRig(lay) : { focus: p, yaw: outward + 0.3, pitch: 0.55, dist: 70 };
+          out.follow = null; out.enter = e.id; out.leave = false; break;
         case 'planet':
           out.rig = { focus: p, yaw: outward + 0.3, pitch: 0.5, dist: 36 }; out.follow = e.id; out.enter = u; out.leave = false; break;
         case 'moon':
@@ -458,6 +462,20 @@ export function createWorld(opts: WorldOptions): World {
     out.pos = rp;
     out.look = out.rig.focus.clone();
     return out;
+  }
+
+  /** The whole nebula in the free part of the screen, seen from above: the same every time (kept while nothing changes). */
+  let rigMemo: { lay: object; key: string; rig: RigState } | null = null;
+  function universeRig(lay: Layout['universes'][number]): RigState {
+    const w = canvas.clientWidth || innerWidth;
+    const h = canvas.clientHeight || innerHeight;
+    const free = opts.freeArea?.() ?? wholeView({ w, h, fov: FOV, k: 1 });
+    const key = [w, h, scaleK(), free.l, free.t, free.r, free.b].join('|');
+    if (!rigMemo || rigMemo.lay !== lay || rigMemo.key !== key) {
+      rigMemo = { lay, key, rig: frameUniverse(lay, { w, h, fov: FOV, k: scaleK() }, free) };
+    }
+    const r = rigMemo.rig;
+    return { focus: r.focus.clone(), yaw: r.yaw, pitch: r.pitch, dist: r.dist };
   }
 
   /** The live pose of the destination (planets move). */
@@ -665,16 +683,17 @@ export function createWorld(opts: WorldOptions): World {
     }
     links.setMoving(!simple);
     links.update(time, resolveRef);
-    // The selection ring follows its thing.
-    if (selected && selRing.visible) {
+    // The selection ring follows its thing. (The nebula we are in has none: it is the whole picture, framed.)
+    if (selected && ringOn(selected)) {
       const p = entityPos(selected, tmp2);
-      if (p) {
+      selRing.visible = !!p && !(selected.kind === 'universe' && focusUniverse === selected.id);
+      if (p && selRing.visible) {
         const r = selected.kind === 'planet' ? bodies.radiusOf(selected.id) : selected.kind === 'moon' ? 0.9 : selected.kind === 'universe' ? (layout.byName.get(selected.id)?.radius ?? 20) : 4;
         const rr = selected.kind === 'universe' ? r * 1.05 : Math.max(r * 1.7, (Math.max(1, camera.position.distanceTo(p)) / scale) * 11);
         selRing.position.copy(p);
         selRing.scale.setScalar(rr);
         selRing.quaternion.copy(camera.quaternion);
-      } else selRing.visible = false;
+      }
     }
     project(w, h);
     if (mode === 'manual' && !flight) updateAim(dt, w, h);
@@ -1173,6 +1192,9 @@ export function createWorld(opts: WorldOptions): World {
         fxAt: (id: string, time: number) => bodies.fxAt(id, time), fxKinds: bodies.kinds(),
         positionOf: (id: string) => { const p = bodies.positionOf(id) ?? docks.sprites.get(id)?.pos; return p ? { x: p.x, y: p.y, z: p.z } : null; },
         project: (id: string) => { const p = bodies.positionOf(id) ?? docks.sprites.get(id)?.pos; return p ? projectPoint(p) : null; },
+        planetsOf: (name: string) => (layout.byName.get(name)?.planets ?? []).map((p) => p.id),
+        free: opts.freeArea?.() ?? null,
+        shipAt: () => { camera.updateMatrixWorld(true); return projectPoint(ship.group.getWorldPosition(new Vector3())); },
       };
     },
     connect(from, to) { if (from && to && from !== to) hooks.onConnect(from, to); },
