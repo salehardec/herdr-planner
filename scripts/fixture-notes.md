@@ -134,6 +134,12 @@ The planner works with its own board only. The stand-ins still answer as a board
   `api user` → `fixture-user`.
 - `glab`: `auth status --hostname gitlab.example.com` → not logged in (exit 1, the hint); `api` → 401.
 - `xdg-terminal-exec`: logs `terminal.jsonl`.
+- `nvidia-smi`: a shell script that prints `DIR/load/nvidia.csv` (the lines the real one prints with
+  `--query-gpu=name,utilization.gpu,memory.used,memory.total --format=csv,noheader,nounits`) and, with no such file,
+  fails like a machine without the driver (exit 9). The load bars' own checks write and remove that file.
+  `HERDR_PLANNER_LOAD_FILE=DIR/load/load.json` (set by `run-checks.sh`, together with `HERDR_PLANNER_LOAD_MS=400`)
+  replaces the planner's reading of `/proc`: a JSON `Load` (`{ok, cpu:{percent,cores}, mem:{used,total,percent},
+  gpus:[…], at}`); `{"ok": false}` is a machine that cannot be read; no file means the real machine.
 
 ## The scale world (`--scale 50x500`)
 

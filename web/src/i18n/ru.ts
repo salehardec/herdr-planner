@@ -386,4 +386,11 @@ export const ru: Record<string, string | string[]> = {
   'scale.now': 'Масштаб интерфейса: {n} %', 'scale.auto': 'Масштаб интерфейса: авто ({n} %)', 'scale.limit': 'Масштаб уже {n} %: дальше некуда',
   'chat.expand': 'Развернуть', 'chat.collapse': 'Свернуть', 'help.scale': 'размер интерфейса: крупнее / мельче / по размеру окна',
   'todo.inDraft': 'в черновике чата: уйдёт вместе с сообщением', 'todo.draftNote': 'Дело в строке чата. Из списка оно уйдёт, когда отправишь сообщение', 'todo.alreadyDraft': 'Это дело уже в черновике чата',
+  'load.cpu': 'CPU', 'load.mem': 'MEM', 'load.gpu': 'GPU', 'load.short': 'Загрузка',
+  'load.own': 'эта машина', 'load.noGpu': 'Видеокарт нет', 'load.noData': 'нет данных', 'load.noTime': 'время чтения неизвестно',
+  'load.level.ok': 'норма', 'load.level.high': 'высокая', 'load.level.crit': 'критическая',
+  'load.offline': 'нет связи с {host}', 'load.waiting': 'Загрузка {host} читается…',
+  'load.aria': 'Загрузка {host}: {list}', 'load.memOf': 'занято {used} из {total} ГБ', 'load.vram': 'видеопамять {used} из {total} ГБ',
+  'load.cores': ['{n} ядро', '{n} ядра', '{n} ядер'], 'load.gpuMean': 'В шкале GPU — средняя загрузка карт: {n} %',
+  'load.updated': 'обновлено {at} · раз в {n} с', 'load.click': 'клик — к Галактике',
 };

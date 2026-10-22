@@ -372,4 +372,11 @@ export const en: Record<string, string | string[]> = {
   'scale.now': 'Interface scale: {n} %', 'scale.auto': 'Interface scale: auto ({n} %)', 'scale.limit': 'The scale is already {n} %: no further',
   'chat.expand': 'Expand', 'chat.collapse': 'Collapse', 'help.scale': 'interface size: bigger / smaller / by the size of the window',
   'todo.inDraft': 'in the chat draft: leaves with the message', 'todo.draftNote': 'The todo is in the chat line. It leaves the list when you send the message', 'todo.alreadyDraft': 'This todo is already in the chat draft',
+  'load.cpu': 'CPU', 'load.mem': 'MEM', 'load.gpu': 'GPU', 'load.short': 'Load',
+  'load.own': 'this machine', 'load.noGpu': 'No video cards', 'load.noData': 'no data', 'load.noTime': 'time of the reading unknown',
+  'load.level.ok': 'normal', 'load.level.high': 'high', 'load.level.crit': 'critical',
+  'load.offline': 'no connection with {host}', 'load.waiting': 'Reading the load of {host}…',
+  'load.aria': 'Load of {host}: {list}', 'load.memOf': '{used} of {total} GB in use', 'load.vram': 'video memory {used} of {total} GB',
+  'load.cores': ['{n} core', '{n} cores', '{n} cores'], 'load.gpuMean': 'The GPU bar is the mean load of the cards: {n} %',
+  'load.updated': 'updated {at} · every {n} s', 'load.click': 'click: fly to the Galaxy',
 };

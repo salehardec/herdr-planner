@@ -193,6 +193,10 @@ pub struct App {
     pub force_after: AtomicBool,
     /// Main-branch lag of this machine's clones, by repo name.
     pub lag: Mutex<BTreeMap<String, gitlag::Lag>>,
+    /// How loaded this machine is (CPU, memory, video cards); kept fresh while a page is open.
+    pub load: RwLock<crate::load::Load>,
+    /// A page has just connected: read the load now, not at the next beat.
+    pub load_poke: Notify,
 }
 
 pub type Shared = Arc<App>;
@@ -301,6 +305,8 @@ impl App {
             after: Mutex::new(AfterCache::default()),
             force_after: AtomicBool::new(false),
             lag: Mutex::new(BTreeMap::new()),
+            load: RwLock::new(crate::load::Load::default()),
+            load_poke: Notify::new(),
         })
     }
 }
