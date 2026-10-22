@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { gb, levelOf, meters, pct, staleLoad, tierFor, worse, worstMeter } from './load';
+import { gb, levelOf, meters, monFit, pct, staleLoad, tierFor, worse, worstMeter } from './load';
 
 describe('load levels', () => {
   it('changes colour at 70 and 90', () => {
@@ -23,6 +23,14 @@ describe('load levels', () => {
   });
   it('takes the form that fits the room the crumbs leave', () => {
     expect([32, 24, 14, 8, 4, 3].map(tierFor)).toEqual(['host', 'full', 'stack', 'sum', 'dot', 'none']);
+  });
+  it('gives the subscription chip its words only while the bars keep their full form', () => {
+    expect(monFit(40, 13, 3.6, 0.5)).toEqual({ chip: 'full', tier: 'full' });
+    expect(monFit(50, 13, 3.6, 0.5)).toEqual({ chip: 'full', tier: 'host' });
+    expect(monFit(30, 13, 3.6, 0.5)).toEqual({ chip: 'pct', tier: 'full' });
+    expect(monFit(10, 13, 3.6, 0.5)).toEqual({ chip: 'pct', tier: 'sum' });
+    expect(monFit(4, 13, 3.6, 0.5)).toEqual({ chip: 'pct', tier: 'none' });
+    expect(monFit(3, 13, 3.6, 0.5)).toEqual({ chip: 'none', tier: 'none' });
   });
   it('knows an old reading by the machine\'s own clock and by how long the stream was quiet', () => {
     expect(staleLoad(0, 5000, 0, 3000)).toBe(true);

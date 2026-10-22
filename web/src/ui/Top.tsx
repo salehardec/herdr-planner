@@ -1,5 +1,4 @@
 import type { JSX } from 'preact';
-import { useEffect, useRef } from 'preact/hooks';
 import { attention, level, mode, panels, selected, snap, universe, taskOf } from '../store';
 import { Search } from './Search';
 import { goHome, navigateTo } from '../nav';
@@ -8,7 +7,6 @@ import { setMode } from '../keys';
 import { t } from '../i18n';
 import { LimitsChip } from './Limits';
 import { Menu } from './Menu';
-import { StationChip } from './StationChip';
 import { LoadBar, LoadPop } from './LoadBar';
 import './top.css';
 
@@ -48,51 +46,32 @@ function Crumbs(): JSX.Element {
   );
 }
 
-/** The search sits in the middle of the top; it is as wide as the free middle allows, so it must know how wide the buttons at the right are. */
-function useRightWidth(top: { current: HTMLElement | null }, right: { current: HTMLElement | null }): void {
-  useEffect(() => {
-    const t = top.current;
-    const r = right.current;
-    if (!t || !r || typeof ResizeObserver === 'undefined') return;
-    const measure = (): void => {
-      const kids = [...r.children] as HTMLElement[];
-      const w = kids.reduce((a, c) => a + c.offsetWidth, 0) + 8 * Math.max(0, kids.length - 1);
-      t.style.setProperty('--right-w', `${Math.ceil(w)}px`);
-    };
-    measure();
-    const ro = new ResizeObserver(measure);
-    [...r.children].forEach((c) => ro.observe(c));
-    const mo = new MutationObserver(() => { ro.disconnect(); [...r.children].forEach((c) => ro.observe(c)); measure(); });
-    mo.observe(r, { childList: true });
-    return () => { ro.disconnect(); mo.disconnect(); };
-  }, []);
-}
-
 export function Top(): JSX.Element {
-  const topRef = useRef<HTMLDivElement>(null);
-  const rightRef = useRef<HTMLDivElement>(null);
-  useRightWidth(topRef, rightRef);
   const waits = attention.value;
   const m = mode.value;
   return (
-    <div class="top" id="top" ref={topRef}>
+    <div class="top" id="top">
       <div class="topl" id="topl">
+        <Menu />
         <Crumbs />
-        <LoadBar />
+        <div class="mon" id="mon">
+          <LoadBar />
+          <LimitsChip />
+        </div>
       </div>
       <Search />
-      <div class="right" id="right" ref={rightRef}>
-        <StationChip />
+      <div class="right" id="right">
         <button
           class={`btn waitbtn ${waits ? 'hot' : ''}`} id="wait-btn" type="button" title="B" aria-pressed={panels.wait.value}
           onClick={() => { panels.wait.value = !panels.wait.value; if (panels.wait.value) fromQueue.value = false; }}
-        >{t('wait.button', { n: waits })}</button>
-        <LimitsChip />
+        >
+          <span class="long">{t('wait.button', { n: waits })}</span>
+          <span class="short">{t('wait.short', { n: waits })}</span>
+        </button>
         <div id="mode" class="modeswitch" role="group" aria-label={t('mode.aria')}>
           <button type="button" data-mode="auto" class={m === 'auto' ? 'on' : ''} aria-pressed={m === 'auto'} title="P" onClick={() => setMode('auto')}>{t('mode.auto')}</button>
           <button type="button" data-mode="manual" class={m === 'manual' ? 'on' : ''} aria-pressed={m === 'manual'} title="P" onClick={() => setMode('manual', true)}>{t('mode.manual')}</button>
         </div>
-        <Menu />
       </div>
       <LoadPop />
     </div>

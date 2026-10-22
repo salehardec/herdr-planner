@@ -35,20 +35,21 @@ export function LimitsChip(): JSX.Element {
   const open = panels.limits.value;
   if (!worst) {
     return (
-      <button class="btn limchip" id="hud-limits" type="button" aria-pressed={open} title={t('limits.noneTip')} onClick={() => { panels.limits.value = !open; }}>
-        <Gl n="limit" />{t('limits.chip')} <span class="faint">{t('limits.noData')}</span>
+      <button class="btn limchip" id="hud-limits" type="button" aria-pressed={open} aria-label={t('limits.noneTip')} title={t('limits.noneTip')} onClick={() => { panels.limits.value = !open; }}>
+        <Gl n="limit" /><span class="lim-ag">{t('limits.chip')} <span class="faint">{t('limits.noData')}</span></span><b class="lim-pc nd">—</b>
       </button>
     );
   }
   const remaining = Math.max(0, 100 - Math.round(worst.window.percent * 100));
   const level = worst.window.severity === 'crit' ? ' lim-crit' : worst.window.severity === 'warn' ? ' lim-warn' : '';
   const stale = worst.agent.stale ? ` · ${t('limits.stale')}` : '';
+  const tip = `${worst.agent.name} · ${worst.window.label}: ${t('limits.left', { n: remaining })}${stale}`;
   return (
     <button
       class={`btn limchip${level}`} id="hud-limits" type="button" aria-pressed={open} onClick={() => { panels.limits.value = !open; }}
-      title={`${worst.agent.name} · ${worst.window.label}: ${t('limits.left', { n: remaining })}${stale}`}
+      aria-label={tip} title={tip}
     >
-      <Gl n="limit" /><b>{remaining}%</b> <span class="lim-ag">{worst.agent.name} · {worst.window.label}</span>
+      <Gl n="limit" /><b class="lim-pc">{remaining}%</b> <span class="lim-ag">{worst.agent.name} · {worst.window.label}</span>
     </button>
   );
 }

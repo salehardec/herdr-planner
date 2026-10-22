@@ -5,8 +5,7 @@ import { live, loadInfo, loadRecv, snap } from '../store';
 import { t, tn, locale } from '../i18n';
 import { goHome } from '../nav';
 import { rootPx } from '../scale';
-import { tierFor } from '../util/load';
-import { gb, levelOf, meters, pct, staleLoad, worstMeter, type LoadLevel, type Meter } from '../util/load';
+import { gb, levelOf, meters, monFit, pct, staleLoad, worstMeter, type LoadLevel, type Meter } from '../util/load';
 import './loadbar.css';
 
 /** The bars and their tooltip are two pieces of the top bar: the tooltip stands outside the bars' box (which clips by its width). */
@@ -39,22 +38,40 @@ function summaryText(ms: Meter[], st: State): string {
   return t('load.aria', { host, list: ms.map((m) => `${keyName(m.key)} ${m.percent} %, ${t(`load.level.${m.level}`)}`).join('; ') });
 }
 
-/** The bars sit beside the crumbs, which come first: the form of the bars is the one that fits in what the crumbs leave (data-tier). */
+/** The monitoring group (the bars, then the subscription chip) sits right of the menu and the crumbs, which come first: the form of the bars
+ *  (data-tier) and of the chip (data-form) is the one that fits in what they leave. */
 function useTier(box: { current: HTMLElement | null }): void {
   useEffect(() => {
     const el = box.current;
-    const row = el?.parentElement;
+    const mon = el?.parentElement;
+    const row = mon?.parentElement;
     const crumbs = row?.querySelector('.crumbs') as HTMLElement | null;
-    if (!el || !row || !crumbs) return;
+    const menu = row?.querySelector('.menu') as HTMLElement | null;
+    const chip = mon?.querySelector('.limchip') as HTMLElement | null;
+    if (!el || !mon || !row || !crumbs || !menu) return;
     const measure = (): void => {
-      // a phone-sized window puts the bars on the second row, beside the search: always the narrowest form
-      if (document.documentElement.classList.contains('bp900')) { el.dataset.tier = 'sum'; return; }
+      // a phone-sized window puts the group on the second row, beside the search: always the narrowest forms
+      if (document.documentElement.classList.contains('bp900')) {
+        el.dataset.tier = 'sum';
+        if (chip) chip.dataset.form = 'pct';
+        return;
+      }
+      const px = rootPx();
       const gap = parseFloat(getComputedStyle(crumbs).columnGap) || 0;
       const kids = [...crumbs.children] as HTMLElement[];
       // what the crumbs would take if nothing were cut: a button's own text, not the width it was squeezed to
       const natural = kids.reduce((a, c) => a + (c.tagName === 'BUTTON' ? c.scrollWidth : c.offsetWidth), 0) + gap * Math.max(0, kids.length - 1);
       const rowGap = parseFloat(getComputedStyle(row).columnGap) || 0;
-      el.dataset.tier = tierFor((row.clientWidth - natural - rowGap) / rootPx());
+      const monGap = parseFloat(getComputedStyle(mon).columnGap) || 0;
+      let full = 0;
+      let short = 0;
+      if (chip) {
+        chip.dataset.form = 'full'; full = chip.offsetWidth;
+        chip.dataset.form = 'pct'; short = chip.offsetWidth;
+      }
+      const fit = monFit((row.clientWidth - menu.offsetWidth - natural - 2 * rowGap) / px, full / px, short / px, monGap / px);
+      el.dataset.tier = fit.tier;
+      if (chip) chip.dataset.form = fit.chip;
     };
     measure();
     if (typeof ResizeObserver === 'undefined') return;
@@ -63,6 +80,7 @@ function useTier(box: { current: HTMLElement | null }): void {
     ro.observe(document.getElementById('top') ?? row);
     const mo = new MutationObserver(measure);
     mo.observe(crumbs, { childList: true, characterData: true, subtree: true });
+    if (chip) mo.observe(chip, { childList: true, characterData: true, subtree: true });
     return () => { ro.disconnect(); mo.disconnect(); };
   }, []);
 }

@@ -118,7 +118,7 @@ for only in "boot,live,navigator,buttons,autopilot,manual,stack,queue,search" \
             "chat,todo" \
             "lag,universes,remote,scale,runners" \
             "station,crew,ship,theme,simple,planet states,narrow" \
-            "focus,agent screen,requests,links,archive,load,limits,memory,layout narrow" \
+            "focus,agent screen,requests,links,archive,load,top bar,limits,memory,layout narrow" \
             "layout 1280" "layout 1920,layout 1600" "layout 2560" "layout 1366,layout big"; do
   n=$((n + 1))
   want "ui$n" || continue

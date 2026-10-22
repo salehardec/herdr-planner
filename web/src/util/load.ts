@@ -43,3 +43,12 @@ export const worstMeter = (ms: Meter[]): Meter => ms.reduce((a, b) => (RANK[b.le
  *  numbers, the worst one only (named, or just the number when the room is very small), or nothing. */
 export const tierFor = (rem: number): 'host' | 'full' | 'stack' | 'sum' | 'dot' | 'none' =>
   rem >= 31 ? 'host' : rem >= 22 ? 'full' : rem >= 12.5 ? 'stack' : rem >= 5.6 ? 'sum' : rem >= 3.8 ? 'dot' : 'none';
+
+/** The top bar's monitoring group (the bars, then the subscription chip) in the room (rem) the menu and the crumbs leave: the chip keeps its
+ *  words (the agent and the window) while the bars still get the full form, else it shrinks to its percentage, and with no room at all
+ *  it steps aside. `gap` is the space between the two. */
+export function monFit(room: number, chipFull: number, chipPct: number, gap: number): { chip: 'full' | 'pct' | 'none'; tier: ReturnType<typeof tierFor> } {
+  if (room - chipFull - gap >= 22) return { chip: 'full', tier: tierFor(room - chipFull - gap) };
+  if (room >= chipPct) return { chip: 'pct', tier: tierFor(room - chipPct - gap) };
+  return { chip: 'none', tier: 'none' };
+}
