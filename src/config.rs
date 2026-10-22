@@ -38,6 +38,8 @@ pub struct AppConfig {
     pub tls_key: Option<PathBuf>,
     /// Who translates answers for the page: `claude/<model>` (default) or `omp/<model>`.
     pub translator: String,
+    /// The ssh program the planner uses for the shipyards (`HERDR_PLANNER_SSH` overrides, for checks).
+    pub ssh_bin: String,
     /// Where a repository added by address is cloned (`~/Projects`).
     pub projects_dir: PathBuf,
 }
@@ -164,6 +166,10 @@ impl AppConfig {
                 .translator
                 .filter(|v| !v.trim().is_empty())
                 .unwrap_or_else(|| "claude/claude-haiku-5-5".to_string()),
+            ssh_bin: env::var("HERDR_PLANNER_SSH")
+                .ok()
+                .filter(|v| !v.trim().is_empty())
+                .unwrap_or_else(|| "ssh".to_string()),
             projects_dir: file
                 .projects_dir
                 .filter(|v| !v.trim().is_empty())
@@ -199,6 +205,20 @@ impl AppConfig {
     /// the repository or the board's data folder.
     pub fn attachments_dir(&self) -> PathBuf {
         self.state_dir.join("attachments")
+    }
+
+    /// The shipyards («верфи»): one file next to the board's own settings, the same path on every
+    /// machine. `HERDR_PLANNER_RUNNERS` points the checks at another one.
+    pub fn runners_file(&self) -> PathBuf {
+        if let Ok(v) = env::var("HERDR_PLANNER_RUNNERS") {
+            if !v.trim().is_empty() {
+                return expand_home(v.trim());
+            }
+        }
+        self.data_dir
+            .parent()
+            .map(|p| p.join("settings/runners.json"))
+            .unwrap_or_else(|| home().join(".herdr-projects/settings/runners.json"))
     }
 
     /// The folder new universes are cloned into now: the one the ship set last, else the configured one.

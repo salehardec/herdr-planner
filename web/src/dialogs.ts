@@ -8,6 +8,7 @@ import type { SavedFile } from './attach';
 
 export const addDialogs = {
   universe: signal(false),
+  runner: signal(false),
   firstRun: signal(false),
   popover: signal<{ id: string; repo: string } | null>(null),
   /** A todo item dropped on a planet: the window to correct it before it goes to the task's agent. */
@@ -38,7 +39,7 @@ export function openNewTask(id: string, repo: string): void {
 }
 
 export const dialogOpen = (): boolean =>
-  addDialogs.universe.value || addDialogs.firstRun.value || !!addDialogs.popover.value || !!addDialogs.tell.value
+  addDialogs.universe.value || addDialogs.runner.value || addDialogs.firstRun.value || !!addDialogs.popover.value || !!addDialogs.tell.value
   || !!addDialogs.summary.value || !!stationDlg.value || shipDlg.value || !!rememberDlg.value;
 
 export function closeDialogs(): void {
@@ -48,6 +49,7 @@ export function closeDialogs(): void {
   if (addDialogs.tell.value) { addDialogs.tell.value = null; return; }
   if (stationDlg.value) { closeStation(); return; }
   if (shipDlg.value) { shipDlg.value = false; return; }
+  if (addDialogs.runner.value) { addDialogs.runner.value = false; return; }
   if (addDialogs.universe.value) { addDialogs.universe.value = false; return; }
   if (addDialogs.firstRun.value) { addDialogs.firstRun.value = false; }
 }

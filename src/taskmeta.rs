@@ -46,6 +46,8 @@ pub struct RepoInfo {
     pub name: String,
     /// Short key used in task ids (`APC` for `apicache`); `""` when unknown.
     pub key: String,
+    /// Every key the board remembers for this repository (the current one and older `had` ones).
+    pub keys: Vec<String>,
     /// Folder of the repository; `""` when unknown.
     pub root: String,
 }
@@ -189,17 +191,21 @@ pub fn repos(data_dir: &Path) -> Vec<RepoInfo> {
         .into_iter()
         .filter(|name| valid_repo(name))
         .map(|name| {
-            let key = had
+            // The first key in the file is the repository's current one; the rest are older names.
+            let mut keys: Vec<String> = had
                 .iter()
-                .find(|(_, repo)| repo.as_str() == Some(name.as_str()))
+                .filter(|(_, repo)| repo.as_str() == Some(name.as_str()))
                 .map(|(key, _)| key.clone())
-                .unwrap_or_default();
+                .collect();
+            let key = keys.first().cloned().unwrap_or_default();
+            keys.sort();
+            keys.dedup();
             let root = folders
                 .get(&name)
                 .and_then(Value::as_str)
                 .unwrap_or("")
                 .to_string();
-            RepoInfo { name, key, root }
+            RepoInfo { name, key, keys, root }
         })
         .collect()
 }

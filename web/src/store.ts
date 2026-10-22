@@ -1,7 +1,7 @@
 /* The page's state: signals. The world and the panels both read from here. */
 import { computed, signal } from '@preact/signals';
 import type {
-  LoadInfo, Entity, GalaxyView, Level, Request, Snapshot, Status, Task, TurnData,
+  LoadInfo, Entity, GalaxyView, Level, Request, Runner, Snapshot, Status, Task, TurnData,
 } from './types';
 import { ATTENTION, STATUS_ORDER } from './types';
 import { collectRequests } from './requests';
@@ -104,6 +104,8 @@ export const currentView = computed<GalaxyView>(() => {
   if (!s) return { label: '', ok: true, tasks: [], projects: [], links: [] };
   return { label: s.host || 'localhost', ok: s.board.ok, tasks: s.tasks, projects: s.projects, links: s.links };
 });
+
+export const runners = computed<Runner[]>(() => snap.value?.runners ?? []);
 
 export const tasksIndex = computed(() => {
   const m = new Map<string, Task>();

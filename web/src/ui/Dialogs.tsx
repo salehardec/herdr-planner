@@ -8,6 +8,7 @@ import { t } from '../i18n';
 import { Gl } from './Gl';
 import { loadModels, modelList } from './Todo';
 import { AddUniverse } from './AddUniverse';
+import { AddRunner } from './AddRunner';
 import { lightPreset } from './station-api';
 import { SavedFiles } from './Attached';
 import { AutoTextarea } from './AutoText';
@@ -136,6 +137,7 @@ export function Dialogs(): JSX.Element {
       <TodoPopover />
       <TodoTell />
       <AddUniverse />
+      <AddRunner />
       <FirstRun />
       <Coach />
     </>

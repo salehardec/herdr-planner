@@ -29,6 +29,7 @@ export const SPRITE = `
 <symbol id="g-limit" viewBox="0 0 16 16"><path d="M2.8 12.4a5.4 5.4 0 1 1 10.4 0"/><path d="M8 10.2 10.6 6.4"/><circle cx="8" cy="12.2" r="1"/></symbol>
 <symbol id="g-search" viewBox="0 0 16 16"><circle cx="7" cy="7" r="4.4"/><path d="m10.3 10.3 3.6 3.6"/></symbol>
 <symbol id="g-quasar" viewBox="0 0 16 16"><circle cx="8" cy="8" r="2.4" fill="currentColor"/><path d="M8 1.5v3M8 11.5v3"/><ellipse cx="8" cy="8" rx="6.3" ry="2.2"/></symbol>
+<symbol id="g-yard" viewBox="0 0 16 16"><ellipse cx="8" cy="8" rx="6.2" ry="2.6"/><ellipse cx="8" cy="8" rx="2.6" ry="1.1"/><path d="M8 2v2.2M8 11.8V14M2 8h2.2M11.8 8H14"/></symbol>
 <symbol id="g-galaxy" viewBox="0 0 16 16"><circle cx="8" cy="8" r="1.4" fill="currentColor"/><path d="M8 8c3-4 6-2 5.5 0.5S9 12 6 11.5 2.5 7 5 4.6"/></symbol>
 <symbol id="g-moon" viewBox="0 0 16 16"><circle cx="8" cy="8" r="3"/><circle cx="12.6" cy="4" r="1.2" fill="currentColor"/></symbol>
 <symbol id="g-chat" viewBox="0 0 16 16"><path d="M2.4 3.2h11.2v7.4H7.4l-3 2.7v-2.7H2.4z"/></symbol>
