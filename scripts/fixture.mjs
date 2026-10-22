@@ -1227,6 +1227,28 @@ function sshMain(C, DATA) {
     if (b.status === 'running') { console.error('ERROR: builder ' + name + ' is running (the check never removes a running builder)'); process.exit(1); }
     st.builders.push(name); st.volumes.push('buildx_buildkit_' + b.node + '_state'); saveSt(); console.log(name + ' removed'); return;
   }
+  // One container: the log tail (a line more at every call, so the page's refresh shows), stop and restart. Stopped
+  // ids and restarted ones are remembered in the state file; the probe shows them.
+  const logsRe = /^docker logs --tail (\d+) ([0-9a-f]{64}) 2>&1$/.exec(inner);
+  if (logsRe) {
+    const c = allContainers.find((x) => x.id === logsRe[2] && !st.ids.includes(x.id));
+    if (!c) { console.log('Error response from daemon: No such container: ' + logsRe[2]); process.exit(1); }
+    st.logCalls = (st.logCalls || 0) + 1; saveSt();
+    const total = 40 + st.logCalls;
+    const lines = [];
+    for (let i = 1; i <= total; i++) lines.push((i % 17 === 0 ? 'ERROR ' : i % 5 === 0 ? 'WARN  ' : 'INFO  ') + c.name + ' line ' + i + (i % 9 === 0 ? ' \u001b[31mred\u001b[0m' : ''));
+    console.log(lines.slice(-Number(logsRe[1])).join('\n'));
+    return;
+  }
+  const stopRe = /^docker (stop|restart) ([0-9a-f]{64})$/.exec(inner);
+  if (stopRe) {
+    const c = allContainers.find((x) => x.id === stopRe[2] && !st.ids.includes(x.id));
+    if (!c) { console.error('Error response from daemon: No such container: ' + stopRe[2]); process.exit(1); }
+    st.stopped = (st.stopped || []).filter((x) => x !== c.id);
+    st.started = (st.started || []).filter((x) => x !== c.id);
+    (stopRe[1] === 'stop' ? st.stopped : st.started).push(c.id);
+    saveSt(); console.log(c.id); return;
+  }
   if (inner.startsWith('docker rm -f -v ')) {
     const ids = inner.slice('docker rm -f -v '.length).trim().split(/\s+/).filter(Boolean);
     ids.forEach((id) => st.ids.push(id)); saveSt(); ids.forEach((id) => console.log(id)); return;
@@ -1263,8 +1285,12 @@ function sshMain(C, DATA) {
     row('gpu', '0, NVIDIA L4-24Q, 12, 1337, 24576, 45');
     row('gpuproc', '4242,1337\tdocker-' + 'a'.repeat(64));
     out.push('== ps');
+    const stopped = new Set(st.stopped || []);
+    const started = new Set(st.started || []);
+    const stateOf = (c) => (stopped.has(c.id) ? 'exited' : started.has(c.id) ? 'running' : c.state);
+    const statusOf = (c) => (stopped.has(c.id) ? 'Exited (0) 1 second ago' : started.has(c.id) ? 'Up 1 second' : c.status);
     allContainers.filter((c) => !gone.has(c.id)).forEach((c) => out.push(JSON.stringify({
-      ID: c.id, Names: c.name, Image: c.image, State: c.state, Status: c.status, CreatedAt: c.created,
+      ID: c.id, Names: c.name, Image: c.image, State: stateOf(c), Status: statusOf(c), CreatedAt: c.created,
       Labels: c.labels, Ports: c.ports, Networks: c.networks, Mounts: c.mounts, Size: c.size,
     })));
     out.push('== stats');

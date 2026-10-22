@@ -5,7 +5,7 @@ use crate::app::{self, Shared};
 use crate::config::{now_ms, AppConfig};
 use crate::ssh::{self, MachineRef};
 use crate::runners::{self, Class, CleanPlan, Runner, RunnerState, RunnersFile};
-use crate::{runners_auto, runners_disk};
+use crate::{runners_auto, runners_ctl, runners_disk};
 use crate::server::{client_is_local, same_origin};
 use crate::station;
 use axum::extract::{ConnectInfo, State};
@@ -729,6 +729,31 @@ pub fn safe_volume(s: &str) -> bool {
         && s.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '-'))
 }
 
+/// Reads the yard again after a change, keeps the answer (the database, the list) and hands it back.
+async fn reprobe(app: &Shared, r: &Runner, prev: &RunnerState) -> RunnerState {
+    let fresh = runners::probe(&app.cfg, r).await;
+    let mut after = runners::keep_last(Some(prev), fresh);
+    {
+        let snap = app.snapshot.read().await.clone();
+        classify_now(app, &snap, &mut after);
+    }
+    if let Ok(json) = serde_json::to_string(&after) {
+        app.db.runner_put(
+            &after.id,
+            &json,
+            after.ok,
+            after.why.as_ref().map(|w| w.line.as_str()).unwrap_or(""),
+        );
+    }
+    {
+        let mut list = app.runners.lock().await;
+        list.retain(|s| s.id != after.id);
+        list.push(after.clone());
+        list.sort_by(|a, b| a.id.cmp(&b.id));
+    }
+    after
+}
+
 /// `POST /api/runner/clean`: removes exactly the planned ids, by full id, then reads the yard again.
 pub async fn runner_clean(State(app): State<Shared>, headers: HeaderMap, Json(body): Json<CleanBody>) -> Response {
     if !same_origin(&headers) {
@@ -851,26 +876,7 @@ pub async fn runner_clean(State(app): State<Shared>, headers: HeaderMap, Json(bo
             }
         }
     }
-    let fresh = runners::probe(&app.cfg, &r).await;
-    let mut after = runners::keep_last(Some(&state), fresh);
-    {
-        let snap = app.snapshot.read().await.clone();
-        classify_now(&app, &snap, &mut after);
-    }
-    if let Ok(json) = serde_json::to_string(&after) {
-        app.db.runner_put(
-            &after.id,
-            &json,
-            after.ok,
-            after.why.as_ref().map(|w| w.line.as_str()).unwrap_or(""),
-        );
-    }
-    {
-        let mut list = app.runners.lock().await;
-        list.retain(|s| s.id != after.id);
-        list.push(after.clone());
-        list.sort_by(|a, b| a.id.cmp(&b.id));
-    }
+    let after = reprobe(&app, &r, &state).await;
     let removed = ids.len().saturating_sub(failed.len());
     let mb = plan.was.bytes as f64 / (1024.0 * 1024.0);
     app::journal_note(
@@ -1200,6 +1206,210 @@ pub async fn runner_auto(State(app): State<Shared>, headers: HeaderMap, Json(bod
         });
     }
     Json(json!({"ok": true, "auto": auto})).into_response()
+}
+
+/* ───────── one container: logs, stop, restart, delete ───────── */
+
+const LOGS_WAIT: Duration = Duration::from_secs(20);
+const ACT_WAIT: Duration = Duration::from_secs(90);
+
+fn machine_of(r: &Runner) -> MachineRef {
+    MachineRef { label: r.id.clone(), target: r.target.clone(), session: String::new() }
+}
+
+/// The container of a shipyard's last read by its full id, or the answer to refuse with.
+async fn container_of(app: &Shared, runner: &str, id: &str) -> Result<(Runner, RunnerState, runners::Container), Response> {
+    if !safe_id(id) {
+        return Err(fail(400, "недопустимый id контейнера"));
+    }
+    let state = state_now(app, runner).await.ok_or_else(|| fail(404, "такой верфи нет в списке"))?;
+    let file = file_of(app)?;
+    let r = file.get(runner).cloned().ok_or_else(|| fail(404, "такой верфи нет в списке"))?;
+    let c = state
+        .containers
+        .iter()
+        .find(|c| c.id == id)
+        .cloned()
+        .ok_or_else(|| fail(409, "контейнера нет на верфи: прочитайте её заново"))?;
+    Ok((r, state, c))
+}
+
+#[derive(Deserialize)]
+pub struct LogsBody {
+    runner: String,
+    id: String,
+    #[serde(default)]
+    tail: Option<u32>,
+}
+
+/// `POST /api/runner/container/logs`: the tail of one task container's log (`docker logs --tail`); read-only.
+pub async fn container_logs(State(app): State<Shared>, headers: HeaderMap, Json(body): Json<LogsBody>) -> Response {
+    if !same_origin(&headers) {
+        return fail(403, "cross-origin request refused");
+    }
+    let (r, _state, c) = match container_of(&app, &body.runner, &body.id).await {
+        Ok(x) => x,
+        Err(resp) => return resp,
+    };
+    if let Err(why) = runners_ctl::logs_gate(&c) {
+        return fail(409, why);
+    }
+    let tail = runners_ctl::tail_of(body.tail);
+    let cmd = runners_ctl::logs_command(&c.id, tail);
+    match ssh::ssh_ended(&app.cfg, &machine_of(&r), &cmd, LOGS_WAIT).await {
+        Ok(e) if e.timed_out => fail(504, "верфь не ответила за 20 секунд"),
+        Ok(e) if !e.error.is_empty() => fail(502, e.error),
+        Ok(e) if e.code == Some(0) => {
+            let (text, cut) = runners_ctl::tail_text(&e.stdout, runners_ctl::LOG_BYTES);
+            Json(json!({"ok": true, "text": text, "cut": cut, "tail": tail, "name": c.name, "state": c.state, "at": now_ms()}))
+                .into_response()
+        }
+        Ok(e) => {
+            // docker's own complaint ends up in the merged text (`2>&1`), ssh's own in stderr
+            let said = if e.stdout.trim().is_empty() { e.stderr.trim() } else { e.stdout.trim() };
+            fail(502, said.lines().next().unwrap_or("docker logs не удался").to_string())
+        }
+        Err(e) => fail(502, e),
+    }
+}
+
+#[derive(Deserialize)]
+pub struct CtlPreviewBody {
+    runner: String,
+    id: String,
+    act: String,
+    /// The task whose Focus the human acts from; empty from the shipyard's own screen.
+    #[serde(default)]
+    task: String,
+}
+
+/// `POST /api/runner/container/preview`: «было → стало» of one action and a token; nothing is touched.
+pub async fn container_preview(State(app): State<Shared>, headers: HeaderMap, Json(body): Json<CtlPreviewBody>) -> Response {
+    if !same_origin(&headers) {
+        return fail(403, "cross-origin request refused");
+    }
+    let Some(act) = runners_ctl::Act::parse(&body.act) else {
+        return fail(400, "неизвестное действие");
+    };
+    let (_r, state, c) = match container_of(&app, &body.runner, &body.id).await {
+        Ok(x) => x,
+        Err(resp) => return resp,
+    };
+    if !state.ok {
+        return fail(409, "верфь не на связи: последнее чтение устарело");
+    }
+    if let Err(why) = runners_ctl::gate(&c, act, &body.task) {
+        return fail(409, why);
+    }
+    let token = {
+        let mut bytes = [0u8; 32];
+        rand::thread_rng().fill_bytes(&mut bytes);
+        bytes.iter().map(|b| format!("{b:02x}")).collect::<String>()
+    };
+    {
+        let mut plans = app.runner_ctl_plans.lock().await;
+        plans.retain(|_, p| p.at.elapsed().as_millis() < runners::PLAN_TTL_MS as u128);
+        plans.insert(
+            token.clone(),
+            runners_ctl::Plan {
+                runner: body.runner.clone(),
+                id: c.id.clone(),
+                act,
+                scope: body.task.clone(),
+                at: std::time::Instant::now(),
+            },
+        );
+    }
+    Json(runners_ctl::preview_of(&body.runner, &c, act, &token, now_ms() + runners::PLAN_TTL_MS)).into_response()
+}
+
+#[derive(Deserialize)]
+pub struct CtlActBody {
+    runner: String,
+    token: String,
+    confirm: Option<bool>,
+}
+
+/// `POST /api/runner/container/act`: runs the previewed action on its container, by full id, after the check is
+/// made again on the last read of the yard (the classes taken anew from the board; the yard itself is read again
+/// only after the command, so a state seen late is harmless because `rm` has no `-f`); then reads the yard again.
+/// The token is spent only when the command is about to run: a refused press leaves the card usable.
+pub async fn container_act(State(app): State<Shared>, headers: HeaderMap, Json(body): Json<CtlActBody>) -> Response {
+    if !same_origin(&headers) {
+        return fail(403, "cross-origin request refused");
+    }
+    if body.confirm != Some(true) {
+        return fail(400, "действие требует подтверждения");
+    }
+    let plan = {
+        let plans = app.runner_ctl_plans.lock().await;
+        let Some(p) = plans.get(&body.token).cloned() else {
+            return fail(409, "план не найден или истёк: откройте карточку заново");
+        };
+        if p.at.elapsed().as_millis() >= runners::PLAN_TTL_MS as u128 {
+            return fail(409, "план истёк: откройте карточку заново");
+        }
+        p
+    };
+    if plan.runner != body.runner {
+        return fail(409, "план принадлежит другой верфи");
+    }
+    let (r, state, c) = match container_of(&app, &plan.runner, &plan.id).await {
+        Ok(x) => x,
+        Err(resp) => return resp,
+    };
+    if !state.ok {
+        return fail(409, "верфь не на связи: последнее чтение устарело");
+    }
+    // The classes follow the board as it is now: a task may have come back to work since the card was shown.
+    let mut state = state;
+    classify_now(&app, &app.snapshot.read().await.clone(), &mut state);
+    let c = state.containers.iter().find(|x| x.id == c.id).cloned().unwrap_or(c);
+    if let Err(why) = runners_ctl::gate(&c, plan.act, &plan.scope) {
+        return fail(409, why);
+    }
+    // One press, one run: a second press with the same token (a double click) finds it gone.
+    if app.runner_ctl_plans.lock().await.remove(&body.token).is_none() {
+        return fail(409, "действие уже выполняется: откройте карточку заново");
+    }
+    let cmd = plan.act.command(&c.id);
+    let ended = ssh::ssh_ended(&app.cfg, &machine_of(&r), &cmd, ACT_WAIT).await;
+    let error = match ended {
+        Ok(e) if e.timed_out => Some("верфь не ответила за 90 секунд".to_string()),
+        Ok(e) if !e.error.is_empty() => Some(e.error),
+        Ok(e) if e.code == Some(0) => None,
+        Ok(e) => {
+            let said = if e.stderr.trim().is_empty() { e.stdout.trim() } else { e.stderr.trim() };
+            Some(said.lines().next().unwrap_or("docker не выполнил команду").to_string())
+        }
+        Err(e) => Some(e),
+    };
+    let after = reprobe(&app, &r, &state).await;
+    let tag = c.task.as_ref().map(|t| t.tag.clone()).unwrap_or_default();
+    let did = match plan.act {
+        runners_ctl::Act::Stop => "остановлен",
+        runners_ctl::Act::Restart => "перезапущен",
+        runners_ctl::Act::Delete => "удалён",
+    };
+    let line = match &error {
+        None => format!("контейнер {} (задача {}) на верфи {}: {}", c.name, tag, r.id, did),
+        Some(e) => format!("контейнер {} (задача {}) на верфи {}: не {} — {}", c.name, tag, r.id, did, e),
+    };
+    app::journal_note(&app, &format!("runner/{}", r.id), "runner", &line).await;
+    app::rebuild_runners(&app).await;
+    app::publish(&app).await;
+    app::index_snapshot(&app).await;
+    let now = after.containers.iter().find(|x| x.id == c.id).map(|x| (x.state.clone(), x.status.clone()));
+    match error {
+        None => Json(json!({
+            "ok": true,
+            "act": plan.act.word(),
+            "name": c.name,
+            "now": now.map(|(s, st)| json!({"state": s, "status": st})).unwrap_or_else(|| json!({"state": "gone", "status": ""})),
+        }))
+        .into_response(),
+        Some(e) => fail(502, e),
+    }
 }
 
 /* ───────── the terminal ───────── */
