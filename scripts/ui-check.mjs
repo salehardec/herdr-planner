@@ -179,6 +179,17 @@ async function waitLog(pred, ms = 8000) {
   while (Date.now() < end) { if (pred()) return true; await sleep(100); }
   return false;
 }
+// The server's answer, not a file: for what the page asks over HTTP and has to see change (a journal row written after
+// the action's own answer, for one). `pred` gets the parsed body.
+async function waitApi(path, pred, ms = 8000) {
+  const end = Date.now() + ms * WAIT_SCALE;
+  while (Date.now() < end) {
+    const body = await evalJs(`fetch(${JSON.stringify(path)}).then((x) => x.json())`);
+    if (pred(body)) return true;
+    await sleep(100);
+  }
+  return false;
+}
 // A human who sees that a key or a click had no effect does it again. So does this: `act()` is done, and when the condition has not
 // come in `ms`, once more (the output says so, and what the page looked like). Only for what is harmless to do twice.
 const untilDone = async (what, act, cond, ms, look = 'true') => {
@@ -4302,6 +4313,8 @@ section('runners', async () => {
   check('the clean removes exactly the ticked id and nothing else', await waitLog(() => calls('ssh.jsonl').some((c) => c.runner && c.inner === 'docker rm -f -v ' + 'b'.repeat(64)) && calls('ssh.jsonl').filter((c) => c.runner).length > before, 20000), JSON.stringify(calls('ssh.jsonl').filter((c) => c.runner).slice(-2)));
   check('the forgotten container leaves the yard; the unsure and the foreign ones stay', await waitFor('plannerSnap().runners[0].containers.every((c) => c.name !== "web-ALP-15") && plannerSnap().runners[0].containers.some((c) => c.name === "x-ALP-99") && plannerSnap().runners[0].containers.some((c) => c.name === "neighbor-db-1") && plannerSnap().runners[0].containers.some((c) => c.name === "buildx_buildkit_x0")', 30000), JSON.stringify((await stateApi())?.runners?.[0]?.containers?.map((c) => c.name)));
   check('the journal keeps a line about it', await waitFor('plannerSnap().journal.some((j) => j.s === "runner")', 8000), JSON.stringify((await stateApi())?.journal?.slice(-2)));
+  check('the yard journal keeps the manual cleaning, its counts and the container’s name', await waitApi('/api/runner/log?id=vm-r&kind=clean', (r) => r.ok && r.entries.some((e) => e.data?.containers >= 1 && (e.data.names ?? []).includes('web-ALP-15') && e.who === 'human')), await evalJs('fetch("/api/runner/log?id=vm-r&kind=clean").then((x) => x.json()).then((r) => JSON.stringify(r.entries))'));
+  check('the journal row of the cleaning shows how much it freed', await waitFor('(document.querySelector("#rf-log")?.innerText || "").includes("Убрано вручную") && (document.querySelector("#rf-log")?.innerText || "").includes("≈")', 8000), await text('#rf-log'));
   // The wizard: a second yard, the machine and this machine's way in, the list written, the agents connected.
   await click('#nav [data-nav="addr"]');
   check('«Добавить верфь…» opens the wizard', await waitFor('!!document.querySelector("#addr #r-go")', 5000) && await hasText('#addr', 'Добавить верфь'), await text('#addr'));
@@ -4319,6 +4332,7 @@ section('runners', async () => {
   check('the yard is ready and offers the agents', await waitFor('!!document.querySelector("#r-connect")', 8000) && await hasText('#addr', 'готова'), await text('#addr'));
   await twoPresses('#r-connect');
   check('the block reaches this machine’s agent instructions', await waitLog(() => { try { const t = readFileSync(join(fixture, 'state', 'board-settings.json'), 'utf8'); return t.includes('herdr-planner:runners') && t.includes('me@192.0.2.29') && !t.includes('herdr.galaxy'); } catch { return false; } }, 20000), 'board-settings');
+  check('the yard journal keeps the rule block connection', await waitApi('/api/runner/log?id=vm-r&kind=rules', (r) => r.ok && r.entries.some((e) => e.data?.on === true && e.who === 'human')), await evalJs('fetch("/api/runner/log?id=vm-r&kind=rules").then((x) => x.json()).then((r) => JSON.stringify(r.entries))'));
   check('and it carries the yard’s limits: the docker run and compose examples, the containers’ maximum',
     (() => { try { const t = readFileSync(join(fixture, 'state', 'board-settings.json'), 'utf8'); return t.includes('--cpus 3 --memory 3g') && t.includes('docker run -d --name pg-PLN-26') && t.includes('deploy:') && t.includes('не больше одного контейнера на задачу'); } catch { return false; } })(),
     (() => { try { return readFileSync(join(fixture, 'state', 'board-settings.json'), 'utf8').match(/Лимиты[^\n]*/)?.[0] || ''; } catch { return ''; } })());
@@ -4771,6 +4785,7 @@ section('runners disk', async () => {
   check('only the ticked kinds are run, in order: the container (no -f), the builder, the images', await waitLog(() => yardCommands(start).length >= 3, 40000) && JSON.stringify(yardCommands(start)) === JSON.stringify(['docker rm -v ' + 'b'.repeat(64), 'docker buildx rm old', 'docker image prune -a -f']), JSON.stringify(yardCommands(start)));
   check('the card shows the steps, then counts again: no images left, the old builder gone, the orphan still there', await waitFor('document.querySelectorAll("#dk-steps li").length === 3 && !document.querySelector("#rf-disk tr[data-key=\\"b:old\\"]") && !!document.querySelector("#rf-disk tr[data-key=\\"s:buildx_buildkit_gone0_state\\"]") && document.querySelector("#rf-disk [data-part=images]").innerText.includes("ничего лишнего")', 40000), await text('#rf-disk'));
   check('the journal keeps a line about the disk cleaning', await waitFor('plannerSnap().journal.some((j) => j.s === "runner" && j.text.includes("уборка диска"))', 8000), JSON.stringify((await stateApi())?.journal?.slice(0, 2)));
+  check('the yard journal keeps the disk cleaning: bytes, stopped, builders, images; not the unticked cache', await waitApi('/api/runner/log?id=vm-r&kind=disk', (r) => r.ok && r.entries.some((e) => e.data?.bytes > 0 && e.data.stopped >= 1 && e.data.builders >= 1 && e.data.images === true && e.data.cache !== true)), await evalJs('fetch("/api/runner/log?id=vm-r&kind=disk").then((x) => x.json()).then((r) => JSON.stringify(r.entries))'));
   check('the forgotten container left the yard, the unsure and the foreign ones stay', await waitFor('plannerSnap().runners[0].containers.every((c) => c.name !== "web-ALP-15") && plannerSnap().runners[0].containers.some((c) => c.name === "x-ALP-99") && plannerSnap().runners[0].containers.some((c) => c.name === "buildx_buildkit_x0")', 20000));
   // A volume, ticked by hand: `docker volume rm` of that name and nothing else.
   await waitFor('!!document.querySelector("#rf-disk tr[data-key=\\"v:chroma_data\\"]") || !!document.querySelector("#rf-disk details")', 5000);
@@ -4814,6 +4829,9 @@ section('runners auto', async () => {
   check('what the finished task ALP-13 left goes by itself: its container, its labelled network and volume, and only those', await waitLog(() => yardCommands(start).length >= 3, 40000) && JSON.stringify(yardCommands(start)) === JSON.stringify(want), JSON.stringify(yardCommands(start)));
   check('the counter and the switch show it', await waitFor('document.querySelector("#rf-auto").dataset.auto === "on" && document.querySelector("#rf-auto-count")?.innerText.includes("контейнеров 1 · сетей 1 · томов 1")', 15000), await text('#rf-auto'));
   check('the journal keeps a line about the automatic cleaning', await waitFor('plannerSnap().journal.some((j) => j.s === "runner" && j.text.includes("убрано автоматически") && j.text.includes("ALP-13"))', 8000), JSON.stringify((await stateApi())?.journal?.slice(0, 2)));
+  check('the yard journal keeps the auto-clean run and the switch, with the task’s tag', await waitApi('/api/runner/log?id=vm-r&kind=auto', (r) => r.ok
+    && r.entries.some((e) => e.data?.action === 'switch' && e.data.on === true)
+    && r.entries.some((e) => e.data?.action === 'run' && e.data.containers >= 1 && e.who === 'auto' && (e.data.tags ?? []).includes('ALP-13'))), await evalJs('fetch("/api/runner/log?id=vm-r&kind=auto").then((x) => x.json()).then((r) => JSON.stringify(r.entries))'));
   check('a task finished less than six hours ago (ALP-15) and the live ones stay', await evalJs('plannerSnap().runners[0].containers.some((c) => c.name === "web-ALP-15") && plannerSnap().runners[0].containers.some((c) => c.name === "pg-ALP-3") && plannerSnap().runners[0].containers.some((c) => c.name === "x-ALP-99") && plannerSnap().runners[0].volumes.some((v) => v.name === "vol-3") && plannerSnap().runners[0].volumes.some((v) => v.name === "stray-vol") && plannerSnap().runners[0].networks.some((n) => n.name === "job-3_net" || n.name === "plain_net")'));
   // The time is the human’s: one hour brings ALP-15 (finished four hours ago) in.
   await evalJs('(() => { const i = document.querySelector("#rf-auto-hours"); i.value = "1"; i.dispatchEvent(new Event("input", { bubbles: true })); return true; })()');
@@ -4893,6 +4911,8 @@ section('runners alerts', async () => {
   check('the threshold is the human’s: zero minutes and the silence is an alarm at once', set[0] === 200 && await waitFor('(plannerSnap().runners.find((r) => r.id === "yard-gone")?.alerts ?? []).some((a) => a.kind === "offline")', 8000), JSON.stringify(await kinds('yard-gone')));
   await click('#nav [data-nav="run|yard-gone"]');
   check('the silent yard’s focus names it', await waitFor('!!document.querySelector("#rf-alerts")', 12000) && (await text('#rf-alerts')).includes('Не отвечает'), await text('#rf-alerts'));
+  check('its journal keeps the silence as one open period, with the planner as the actor and the reason', await waitApi('/api/runner/log?id=yard-gone&kind=down', (r) => r.ok && r.entries.length === 1 && r.entries[0].until === 0 && r.entries[0].who === 'planner' && r.entries[0].why.length > 0, 10000)
+    && await waitFor('!!document.querySelector("#rf-log tbody tr[data-kind=down]") && (document.querySelector("#rf-log").innerText.includes("планировщик")) && (document.querySelector("#rf-log").innerText.includes("не отвечает"))', 10000), await text('#rf-log'));
   check('one word to the Coordinator about the silence', await waitLog(() => told() === t2 + 1, 10000), JSON.stringify(lastCall('coordinator.jsonl')));
   await ask('yard-gone');
   await ask('yard-gone');
@@ -5037,6 +5057,58 @@ section('runners ctl', async () => {
   check('the delete is docker rm -v of that id, no -f', await waitLog(() => yardCommands(start).includes('docker rm -v ' + id('b')), 30000) && yardCommands(start).every((c) => !c.includes(' -f')), JSON.stringify(yardCommands(start)));
   check('the container leaves the yard; the others stay', await waitFor('plannerSnap().runners[0].containers.every((c) => c.name !== "web-ALP-15") && plannerSnap().runners[0].containers.some((c) => c.name === "pg-ALP-3") && plannerSnap().runners[0].containers.some((c) => c.name === "neighbor-db-1")', 30000));
   check('the journal keeps lines about the three', await waitFor('["остановлен", "перезапущен", "удалён"].every((w) => plannerSnap().journal.some((j) => j.s === "runner" && j.text.includes(w) && j.text.includes("web-ALP-15")))', 8000), JSON.stringify((await stateApi())?.journal?.slice(0, 3)));
+  // The yard's own journal (PLN-47): the same three actions, who did them, and the page's filter and search.
+  const logApi = (qs = '') => evalJs(`fetch("/api/runner/log?id=vm-r${qs}").then((x) => x.json())`);
+  const acts = await logApi('&kind=stop,restart,delete');
+  check('the yard journal keeps the stop, the restart and the delete, with the human as the actor',
+    acts.ok && ['stop', 'restart', 'delete'].every((k) => acts.entries.some((e) => e.kind === k && e.name === 'web-ALP-15' && e.who === 'human' && e.ok)),
+    JSON.stringify(acts.entries?.slice(0, 4)));
+  const del = await logApi('&kind=delete');
+  check('a kind filter keeps only deletions', del.ok && del.entries.length >= 1 && del.entries.every((e) => e.kind === 'delete'), JSON.stringify(del.entries));
+  const found = await logApi('&q=web-ALP-15');
+  check('the search finds a container by its name across the rows', found.ok && found.entries.length >= 3 && found.entries.some((e) => e.kind === 'delete'), JSON.stringify(found.entries?.slice(0, 4)));
+  check('an unknown kind is refused (400)', (await evalJs('fetch("/api/runner/log?id=vm-r&kind=kill").then((x) => x.status)')) === 400);
+  check('the Focus draws the yard journal with its rows', await waitFor('document.querySelectorAll("#rf-log tbody tr").length >= 3', 12000), await text('#rf-log'));
+  // Reopen the yard from another Focus: the journal mounts anew, and its first page must survive the 300 ms search
+  // debounce that once wiped it (nothing was left to fetch it again).
+  await go('alpha/3');
+  await openYard();
+  check('reopening the yard draws the journal', await waitFor('document.querySelectorAll("#rf-log tbody tr").length >= 3', 12000), await text('#rf-log'));
+  await sleep(700); // the search debounce is 300 ms
+  check('the journal is still there when the search debounce settles after opening', (await evalJs('document.querySelectorAll("#rf-log tbody tr").length')) >= 3 && !(await evalJs('!!document.querySelector("#rf-log-empty")')), await text('#rf-log'));
+  await evalJs('(() => { const s = document.querySelector("#rf-log-kind"); s.value = "delete"; s.dispatchEvent(new Event("change", { bubbles: true })); return true; })()');
+  check('the filter in the Focus keeps only deletions', await waitFor('document.querySelectorAll("#rf-log tbody tr").length >= 1 && [...document.querySelectorAll("#rf-log tbody tr")].every((r) => r.dataset.kind === "delete")', 8000), await text('#rf-log'));
+  await evalJs('(() => { const i = document.querySelector("#rf-log-q"); i.value = "web-ALP-15"; i.dispatchEvent(new Event("input", { bubbles: true })); return true; })()');
+  check('the search in the Focus finds the container, and the table says so', await waitFor('document.querySelectorAll("#rf-log tbody tr").length >= 1 && [...document.querySelectorAll("#rf-log tbody tr")].every((r) => r.innerText.includes("web-ALP-15"))', 8000) && await hasText('#rf-log', 'Удалён контейнер web-ALP-15', 8000), await text('#rf-log'));
+  await evalJs('(() => { const i = document.querySelector("#rf-log-q"); i.value = "no-such-thing"; i.dispatchEvent(new Event("input", { bubbles: true })); return true; })()');
+  check('a word that is not there says so', await waitFor('(document.querySelector("#rf-log-empty")?.innerText || "").includes("ничего нет")', 8000), await text('#rf-log'));
+  await evalJs('(() => { const i = document.querySelector("#rf-log-q"); i.value = ""; i.dispatchEvent(new Event("input", { bubbles: true })); const s = document.querySelector("#rf-log-kind"); s.value = ""; s.dispatchEvent(new Event("change", { bubbles: true })); return true; })()');
+  // Past one page (PLN-47): 620 rows in the planner's database, then the page's own cursor must reach the old ones —
+  // «Показать ещё» that grows a limit stops at the API's 500, a `before` cursor does not. The last seeded row is the
+  // first one inserted (`pg-ALP-3-0`), so it can only be reached through the cursor.
+  const dbFile = join(fixture, 'state', 'herdr-planner', 'planner.sqlite');
+  const seedAt = Date.now();
+  const seed = [];
+  for (let i = 0; i < 620; i++) {
+    seed.push(`('vm-r', ${seedAt - (1000 + i) * 1000}, 'stop', 'human', 'alpha/3', 'ALP-3', 'pg-ALP-3-${i}', 1, '', 0, '{}', '')`);
+  }
+  seed.push(`('vm-r', ${seedAt}, 'delete', 'human', 'alpha/15', 'ALP-15', 'web-ALP-FAIL', 0, 'container is running', 0, '{}', 'web-alp-fail')`);
+  execFileSync('sqlite3', [dbFile, `PRAGMA busy_timeout=5000; INSERT INTO runner_log (runner, at, kind, who, task, tag, name, ok, why, until, data, hay) VALUES ${seed.join(',')};`]);
+  await post('/api/runner/ask', { id: 'vm-r' });
+  check('the journal starts with one page and offers older rows', await waitFor('document.querySelectorAll("#rf-log tbody tr").length === 100 && !!document.querySelector("#rf-log-more")', 12000), String(await evalJs('document.querySelectorAll("#rf-log tbody tr").length')));
+  for (let i = 0; i < 6; i++) {
+    await waitFor('!document.querySelector("#rf-log-more")?.disabled', 8000);
+    await click('#rf-log-more');
+    const want = i === 5 ? 501 : 100 * (i + 2);
+    check(`journal page ${i + 2} arrives`, await waitFor(`document.querySelectorAll("#rf-log tbody tr").length >= ${want}`, 10000), String(await evalJs('document.querySelectorAll("#rf-log tbody tr").length')));
+  }
+  check('the cursor reaches rows older than 500: the first seeded row is really shown',
+    (await evalJs('document.querySelectorAll("#rf-log tbody tr").length')) > 500
+      && await waitFor('[...document.querySelectorAll("#rf-log tbody tr")].some((r) => r.innerText.includes("pg-ALP-3-0"))', 8000),
+    String(await evalJs('document.querySelectorAll("#rf-log tbody tr").length')));
+  // A failed action must not read as done.
+  await evalJs('(() => { const s = document.querySelector("#rf-log-kind"); s.value = "delete"; s.dispatchEvent(new Event("change", { bubbles: true })); const i = document.querySelector("#rf-log-q"); i.value = "web-ALP-FAIL"; i.dispatchEvent(new Event("input", { bubbles: true })); return true; })()');
+  check('a failed action says it failed in its own headline, not that it was done', await waitFor('(document.querySelector("#rf-log")?.innerText || "").includes("Не удалось удалить контейнер web-ALP-FAIL")', 10000) && await hasText('#rf-log', 'Не вышло: container is running', 5000), await text('#rf-log'));
   check('only these three commands went to the yard (no foreign id)', yardCommands(start).filter((c) => !c.startsWith('docker logs')).length === 3, JSON.stringify(yardCommands(start)));
 
   // A late answer closes only its own card: the answer to job-a's restart comes 3 s late, and job-b's card, opened

@@ -8,7 +8,7 @@ use crate::runners::{self, Class, CleanPlan, Runner, RunnerState, RunnersFile};
 use crate::{runners_auto, runners_ctl, runners_disk};
 use crate::server::{client_is_local, same_origin};
 use crate::station;
-use axum::extract::{ConnectInfo, State};
+use axum::extract::{ConnectInfo, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::Json;
@@ -91,6 +91,61 @@ pub async fn runners_get(State(app): State<Shared>) -> Response {
     .into_response()
 }
 
+/// `GET /api/runner/log`: the yard's journal (PLN-47), newest first, with a kind filter, an actor filter, a word
+/// search and a page. The rows outlive the yard's removal until the retention forgets them; a yard readded with the
+/// same label sees its old history again.
+#[derive(Deserialize)]
+pub struct LogBody {
+    id: String,
+    #[serde(default)]
+    kind: String,
+    #[serde(default)]
+    who: String,
+    #[serde(default)]
+    q: String,
+    #[serde(default)]
+    before: u64,
+    #[serde(default)]
+    limit: Option<usize>,
+}
+
+pub async fn runner_log(State(app): State<Shared>, Query(body): Query<LogBody>) -> Response {
+    if !crate::ssh::valid_label(&body.id) {
+        return fail(400, "метка верфи: буквы, цифры, «-», «_», «.»");
+    }
+    let mut kinds: Vec<&str> = Vec::new();
+    for kind in body.kind.split(',').map(str::trim).filter(|k| !k.is_empty()) {
+        if !crate::runners_log::valid_kind(kind) {
+            return fail(400, format!("неизвестный вид записи журнала: {kind:?}"));
+        }
+        kinds.push(kind);
+    }
+    let kinds = kinds.join(",");
+    let who = body.who.trim();
+    if !crate::runners_log::valid_actor(who) {
+        return fail(400, format!("кто: человек, автоуборка или планировщик, не {who:?}"));
+    }
+    let word = body.q.trim();
+    if word.chars().count() > 100 {
+        return fail(400, "слишком длинный поиск");
+    }
+    let limit = body
+        .limit
+        .unwrap_or(crate::runners_log::LIMIT_DEFAULT)
+        .clamp(1, crate::runners_log::LIMIT_MAX);
+    let mut entries = app.db.log_page(&body.id, &kinds, who, word, body.before, limit + 1);
+    let more = entries.len() > limit;
+    entries.truncate(limit);
+    Json(json!({
+        "ok": true,
+        "at": now_ms(),
+        "entries": entries,
+        "more": more,
+        "keep_days": crate::runners_log::KEEP_DAYS,
+    }))
+    .into_response()
+}
+
 /// `GET /api/runners/history`: the load of every yard over the last hours and the day, and what its tasks ate (PLN-46).
 pub async fn runners_history(State(app): State<Shared>) -> Response {
     let now = now_ms();
@@ -139,6 +194,7 @@ pub async fn runner_ask(State(app): State<Shared>, headers: HeaderMap, Json(body
         classify_now(&app, &snap, &mut kept);
         // The classes are set: the usage rows can name the board task (PLN-46).
         crate::runners_hist::record(&app.db, prev.as_ref(), &kept, at_ms);
+        crate::runners_log::note_read(&app.db, &kept.id, prev.as_ref(), &kept, at_ms);
         kept
     };
     if let Ok(json) = serde_json::to_string(&state) {
@@ -657,6 +713,8 @@ pub async fn runner_remove(State(app): State<Shared>, headers: HeaderMap, Json(b
             runners::sync_scope_block(&app, &repo, Some(&id), &text).await;
         }
     }
+    app.db.log_up(&body.id, 0, now_ms(), "");
+    app.db.log_add(&body.id, &crate::runners_log::removed(now_ms(), body.force, &busy));
     app.db.runner_remove(&body.id);
     app.db.hist_remove(&body.id);
     app.db.usage_remove(&body.id);
@@ -844,7 +902,15 @@ pub async fn runner_connect(State(app): State<Shared>, headers: HeaderMap, Json(
             .unwrap_or_default();
         let value = match runners::connect_value(&was, &block, body.on) {
             Ok(v) => v,
-            Err(e) => return fail(422, e),
+            Err(e) => {
+                for r in &file.runners {
+                    app.db.log_add(
+                        &r.id,
+                        &crate::runners_log::rules(now_ms(), body.on, body.drop_old, results.len(), false, &e),
+                    );
+                }
+                return fail(422, e);
+            }
         };
         let value = match value {
             Some(v) if body.on && body.drop_old => {
@@ -860,8 +926,21 @@ pub async fn runner_connect(State(app): State<Shared>, headers: HeaderMap, Json(
         if out.ok() {
             results.push(json!({"setting": name, "was": was, "now": value}));
         } else {
-            return fail(422, out.words());
+            let why = out.words();
+            for r in &file.runners {
+                app.db.log_add(
+                    &r.id,
+                    &crate::runners_log::rules(now_ms(), body.on, body.drop_old, results.len(), false, &why),
+                );
+            }
+            return fail(422, why);
         }
+    }
+    for r in &file.runners {
+        app.db.log_add(
+            &r.id,
+            &crate::runners_log::rules(now_ms(), body.on, body.drop_old, results.len(), true, ""),
+        );
     }
     {
         let mut state = app.runner_block.lock().await;
@@ -951,6 +1030,7 @@ async fn reprobe(app: &Shared, r: &Runner, prev: &RunnerState) -> RunnerState {
         classify_now(app, &snap, &mut after);
     }
     crate::runners_hist::record(&app.db, Some(prev), &after, at_ms);
+    crate::runners_log::note_read(&app.db, &after.id, Some(prev), &after, at_ms);
     if let Ok(json) = serde_json::to_string(&after) {
         app.db.runner_put(
             &after.id,
@@ -1093,6 +1173,19 @@ pub async fn runner_clean(State(app): State<Shared>, headers: HeaderMap, Json(bo
     let after = reprobe(&app, &r, &state).await;
     let removed = ids.len().saturating_sub(failed.len());
     let mb = plan.was.bytes as f64 / (1024.0 * 1024.0);
+    let picked: Vec<&runners::PlanItem> = plan.containers.iter().filter(|c| wanted.contains(c.id.as_str())).collect();
+    let names: Vec<String> = picked.iter().map(|c| c.name.clone()).collect();
+    let mut tags: Vec<String> = picked.iter().map(|c| c.task.clone()).filter(|t| !t.is_empty()).collect();
+    tags.sort();
+    tags.dedup();
+    let bytes: u64 = picked.iter().map(|c| c.size_bytes).sum::<u64>()
+        + plan.networks.iter().filter(|n| nets.contains(&n.id)).map(|n| n.size_bytes).sum::<u64>()
+        + plan.volumes.iter().filter(|v| vols.contains(&v.name)).map(|v| v.size_bytes).sum::<u64>();
+    let first_error = failed.first().and_then(|f| f.get("error")).and_then(|e| e.as_str()).unwrap_or("");
+    app.db.log_add(
+        &r.id,
+        &crate::runners_log::cleaned(now_ms(), removed, removed_nets, removed_vols, bytes, &names, &tags, failed.len(), first_error),
+    );
     app::journal_note(
         &app,
         &format!("runner/{}", r.id),
@@ -1245,6 +1338,7 @@ pub async fn disk_clean(State(app): State<Shared>, headers: HeaderMap, Json(body
     let at_ms = fresh_state.fetched_at_ms;
     let kept = runners::keep_last(Some(&state), fresh_state);
     crate::runners_hist::record(&app.db, Some(&state), &kept, at_ms);
+    crate::runners_log::note_read(&app.db, &kept.id, Some(&state), &kept, at_ms);
     if let Ok(json) = serde_json::to_string(&kept) {
         app.db.runner_put(&kept.id, &json, kept.ok, kept.why.as_ref().map(|w| w.line.as_str()).unwrap_or(""));
     }
@@ -1293,6 +1387,23 @@ pub async fn disk_clean(State(app): State<Shared>, headers: HeaderMap, Json(body
         note.push_str(&format!("; не вышло: {}", f.error.lines().next().unwrap_or("")));
     }
     app::journal_note(&app, &format!("runner/{}", r.id), "runner", &note).await;
+    app.db.log_add(
+        &r.id,
+        &crate::runners_log::disk(
+            now_ms(),
+            json!({
+                "stopped": done("stopped"),
+                "builders": done("builders"),
+                "volumes": done("volumes"),
+                "images": ran("images"),
+                "cache": ran("cache"),
+                "bytes": bytes,
+                "failed": failed.len(),
+            }),
+            failed.is_empty(),
+            failed.first().map(|f| f.error.lines().next().unwrap_or("")).unwrap_or(""),
+        ),
+    );
     app::rebuild_runners(&app).await;
     app::publish(&app).await;
     app::index_snapshot(&app).await;
@@ -1393,6 +1504,7 @@ pub async fn runner_auto(State(app): State<Shared>, headers: HeaderMap, Json(bod
     if let Err(e) = runners::save(&app.cfg.runners_file(), &file) {
         return fail(422, e);
     }
+    app.db.log_add(&body.id, &crate::runners_log::auto_switch(now_ms(), auto.enabled, auto.hours));
     app::journal_note(
         &app,
         &format!("runner/{}", body.id),
@@ -1611,6 +1723,10 @@ pub async fn container_act(State(app): State<Shared>, headers: HeaderMap, Json(b
         None => format!("контейнер {} (задача {}) на верфи {}: {}", c.name, tag, r.id, did),
         Some(e) => format!("контейнер {} (задача {}) на верфи {}: не {} — {}", c.name, tag, r.id, did, e),
     };
+    app.db.log_add(
+        &r.id,
+        &crate::runners_log::action(now_ms(), plan.act.word(), &c, error.is_none(), error.as_deref().unwrap_or("")),
+    );
     app::journal_note(&app, &format!("runner/{}", r.id), "runner", &line).await;
     app::rebuild_runners(&app).await;
     app::publish(&app).await;

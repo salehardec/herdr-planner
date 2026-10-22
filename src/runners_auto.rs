@@ -186,6 +186,7 @@ async fn reread(app: &Shared, r: &Runner, prev: &RunnerState) -> RunnerState {
     let at_ms = fresh.fetched_at_ms;
     let kept = runners::keep_last(Some(prev), fresh);
     crate::runners_hist::record(&app.db, Some(prev), &kept, at_ms);
+    crate::runners_log::note_read(&app.db, &kept.id, Some(prev), &kept, at_ms);
     if let Ok(json) = serde_json::to_string(&kept) {
         app.db.runner_put(&kept.id, &json, kept.ok, kept.why.as_ref().map(|w| w.line.as_str()).unwrap_or(""));
     }
@@ -252,7 +253,9 @@ pub async fn run_one(app: &Shared, r: &Runner) -> (usize, usize, usize) {
     } else {
         (0, 0, 0)
     };
-    let tags = plan.tags.iter().cloned().collect::<Vec<_>>().join(", ");
+    let tag_list: Vec<String> = plan.tags.iter().cloned().collect();
+    let tags = tag_list.join(", ");
+    let first_error = errors.first().map(|e| e.lines().next().unwrap_or("").to_string()).unwrap_or_default();
     if c + n + v > 0 {
         let line = format!("контейнеров {c}, сетей {n}, томов {v} (задачи {tags})");
         let mut stats = stats_of(app, &r.id);
@@ -272,14 +275,19 @@ pub async fn run_one(app: &Shared, r: &Runner) -> (usize, usize, usize) {
         );
     }
     if !errors.is_empty() {
-        let first = errors.first().cloned().unwrap_or_default();
         crate::app::journal_note(
             app,
             &format!("runner/{}", r.id),
             "runner",
-            &format!("автоуборка на верфи {} не всё убрала: {}", r.id, first.lines().next().unwrap_or("")),
+            &format!("автоуборка на верфи {} не всё убрала: {}", r.id, first_error),
         )
         .await;
+    }
+    if c + n + v > 0 || !errors.is_empty() {
+        app.db.log_add(
+            &r.id,
+            &crate::runners_log::auto_run(now_ms(), c, n, v, &tag_list, errors.len(), &first_error),
+        );
     }
     crate::app::rebuild_runners(app).await;
     crate::app::publish(app).await;

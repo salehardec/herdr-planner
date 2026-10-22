@@ -29,6 +29,8 @@ const MIGRATIONS: &[&str] = &[
     include_str!("db/migrations/004_no_far_galaxies.sql"),
     include_str!("db/migrations/005_runners.sql"),
     include_str!("db/migrations/006_runner_hist.sql"),
+    include_str!("db/migrations/007_runner_log.sql"),
+    include_str!("db/migrations/008_runner_log_hay.sql"),
 ];
 
 /// Entries the journal hands out; older ones stay in the table up to [`JOURNAL_KEEP`].
@@ -140,6 +142,7 @@ impl Db {
         )
         .map_err(db_err)?;
         migrate(&mut conn)?;
+        backfill_log_hay(&mut conn).map_err(db_err)?;
         Ok(Db(Arc::new(Mutex::new(conn))))
     }
 
@@ -646,6 +649,132 @@ impl Db {
         })
     }
 
+    // ---- the journal of a shipyard (PLN-47) ----
+
+    /// One action of a yard. The retention runs with every write, so old rows go without a timer.
+    pub fn log_add(&self, runner: &str, e: &crate::runners_log::Entry) {
+        self.with("log_add", |c| {
+            c.execute(
+                "INSERT INTO runner_log (runner, at, kind, who, task, tag, name, ok, why, until, data, hay) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+                params![
+                    runner,
+                    e.at as i64,
+                    e.kind,
+                    e.who,
+                    e.task,
+                    e.tag,
+                    e.name,
+                    e.ok,
+                    e.why,
+                    e.until as i64,
+                    log_data(e),
+                    log_hay(e),
+                ],
+            )?;
+            log_prune_conn(c, crate::runners_log::KEEP_MS)?;
+            Ok(())
+        })
+    }
+
+    /// Opens a downtime row, unless the yard is already inside one (repeated failed reads of the same silence add
+    /// nothing). The row keeps the first reason it was opened with.
+    pub fn log_down(&self, runner: &str, e: &crate::runners_log::Entry) {
+        self.with("log_down", |c| {
+            let open: Option<i64> = c
+                .query_row(
+                    "SELECT n FROM runner_log WHERE runner = ?1 AND kind = 'down' AND until = 0 ORDER BY n DESC LIMIT 1",
+                    [runner],
+                    |r| r.get(0),
+                )
+                .optional()?;
+            if open.is_none() {
+                c.execute(
+                    "INSERT INTO runner_log (runner, at, kind, who, ok, why, data, hay) VALUES (?1, ?2, 'down', ?3, 0, ?4, ?5, ?6)",
+                    params![runner, e.at as i64, e.who, e.why, log_data(e), log_hay(e)],
+                )?;
+            }
+            log_prune_conn(c, crate::runners_log::KEEP_MS)?;
+            Ok(())
+        })
+    }
+
+    /// Closes the open downtime row at `at`. When there is none but the previous read knew the silence began at
+    /// `since`, a closed row is written (the open one may have been pruned long ago); `since == 0` means «just close
+    /// whatever is open, if anything».
+    pub fn log_up(&self, runner: &str, since: u64, at: u64, why: &str) {
+        self.with("log_up", |c| {
+            let changed = c.execute(
+                "UPDATE runner_log SET until = ?1 WHERE runner = ?2 AND kind = 'down' AND until = 0",
+                params![at as i64, runner],
+            )?;
+            if changed == 0 && since > 0 {
+                c.execute(
+                    "INSERT INTO runner_log (runner, at, kind, who, ok, why, until, hay) VALUES (?1, ?2, 'down', 'planner', 0, ?3, ?4, ?5)",
+                    params![
+                        runner,
+                        since as i64,
+                        why,
+                        at as i64,
+                        crate::runners_log::hay_of("", "", "", why, &serde_json::Value::Null),
+                    ],
+                )?;
+            }
+            log_prune_conn(c, crate::runners_log::KEEP_MS)?;
+            Ok(())
+        })
+    }
+
+    /// The rows of one yard, newest first. `kinds` is a comma-separated list of kinds (empty — all), `who` an actor
+    /// (empty — both), `q` words found in the container's name, the task, the reason or the kind's own data, `before`
+    /// the `n` to continue after (0 — from the newest), `limit` how many to hand back.
+    pub fn log_page(&self, runner: &str, kinds: &str, who: &str, q: &str, before: u64, limit: usize) -> Vec<crate::runners_log::Entry> {
+        let needle = q.to_lowercase();
+        self.with("log_page", |c| {
+            log_prune_conn(c, crate::runners_log::KEEP_MS)?;
+            let mut st = c.prepare(
+                "SELECT n, at, kind, who, task, tag, name, ok, why, until, data FROM runner_log \
+                 WHERE runner = ?1 \
+                   AND (?2 = '' OR instr(',' || ?2 || ',', ',' || kind || ',') > 0) \
+                   AND (?3 = '' OR who = ?3) \
+                   AND (?4 = '' OR instr(hay, ?4) > 0) \
+                   AND (?5 = 0 OR n < ?5) \
+                 ORDER BY n DESC LIMIT ?6",
+            )?;
+            let rows = st.query_map(
+                params![runner, kinds, who, needle, before as i64, limit as i64],
+                |r| {
+                    let data: String = r.get(10)?;
+                    Ok(crate::runners_log::Entry {
+                        n: r.get::<_, i64>(0)? as u64,
+                        at: r.get::<_, i64>(1)? as u64,
+                        kind: r.get(2)?,
+                        who: r.get(3)?,
+                        task: r.get(4)?,
+                        tag: r.get(5)?,
+                        name: r.get(6)?,
+                        ok: r.get(7)?,
+                        why: r.get(8)?,
+                        until: r.get::<_, i64>(9)? as u64,
+                        data: serde_json::from_str(&data).unwrap_or(serde_json::Value::Null),
+                    })
+                },
+            )?;
+            rows.collect()
+        })
+    }
+
+    /// Forgets journal rows older than `before_ms`; an open downtime row stays (it is not history).
+    pub fn log_prune(&self, before_ms: u64) {
+        self.with("log_prune", |c| {
+            c.execute(
+                "DELETE FROM runner_log WHERE MAX(at, until) < ?1 AND NOT (kind = 'down' AND until = 0)",
+                [before_ms as i64],
+            )?;
+            Ok(())
+        })
+    }
+
     // ---- memory suggestions ----
 
     /// Reserves the suggestion of `task`; false when it was made (or is being made) already.
@@ -906,6 +1035,51 @@ fn restrict(path: &Path, mode: u32) {
 
 #[cfg(not(unix))]
 fn restrict(_: &Path, _: u32) {}
+
+/// The JSON of a journal row's numbers and names; an empty object when it cannot be written.
+fn log_data(e: &crate::runners_log::Entry) -> String {
+    serde_json::to_string(&e.data).unwrap_or_else(|_| "{}".to_string())
+}
+
+/// The retention of the journal, inside a connection that is already open (a write and its pruning are one call).
+fn log_prune_conn(c: &mut Connection, keep_ms: u64) -> rusqlite::Result<()> {
+    let cut = now_ms().saturating_sub(keep_ms) as i64;
+    c.execute(
+        "DELETE FROM runner_log WHERE MAX(at, until) < ?1 AND NOT (kind = 'down' AND until = 0)",
+        [cut],
+    )?;
+    Ok(())
+}
+
+/// The searchable text of a journal row, as it is stored: lower-cased words of the row, the values of `data` included,
+/// its keys not.
+fn log_hay(e: &crate::runners_log::Entry) -> String {
+    crate::runners_log::hay_of(&e.name, &e.tag, &e.task, &e.why, &e.data)
+}
+
+/// Fills `hay` for rows written before the column existed (a database of an earlier build of this feature). Opened once
+/// on every open of the database; rows that already have their text are left alone.
+fn backfill_log_hay(c: &mut Connection) -> rusqlite::Result<()> {
+    let rows: Vec<(i64, String, String, String, String, String)> = {
+        let mut st = c.prepare("SELECT n, name, tag, task, why, data FROM runner_log WHERE hay = ''")?;
+        let it = st.query_map([], |r| {
+            Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?))
+        })?;
+        it.collect::<rusqlite::Result<Vec<_>>>()?
+    };
+    if rows.is_empty() {
+        return Ok(());
+    }
+    let tx = c.transaction()?;
+    for (n, name, tag, task, why, data) in rows {
+        let value = serde_json::from_str(&data).unwrap_or(serde_json::Value::Null);
+        tx.execute(
+            "UPDATE runner_log SET hay = ?1 WHERE n = ?2",
+            params![crate::runners_log::hay_of(&name, &tag, &task, &why, &value), n],
+        )?;
+    }
+    tx.commit()
+}
 
 /// Fingerprint of a turn's content, stored next to it so a sync can tell which turns changed.
 pub fn chat_row_hash(at: u64, from: &str, q: &str, a: &str) -> String {

@@ -11,6 +11,7 @@ import { CleanCard } from './CleanCard';
 import { DiskCard } from './DiskCard';
 import { ContainerButtons, ContainerPorts } from './ContainerTools';
 import { RunnerAuto } from './RunnerAuto';
+import { RunnerLog } from './RunnerLog';
 import { Spark, sparkStats } from './Spark';
 import { DAY_MS, HOURS_MS, cpuTime, hist, histError, loadHistory, memSize, yardUsage } from './usage-api';
 import { RichText } from './RichText';
@@ -558,6 +559,7 @@ export function RunnerFocus(props: { entity: Entity }): JSX.Element {
       )}
       {cleanOpen && <CleanCard runner={r.id} ids={cleanIds} onClose={() => setCleanOpen(false)} onDone={() => setCleanOpen(false)} />}
       <RunnerAuto runner={r} />
+      <RunnerLog key={r.id} runner={r.id} stamp={stamp} />
       <details class="rf-foreign" id="rf-foreign">
         <summary>{t('runner.foreign', { n: foreign.length })}{foreign.length > 0 ? ` · ${t('runner.foreignHint')}` : ''}</summary>
         <div class="hint">{foreign.map((c) => c.name).join(' · ')}</div>
