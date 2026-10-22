@@ -1,4 +1,4 @@
-/* The machine's load in the top bar, between the crumbs and the search: CPU, MEM and (with a card) GPU.
+/* The machine's load in the top bar, right of the crumbs (the subscription chip follows it): CPU, MEM and (with a card) GPU.
    The colours are the theme's semantic ones (green, yellow, red), not its accent; the number is always written,
    and the bars carry marks at 70 % and 90 %, so the level is read without the colour. */
 .win{
@@ -15,8 +15,8 @@
   --load-high-ink:color-mix(in srgb,var(--c-yellow) 30%,var(--c-fg));
 }
 
-/* the left of the top bar: the crumbs and the bars share it. The crumbs come first: the bars take the form that fits in
-   the room the crumbs leave (LoadBar.tsx measures it and sets data-tier: host, full, stack, sum or none) */
+/* the left of the top bar: the menu, the crumbs and the bars share it. The crumbs come first: the bars take the form that fits in
+   the room the menu and the crumbs leave (LoadBar.tsx measures it and sets data-tier: host, full, stack, sum or none) */
 .topl{min-width:0;display:flex;align-items:center;gap:0.75rem}
 .topl .crumbs{flex:0 1 auto;min-width:0}
 .loadbar{flex:none;min-width:0}
@@ -81,7 +81,5 @@
 .ld-none,.ld-note{color:var(--pl-faint);font-size:0.6875rem}
 .ld-ft{display:flex;flex-wrap:wrap;justify-content:space-between;gap:0.125rem 0.75rem;padding-top:0.3125rem;border-top:1px solid var(--pl-line);color:var(--pl-faint);font-size:0.6562rem}
 
-/* a phone-sized window has two rows (crumbs and buttons, then the search): the bars stand right of the search, in their narrowest form */
-:root.bp900 .topl{display:contents}
-:root.bp900 .top .loadbar{grid-area:load;justify-self:end}
+/* a phone-sized window has two rows (menu, crumbs and buttons, then the search): the bars stand right of the search, in their narrowest form (top.css) */
 .loadbar[data-tier="dot"] .ld-sum .ld-k{display:none}
