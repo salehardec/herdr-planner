@@ -7,6 +7,8 @@ import { dayTimeOf } from '../util/dates';
 import { Gl } from './Gl';
 import { MemoryPanel } from './MemoryPanel';
 import { CleanCard } from './CleanCard';
+import { DiskCard } from './DiskCard';
+import { RunnerAuto } from './RunnerAuto';
 import { RichText } from './RichText';
 import { toast } from '../toast';
 import { STATUS_ORDER } from '../types';
@@ -243,6 +245,7 @@ function yardAge(ms: number): string {
 export function RunnerFocus(props: { entity: Entity }): JSX.Element {
   const r = runners.value.find((x) => x.id === props.entity.id);
   const [cleanOpen, setCleanOpen] = useState(false);
+  const [diskOpen, setDiskOpen] = useState(false);
   const [editOpen, setEditOpen] = useState(false);
   const [connectOpen, setConnectOpen] = useState(false);
   const [warned, setWarned] = useState<string[]>([]);
@@ -382,6 +385,7 @@ export function RunnerFocus(props: { entity: Entity }): JSX.Element {
         <div class="act"><button class="btn danger" type="button" id="rf-clean" onClick={() => setCleanOpen(true)}>{t('runner.cleanOpen')}</button></div>
       )}
       {cleanOpen && <CleanCard runner={r.id} ids={cleanIds} onClose={() => setCleanOpen(false)} onDone={() => setCleanOpen(false)} />}
+      <RunnerAuto runner={r} />
       <details class="rf-foreign" id="rf-foreign">
         <summary>{t('runner.foreign', { n: foreign.length })}{foreign.length > 0 ? ` · ${t('runner.foreignHint')}` : ''}</summary>
         <div class="hint">{foreign.map((c) => c.name).join(' · ')}</div>
@@ -392,13 +396,14 @@ export function RunnerFocus(props: { entity: Entity }): JSX.Element {
       <div class="act">
         <button class="btn" type="button" onClick={() => void post('/api/runner/ask', { id: r.id })}><Gl n="refresh" />{t('runner.refresh')}</button>
         {local && <button class="btn" type="button" id="rf-terminal" onClick={async () => { try { await post('/api/runner/terminal', { id: r.id }); } catch (e) { toast((e as Error).message, { icon: 'failed' }); } }}><Gl n="screen" />{t('runner.terminal')}</button>}
-        <button class="btn" type="button" onClick={() => void post('/api/runner/df', { id: r.id }).then((v: { rows: Record<string, string>[] }) => toast(v.rows.map((x) => `${x.Type}: ${x.Size} (${x.Reclaimable ?? ''})`).join(' · '))).catch((e: Error) => toast(e.message, { icon: 'failed' }))}>{t('runner.df')}</button>
+        <button class="btn" type="button" id="rf-disk-open" onClick={() => setDiskOpen(true)}>{t('runner.df')}</button>
       </div>
       <div class="act">
         <button class="btn" type="button" onClick={openEdit}>{t('runner.edit')}</button>
         <button class="btn" type="button" onClick={() => setConnectOpen(!connectOpen)}>{t('runner.connect')}</button>
         <button class="btn danger" type="button" onClick={() => remove(false)}>{armed.value?.key === `rrm:${r.id}:n` ? t('runner.removeConfirm') : t('runner.remove')}</button>
       </div>
+      {diskOpen && <DiskCard runner={r.id} onClose={() => setDiskOpen(false)} />}
       {err && <p class="hint bad">{err}</p>}
       {warned.length > 0 && (
         <div class="req s-failed">

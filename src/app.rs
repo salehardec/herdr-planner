@@ -200,8 +200,10 @@ pub struct App {
     /// The last read of every shipyard (from `runners.json` and one probe each).
     pub runners: Mutex<Vec<crate::runners::RunnerState>>,
     pub runner_plans: Mutex<HashMap<String, crate::runners::CleanPlan>>,
-    /// `docker system df` answers, cached by runner id.
-    pub runner_df: Mutex<HashMap<String, (u64, serde_json::Value)>>,
+    /// The counted «уборка диска» cards, by token.
+    pub runner_disk_plans: Mutex<HashMap<String, crate::runners_disk::Plan>>,
+    /// The last auto-clean plan tried on each shipyard (signature, when), so a plan that fails is not repeated at once.
+    pub runner_auto_try: Mutex<HashMap<String, (String, u64)>>,
     /// Whether the docker block is in this machine's instructions (as last synced).
     pub runner_block: Mutex<crate::runners::BlockState>,
     /// How loaded this machine is (CPU, memory, video cards); kept fresh while a page is open.
@@ -339,7 +341,8 @@ impl App {
             lag: Mutex::new(BTreeMap::new()),
             runners: Mutex::new(runners),
             runner_plans: Mutex::new(HashMap::new()),
-            runner_df: Mutex::new(HashMap::new()),
+            runner_disk_plans: Mutex::new(HashMap::new()),
+            runner_auto_try: Mutex::new(HashMap::new()),
             runner_block: Mutex::new(runner_block),
             load: RwLock::new(crate::load::Load::default()),
             load_poke: Notify::new(),
@@ -625,8 +628,13 @@ pub async fn rebuild_runners(app: &Shared) {
     let repos = taskmeta::repos(&app.cfg.data_dir);
     let index = crate::runners::TaskIndex::build(&tasks, &archived, &repos);
     let mut states = app.runners.lock().await.clone();
+    let file = crate::runners::load(&app.cfg.runners_file()).unwrap_or_default();
     for st in &mut states {
         crate::runners::classify(&mut st.containers, &st.protected, &index);
+        if let Some(r) = file.get(&st.id) {
+            st.auto = r.auto.clone();
+        }
+        st.auto_stats = crate::runners_auto::stats_of(app, &st.id);
     }
     note_forgotten(app, &states).await;
     let block = app.runner_block.lock().await.clone();

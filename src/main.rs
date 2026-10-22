@@ -22,6 +22,8 @@ mod load;
 mod models;
 mod runners;
 mod runners_api;
+mod runners_auto;
+mod runners_disk;
 mod search;
 mod server;
 mod ship;
@@ -298,6 +300,7 @@ fn spawn_loops(app: Shared) {
         let mut blocks_at = 0u64;
         loop {
             runners::poll_all(&a).await;
+            runners_auto::run_all(&a).await;
             let now = crate::config::now_ms();
             if now.saturating_sub(blocks_at) > 600_000 {
                 blocks_at = now;
