@@ -16,8 +16,8 @@
 //  - what must NOT happen is checked after a barrier that proves the page has had its turn (see pageTurn());
 //  - a section that fails is run once more from a fresh page, said out loud in the output and in the summary.
 
-import { spawn } from 'node:child_process';
-import { mkdtempSync, writeFileSync, readFileSync, existsSync, unlinkSync, utimesSync, rmSync } from 'node:fs';
+import { spawn, execFileSync } from 'node:child_process';
+import { mkdtempSync, writeFileSync, readFileSync, existsSync, unlinkSync, utimesSync, rmSync, readdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -2180,6 +2180,558 @@ section('narrow', async () => {
   await send('Emulation.setDeviceMetricsOverride', { width: 1500, height: 950, deviceScaleFactor: 1, mobile: false });
   await waitFor('innerWidth === 1500', 5000);
 }, { retry: true });
+
+// ── memory: three levels, Markdown files, one index ─────────────────────────
+const memDir = join(fixture || '', 'memory', 'galaxy');
+const alphaMem = join(fixture || '', 'projects', 'AI', 'alpha', 'docs', 'memory');
+const docsRepo = join(fixture || '', 'projects', 'herdr', 'docs');
+const vmHome = join(fixture || '', 'state', 'vm-a-home');
+const vmMem = join(vmHome, '.herdr-projects', 'memory', 'galaxy');
+const coordFiles = join(fixture || '', 'board', 'coordinator', 'default', 'chat');
+const readFile = (p) => (existsSync(p) ? readFileSync(p, 'utf8') : '');
+const filesIn = (d) => (existsSync(d) ? readdirSync(d).filter((f) => f.endsWith('.md') && f !== 'MEMORY.md') : []);
+const BLOCK = '<!-- herdr-planner:memory -->';
+const alphaRoot = join(fixture || '', 'projects', 'AI', 'alpha');
+// The planner's drafts of a universe's memory (outside the checkout), and what git says of a checkout.
+const draftsOf = (repo) => join(fixture || '', 'state', 'herdr-planner', 'memory-drafts', repo, 'put');
+const gitStatus = (root) => execFileSync('git', ['-C', root, 'status', '--porcelain', '--untracked-files=all']).toString();
+// A memory change shows «было → стало» first: wait for the card; «да» is its confirm button.
+const waitCard = () => waitFor('!!document.querySelector("#mem-chg")', 10000);
+// After the yes the card goes (the next change must not meet the old card still on the page).
+const sayYes = async () => { await click('#mem-chg-confirm'); await waitFor('!document.querySelector("#mem-chg")', 10000); };
+const quasarOf = async (galaxy = '') => {
+  await evalJs(`planner.navigateTo({kind:'quasar',galaxy:${JSON.stringify(galaxy)},id:'quasar'})`);
+  await waitFor('world.debug().flight === "idle"', 15000);
+};
+const universeOf = async (id, galaxy = '') => {
+  await evalJs(`planner.navigateTo({kind:'universe',galaxy:${JSON.stringify(galaxy)},id:${JSON.stringify(id)}})`);
+  await waitFor('world.debug().flight === "idle"', 15000);
+};
+
+section('memory galaxy', async () => {
+  await resetUi();
+  await evalJs('planner.goHome()');
+  await waitFor('plannerDebug().galaxy === ""', 6000);
+  await quasarOf();
+  check('the Quasar has a memory panel with the Galaxy files', await waitFor('document.querySelectorAll("#mem-galaxy-list [data-mem]").length === 2', 30000), await text('#mem-galaxy'));
+  check('the panel counts them and shows the folder', (await text('#mem-galaxy-count')) === '2' && (await text('#mem-galaxy .mm-dir')).includes('memory/galaxy'), await text('#mem-galaxy .mm-dir'));
+  check('the planner made MEMORY.md, the table of contents, from the files', await waitLog(() => readFile(join(memDir, 'MEMORY.md')).includes('(gitlab-bez-pr.md)') && readFile(join(memDir, 'MEMORY.md')).includes('(deshevaya-model.md)'), 10000), readFile(join(memDir, 'MEMORY.md')));
+  // The board's own files are the board's: the planner writes none of them (the board makes them from settings)
+  const boardFiles = {
+    [join(coordFiles, 'AGENTS.md')]: readFile(join(coordFiles, 'AGENTS.md')),
+    [join(coordFiles, 'CLAUDE.md')]: readFile(join(coordFiles, 'CLAUDE.md')),
+    [join(fixture, 'board', 'coordinator', 'default', 'machine', 'chat', 'AGENTS.md')]: readFile(join(fixture, 'board', 'coordinator', 'default', 'machine', 'chat', 'AGENTS.md')),
+    [join(fixture, 'board', 'coordinator', 'default', 'projects', 'alpha', 'rules.md')]: readFile(join(fixture, 'board', 'coordinator', 'default', 'projects', 'alpha', 'rules.md')),
+  };
+  const boardFilesUntouched = () => Object.entries(boardFiles).every(([p, text]) => readFile(p) === text && !text.includes(BLOCK));
+  const humanRules = (await stationOf()).settings.find((x) => x.name === 'coordinator.instructions')?.value || '';
+  check('the human\'s own instructions are on the board as a setting', humanRules.startsWith('Мои правила, поверх общих:'), humanRules);
+  const conn = await text('#mem-connect');
+  check('the panel says the Coordinator is not connected yet, and for what the change is', conn.includes('не подключена') && conn.includes('coordinator.instructions'), conn);
+  check('the planner has written none of the board\'s files (AGENTS.md, CLAUDE.md, the machine\'s and a project\'s)', boardFilesUntouched());
+  check('the Coordinator program\'s own memory is shown, read only', await exists('[data-foreign="claude"] [data-mem="user-answers-short"]') && !(await exists('[data-foreign="claude"] [data-act="mem-edit"]')) && !(await exists('[data-foreign="claude"] [data-act="mem-del"]')));
+  await shot('memory-galaxy.png');
+
+  // add: a form, a Markdown file with a header, the index
+  await click('#mem-add');
+  check('the add form opens', await waitFor('!!document.querySelector("#mem-form")', 3000));
+  await typeIn('#mem-title', 'Порты Postgres');
+  await typeIn('#mem-kind', 'pitfall');
+  await typeIn('#mem-body', 'Локальный Postgres слушает 5433, а не 5432.');
+  await click('#mem-save');
+  check('saving shows the change first: level, file, was → will be', await waitCard() && (await text('#mem-chg-where')).includes('Галактика') && (await text('#mem-chg .mm-chg-file')).endsWith('porty-postgres.md') && (await text('#mem-chg .mm-was')).includes('не было') && (await text('#mem-chg .mm-now')).includes('5433'), await text('#mem-chg'));
+  check('and writes nothing until the human confirms', !existsSync(join(memDir, 'porty-postgres.md')));
+  await sayYes();
+  check('a new entry is a Markdown file with a header', await waitLog(() => { const t = readFile(join(memDir, 'porty-postgres.md')); return t.includes('title: Порты Postgres') && t.includes('type: pitfall') && t.includes('5433') && t.startsWith('---\n'); }, 8000), readFile(join(memDir, 'porty-postgres.md')));
+  check('it is in the list and the index', await waitFor('!!document.querySelector(\'#mem-galaxy-list [data-mem="porty-postgres"]\')', 6000) && readFile(join(memDir, 'MEMORY.md')).includes('(porty-postgres.md)'));
+  // edit: the id stays
+  await click('[data-mem="porty-postgres"] .mm-line');
+  await click('[data-mem="porty-postgres"] [data-act="mem-edit"]');
+  await waitFor('!!document.querySelector("#mem-form")', 3000);
+  await typeIn('#mem-body', 'Локальный Postgres слушает 5434.');
+  await click('#mem-save');
+  check('an edit shows was (5433) → will be (5434) and writes nothing yet', await waitCard() && (await text('#mem-chg .mm-was')).includes('5433') && (await text('#mem-chg .mm-now')).includes('5434') && readFile(join(memDir, 'porty-postgres.md')).includes('5433'), await text('#mem-chg'));
+  await sayYes();
+  check('an edit rewrites the same file', await waitLog(() => readFile(join(memDir, 'porty-postgres.md')).includes('5434') && filesIn(memDir).filter((f) => f.startsWith('porty')).length === 1, 8000));
+  // delete: the card first (was → nothing), the file goes after the human's yes
+  await waitFor('!!document.querySelector(\'[data-mem="porty-postgres"]\')', 4000);
+  if (!(await exists('[data-mem="porty-postgres"] [data-act="mem-del"]'))) await click('[data-mem="porty-postgres"] .mm-line');
+  await click('[data-mem="porty-postgres"] [data-act="mem-del"]');
+  check('delete shows the file that goes away, and keeps it until the yes', await waitCard() && (await text('#mem-chg .mm-was')).includes('5434') && (await text('#mem-chg .mm-now')).includes('удалена') && existsSync(join(memDir, 'porty-postgres.md')), await text('#mem-chg'));
+  await sayYes();
+  check('the yes removes the file and the index line', await waitLog(() => !existsSync(join(memDir, 'porty-postgres.md')) && !readFile(join(memDir, 'MEMORY.md')).includes('porty-postgres'), 8000));
+  // an agent adds a file by hand (no planner): it appears, and the index follows
+  writeFileSync(join(memDir, 'ruchnaya-zapis.md'), '---\nname: ruchnaya-zapis\ntitle: Ручная запись\ndescription: добавил агент\ntype: rule\n---\n\nФайл положен руками, без планировщика.\n');
+  check('a file put there by hand shows up and gets into the index', await waitFor('!!document.querySelector(\'#mem-galaxy-list [data-mem="ruchnaya-zapis"]\')', 15000) && await waitLog(() => readFile(join(memDir, 'MEMORY.md')).includes('(ruchnaya-zapis.md)'), 15000));
+  unlinkSync(join(memDir, 'ruchnaya-zapis.md'));
+
+  // entries put in by hand under any name can be edited and deleted from the page
+  writeFileSync(join(memDir, 'GitLab.md'), '# GitLab\n\nРучная заметка про GitLab.\n');
+  writeFileSync(join(memDir, 'Порты БД.md'), '---\ntitle: Порты БД\ntype: reference\n---\n\nPostgres 5433.\n');
+  check('files with names that are not slugs are listed', await waitFor('!!document.querySelector(\'#mem-galaxy-list [data-mem="GitLab"]\') && !!document.querySelector(\'#mem-galaxy-list [data-mem="Порты БД"]\')', 15000));
+  await click('[data-mem="GitLab"] .mm-line');
+  await click('[data-mem="GitLab"] [data-act="mem-edit"]');
+  await waitFor('!!document.querySelector("#mem-form")', 3000);
+  await typeIn('#mem-body', 'Правка: GitLab — без PR.');
+  await click('#mem-save');
+  await waitCard();
+  await sayYes();
+  check('one of them can be edited, and keeps its file name', await waitLog(() => readFile(join(memDir, 'GitLab.md')).includes('без PR') && filesIn(memDir).filter((f) => f.toLowerCase().startsWith('gitlab')).length === 2, 8000), filesIn(memDir).join(','));
+  await waitFor('!!document.querySelector(\'[data-mem="Порты БД"]\')', 4000);
+  if (!(await exists('[data-mem="Порты БД"] [data-act="mem-del"]'))) await click('[data-mem="Порты БД"] .mm-line');
+  await click('[data-mem="Порты БД"] [data-act="mem-del"]');
+  await waitCard();
+  await sayYes();
+  check('and another deleted', await waitLog(() => !existsSync(join(memDir, 'Порты БД.md')), 8000));
+  await click('[data-mem="GitLab"] [data-act="mem-del"]');
+  await waitCard();
+  await sayYes();
+  check('the rest too', await waitLog(() => !existsSync(join(memDir, 'GitLab.md')), 8000));
+  // connect: the board's setting coordinator.instructions, «было → стало», two presses, the board's own set
+  const setsBefore = setCalls('coordinator.instructions').length;
+  await click('#mem-connect-toggle');
+  check('connecting shows the change card first: was → will be', await waitFor('!!document.querySelector("#mem-change")', 15000));
+  check('was: the human\'s own instructions as they are', (await evalJs('document.querySelector("#mem-was").innerText')).startsWith('Мои правила, поверх общих:'), await text('#mem-was'));
+  const willBe = await evalJs('document.querySelector("#mem-now").innerText');
+  check('will be: the same text, with the memory block added at the end', willBe.startsWith(humanRules.trimEnd()) && willBe.includes(BLOCK) && willBe.length > humanRules.length, willBe.slice(0, 120));
+  check('nothing is sent to the board yet', setCalls('coordinator.instructions').length === setsBefore);
+  await shot('memory-connect.png');
+  await click('#mem-change-confirm');
+  await sleep(250);
+  check('the first press only asks again', (await text('#mem-change-confirm')).includes('Точно') && setCalls('coordinator.instructions').length === setsBefore, await text('#mem-change-confirm'));
+  await sleep(700);
+  await click('#mem-change-confirm');
+  check('the second press is the board\'s own `set coordinator.instructions`', await waitLog(() => setCalls('coordinator.instructions').length === setsBefore + 1, 10000), JSON.stringify(calls().slice(-1)));
+  const afterOn = (await stationOf()).settings.find((x) => x.name === 'coordinator.instructions')?.value || '';
+  check('the board has the human\'s text unchanged, then the block', afterOn.startsWith(humanRules) && afterOn.includes(BLOCK) && afterOn.split(BLOCK).length === 2, afterOn.slice(0, 80));
+  check('and the panel says it is connected', await waitFor('(document.querySelector("#mem-connect")?.innerText || "").includes("подключена") && !(document.querySelector("#mem-connect")?.innerText || "").includes("не подключена")', 10000), await text('#mem-connect'));
+  check('the board\'s own files are still untouched', boardFilesUntouched());
+  // disconnect: back to exactly what the human wrote
+  await click('#mem-disconnect');
+  await waitFor('!!document.querySelector("#mem-change")', 10000);
+  check('disconnecting shows what it becomes: the human\'s text, without the block', (await evalJs('document.querySelector("#mem-now").innerText')) === humanRules.trimEnd(), await text('#mem-now'));
+  await click('#mem-change-cancel');
+  check('cancel sends nothing', setCalls('coordinator.instructions').length === setsBefore + 1 && !(await exists('#mem-change')));
+  await click('#mem-disconnect');
+  await waitFor('!!document.querySelector("#mem-change-confirm")', 10000);
+  await twoPresses('#mem-change-confirm');
+  check('the board has exactly the human\'s text again', await waitLog(() => setCalls('coordinator.instructions').length === setsBefore + 2, 10000) && await waitFor('fetch("/api/station").then((r) => r.json()).then((d) => d.settings.find((x) => x.name === "coordinator.instructions")?.value === ' + JSON.stringify(humanRules) + ')', 10000));
+  await waitFor('!!document.querySelector("#mem-connect-toggle")', 10000);
+  await click('#mem-connect-toggle');
+  await waitFor('!!document.querySelector("#mem-change-confirm")', 10000);
+  await twoPresses('#mem-change-confirm');
+  check('connected again', await waitFor('fetch("/api/station").then((r) => r.json()).then((d) => (d.settings.find((x) => x.name === "coordinator.instructions")?.value || "").includes("herdr-planner:memory"))', 10000), `${await text('#mem-connect')} | ${JSON.stringify(setCalls('coordinator.instructions').length)} vs ${setsBefore}`);
+  await waitFor('!!document.querySelector("#mem-tell")', 15000);
+  check('nothing was ever written into the board\'s files', boardFilesUntouched());
+
+  // ask the running Coordinator to read it now
+  const before = calls('coordinator.jsonl').length;
+  await waitFor('!!document.querySelector("#mem-tell")', 15000);
+  await click('#mem-tell');
+  check('«прочитать сейчас» sends the Coordinator the path of the index', await waitLog(() => calls('coordinator.jsonl').slice(before).some((c) => String(c.text).includes(`${memDir}/MEMORY.md`)), 20000), JSON.stringify(lastCall('coordinator.jsonl')));
+  await click('#mem-showblock');
+  check('the text of the block can be shown for programs that read another file', await waitFor('(document.querySelector("#mem-block")?.innerText || "").includes("Запомни")', 3000));
+
+  // «В память» beside a chat answer
+  await resetUi();
+  await evalJs('planner.goOverview()');
+  await sleep(300);
+  await press('Slash', '/');
+  await waitFor('document.querySelectorAll("#clog .turn:not(.pending)").length === 3', 8000);
+  check('every answer in the chat has a «В память» button', await exists('#clog .turn [data-act="to-memory"][data-who="a"]') && await exists('#clog .turn [data-act="to-memory"][data-who="q"]'));
+  await evalJs('(() => { const b = [...document.querySelectorAll(\'#clog .turn [data-act="to-memory"][data-who="a"]\')].pop(); b.click(); return true; })()');
+  check('it opens the dialog with that answer in it', await waitFor('!!document.querySelector("#remember")', 3000) && (await evalJs('document.querySelector("#rem-text").value')).includes('Ответ 9'), await evalJs('document.querySelector("#rem-text")?.value'));
+  check('the Galaxy is the level, and the universe can be chosen', (await evalJs('document.querySelector("#rem-galaxy").classList.contains("on")')) && !(await evalJs('document.querySelector("#rem-universe").disabled')));
+  await press('Escape');
+  check('Esc closes the dialog', await waitFor('!document.querySelector("#remember")', 3000));
+  await evalJs('(() => { const b = [...document.querySelectorAll(\'#clog .turn [data-act="to-memory"][data-who="a"]\')].pop(); b.click(); return true; })()');
+  await waitFor('!!document.querySelector("#remember")', 3000);
+  await typeIn('#rem-title', 'Ход работ по ALP-9');
+  await click('#rem-go');
+  check('«Запомнить» shows was → will be first, with the level, and writes nothing', await waitCard() && (await text('#mem-chg-where')).includes('Галактика') && (await text('#mem-chg .mm-now')).includes('Ответ 9') && !filesIn(memDir).some((x) => readFile(join(memDir, x)).includes('Ответ 9')), await text('#mem-chg'));
+  await sayYes();
+  check('«Запомнить» writes the file in the Galaxy folder, with where it came from', await waitLog(() => { const f = filesIn(memDir).find((x) => readFile(join(memDir, x)).includes('Ответ 9')); return !!f && readFile(join(memDir, f)).includes('source: chat') && readFile(join(memDir, f)).includes('title: Ход работ по ALP-9'); }, 8000), filesIn(memDir).join(','));
+  check('and the dialog closes', await waitFor('!document.querySelector("#remember")', 3000));
+  await press('Escape');
+
+  // «В память» beside a task's closing note: the task's universe is the level
+  await resetUi();
+  await go('alpha/15');
+  await waitFor('!!document.querySelector("#closing [data-act=to-memory]")', 8000);
+  await click('#closing [data-act="to-memory"]');
+  await waitFor('!!document.querySelector("#remember")', 3000);
+  check('from a closing note the dialog starts on the task\'s universe', (await evalJs('document.querySelector("#rem-universe").classList.contains("on")')) && (await evalJs('document.querySelector("#rem-repo").value')) === 'alpha' && (await evalJs('document.querySelector("#rem-text").value')).includes('export button'));
+  const alphaStatus = gitStatus(alphaRoot);
+  await click('#rem-go');
+  check('for a universe the card says the entry becomes a draft kept outside the checkout', await waitCard() && (await text('#mem-chg-where')).includes('вселенная alpha') && (await text('#mem-chg-dest')).includes('вне чекаута') && (await text('#mem-chg .mm-chg-file')).startsWith('docs/memory/'), await text('#mem-chg'));
+  await sayYes();
+  check('the draft is the planner\'s: the task as its source, in the planner\'s folder', await waitLog(() => filesIn(draftsOf('alpha')).some((f) => readFile(join(draftsOf('alpha'), f)).includes('source: task alpha/15')), 8000), filesIn(draftsOf('alpha')).join(','));
+  check('and the repository checkout is exactly as dirty as before: nothing was written into it', gitStatus(alphaRoot) === alphaStatus && !filesIn(alphaMem).some((f) => readFile(join(alphaMem, f)).includes('source: task alpha/15')), gitStatus(alphaRoot));
+  await resetUi();
+});
+
+section('memory connect', async () => {
+  // The memory block goes into the board's coordinator.instructions: the human's text first and untouched, whatever it
+  // is; a change made meanwhile is never overwritten.
+  const cliSet = (value) => execFileSync(join(fixture, 'bin', 'herdr-projects'), ['set', 'coordinator.instructions', value], { env: { ...process.env, FIXTURE_DIR: fixture } });
+  const instr = async () => (await stationOf()).settings.find((x) => x.name === 'coordinator.instructions')?.value || '';
+  const fresh = async () => {   // the panel is made again (it reads the instructions when it opens)
+    await resetUi();
+    await universeOf('alpha');
+    await quasarOf();
+    await waitFor('!!document.querySelector("#mem-connect-toggle") || !!document.querySelector("#mem-disconnect")', 15000);
+  };
+  const original = await instr();
+  const connectNow = async () => { await click('#mem-connect-toggle'); await waitFor('!!document.querySelector("#mem-change-confirm")', 15000); await twoPresses('#mem-change-confirm'); };
+
+  // 1. the instructions change after the card was opened
+  const base = 'Мои правила:\n1. Первое правило.';
+  cliSet(base);
+  await fresh();
+  await click('#mem-connect-toggle');
+  check('the card opens with the instructions as they are', await waitFor('!!document.querySelector("#mem-change-confirm")', 15000) && (await text('#mem-was')).includes('1. Первое правило.'));
+  const newer = base + '\n3. НОВОЕ ПРАВИЛО ЧЕЛОВЕКА';
+  cliSet(newer);
+  await twoPresses('#mem-change-confirm');
+  await sleep(1500);
+  check('an edit made meanwhile is not overwritten: the board still has the newer text, without the block', (await instr()) === newer, await instr());
+  check('and the card is made again from the newer text', await waitFor('(document.querySelector("#mem-was")?.innerText || "").includes("НОВОЕ ПРАВИЛО ЧЕЛОВЕКА") && (document.querySelector("#mem-now")?.innerText || "").includes("НОВОЕ ПРАВИЛО ЧЕЛОВЕКА")', 10000), await text('#mem-change'));
+  await twoPresses('#mem-change-confirm');
+  check('confirmed again, the block is added to the newer text', await waitFor(`fetch("/api/station").then((r) => r.json()).then((d) => { const v = d.settings.find((x) => x.name === "coordinator.instructions")?.value || ""; return v.startsWith(${JSON.stringify(newer)}) && v.includes("herdr-planner:memory"); })`, 10000), await instr());
+
+  // 2. instructions that are a Markdown list
+  const list = '- Настройки меняй только с моего согласия.\n- Не угадывай репозиторий.';
+  cliSet(list);
+  await fresh();
+  await connectNow();
+  check('a list starting with «-» can be connected: the text first and untouched', await waitFor(`fetch("/api/station").then((r) => r.json()).then((d) => { const v = d.settings.find((x) => x.name === "coordinator.instructions")?.value || ""; return v.startsWith(${JSON.stringify(list)}) && v.includes("herdr-planner:memory"); })`, 10000), await instr());
+  await waitFor('!!document.querySelector("#mem-disconnect")', 10000);
+  await click('#mem-disconnect');
+  await waitFor('!!document.querySelector("#mem-change-confirm")', 10000);
+  await twoPresses('#mem-change-confirm');
+  check('and disconnected: exactly the list again', await waitFor(`fetch("/api/station").then((r) => r.json()).then((d) => d.settings.find((x) => x.name === "coordinator.instructions")?.value === ${JSON.stringify(list)})`, 10000), await instr());
+
+  // 3. long instructions
+  const long = 'Длинное правило. '.repeat(400);
+  cliSet(long.trimEnd());
+  await fresh();
+  await connectNow();
+  check('long instructions (6 800 characters) can be connected; the board takes any length', await waitFor('fetch("/api/station").then((r) => r.json()).then((d) => { const v = d.settings.find((x) => x.name === "coordinator.instructions")?.value || ""; return v.length > 6800 && v.includes("herdr-planner:memory"); })', 10000));
+  await waitFor('!!document.querySelector("#mem-disconnect")', 10000);
+  await click('#mem-disconnect');
+  await waitFor('!!document.querySelector("#mem-change-confirm")', 10000);
+  await twoPresses('#mem-change-confirm');
+  check('and the text comes back whole', await waitFor(`fetch("/api/station").then((r) => r.json()).then((d) => d.settings.find((x) => x.name === "coordinator.instructions")?.value === ${JSON.stringify(long.trimEnd())})`, 10000));
+
+  // 4. text that could be read as an option is refused, with the reason, and nothing is sent
+  cliSet('--x опасно');
+  await fresh();
+  const sets = setCalls('coordinator.instructions').length;
+  await click('#mem-connect-toggle');
+  check('a text starting with «--x» is refused with a reason; no card, nothing sent', await waitFor('(document.querySelector("#toasts")?.innerText || "").includes("параметр")', 8000) && !(await exists('#mem-change')) && setCalls('coordinator.instructions').length === sets && (await instr()) === '--x опасно', await text('#toasts'));
+  cliSet(original || 'Мои правила, поверх общих:\n1. Настройки меняй только с моего явного согласия.');
+  await resetUi();
+});
+
+section('memory universe', async () => {
+  await resetUi();
+  await universeOf('alpha');
+  check('a universe has its own memory panel: the files of docs/memory/', await waitFor('!!document.querySelector(\'#mem-universe-list [data-mem="merge-squash"]\')', 10000) && (await text('#mem-universe .mm-dir')).includes('docs/memory'), await text('#mem-universe'));
+  check('the panel says the files are not in git, and lists them', await waitFor('(document.querySelector("#mem-git")?.innerText || "").includes("не в git")', 6000) && (await text('#mem-git')).includes('merge-squash.md'), await text('#mem-git'));
+  await shot('memory-universe.png');
+  // docs: a git folder with no memory yet. Add one: a draft outside the checkout, then commit just that.
+  await universeOf('docs');
+  check('a universe without memory says so', await waitFor('(document.querySelector("#mem-universe")?.innerText || "").includes("Пока пусто")', 8000), await text('#mem-universe'));
+  check('and its git state is clean', (await text('#mem-git')).includes('закоммичено'), await text('#mem-git'));
+  check('the checkout is clean to begin with', gitStatus(docsRepo) === '', gitStatus(docsRepo));
+  await click('#mem-add');
+  await waitFor('!!document.querySelector("#mem-form")', 3000);
+  await typeIn('#mem-title', 'Тесты без сети');
+  await typeIn('#mem-body', 'Тесты docs не ходят в сеть: всё, что нужно, лежит в фикстуре.');
+  await click('#mem-save');
+  check('the card names the level and the file, and says the entry becomes a draft outside the checkout', await waitCard() && (await text('#mem-chg-where')).includes('вселенная docs') && (await text('#mem-chg .mm-chg-file')) === 'docs/memory/testy-bez-seti.md' && (await text('#mem-chg-dest')).includes('вне чекаута') && (await text('#mem-chg .mm-now')).includes('type: decision'), await text('#mem-chg'));
+  check('clean text: no findings, the ordinary confirm', !(await exists('#mem-chg-found')) && (await evalJs('document.querySelector("#mem-chg").dataset.risk')) === 'none');
+  check('nothing is written before the yes', filesIn(draftsOf('docs')).length === 0 && gitStatus(docsRepo) === '');
+  await sayYes();
+  check('the entry is a draft kept by the planner', await waitLog(() => filesIn(draftsOf('docs')).length === 1 && readFile(join(draftsOf('docs'), filesIn(draftsOf('docs'))[0])).includes('type: decision'), 8000), filesIn(draftsOf('docs')).join(','));
+  check('the checkout stays clean: `git status` is empty and docs/memory is not even there (the board can still merge into it)', gitStatus(docsRepo) === '' && !existsSync(join(docsRepo, 'docs')), gitStatus(docsRepo));
+  check('the list shows it as a draft, and the page says drafts wait for a commit', await waitFor('!!document.querySelector(\'#mem-universe-list [data-mem="testy-bez-seti"][data-draft="new"]\')', 8000) && await waitFor('(document.querySelector("#mem-drafts")?.innerText || "").includes("черновик")', 8000), await text('#mem-git'));
+  await shot('memory-draft.png');
+  writeFileSync(join(docsRepo, 'OTHER.txt'), 'staged elsewhere\n');
+  execFileSync('git', ['-C', docsRepo, 'add', 'OTHER.txt']);
+  await click('#mem-commit');
+  check('committing shows the files first (was → will be); nothing is committed yet', await waitCard() && (await text('#mem-chg-dest')).includes('закоммичены') && (await text('#mem-chg .mm-chg-file')) === 'docs/memory/testy-bez-seti.md' && execFileSync('git', ['-C', docsRepo, 'rev-list', '--count', 'HEAD']).toString().trim() === '1' && !existsSync(join(docsRepo, 'docs')), await text('#mem-chg'));
+  await sayYes();
+  check('the yes makes a commit with only the memory files', await waitLog(() => execFileSync('git', ['-C', docsRepo, 'rev-list', '--count', 'HEAD']).toString().trim() === '2', 8000));
+  const files = execFileSync('git', ['-C', docsRepo, 'show', '--name-only', '--format=%s', 'HEAD']).toString().trim().split('\n').filter(Boolean);
+  check('its message names the memory, and the other staged file was left out', files[0].startsWith('Память вселенной') && files.slice(1).every((f) => f.startsWith('docs/memory/')) && files.length === 3, files.join(' | '));
+  check('the checkout is clean again (only the other staged file stays), and the drafts are gone', gitStatus(docsRepo) === 'A  OTHER.txt\n' && filesIn(draftsOf('docs')).length === 0, gitStatus(docsRepo));
+  check('the page then says everything is committed', await waitFor('(document.querySelector("#mem-git")?.innerText || "").includes("закоммичено")', 8000), await text('#mem-git'));
+  // a folder that is not a git repository
+  await universeOf('delta');
+  check('a folder without git says so', await waitFor('(document.querySelector("#mem-git")?.innerText || "").includes("не в git-репозитории")', 8000), await text('#mem-universe'));
+  await resetUi();
+});
+
+section('memory find', async () => {
+  await resetUi();
+  await evalJs('planner.goOverview()');
+  await sleep(300);
+  const query = async (q) => {
+    await evalJs('document.getElementById("q").focus(); true');
+    await typeIn('#q', q);
+    await waitFor(`document.querySelectorAll("#sres .srow").length > 0`, 6000);
+    await sleep(500);
+  };
+  await query('squash');
+  check('the space search finds a universe\'s memory entry, in its own group', await waitFor('!!document.querySelector(\'#sres .srow[data-kind="memory"][data-id="alpha|merge-squash"]\')', 6000), await text('#sres'));
+  check('the group is named «Память» and the path says where it lives', (await text('#sres')).includes('Память') && (await text('#sres .srow[data-kind="memory"] .path')).includes('alpha'), await text('#sres'));
+  await click('#sres .srow[data-kind="memory"]');
+  check('a click flies to the universe and opens that entry', await waitFor('document.querySelector(\'#mem-universe [data-mem="merge-squash"]\')?.classList.contains("open")', 12000) && (await pd())?.selected?.id === 'alpha', JSON.stringify((await pd())?.selected));
+  await resetUi();
+  await evalJs('planner.goOverview()');
+  await sleep(300);
+  await query('localStorage');
+  check('the closing notes of tasks are searched too (the planet level)', await waitFor('!!document.querySelector(\'#sres .srow[data-kind="closing"][data-id="alpha/4"]\')', 6000), await text('#sres'));
+  await click('#sres .srow[data-kind="closing"]');
+  check('a click opens the task', await waitFor('document.querySelector("#focus [data-focus=task] .tagk")?.innerText === "ALP-4"', 12000));
+  await resetUi();
+  await evalJs('planner.goOverview()');
+  await sleep(300);
+  await query('коротко');
+  check('the memory the Coordinator\'s program keeps is searched (read only)', await waitFor('!!document.querySelector(\'#sres .srow[data-kind="memory"][data-id="@claude|user-answers-short"]\')', 6000), await text('#sres'));
+  await click('#sres .srow[data-kind="memory"]');
+  check('and opens on the Quasar, in the program\'s own block', await waitFor('document.querySelector(\'[data-foreign="claude"] [data-mem="user-answers-short"]\')?.classList.contains("open")', 12000));
+  await resetUi();
+});
+
+section('memory suggestions', async () => {
+  await resetUi();
+  const pending = async () => (await stateApi()).memory_suggestions.map((m) => m.task);
+  // The sections before this one may have approved alpha/4 already (`requests`): its suggestion is then waiting, asked once.
+  const doneAlready = (await stateApi()).tasks.some((t) => t.id === 'alpha/4' && t.status === 'done');
+  const asked = (tag) => calls('claude.jsonl').filter((c) => c.suggest && (!tag || c.suggest === tag)).length;
+  if (!doneAlready) {
+    check('there is no suggestion yet', (await pending()).length === 0);
+    const ok = await post('/api/action', { action: 'approve', id: 'alpha/4', confirm: true });
+    check('a task is approved', ok?.[0] === 200, JSON.stringify(ok));
+  }
+  check('the model is asked once, by the planner, for lines to keep', await waitLog(() => asked('ALP-4') === 1, 15000), JSON.stringify(calls('claude.jsonl').slice(-2)));
+  check('the call has no tools (a fixed prompt, the text as data)', calls('claude.jsonl').filter((c) => !c.suggest && c.toolsEmpty).length >= 1);
+  check('its suggestion waits in the snapshot for the human', await waitFor('fetch("/api/state").then((r) => r.json()).then((s) => s.memory_suggestions.some((m) => m.task === "alpha/4" && m.lines.length === 2))', 15000), JSON.stringify(await pending()));
+  check('and nothing is written without the human', filesIn(alphaMem).every((f) => !readFile(join(alphaMem, f)).includes('source: task alpha/4')) && filesIn(draftsOf('alpha')).every((f) => !readFile(join(draftsOf('alpha'), f)).includes('source: task alpha/4')));
+  if (!doneAlready) check('the page tells about it', await waitFor('(document.querySelector("#toasts")?.innerText || "").includes("Есть что запомнить")', 8000), await text('#toasts'));
+  await universeOf('alpha');
+  check('the universe panel shows it with the lines editable', await waitFor('!!document.querySelector(\'#mem-universe .mm-sug[data-sug="alpha/4"]\')', 8000) && (await evalJs('document.querySelectorAll("#mem-universe .mm-sug textarea").length')) === 2);
+  await shot('memory-suggestion.png');
+  await typeIn('#mem-universe .mm-sug textarea', 'ALP-4: тема не хранится в базе — только localStorage и системная настройка.');
+  const alphaStatus = gitStatus(alphaRoot);
+  await click('#mem-universe [data-act="mem-sug-accept"]');
+  check('keeping shows was → will be for both lines (two files) first, and writes nothing', await waitCard() && (await evalJs('document.querySelectorAll("#mem-universe .mm-chg-one").length')) === 2 && (await text('#mem-chg')).includes('только localStorage') && filesIn(draftsOf('alpha')).every((f) => !readFile(join(draftsOf('alpha'), f)).includes('source: task alpha/4')), await text('#mem-chg'));
+  check('the suggestion still waits while the card is open', (await pending()).includes('alpha/4'));
+  await sayYes();
+  check('the edited lines become drafts with the task as the source', await waitLog(() => filesIn(draftsOf('alpha')).some((f) => { const t = readFile(join(draftsOf('alpha'), f)); return t.includes('source: task alpha/4') && t.includes('только localStorage'); }) && filesIn(draftsOf('alpha')).filter((f) => readFile(join(draftsOf('alpha'), f)).includes('source: task alpha/4')).length === 2, 10000), filesIn(draftsOf('alpha')).join(','));
+  check('and the checkout of the universe is as it was: nothing written into docs/memory', gitStatus(alphaRoot) === alphaStatus && !filesIn(alphaMem).some((f) => readFile(join(alphaMem, f)).includes('source: task alpha/4')), gitStatus(alphaRoot));
+  check('and the suggestion is gone', await waitFor('fetch("/api/state").then((r) => r.json()).then((s) => !s.memory_suggestions.some((m) => m.task === "alpha/4"))', 8000) && await waitFor('!document.querySelector(".mm-sug")', 8000));
+  await post('/api/refresh', {});
+  await sleep(1500);
+  check('it is not asked again for the same task', asked('ALP-4') === 1);
+
+  // dismiss, from the task's own panel
+  await post('/api/action', { action: 'approve', id: 'delta/1', confirm: true });
+  check('another done task is proposed too', await waitFor('fetch("/api/state").then((r) => r.json()).then((s) => s.memory_suggestions.some((m) => m.task === "delta/1"))', 15000));
+  // an accept that cannot work changes nothing: no lines at all, or one line too long among good ones
+  const none = await post('/api/memory/suggestion', { task: 'delta/1', action: 'accept', lines: [{ kind: 'decision', text: '   ' }] });
+  check('keeping zero lines is refused, not turned into the model\'s own', none?.[0] === 422 && !existsSync(join(fixture, 'projects', 'herdr', 'delta', 'docs', 'memory')), JSON.stringify(none));
+  const mixed = await post('/api/memory/suggestion', { task: 'delta/1', action: 'accept', lines: [{ kind: 'decision', text: 'Хорошая строка для памяти.' }, { kind: 'pitfall', text: 'я'.repeat(9000) }] });
+  const leaky = await post('/api/memory/suggestion', { task: 'delta/1', action: 'accept', lines: [{ kind: 'pitfall', text: 'Стенд лежит на 203.0.113.7, зайти можно под ivan@corp-mail.example.org.' }] });
+  check('a suggested line with an address and an e-mail is checked like any other write: it is a preview that names both', leaky?.[0] === 200 && leaky[1].preview === true && leaky[1].risk === 'confirm' && ['ip', 'email'].every((k) => leaky[1].findings.some((f) => f.kind === k)), JSON.stringify(leaky).slice(0, 300));
+  const leakyYes = await post('/api/memory/suggestion', { task: 'delta/1', action: 'accept', lines: [{ kind: 'pitfall', text: 'Стенд лежит на 203.0.113.7, зайти можно под ivan@corp-mail.example.org.' }], confirm: true, token: leaky?.[1]?.token });
+  check('and without the «да» about them nothing is written', leakyYes?.[0] === 422 && !existsSync(join(fixture, 'projects', 'herdr', 'delta', 'docs', 'memory')), JSON.stringify(leakyYes).slice(0, 200));
+  check('a line that cannot be saved stops the whole accept: nothing is written', mixed?.[0] === 422 && !existsSync(join(fixture, 'projects', 'herdr', 'delta', 'docs', 'memory')), JSON.stringify(mixed).slice(0, 200));
+  check('and the suggestion still waits', await waitFor('fetch("/api/state").then((r) => r.json()).then((s) => s.memory_suggestions.some((m) => m.task === "delta/1"))', 4000));
+  await go('delta/1');
+  check('the task\'s own panel carries the suggestion beside its closing note', await waitFor('!!document.querySelector(\'#closing .mm-sug[data-sug="delta/1"]\')', 8000));
+  await click('#closing [data-act="mem-sug-dismiss"]');
+  check('«Не нужно» drops it and writes nothing', await waitFor('fetch("/api/state").then((r) => r.json()).then((s) => !s.memory_suggestions.some((m) => m.task === "delta/1"))', 8000) && !existsSync(join(fixture, 'projects', 'herdr', 'delta', 'docs', 'memory')));
+  // the switch: off, and a done task is not sent to the model
+  await resetUi();
+  await quasarOf();
+  await waitFor('!!document.querySelector("#mem-suggest-toggle")', 8000);
+  check('the panel says the proposals are on', (await text('#mem-suggest-toggle')) === 'вкл', await text('#mem-suggest-toggle'));
+  await click('#mem-suggest-toggle');
+  check('and the switch turns them off', await waitFor('(document.querySelector("#mem-suggest-toggle")?.innerText || "") === "выкл"', 6000) && (await api('/api/memory'))?.[1]?.settings?.suggest === false);
+  const a1 = asked();
+  await post('/api/action', { action: 'approve', id: 'sigma/2', confirm: true });
+  await waitFor('fetch("/api/state").then((r) => r.json()).then((s) => s.tasks.some((t) => t.id === "sigma/2" && t.status === "done"))', 12000);
+  await sleep(2500);
+  check('a task done while it is off is not sent to the model', asked() === a1 && !(await pending()).includes('sigma/2'), `${asked()} vs ${a1}`);
+  await click('#mem-suggest-toggle');
+  await resetUi();
+});
+
+section('memory guard', async () => {
+  await resetUi();
+  const save = (repo, body, extra = {}) => post('/api/memory/save', { repo, title: 'Проба', kind: 'decision', body, ...extra });
+  const samples = {
+    ip: 'Стенд лежит на 203.0.113.7 за VPN.',
+    email: 'Писать на ivan@corp-mail.example.org.',
+    host: 'Репозиторий на gitlab.acme-corp.io/team/app.',
+    secret: 'Токен ghp_abcdefghijklmnopqrstuvwxyz0123456789 лежит в CI.',
+    path: 'Проект лежит в /home/ivan/work/app.',
+    person: 'Решение принял Иван Петров на встрече.',
+    own: 'Машина bob-the-builder-host падала.',
+  };
+  const docsCommits = () => execFileSync('git', ['-C', docsRepo, 'rev-list', '--count', 'HEAD']).toString().trim();
+  const commits0 = docsCommits();
+  // 1. every kind is found, before anything is written; the repository on this machine only is not «public»
+  for (const [kind, text] of Object.entries(samples)) {
+    const r = await save('docs', text);
+    check(`${kind}: found and shown to the human, nothing written`, r?.[0] === 200 && r[1].preview === true && r[1].findings.some((f) => f.kind === kind) && r[1].risk === 'confirm' && filesIn(draftsOf('docs')).length === 0 && gitStatus(docsRepo).replace('A  OTHER.txt\n', '') === '', JSON.stringify(r?.[1]?.findings));
+  }
+  // passwords: in a URL query next to other findings, in plain phrasing, glued to an option
+  for (const t of ['строка jdbc:postgresql://db.internal:5432/app?user=app&password=Secr3t', 'пароль от стенда: Qwerty123', 'Пароль — Qwerty123', 'мой пароль Qwerty123 не показывать', 'mysql -u root -pSecr3t123 app']) {
+    const r = await save('docs', t);
+    check(`a password is found: ${t.slice(0, 40)}`, r?.[0] === 200 && r[1].findings.some((f) => f.kind === 'secret'), JSON.stringify(r?.[1]?.findings));
+  }
+  const jd = await save('docs', 'строка jdbc:postgresql://db.internal:5432/app?user=app&password=Secr3t');
+  const jdRedacted = jd[1].redacted[0]?.body || '';
+  const jdAgain = await save('docs', jdRedacted);
+  check('what «Обезличить» offers is really clean: no password left, nothing found', !jdRedacted.includes('Secr3t') && jdAgain[1].risk === 'none' && jdAgain[1].findings.length === 0, jdRedacted);
+  const secret = await save('docs', samples.secret);
+  check('a secret is shown only by its beginning', secret[1].findings.every((f) => !f.text.includes('abcdefghijkl')) && secret[1].findings[0].text.endsWith('…'), JSON.stringify(secret[1].findings));
+  const clean = await save('docs', 'Решили сливать squash: ветки задач короткие.');
+  check('a clean text has no findings and risk none', clean[1].risk === 'none' && clean[1].findings.length === 0);
+  check('the Galaxy\'s own memory is local: it is not checked, and its card says so', (await post('/api/memory/save', { repo: '', title: 'Проба', body: samples.ip }))[1].risk === 'none');
+
+  // 2. the confirm is the human's: the token of what they saw, and a «да» about the findings
+  const prev = await save('docs', samples.ip);
+  const noToken = await save('docs', samples.ip, { confirm: true });
+  const stale = await save('docs', samples.ip, { confirm: true, token: 'stale', accept_risk: true });
+  const noYes = await save('docs', samples.ip, { confirm: true, token: prev[1].token });
+  check('no token, a stale token and no «да» about the findings are all refused', noToken?.[0] === 409 && stale?.[0] === 409 && noYes?.[0] === 422 && filesIn(draftsOf('docs')).length === 0, JSON.stringify([noToken?.[0], stale?.[0], noYes?.[0]]));
+  const edited = await save('docs', samples.ip + ' Ещё слово.', { confirm: true, token: prev[1].token, accept_risk: true });
+  check('a text edited after the preview is not written under the old token', edited?.[0] === 409 && filesIn(draftsOf('docs')).length === 0);
+  const galaxyNoToken = await post('/api/memory/save', { repo: '', title: 'Без токена', body: 'x', confirm: true });
+  check('the Galaxy too: a write without the preview\'s token is refused', galaxyNoToken?.[0] === 409 && !filesIn(memDir).some((f) => f.includes('bez-tokena')), JSON.stringify(galaxyNoToken));
+  const yes = await save('docs', samples.ip, { confirm: true, token: prev[1].token, accept_risk: true });
+  check('with the token and the «да» the draft is written (outside the checkout)', yes?.[0] === 200 && yes[1].draft === true && filesIn(draftsOf('docs')).length === 1 && gitStatus(docsRepo).replace('A  OTHER.txt\n', '') === '', JSON.stringify(yes));
+
+  // 3. the same check stands before «Закоммитить память»
+  const cprev = await post('/api/memory/commit', { repo: 'docs' });
+  check('the commit preview lists the file and the address in it', cprev?.[0] === 200 && cprev[1].preview && cprev[1].changes.length === 1 && cprev[1].findings.some((f) => f.kind === 'ip'), JSON.stringify(cprev?.[1]).slice(0, 300));
+  const cno = await post('/api/memory/commit', { repo: 'docs', confirm: true, token: cprev[1].token });
+  check('without the «да» about it nothing is committed', cno?.[0] === 422 && docsCommits() === commits0, JSON.stringify(cno));
+  const cyes = await post('/api/memory/commit', { repo: 'docs', confirm: true, token: cprev[1].token, accept_risk: true });
+  check('with it the commit is made, and the checkout is clean again', cyes?.[0] === 200 && String(docsCommits()) === String(Number(commits0) + 1) && gitStatus(docsRepo).replace('A  OTHER.txt\n', '') === '' && filesIn(draftsOf('docs')).length === 0, JSON.stringify(cyes));
+
+  // 4. a repository that is public — or whose visibility is unknown — forbids it by default
+  const apr = await save('alpha', samples.email);
+  check('alpha\'s origin cannot be asked: treated as public; findings are blocked by default', apr?.[0] === 200 && apr[1].risk === 'block' && apr[1].visibility === 'unknown', JSON.stringify([apr?.[1]?.risk, apr?.[1]?.visibility]));
+  const before = filesIn(draftsOf('alpha')).length;
+  const apRisk = await save('alpha', samples.email, { confirm: true, token: apr[1].token, accept_risk: true });
+  check('the ordinary «да» is not enough there', apRisk?.[0] === 403 && filesIn(draftsOf('alpha')).length === before, JSON.stringify(apRisk));
+  const apPublic = await save('alpha', samples.email, { confirm: true, token: apr[1].token, accept_public: true });
+  check('only the explicit public confirmation writes it', apPublic?.[0] === 200 && filesIn(draftsOf('alpha')).length === before + 1, JSON.stringify(apPublic));
+  const dprev = await post('/api/memory/discard', { repo: 'alpha', id: apPublic[1].entry.id });
+  const dnoTok = await post('/api/memory/discard', { repo: 'alpha', id: apPublic[1].entry.id, confirm: true });
+  check('throwing a draft away is a change too: a preview (draft → nothing), and no token, no discard', dprev?.[0] === 200 && dprev[1].preview && dprev[1].changes[0].before.includes('ivan@corp-mail') && dprev[1].changes[0].after === null && dnoTok?.[0] === 409 && filesIn(draftsOf('alpha')).length === before + 1, JSON.stringify([dprev?.[0], dnoTok?.[0]]));
+  const dropped = await post('/api/memory/discard', { repo: 'alpha', id: apPublic[1].entry.id, confirm: true, token: dprev[1].token });
+  check('with the card\'s token the draft is thrown away', dropped?.[0] === 200 && filesIn(draftsOf('alpha')).length === before, JSON.stringify(dropped));
+
+  // 5. on the page: the card for a public repository, anonymise, and «в память Галактики»
+  const alphaStatus = gitStatus(alphaRoot);
+  await universeOf('alpha');
+  await waitFor('!!document.querySelector("#mem-add")', 10000);
+  await click('#mem-add');
+  await waitFor('!!document.querySelector("#mem-form")', 3000);
+  await typeIn('#mem-title', 'Стенд');
+  await typeIn('#mem-body', 'Стенд лежит на 203.0.113.7, писать на ivan@corp-mail.example.org.');
+  await click('#mem-save');
+  check('the card is red for a public repository and names what was found', await waitCard() && (await evalJs('document.querySelector("#mem-chg").dataset.risk')) === 'block' && (await text('#mem-chg-found')).includes('203.0.113.7') && (await text('#mem-chg-found')).includes('ivan@corp-mail.example.org') && (await text('#mem-chg-found')).includes('публичный'), await text('#mem-chg'));
+  await shot('memory-public-block.png');
+  check('its confirm says it plainly, and the other ways out are offered', (await text('#mem-chg-confirm')).includes('публичный') && await exists('#mem-chg-redact') && await exists('#mem-chg-galaxy'));
+  await click('#mem-chg-confirm');
+  await sleep(300);
+  check('the public confirmation is two presses: the first only asks again', (await text('#mem-chg-confirm')).includes('Точно') && !filesIn(draftsOf('alpha')).some((f) => readFile(join(draftsOf('alpha'), f)).includes('203.0.113.7')), await text('#mem-chg-confirm'));
+  await click('#mem-chg-redact');
+  check('anonymise puts the text without the findings into the form and asks again: now clean', await waitFor('document.querySelector("#mem-chg")?.dataset.risk === "none" && !document.querySelector("#mem-chg-found")', 8000) && (await evalJs('document.querySelector("#mem-body").value')).includes('<ip>') && (await text('#mem-chg .mm-now')).includes('<email>') && !(await text('#mem-chg .mm-now')).includes('203.0.113.7'), await text('#mem-chg'));
+  await sayYes();
+  check('the anonymised draft is written, the original text is nowhere', await waitLog(() => filesIn(draftsOf('alpha')).some((f) => readFile(join(draftsOf('alpha'), f)).includes('<ip>')) && !filesIn(draftsOf('alpha')).some((f) => readFile(join(draftsOf('alpha'), f)).includes('203.0.113.7')), 8000));
+  await waitFor('!document.querySelector("#mem-form")', 5000);
+  // «Отбросить черновик» shows the card too (the draft → nothing), and drops it only after the yes
+  await waitFor('!!document.querySelector(\'#mem-universe-list [data-mem="stend"] .mm-line\')', 8000);
+  await click('[data-mem="stend"] .mm-line');
+  await click('[data-mem="stend"] [data-act="mem-discard"]');
+  check('discarding a draft shows the card and keeps the draft until the yes', await waitCard() && (await text('#mem-chg-dest')).includes('отброшен') && (await text('#mem-chg .mm-was')).includes('<ip>') && (await text('#mem-chg .mm-now')).includes('удалена') && filesIn(draftsOf('alpha')).some((f) => readFile(join(draftsOf('alpha'), f)).includes('<ip>')), await text('#mem-chg'));
+  await sayYes();
+  check('the yes throws the draft away', await waitLog(() => !filesIn(draftsOf('alpha')).some((f) => readFile(join(draftsOf('alpha'), f)).includes('<ip>')), 8000));
+  await click('#mem-add');
+  await waitFor('!!document.querySelector("#mem-form")', 3000);
+  await typeIn('#mem-title', 'Стенд для себя');
+  await typeIn('#mem-body', 'Мой стенд лежит на 203.0.113.9.');
+  await click('#mem-save');
+  await waitCard();
+  await click('#mem-chg-galaxy');
+  check('«в память Галактики» asks again, for the Galaxy: local, not checked, no findings', await waitFor('(document.querySelector("#mem-chg-where")?.innerText || "").includes("Галактика") && document.querySelector("#mem-chg")?.dataset.risk === "none"', 8000) && (await text('#mem-chg-dest')).includes('в git он не попадает'), await text('#mem-chg'));
+  await sayYes();
+  check('the entry is a file of the Galaxy memory, and not a draft of the universe', await waitLog(() => filesIn(memDir).some((f) => readFile(join(memDir, f)).includes('203.0.113.9')) && !filesIn(draftsOf('alpha')).some((f) => readFile(join(draftsOf('alpha'), f)).includes('203.0.113.9')), 8000));
+  for (const f of filesIn(memDir).filter((f) => readFile(join(memDir, f)).includes('203.0.113.9'))) unlinkSync(join(memDir, f));
+  check('the repository checkout of alpha was not touched by any of it', gitStatus(alphaRoot) === alphaStatus, gitStatus(alphaRoot));
+
+  // 6. the Coordinator is told the same rules
+  const mem = await api('/api/memory');
+  const block = mem?.[1]?.connect?.block || '';
+  check('the block for the Coordinator says: show «было → стало», wait for «да»', block.includes('«было → стало»') && block.includes('«да»') && block.includes('ничего не пиши'), block.slice(0, 200));
+  check('the Coordinator is told never to write a universe into the checkout (that would make it dirty for the board): a task instead', block.includes('никогда в чекаут') && block.includes('задачу «Запомнить в docs/memory'), block.slice(0, 200));
+  check('and: no personal data or secrets in a universe, anonymise or write it to the Galaxy', block.includes('персональные данные') && block.includes('обезличить') && block.includes('в Галактику'));
+  await resetUi();
+});
+
+section('memory ssh', async () => {
+  await resetUi();
+  await evalJs('planner.enterGalaxy("vm-a")');
+  await waitFor('plannerDebug().galaxy === "vm-a" && world.debug().flight === "idle"', 30000);
+  await quasarOf('vm-a');
+  check('a far galaxy has its own memory: read over ssh from that machine', await waitFor('!!document.querySelector(\'#mem-galaxy-list [data-mem="vm-a-ports"]\')', 25000) && (await text('#mem-galaxy-count')) === '1', await text('#mem-galaxy'));
+  check('the title names that galaxy', (await text('#mem-galaxy .mm-h')).toLowerCase().includes('vm-a'));
+  check('its Coordinator is not connected until asked', (await text('#mem-connect')).includes('не подключена'), await text('#mem-connect'));
+  const vmAgents = join(vmHome, '.herdr-projects', 'data', 'coordinator', 'default', 'chat', 'AGENTS.md');
+  const vmAgentsWas = readFile(vmAgents);
+  await click('#mem-connect-toggle');
+  await waitFor('!!document.querySelector("#mem-change")', 25000);
+  check('a far galaxy shows the same card: it has no instructions of its own yet', (await text('#mem-was')).includes('не задано') && (await text('#mem-now')).includes(BLOCK), await text('#mem-was'));
+  await twoPresses('#mem-change-confirm');
+  check('connecting is the far board\'s own set, over ssh', await waitFor('fetch("/api/station?galaxy=vm-a").then((r) => r.json()).then((d) => (d.settings.find((x) => x.name === "coordinator.instructions")?.value || "").includes("herdr-planner:memory"))', 25000));
+  check('the block points at that machine\'s own Galaxy folder', (await stationOf('vm-a')).settings.find((x) => x.name === 'coordinator.instructions').value.includes('~/.herdr-projects/memory/galaxy/MEMORY.md'));
+  check('the home board is not touched by it, and no file of the far board is written', !calls().some((c) => c.argv?.[0] === 'set' && c.argv.includes('coordinator.instructions') && String(c.argv[2] || '').includes('~/.herdr-projects')) && readFile(vmAgents) === vmAgentsWas && !readFile(vmAgents).includes(BLOCK));
+  await click('#mem-add');
+  await waitFor('!!document.querySelector("#mem-form")', 3000);
+  await typeIn('#mem-title', 'Ключ деплоя');
+  await typeIn('#mem-body', 'Деплой на vm-a идёт под пользователем deploy.');
+  await click('#mem-save');
+  check('a far galaxy\'s change shows the same card, and writes nothing there before the yes', await waitCard() && (await text('#mem-chg .mm-chg-file')).includes('.herdr-projects/memory/galaxy/') && !existsSync(join(vmMem, 'klyuch-deploya.md')), await text('#mem-chg'));
+  await sayYes();
+  check('a new entry is written there: its file and the index', await waitLog(() => readFile(join(vmMem, 'klyuch-deploya.md')).includes('пользователем deploy') && readFile(join(vmMem, 'MEMORY.md')).includes('(vm-a-ports.md)') && readFile(join(vmMem, 'MEMORY.md')).includes('(klyuch-deploya.md)'), 20000), readFile(join(vmMem, 'MEMORY.md')));
+  check('and it is not written on this machine', !filesIn(memDir).includes('klyuch-deploya.md'));
+  check('the list shows both', await waitFor('document.querySelectorAll("#mem-galaxy-list [data-mem]").length === 2', 15000));
+  await click('[data-mem="klyuch-deploya"] .mm-line');
+  await click('[data-mem="klyuch-deploya"] [data-act="mem-del"]');
+  await waitCard();
+  await sayYes();
+  check('delete goes there too', await waitLog(() => !existsSync(join(vmMem, 'klyuch-deploya.md')) && !readFile(join(vmMem, 'MEMORY.md')).includes('klyuch-deploya'), 20000));
+  // the universe of the far galaxy: its memory is git's, read only here
+  await universeOf('alpha', 'vm-a');
+  check('a far universe shows the memory of its folder, read only', await waitFor('!!document.querySelector(\'#mem-universe-list [data-mem="vm-alpha-note"]\')', 25000) && !(await exists('#mem-add')), await text('#mem-universe'));
+  check('and says why: it lives in git', (await text('#mem-universe')).includes('живёт в git'), await text('#mem-universe'));
+  const refused = await post('/api/memory/save', { galaxy: 'vm-a', repo: 'alpha', title: 'x', body: 'y' });
+  check('a write into a far universe is refused', refused?.[0] === 403, JSON.stringify(refused));
+  const found = await api('/api/search?q=' + encodeURIComponent('сервисы vm-a'));
+  check('the far memory is searched too, filed under its galaxy', found?.[1]?.hits?.some((h) => h.kind === 'memory' && h.galaxy === 'vm-a' && h.id === '|vm-a-ports'), JSON.stringify(found?.[1]?.hits?.map((h) => [h.kind, h.galaxy, h.id])));
+  await resetUi();
+  await evalJs('planner.goHome()');
+  await waitFor('plannerDebug().galaxy === ""', 8000);
+});
 
 // ── run ──────────────────────────────────────────────────────────────────
 
