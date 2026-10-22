@@ -2942,14 +2942,32 @@ section('memory universe', async () => {
   await shot('memory-draft.png');
   writeFileSync(join(docsRepo, 'OTHER.txt'), 'staged elsewhere\n');
   execFileSync('git', ['-C', docsRepo, 'add', 'OTHER.txt']);
-  await click('#mem-commit');
-  check('committing shows the files first (was → will be); nothing is committed yet', await waitCard() && (await text('#mem-chg-dest')).includes('закоммичены') && (await text('#mem-chg .mm-chg-file')) === 'docs/memory/testy-bez-seti.md' && execFileSync('git', ['-C', docsRepo, 'rev-list', '--count', 'HEAD']).toString().trim() === '1' && !existsSync(join(docsRepo, 'docs')), await text('#mem-chg'));
+  const commitsOf = (root) => execFileSync('git', ['-C', root, 'rev-list', '--count', 'HEAD']).toString().trim();
+  const headOf = (root) => execFileSync('git', ['-C', root, 'rev-parse', 'HEAD']).toString().trim();
+  const status0 = gitStatus(docsRepo), head0 = headOf(docsRepo), adds0 = calls().filter((c) => c.argv[0] === 'add').length;
+  check('the button says what it does: it sends by a task, it does not commit', (await text('#mem-send')) === 'Отправить в репозиторий задачей' && !(await exists('#mem-commit')), await text('#mem-git'));
+  await click('#mem-send');
+  check('sending shows the files first (was → will be) and says a board task is made; nothing is added yet', await waitCard() && (await text('#mem-chg-dest')).includes('задачу') && !(await text('#mem-chg-dest')).includes('закоммичены') && (await text('#mem-chg .mm-chg-file')) === 'docs/memory/testy-bez-seti.md' && calls().filter((c) => c.argv[0] === 'add').length === adds0 && !existsSync(join(docsRepo, 'docs')), await text('#mem-chg'));
   await sayYes();
-  check('the yes makes a commit with only the memory files', await waitLog(() => execFileSync('git', ['-C', docsRepo, 'rev-list', '--count', 'HEAD']).toString().trim() === '2', 8000));
-  const files = execFileSync('git', ['-C', docsRepo, 'show', '--name-only', '--format=%s', 'HEAD']).toString().trim().split('\n').filter(Boolean);
-  check('its message names the memory, and the other staged file was left out', files[0].startsWith('Память вселенной') && files.slice(1).every((f) => f.startsWith('docs/memory/')) && files.length === 3, files.join(' | '));
-  check('the checkout is clean again (only the other staged file stays), and the drafts are gone', gitStatus(docsRepo) === 'A  OTHER.txt\n' && filesIn(draftsOf('docs')).length === 0, gitStatus(docsRepo));
-  check('the page then says everything is committed', await waitFor('(document.querySelector("#mem-git")?.innerText || "").includes("закоммичено")', 8000), await text('#mem-git'));
+  const sendAdd = () => calls().filter((c) => c.argv[0] === 'add').slice(adds0).find((c) => c.argv[1]?.startsWith('Запомнить в docs/memory: Тесты без сети'));
+  check('the yes adds a board task of this repo, with the file text and the MEMORY.md line in its description', await waitLog(() => {
+    const c = sendAdd();
+    const d = c ? c.argv[c.argv.indexOf('--desc') + 1] || '' : '';
+    return !!c && c.argv.includes('--repo') && c.argv[c.argv.indexOf('--repo') + 1] === 'docs' && d.includes('docs/memory/testy-bez-seti.md') && d.includes('type: decision') && d.includes('Тесты docs не ходят в сеть') && d.includes('- [Тесты без сети](testy-bez-seti.md)') && d.includes('docs/memory/MEMORY.md');
+  }, 8000), JSON.stringify(sendAdd()).slice(0, 400));
+  check('the checkout is not touched: same git status, same HEAD, no new commit, no docs folder', gitStatus(docsRepo) === status0 && status0 === 'A  OTHER.txt\n' && headOf(docsRepo) === head0 && commitsOf(docsRepo) === '1' && !existsSync(join(docsRepo, 'docs')), gitStatus(docsRepo));
+  check('the drafts are handed over and gone', await waitLog(() => filesIn(draftsOf('docs')).length === 0, 8000));
+  check('the page shows the id of the task made, and the board has it', await waitFor('!!document.querySelector("#mem-sent")', 8000) && /[A-Z]+-\d+/.test(await text('#mem-sent')) && (await evalJs('fetch("/api/state").then((r) => r.json()).then((s) => s.tasks.some((t) => t.id === document.querySelector("#mem-sent").dataset.task && t.title.startsWith("Запомнить")))')), await text('#mem-sent'));
+  check('the sent entry stays on the panel, marked as waiting for the task\'s merge', await waitFor('document.querySelector(\'#mem-universe-list [data-mem="testy-bez-seti"]\')?.dataset.draft === "sent" && (document.querySelector(\'#mem-universe-list [data-mem="testy-bez-seti"] .mm-draft\')?.innerText || "").toLowerCase().includes("слияни")', 8000), await text('#mem-universe-list'));
+  check('and the panel does not claim that everything is committed: nothing is in git yet', !(await text('#mem-git')).includes('закоммичено') && !(await text('#mem-universe')).includes('Пока пусто'), await text('#mem-git'));
+  await shot('memory-sent.png');
+  await navigate(base + '/?noauto&nocoach&bloom=0');
+  await universeOf('docs');
+  check('after a reload the note and the task id are still there', await waitFor('!!document.querySelector("#mem-sent") && /[A-Z]+-\\d+/.test(document.querySelector("#mem-sent").innerText) && !!document.querySelector(\'#mem-universe-list [data-mem="testy-bez-seti"][data-draft="sent"]\')', 12000), await text('#mem-git'));
+  await click('#mem-sent [data-act="mem-sent-forget"]');
+  check('«Забыть пометку» drops the note (the memory itself is untouched); only then it is just clean', await waitFor('!document.querySelector("#mem-sent") && (document.querySelector("#mem-git")?.innerText || "").includes("закоммичено")', 8000) && gitStatus(docsRepo) === status0, await text('#mem-git'));
+  execFileSync('git', ['-C', docsRepo, 'reset', '--quiet', '--', 'OTHER.txt']);
+  rmSync(join(docsRepo, 'OTHER.txt'), { force: true });
   // a folder that is not a git repository
   await universeOf('delta');
   check('a folder without git says so', await waitFor('(document.querySelector("#mem-git")?.innerText || "").includes("не в git-репозитории")', 8000), await text('#mem-universe'));
@@ -3066,6 +3084,14 @@ section('memory guard', async () => {
     person: 'Решение принял Иван Петров на встрече.',
     own: 'Машина bob-the-builder-host падала.',
   };
+  // The names of machines are found by the list this run is given (the way the real run reads ~/.ssh/config and /etc/hosts).
+  const machine = await save('docs', 'Стенд поднят на app-semantics, ключ лежит на salehost; деплой через dokploymain.');
+  check('internal host names (ssh aliases) are found as hosts, not only IPs and domains', machine?.[0] === 200 && ['app-semantics', 'salehost'].every((n) => machine[1].findings.some((f) => f.kind === 'host' && f.text === n)) && machine[1].risk === 'confirm', JSON.stringify(machine?.[1]?.findings));
+  check('and «Обезличить» takes them out', !(machine[1].redacted[0]?.body || '').includes('app-semantics') && (machine[1].redacted[0]?.body || '').includes('<хост>'), JSON.stringify(machine?.[1]?.redacted));
+  const runner = await save('docs', 'Контейнеры гоняем на верфи vm-r.');
+  check('the names of the board\'s runners (runners.json) are found as hosts too', runner?.[0] === 200 && runner[1].findings.some((f) => f.kind === 'host' && f.text === 'vm-r'), JSON.stringify(runner?.[1]?.findings));
+  const machineAlpha = await save('alpha', 'Стенд поднят на app-semantics.');
+  check('in a public (or unknown) repository such a name is blocked by default, like the rest', machineAlpha?.[1]?.risk === 'block' && machineAlpha[1].findings.some((f) => f.kind === 'host' && f.text === 'app-semantics'), JSON.stringify(machineAlpha?.[1]?.findings));
   const docsCommits = () => execFileSync('git', ['-C', docsRepo, 'rev-list', '--count', 'HEAD']).toString().trim();
   const commits0 = docsCommits();
   // 1. every kind is found, before anything is written; the repository on this machine only is not «public»
@@ -3101,13 +3127,17 @@ section('memory guard', async () => {
   const yes = await save('docs', samples.ip, { confirm: true, token: prev[1].token, accept_risk: true });
   check('with the token and the «да» the draft is written (outside the checkout)', yes?.[0] === 200 && yes[1].draft === true && filesIn(draftsOf('docs')).length === 1 && gitStatus(docsRepo).replace('A  OTHER.txt\n', '') === '', JSON.stringify(yes));
 
-  // 3. the same check stands before «Закоммитить память»
-  const cprev = await post('/api/memory/commit', { repo: 'docs' });
-  check('the commit preview lists the file and the address in it', cprev?.[0] === 200 && cprev[1].preview && cprev[1].changes.length === 1 && cprev[1].findings.some((f) => f.kind === 'ip'), JSON.stringify(cprev?.[1]).slice(0, 300));
-  const cno = await post('/api/memory/commit', { repo: 'docs', confirm: true, token: cprev[1].token });
-  check('without the «да» about it nothing is committed', cno?.[0] === 422 && docsCommits() === commits0, JSON.stringify(cno));
-  const cyes = await post('/api/memory/commit', { repo: 'docs', confirm: true, token: cprev[1].token, accept_risk: true });
-  check('with it the commit is made, and the checkout is clean again', cyes?.[0] === 200 && String(docsCommits()) === String(Number(commits0) + 1) && gitStatus(docsRepo).replace('A  OTHER.txt\n', '') === '' && filesIn(draftsOf('docs')).length === 0, JSON.stringify(cyes));
+  // 3. the same check stands before «Отправить в репозиторий задачей»; the checkout is never written
+  const adds1 = () => calls().filter((c) => c.argv[0] === 'add').length;
+  const addsBefore = adds1(), headBefore = execFileSync('git', ['-C', docsRepo, 'rev-parse', 'HEAD']).toString().trim();
+  const cprev = await post('/api/memory/send', { repo: 'docs' });
+  check('the send preview lists the file and the address in it', cprev?.[0] === 200 && cprev[1].preview && cprev[1].changes.length === 1 && cprev[1].findings.some((f) => f.kind === 'ip'), JSON.stringify(cprev?.[1]).slice(0, 300));
+  const cno = await post('/api/memory/send', { repo: 'docs', confirm: true, token: cprev[1].token });
+  check('without the «да» about it no task is made', cno?.[0] === 422 && adds1() === addsBefore && filesIn(draftsOf('docs')).length === 1, JSON.stringify(cno));
+  const cyes = await post('/api/memory/send', { repo: 'docs', confirm: true, token: cprev[1].token, accept_risk: true });
+  check('with it a board task is made (the tag and the id of the board), and the checkout has no new commit and is as it was', cyes?.[0] === 200 && /[A-Z]+-\d+/.test(cyes[1].task) && /^docs\/\d+$/.test(cyes[1].id) && adds1() === addsBefore + 1 && execFileSync('git', ['-C', docsRepo, 'rev-parse', 'HEAD']).toString().trim() === headBefore && docsCommits() === commits0 && gitStatus(docsRepo) === '' && filesIn(draftsOf('docs')).length === 0, JSON.stringify(cyes));
+  const nothing = await post('/api/memory/send', { repo: 'docs' });
+  check('with no drafts there is nothing to send', nothing?.[0] === 422, JSON.stringify(nothing));
 
   // 4. a repository that is public — or whose visibility is unknown — forbids it by default
   const apr = await save('alpha', samples.email);
@@ -3117,6 +3147,11 @@ section('memory guard', async () => {
   check('the ordinary «да» is not enough there', apRisk?.[0] === 403 && filesIn(draftsOf('alpha')).length === before, JSON.stringify(apRisk));
   const apPublic = await save('alpha', samples.email, { confirm: true, token: apr[1].token, accept_public: true });
   check('only the explicit public confirmation writes it', apPublic?.[0] === 200 && filesIn(draftsOf('alpha')).length === before + 1, JSON.stringify(apPublic));
+  // the send of that draft to a public (or unknown) repository is forbidden by default, too: no task is made
+  const sprev = await post('/api/memory/send', { repo: 'alpha' });
+  const addsAlpha = adds1();
+  const sRisk = await post('/api/memory/send', { repo: 'alpha', confirm: true, token: sprev?.[1]?.token, accept_risk: true });
+  check('sending it is blocked by default for a public repository: the ordinary «да» makes no task', sprev?.[0] === 200 && sprev[1].risk === 'block' && sRisk?.[0] === 403 && adds1() === addsAlpha && filesIn(draftsOf('alpha')).length === before + 1, JSON.stringify([sprev?.[1]?.risk, sRisk?.[0], sRisk?.[1]]));
   const dprev = await post('/api/memory/discard', { repo: 'alpha', id: apPublic[1].entry.id });
   const dnoTok = await post('/api/memory/discard', { repo: 'alpha', id: apPublic[1].entry.id, confirm: true });
   check('throwing a draft away is a change too: a preview (draft → nothing), and no token, no discard', dprev?.[0] === 200 && dprev[1].preview && dprev[1].changes[0].before.includes('ivan@corp-mail') && dprev[1].changes[0].after === null && dnoTok?.[0] === 409 && filesIn(draftsOf('alpha')).length === before + 1, JSON.stringify([dprev?.[0], dnoTok?.[0]]));
