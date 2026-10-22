@@ -6,6 +6,7 @@ import { chat, snap } from './store';
 import type { TurnData } from './types';
 import { t } from './i18n';
 import { makeShelf, type SavedFile } from './attach';
+import { settleRead } from './chat-unread';
 
 /** The files waiting in the message line. */
 const shelf = makeShelf();
@@ -15,7 +16,7 @@ export const removeFile = shelf.remove;
 export const sending = signal(false);
 export const optimistic = signal<{ text: string; at: number; attachments: { id: string; name: string }[] } | null>(null);
 /** Set when a search hit or a key asks the log to show a given turn. */
-export const scrollTo = signal<{ n: number; at: number } | null>(null);
+export const scrollTo = signal<{ n: number; at: number; block?: 'start' | 'center' } | null>(null);
 /** A draft for the message line (a todo item dropped on the chat): the line takes the text once. */
 export const draftRequest = signal<{ text: string; at: number } | null>(null);
 
@@ -41,6 +42,7 @@ export async function loadLatest(): Promise<void> {
       // More than a page arrived since the last look: start again from the end.
       if (have >= 0 && r.turns.length && r.turns[0].n > have + 1) update({ turns: [] });
       merge(r.turns);
+      settleRead();
     }
   } catch { /* the compact tail stays */ } finally {
     update({ loadingLatest: false });

@@ -30,6 +30,7 @@ export const en: Record<string, string | string[]> = {
   'chat.aria': 'Chat with the Coordinator', 'chat.button': 'Chat', 'chat.hide': 'Hide', 'chat.search': 'search the chat',
   'chat.searching': 'searching…', 'chat.noHits': 'not in the conversation', 'chat.loading': 'Loading…', 'chat.older': '↑ Earlier · scroll up or ↑',
   'chat.start': 'start of the conversation', 'chat.toLast': '↓ To the latest', 'chat.you': 'you', 'chat.reuse': 'put back in the input',
+  'chat.unreadDot': 'New message', 'chat.toUnread': 'To the unread', 'chat.unreadN': ['{n} new', '{n} new', '{n} new'],
   'chat.boardNotice': 'board notice', 'chat.more': 'Expand ▾', 'chat.less': 'Collapse ▴', 'chat.sentWaiting': 'sent · waiting for the Coordinator',
   'chat.reading': 'reading the board', 'chat.placeholder': 'Tell the Coordinator… · Ctrl+V — an image',
   'chat.send': 'Send', 'chat.attachTitle': 'Attach a file (text, image, sound): Ctrl+V, drag or pick', 'chat.remove': 'Remove',

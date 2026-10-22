@@ -17,7 +17,7 @@
 //  - a section that fails is run once more from a fresh page, said out loud in the output and in the summary.
 
 import { spawn, execFileSync } from 'node:child_process';
-import { mkdtempSync, writeFileSync, readFileSync, existsSync, unlinkSync, utimesSync, rmSync, readdirSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, readFileSync, existsSync, unlinkSync, utimesSync, rmSync, readdirSync, appendFileSync, realpathSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -4524,6 +4524,111 @@ section('runners ctl', async () => {
   await twoPresses('#ctl-go');
   check('docker stop of its id', await waitLog(() => yardCommands(start2).includes('docker stop ' + id('a')), 30000), JSON.stringify(yardCommands(start2)));
   check('and the yard shows it stopped', await waitFor(`${stateOf('pg-ALP-3')} === "exited"`, 30000));
+}, { retry: false });
+
+// The green light of an unread message of the Coordinator: by its label, a count on the chat button and in the header, put out
+// when the message has been in view of an open chat in the window in front; kept in the browser.
+section('chat unread', async () => {
+  const READ = 'herdr-planner.chat.read';
+  const folder = realpathSync(join(fixture, 'board', 'coordinator', 'default', 'chat')).replace(/[^A-Za-z0-9]/g, '-');
+  const file = join(fixture, 'claude', 'projects', folder, 'fixture.jsonl');
+  let next = 11;
+  // A turn of the transcript: a question and its answer (`lines` makes the answer tall).
+  const say = (lines = 1) => {
+    const i = next++;
+    const at = (k) => new Date(1792389360000 + i * 60000 + k).toISOString();
+    const usage = { input_tokens: 3000, cache_read_input_tokens: 140000, cache_creation_input_tokens: 7000 };
+    const body = Array.from({ length: lines }, (_, k) => `Ответ ${i}, строка ${k + 1}: всё идёт по плану.`).join('\n');
+    appendFileSync(file, JSON.stringify({ type: 'user', timestamp: at(0), message: { role: 'user', content: `Вопрос ${i}: что нового?` } }) + '\n'
+      + JSON.stringify({ type: 'assistant', timestamp: at(1000), message: { role: 'assistant', model: 'claude-opus-5-5', content: [{ type: 'text', text: body }], usage } }) + '\n');
+    return i - 1;   // its place in the conversation (the fixture has turns 0…9)
+  };
+  // «The window is the one in front» is decided by the page from hasFocus and the visibility; here it is set by hand, so the
+  // check does not depend on which window of the machine the headless browser was given.
+  const focus = (on) => evalJs(`(() => { document.hasFocus = () => ${on}; window.dispatchEvent(new Event(${JSON.stringify(on ? 'focus' : 'blur')})); return true; })()`);
+  const stored = () => evalJs(`JSON.parse(localStorage.getItem(${JSON.stringify(READ)}) || 'null')`);
+  const fresh = async () => {
+    await navigate(base + '/?noauto&nocoach&bloom=0');
+    await focus(true);
+  };
+  const dots = (n) => `document.querySelectorAll('#clog .turn[data-n="${n}"] .udot.on').length`;
+  // The button opens the chat and, 30 ms later, puts the caret in the line: a press that comes before that would be undone by the focus.
+  const toggle = async () => {
+    const was = await evalJs('!document.querySelector("#chat").classList.contains("off")');
+    await click('#bchat');
+    await waitFor(was ? 'document.querySelector("#chat").classList.contains("off")' : '!document.querySelector("#chat").classList.contains("off") && document.activeElement.id === "ask-in"', 5000);
+  };
+  const chatOpen = () => evalJs('!document.querySelector("#chat").classList.contains("off")');
+
+  await resetUi();
+  await evalJs(`localStorage.removeItem(${JSON.stringify(READ)}); true`);
+  await fresh();
+  check('the first look takes what the chat holds for read: no count, no light', await waitFor('!!localStorage.getItem(' + JSON.stringify(READ) + ')', 10000) && !(await exists('#bchat-n')) && (await stored()).base === 8, JSON.stringify(await stored()));
+
+  // A new answer while the chat is hidden: the count is on the button, green.
+  const a = say();
+  check('a new answer shows a count on the hidden chat\'s button', await hasText('#bchat-n', '1', 10000), await text('#bchat'));
+  const green = await evalJs(`(() => { const c = getComputedStyle(document.querySelector('#bchat-n')).color.match(/[\\d.]+/g).map(Number); return { c, ok: c[1] > c[0] && c[1] > c[2] }; })()`);
+  check('the count is green', green.ok, JSON.stringify(green));
+  check('the chat is still hidden', !(await chatOpen()));
+  // A hidden chat does not read anything, however long the window is in front.
+  await sleep(1600);   // the page's own minimum time of «seen» is 0.9 s
+  check('a hidden chat keeps the message unread', await exists('#bchat-n') && (await evalJs(dots(a))) === 1 && (await stored()).base < a, JSON.stringify(await stored()));
+
+  // The chat opens in a window that is not in front: the light and the counts stay.
+  await focus(false);
+  await toggle();
+  check('the chat opens', await waitFor('!document.querySelector("#chat").classList.contains("off")', 5000));
+  check('the new message has a light by the Coordinator\'s label', await waitFor(dots(a) + ' === 1', 5000));
+  check('the header counts and says «new»', await hasText('#cunread', '1 новое', 5000), await text('#cunread'));
+  await sleep(1600);
+  check('a window that is not in front reads nothing', (await evalJs(dots(a))) === 1 && await exists('#bchat-n') && await exists('#cunread') && (await stored()).base < a, JSON.stringify(await stored()));
+  await shot('chat-unread.png');
+  // The window comes to the front: the message is in view, the light goes out and the counts go.
+  await focus(true);
+  check('in the window in front the light goes out', await waitFor(dots(a) + ' === 0', 8000));
+  check('the counts go too', await waitFor('!document.querySelector("#bchat-n") && !document.querySelector("#cunread")', 5000));
+  check('«read» is kept in the browser', (await stored()).base === a && (await stored()).seen.length === 0, JSON.stringify(await stored()));
+  const fade = await evalJs(`getComputedStyle(document.querySelector('#clog .turn[data-n="${a}"] .udot')).transitionDuration`);
+  check('the light fades softly', fade !== '0s', fade);
+  await send('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-reduced-motion', value: 'reduce' }] });
+  const still = await evalJs(`getComputedStyle(document.querySelector('#clog .turn[data-n="${a}"] .udot')).transitionDuration`);
+  await send('Emulation.setEmulatedMedia', { features: [] });
+  check('with reduced motion it goes out at once', still === '0s', still);
+
+  // Two answers while the chat is hidden; the page is reloaded: they are still unread, and reading them survives another reload.
+  await toggle();
+  await waitFor('document.querySelector("#chat").classList.contains("off")', 5000);
+  const b = say(); const c2 = say();
+  check('two new answers: the count is 2', await hasText('#bchat-n', '2', 10000), await text('#bchat'));
+  await sleep(1600);
+  check('the hidden chat leaves both unread', (await evalJs(dots(b) + ' + ' + dots(c2))) === 2 && await hasText('#bchat-n', '2', 100));
+  await fresh();
+  check('after a reload the count is still 2', await hasText('#bchat-n', '2', 10000), await text('#bchat'));
+  await toggle();
+  check('opened in the window in front, both are read', await waitFor('!document.querySelector("#bchat-n") && !document.querySelector("#cunread")', 10000), await text('#bchat'));
+  check('the place is kept', (await stored()).base === c2, JSON.stringify(await stored()));
+  await fresh();
+  await toggle();
+  await waitFor('!document.querySelector("#chat").classList.contains("off")', 5000);
+  check('after a reload nothing is unread again', !(await exists('#bchat-n')) && (await evalJs(`document.querySelectorAll('#clog .udot.on').length`)) === 0);
+
+  // Many tall answers while the chat is hidden: opening it in a window that is not in front takes it to the first unread,
+  // and the button of the header brings it back from the end.
+  await toggle();
+  await waitFor('document.querySelector("#chat").classList.contains("off")', 5000);
+  await focus(false);
+  const first = say(14); for (let i = 0; i < 5; i++) say(14);
+  check('six tall answers: the count is 6', await hasText('#bchat-n', '6', 10000), await text('#bchat'));
+  check('the chat is hidden while they come', !(await chatOpen()));
+  await toggle();
+  check('opening the chat takes it to the first unread, loading the turns before it', await waitFor(`(() => { const e = document.querySelector('#clog .turn[data-n="${first}"]'); const l = document.querySelector('#clog'); if (!e) return false; const r = e.getBoundingClientRect(); const o = l.getBoundingClientRect(); return r.top >= o.top - 2 && r.top < o.top + 80; })()`, 15000), await evalJs(`JSON.stringify({ first: ${first}, turns: [...document.querySelectorAll('#clog .turn')].map((e) => e.dataset.n), top: document.querySelector('#clog').scrollTop })`));
+  await click('#tolast');
+  await waitFor('(() => { const l = document.querySelector("#clog"); return l.scrollHeight - l.scrollTop - l.clientHeight < 30; })()', 12000);
+  await click('#cunread');
+  check('the header button takes it back to the first unread', await waitFor(`(() => { const e = document.querySelector('#clog .turn[data-n="${first}"]'); const l = document.querySelector('#clog'); if (!e) return false; const r = e.getBoundingClientRect(); const o = l.getBoundingClientRect(); return r.top >= o.top - 2 && r.top < o.top + 80; })()`, 15000));
+  check('still six: a window that is not in front reads nothing', await hasText('#bchat-n', '6', 100));
+  await evalJs('delete document.hasFocus; true');
 }, { retry: false });
 
 for (const [name, fn, opts] of sections) {

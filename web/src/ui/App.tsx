@@ -22,7 +22,8 @@ import { Ship } from './Ship';
 import { RememberDialog } from './MemoryPanel';
 import { MemoryWindow } from './MemoryWindow';
 import { Gl } from './Gl';
-import { t } from '../i18n';
+import { t, tn } from '../i18n';
+import { unreadCount as unreadChat } from '../chat-unread';
 import { unreadCount } from './unread';
 import './help.css';
 import './chatwide.css';
@@ -34,7 +35,9 @@ function Dock(): JSX.Element {
         <Gl n="list" />{t('todo.button', { n: unreadCount() })}
       </button>
       <button class={`btn ${panels.chat.value ? 'on' : ''}`} id="bchat" type="button" aria-pressed={panels.chat.value} onClick={() => { panels.chat.value = !panels.chat.value; if (panels.chat.value) setTimeout(() => (document.getElementById('ask-in') as HTMLTextAreaElement | null)?.focus(), 30); }}>
-        <Gl n="chat" />{t('chat.button')} <kbd>/</kbd>
+        <Gl n="chat" />{t('chat.button')}
+        {unreadChat.value > 0 && <span class="ubadge" id="bchat-n" role="status" aria-label={tn('chat.unreadN', unreadChat.value)}>{unreadChat.value}</span>}
+        {' '}<kbd>/</kbd>
       </button>
     </div>
   );
