@@ -275,6 +275,7 @@ pub async fn runner_probe(State(app): State<Shared>, headers: HeaderMap, Json(bo
         added_at_ms: 0,
         capacity: None,
         auto: Default::default(),
+        alerts: Default::default(),
     };
     let local = local_checks(&app.cfg, &target).await;
     let state = runners::probe(&app.cfg, &r).await;
@@ -400,6 +401,7 @@ pub async fn runner_add(State(app): State<Shared>, headers: HeaderMap, Json(body
         added_at_ms: now_ms(),
         capacity: None,
         auto: Default::default(),
+        alerts: Default::default(),
     };
     if file.runners.is_empty() || body.default {
         file.default = label.clone();
@@ -432,10 +434,16 @@ pub struct SetBody {
     default: Option<bool>,
     #[serde(default)]
     note: Option<String>,
+    /// The free share of the docker disk that is too little, in percent (PLN-42).
+    #[serde(default)]
+    disk_free_pct: Option<u64>,
+    /// How many minutes of silence are too long (PLN-42).
+    #[serde(default)]
+    offline_min: Option<u64>,
     confirm: Option<bool>,
 }
 
-/// `POST /api/runner/set`: tags, masks, the ports' address, the default and the note.
+/// `POST /api/runner/set`: tags, masks, the ports' address, the default, the note and the alarms' thresholds.
 pub async fn runner_set(State(app): State<Shared>, headers: HeaderMap, Json(body): Json<SetBody>) -> Response {
     if !same_origin(&headers) {
         return fail(403, "cross-origin request refused");
@@ -464,6 +472,12 @@ pub async fn runner_set(State(app): State<Shared>, headers: HeaderMap, Json(body
         if let Some(n) = body.note {
             r.note = n;
         }
+        if let Some(p) = body.disk_free_pct {
+            r.alerts.disk_free_pct = p;
+        }
+        if let Some(m) = body.offline_min {
+            r.alerts.offline_min = m;
+        }
     }
     if body.default == Some(true) {
         file.default = body.id.clone();
@@ -481,6 +495,7 @@ pub async fn runner_set(State(app): State<Shared>, headers: HeaderMap, Json(body
                 s.tags = r.tags.clone();
                 s.protected = r.protected.clone();
                 s.note = r.note.clone();
+                s.alert_rules = r.alerts.clone();
             }
         }
     }
@@ -545,6 +560,7 @@ pub async fn runner_remove(State(app): State<Shared>, headers: HeaderMap, Json(b
         return fail(422, e);
     }
     app.db.runner_remove(&body.id);
+    app.db.meta_set(&crate::runners_alert::meta_key(&body.id), "");
     app.runners.lock().await.retain(|s| s.id != body.id);
     spawn_after_change(app.clone(), false);
     Json(json!({"ok": true, "warned": busy})).into_response()

@@ -512,6 +512,17 @@ export const ru: Record<string, string | string[]> = {
   'runner.stationPreview': 'Показать текст: было → стало', 'runner.stationWas': 'Было', 'runner.stationNow': 'Станет', 'runner.stationEmpty': '(инструкции не заданы)',
   'runner.dropOld': 'Заодно убрать старые строки про DOCKER_HOST (свои правила рядом останутся)',
   'runner.forgotToast': 'На верфи {id} забыт контейнер {name} ({tag})',
+  /* тревоги верфи */
+  'runner.alerts': 'Тревоги',
+  'runner.alertKind.offline': 'Верфь не отвечает', 'runner.alertKind.disk': 'Мало места на диске',
+  'runner.alertKind.crash': 'Контейнер задачи упал', 'runner.alertKind.forgotten': 'Забытый контейнер',
+  'runner.alert.offline': 'Не отвечает {n} мин.',
+  'runner.alert.disk': 'Свободно {pct} % ({free} из {total} ГБ)',
+  'runner.alert.crash': 'Контейнер {name} задачи {tag} не работает — {status}',
+  'runner.alert.crashNoTag': 'Контейнер {name} не работает — {status}',
+  'runner.alert.forgotten': 'Забыт контейнер {name} задачи {tag}',
+  'runner.alert.forgottenNoTag': 'Забыт контейнер {name}',
+  'runner.diskPct': 'Свободно на диске не меньше, %', 'runner.offlineMin': 'Не отвечает дольше, мин',
   /* уборка диска и автоуборка верфи */
   'disk.title': 'Уборка диска: было → стало', 'disk.counting': 'Считаю место на верфи… это может занять до двух минут.',
   'disk.unitGb': 'ГБ', 'disk.unitMb': 'МБ', 'disk.unitKb': 'КБ', 'disk.nothing': 'ничего лишнего',

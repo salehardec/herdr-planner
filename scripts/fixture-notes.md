@@ -165,7 +165,8 @@ The planner works with its own board only. The stand-ins still answer as a board
 - `state/runner.json`: ids, networks and volume names already removed, builders removed, whether the images and the cache
   were pruned; the probe leaves them out. Its `extra` (`containers`, `networks`, `volumes`, in the shape of
   `DATA.runnerR`) is what a check adds to the yard: the `runners auto` section writes it (a container, a network and a
-  volume labelled `herdr.task=ALP-13`, and live ones that must stay). Writing the file anew brings the yard back.
+  volume labelled `herdr.task=ALP-13`, and live ones that must stay). `disk: {size, avail}` overrides what the probe
+  reports as the docker disk (the `runners alerts` section asks for 8 % free). Writing the file anew brings the yard back.
 - Six containers: `pg-ALP-3` (a live task, compose project `work-3`), `pg-AL9-4` (the same task alpha/4 under the
   repository's older key `AL9`, from `repo-keys.json` `had`), `web-ALP-15` (task ALP-15 is done → forgotten),
   `x-ALP-99` (tag with no such task → unsure), `neighbor-db-1` (compose project `neighbor`) and
@@ -174,6 +175,13 @@ The planner works with its own board only. The stand-ins still answer as a board
   builders (`old`, stopped, state volume 3.1 GB; `x`, running), an orphan builder state `buildx_buildkit_gone0_state`
   (8 GB) and one unused volume of somebody else (`chroma_data`, compose project `chroma`).
 - `log/ssh.jsonl` gets a line with `runner: "vm-r"` for every such call. No copy of the list goes to another machine.
+- The yard's alarms (`src/runners_alert.rs`) are sent to the Coordinator as `coordinator tell`: `log/coordinator.jsonl`
+  gets a line whose text starts with «Верфь …». They come one per state (little disk, silence, a fallen container, a
+  forgotten one) and are not repeated while the state lasts — the same names the page's own messages would use. A told
+  alarm is only forgotten after ten minutes of complete reads without it, so a crash loop caught «Up» or a disk
+  wobbling at the threshold does not send it again. The
+  `chat` section waits for the first such line, then writes the stand-in's opening words back (the alarm is a real
+  message and changes them), so its option buttons are those of the fixture's conversation.
 - The wizard's local check: `ssh -G me@192.0.2.29` prints its `hostname`, `bin/docker` exists, and the stand-in ssh
   answers `true` and `docker version` with `28.3.0`.
 

@@ -1302,7 +1302,7 @@ function sshMain(C, DATA) {
     row('mem', 'MemAvailable:   12582912 kB');
     row('mem', 'SwapTotal:       2097152 kB');
     row('mem', 'SwapFree:        2097152 kB');
-    row('disk', '/var/lib/docker\t500000000000 300000000000');
+    row('disk', '/var/lib/docker\t' + (st.disk ? st.disk.size + ' ' + st.disk.avail : '500000000000 300000000000'));
     row('docker', '28.3.0 x86_64');
     row('compose', 'v2.17.3');
     row('info', '8|17179869184|6|4|40|Ubuntu 24.04 LTS|runc,nvidia,');

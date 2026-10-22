@@ -126,9 +126,11 @@ export async function openRequest(index: number): Promise<void> {
   if (!r) return;
   queueCursor.value = index;
   pushFrame();
-  const entity: Entity = r.id === 'coordinator'
-    ? { kind: 'quasar', id: 'quasar' }
-    : { kind: 'planet', id: r.id };
+  const entity: Entity = r.type === 'runner-alert'
+    ? { kind: 'runner', id: r.id }
+    : r.id === 'coordinator'
+      ? { kind: 'quasar', id: 'quasar' }
+      : { kind: 'planet', id: r.id };
   await navigateTo(entity, { push: false });
   fromQueue.value = true;
 }

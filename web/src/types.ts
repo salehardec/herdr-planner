@@ -286,6 +286,26 @@ export interface RunnerBlock {
 export interface RunnerAuto { enabled: boolean; hours: number }
 export interface RunnerAutoStats { containers: number; networks: number; volumes: number; runs: number; last_ms: number; last_line: string }
 
+/** An alarm of a shipyard (PLN-42): little disk, a long silence, a task's container fallen, a forgotten container. */
+export interface RunnerAlert {
+  key: string;
+  runner: string;
+  kind: 'offline' | 'disk' | 'crash' | 'forgotten';
+  since_ms: number;
+  free_pct?: number;
+  free_bytes?: number;
+  total_bytes?: number;
+  minutes?: number;
+  name?: string;
+  tag?: string;
+  task?: string;
+  state?: string;
+  status?: string;
+}
+
+/** When a shipyard is worth an alarm, as `runners.json` has it. */
+export interface RunnerAlertRules { disk_free_pct: number; offline_min: number }
+
 export interface Runner {
   id: string;
   target: string;
@@ -304,6 +324,12 @@ export interface Runner {
   shared: RunnerShared[];
   auto: RunnerAuto;
   auto_stats: RunnerAutoStats;
+  /** The alarms of this yard, from its last read. */
+  alerts: RunnerAlert[];
+  /** The thresholds as the list file has them now. */
+  alert_rules: RunnerAlertRules;
+  /** When the yard stopped answering (ms); 0 while it answers. */
+  down_since_ms: number;
 }
 
 export interface Snapshot {
@@ -372,6 +398,8 @@ export interface Request {
   text: string;
   task?: Task;
   options?: { label: string; value: string }[];
+  /** An alarm of a shipyard: the row leads to that yard's focus, not to a task. */
+  alert?: RunnerAlert;
   urgency: number;
 }
 

@@ -1,10 +1,14 @@
-/* Requests to the human: one list from the board's tasks and the Coordinator. */
-import type { Request, Task, Status, CoordinatorState } from './types';
+/* Requests to the human: one list from the board's tasks, the Coordinator and the shipyards' alarms. */
+import type { Request, Runner, RunnerAlert, Task, Status, CoordinatorState } from './types';
 import { firstSentence } from './util/format';
 import { t } from './i18n';
 
 const ORDER: Record<Status, number> = { waiting: 0, failed: 1, ready: 2, plan: 3, review: 4, working: 5, queued: 6, done: 7 };
 const ATTN = new Set<Status>(['waiting', 'failed', 'ready', 'plan']);
+/** Between a ready plan (3) and a task in review (4): an alarm needs the human, but not before a task's own request. */
+const ALARM_URGENCY = 3.5;
+const GB = 1024 * 1024 * 1024;
+const gb = (b?: number): string => String(((b ?? 0) / GB).toFixed(1));
 
 export const PERMISSION_ALLOW = (): string => t('perm.allow.text');
 export const PERMISSION_DENY = (): string => t('perm.deny.text');
@@ -55,9 +59,31 @@ const TITLE_KEY: Record<string, string> = {
   'coordinator-dialog': 'req.coordinator.dialog', 'coordinator-options': 'req.coordinator.options',
 };
 
+const ALARM_TITLE_KEY: Record<string, string> = {
+  offline: 'runner.alertKind.offline', disk: 'runner.alertKind.disk',
+  crash: 'runner.alertKind.crash', forgotten: 'runner.alertKind.forgotten',
+};
+
+/** What an alarm says, in the words of the current language. */
+export function alertText(a: RunnerAlert): string {
+  if (a.kind === 'offline') return t('runner.alert.offline', { n: a.minutes ?? 0 });
+  if (a.kind === 'disk') {
+    return t('runner.alert.disk', { pct: a.free_pct ?? 0, free: gb(a.free_bytes), total: gb(a.total_bytes) });
+  }
+  if (a.kind === 'crash') {
+    const status = a.status || a.state || '';
+    return a.tag
+      ? t('runner.alert.crash', { name: a.name ?? '', tag: a.tag, status })
+      : t('runner.alert.crashNoTag', { name: a.name ?? '', status });
+  }
+  return a.tag
+    ? t('runner.alert.forgotten', { name: a.name ?? '', tag: a.tag })
+    : t('runner.alert.forgottenNoTag', { name: a.name ?? '' });
+}
+
 export const requestTitle = (type: string): string => t(TITLE_KEY[type] ?? 'req.other');
 
-export function collectRequests(input: { tasks: Task[]; coordinator: CoordinatorState | null }): Request[] {
+export function collectRequests(input: { tasks: Task[]; coordinator: CoordinatorState | null; runners?: Runner[] }): Request[] {
   const out: Request[] = [];
   for (const task of input.tasks) {
     if (!ATTN.has(task.status)) continue;
@@ -67,6 +93,16 @@ export function collectRequests(input: { tasks: Task[]; coordinator: Coordinator
       msg: task.msg || task.board_label || '', text: firstSentence(task.msg || task.board_label || ''), task,
       urgency: ORDER[task.status] ?? 9,
     });
+  }
+  // The shipyards' alarms: a row of their own, leading to that yard's focus (PLN-42).
+  for (const r of input.runners ?? []) {
+    for (const a of r.alerts ?? []) {
+      out.push({
+        key: `runner-alert:${a.key}`, type: 'runner-alert', title: t(ALARM_TITLE_KEY[a.kind] ?? 'req.other'),
+        id: r.id, tag: r.id, repo: t('nav.runners'), msg: alertText(a), text: alertText(a), alert: a,
+        urgency: ALARM_URGENCY,
+      });
+    }
   }
   const c = input.coordinator;
   if (c?.dialog) {

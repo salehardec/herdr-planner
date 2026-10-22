@@ -3,6 +3,7 @@ import { armed, currentView, panels, requests, runners, snap } from '../store';
 import { archiveAllDone, compactCoordinator, confirmStep, newCoordinator, runTaskAction, sendAction } from '../actions';
 import { navigateTo, openRequest } from '../nav';
 import { t } from '../i18n';
+import { alertText } from '../requests';
 import { dayTimeOf } from '../util/dates';
 import { Gl } from './Gl';
 import { MemoryPanel } from './MemoryPanel';
@@ -261,6 +262,8 @@ export function RunnerFocus(props: { entity: Entity }): JSX.Element {
   const [masks, setMasks] = useState('');
   const [ports, setPorts] = useState('');
   const [note, setNote] = useState('');
+  const [alertDiskPct, setAlertDiskPct] = useState('10');
+  const [alertOfflineMin, setAlertOfflineMin] = useState('10');
   const [makeDefault, setMakeDefault] = useState(false);
   const [err, setErr] = useState('');
   const local = ['127.0.0.1', '::1', '[::1]', 'localhost'].includes(location.hostname);
@@ -281,6 +284,8 @@ export function RunnerFocus(props: { entity: Entity }): JSX.Element {
     setMasks(r.protected.join(', '));
     setPorts(r.ports_host);
     setNote(r.note);
+    setAlertDiskPct(String(r.alert_rules?.disk_free_pct ?? 10));
+    setAlertOfflineMin(String(r.alert_rules?.offline_min ?? 10));
     setMakeDefault(false);
     setErr('');
     setEditOpen(true);
@@ -294,6 +299,8 @@ export function RunnerFocus(props: { entity: Entity }): JSX.Element {
           tags: tags.split(',').map((x) => x.trim()).filter(Boolean),
           protected: masks.split(',').map((x) => x.trim()).filter(Boolean),
           ports_host: ports.trim(), note, default: makeDefault || undefined,
+          disk_free_pct: alertDiskPct.trim() === '' ? undefined : Number(alertDiskPct),
+          offline_min: alertOfflineMin.trim() === '' ? undefined : Number(alertOfflineMin),
         });
         toast(t('runner.saved'));
         setEditOpen(false);
@@ -352,6 +359,20 @@ export function RunnerFocus(props: { entity: Entity }): JSX.Element {
         {host.gpu.map((g) => yardGauge(`GPU ${g.name}`, g.mem_total_mib ? ((g.mem_used_mib ?? 0) / g.mem_total_mib) * 100 : 0,
           `${(((g.mem_used_mib ?? 0) / 1024)).toFixed(1)} / ${(((g.mem_total_mib ?? 0) / 1024)).toFixed(0)} GB`))}
       </section>
+      {r.alerts.length > 0 && (
+        <section class="rf-alerts" id="rf-alerts">
+          <h3>{t('runner.alerts')} <span class="cnt">{r.alerts.length}</span></h3>
+          {r.alerts.map((a) => (
+            <div class="rf-alert" key={a.key} data-alert={a.kind}>
+              <Gl n={a.kind === 'forgotten' ? 'yard' : 'failed'} />
+              <span class="tx">{alertText(a)}</span>
+              {a.task && a.tag && (
+                <button class="k" type="button" onClick={() => void navigateTo({ kind: 'planet', id: a.task! })}>{a.tag}</button>
+              )}
+            </div>
+          ))}
+        </section>
+      )}
       <h3>{t('runner.taskContainers')} <span class="cnt">{active.length}</span></h3>
       {active.length === 0 ? <div class="hint">{t('runner.noContainers')}</div> : (
         <table class="rft" id="rf-tasks">
@@ -443,6 +464,8 @@ export function RunnerFocus(props: { entity: Entity }): JSX.Element {
           <label>{t('runner.masks')}<input class="field" value={masks} onInput={(e) => setMasks((e.target as HTMLInputElement).value)} /></label>
           <label>{t('runner.portsHost')}<input class="field" value={ports} onInput={(e) => setPorts((e.target as HTMLInputElement).value)} /></label>
           <label>{t('runner.note')}<input class="field" value={note} onInput={(e) => setNote((e.target as HTMLInputElement).value)} /></label>
+          <label>{t('runner.diskPct')}<input class="field" id="rf-disk-pct" inputMode="numeric" value={alertDiskPct} onInput={(e) => setAlertDiskPct((e.target as HTMLInputElement).value)} /></label>
+          <label>{t('runner.offlineMin')}<input class="field" id="rf-offline-min" inputMode="numeric" value={alertOfflineMin} onInput={(e) => setAlertOfflineMin((e.target as HTMLInputElement).value)} /></label>
           <label class="rf-check"><input type="checkbox" checked={makeDefault} onChange={(e) => setMakeDefault((e.target as HTMLInputElement).checked)} />{t('runner.makeDefault')}</label>
           <div class="act">
             <button class={`btn primary ${armed.value?.key === `rset:${r.id}` ? 'arm' : ''}`} type="button" id="rf-set" onClick={saveEdit}>{armed.value?.key === `rset:${r.id}` ? t('runner.saveConfirm') : t('runner.save')}</button>

@@ -66,6 +66,9 @@ pub struct Runner {
     /// Clearing the containers, networks and volumes of finished tasks by itself.
     #[serde(default)]
     pub auto: AutoClean,
+    /// When a yard is worth an alarm: little disk, a long silence (PLN-42).
+    #[serde(default)]
+    pub alerts: crate::runners_alert::AlertRules,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -153,6 +156,9 @@ pub fn validate(file: &RunnersFile) -> Result<(), String> {
             if !valid_mask(m) {
                 return Err(format!("runners.json: маска защиты {:?} у верфи {}", m, r.id));
             }
+        }
+        if let Err(e) = r.alerts.validate() {
+            return Err(format!("runners.json: {e} (верфь {})", r.id));
         }
         for t in &r.tags {
             if t.len() > 32
@@ -415,12 +421,22 @@ pub struct RunnerState {
     pub auto: AutoClean,
     #[serde(default)]
     pub auto_stats: AutoStats,
+    /// When a yard is worth an alarm, as the list file has it now.
+    #[serde(default)]
+    pub alert_rules: crate::runners_alert::AlertRules,
+    /// The alarms of this yard, from the last read (PLN-42).
+    #[serde(default)]
+    pub alerts: Vec<crate::runners_alert::Alert>,
+    /// When the yard stopped answering (ms); 0 while it answers.
+    #[serde(default)]
+    pub down_since_ms: u64,
 }
 
 impl RunnerState {
     pub fn from_runner(r: &Runner) -> Self {
         Self {
             auto: r.auto.clone(),
+            alert_rules: r.alerts.clone(),
             id: r.id.clone(),
             target: r.target.clone(),
             ports_host: if r.ports_host.is_empty() {
@@ -1071,14 +1087,37 @@ fn why(end: &ssh::Ended, m: &MachineRef) -> Why {
 }
 
 /// A failed probe keeps the last good read: the page shows it dimmed with the reason and when it was read.
+/// The moment the silence began is kept too (PLN-42): an alarm needs to know how long the yard has been quiet.
 pub fn keep_last(prev: Option<&RunnerState>, fresh: RunnerState) -> RunnerState {
-    match prev.filter(|p| p.fetched_at_ms > 0 && !fresh.ok) {
-        Some(p) => RunnerState {
-            ok: false,
-            why: fresh.why,
-            ..p.clone()
+    let prev = prev.filter(|p| p.fetched_at_ms > 0);
+    match prev {
+        Some(p) if !fresh.ok => {
+            let down = if p.ok {
+                fresh.fetched_at_ms
+            } else {
+                match p.down_since_ms {
+                    0 => fresh.fetched_at_ms,
+                    d => d,
+                }
+            };
+            RunnerState {
+                ok: false,
+                why: fresh.why,
+                down_since_ms: down,
+                ..p.clone()
+            }
+        }
+        Some(_) => RunnerState {
+            down_since_ms: 0,
+            ..fresh
         },
-        None => fresh,
+        None => {
+            let down = if fresh.ok { 0 } else { fresh.fetched_at_ms };
+            RunnerState {
+                down_since_ms: down,
+                ..fresh
+            }
+        }
     }
 }
 
@@ -1864,6 +1903,32 @@ mod tests {
     }
 
     #[test]
+    fn the_moment_a_yard_went_quiet_survives_more_probes() {
+        let mut good = RunnerState::default();
+        good.ok = true;
+        good.fetched_at_ms = 7;
+        let mut bad = RunnerState::default();
+        bad.fetched_at_ms = 10;
+        bad.why = Some(Why { line: "нет ответа".into(), detail: vec![] });
+        let first = keep_last(Some(&good), bad);
+        assert!(!first.ok);
+        assert_eq!(first.down_since_ms, 10, "the silence began with this failed read");
+        let mut bad2 = RunnerState::default();
+        bad2.fetched_at_ms = 40;
+        let second = keep_last(Some(&first), bad2);
+        assert_eq!(second.down_since_ms, 10, "the moment stays, not the newest read");
+        let mut ok = RunnerState::default();
+        ok.ok = true;
+        ok.fetched_at_ms = 90;
+        let third = keep_last(Some(&second), ok);
+        assert_eq!(third.down_since_ms, 0, "an answer ends the silence");
+        let mut never = RunnerState::default();
+        never.fetched_at_ms = 5;
+        let fourth = keep_last(None, never);
+        assert_eq!(fourth.down_since_ms, 5, "a yard that never answered is silent since its first read");
+    }
+
+    #[test]
     fn a_failed_probe_keeps_the_last_good_read() {
         let mut good = RunnerState::default();
         good.ok = true;
@@ -1965,6 +2030,7 @@ mod tests {
                 added_at_ms: 1,
                 capacity: None,
                 auto: AutoClean::default(),
+                alerts: Default::default(),
             }],
             assign: BTreeMap::new(),
             version: FILE_VERSION,
@@ -1996,6 +2062,7 @@ mod tests {
                 added_at_ms: 0,
                 capacity: None,
                 auto: AutoClean::default(),
+                alerts: Default::default(),
             }],
             ..RunnersFile::default()
         };
@@ -2023,6 +2090,7 @@ mod tests {
                 added_at_ms: 0,
                 capacity: None,
                 auto: AutoClean::default(),
+                alerts: Default::default(),
             }],
             ..RunnersFile::default()
         };
