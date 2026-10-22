@@ -202,6 +202,8 @@ pub struct App {
     pub runner_plans: Mutex<HashMap<String, crate::runners::CleanPlan>>,
     /// The counted «уборка диска» cards, by token.
     pub runner_disk_plans: Mutex<HashMap<String, crate::runners_disk::Plan>>,
+    /// The previewed actions on one container (stop, restart, delete), by token.
+    pub runner_ctl_plans: Mutex<HashMap<String, crate::runners_ctl::Plan>>,
     /// The last auto-clean plan tried on each shipyard (signature, when), so a plan that fails is not repeated at once.
     pub runner_auto_try: Mutex<HashMap<String, (String, u64)>>,
     /// Whether the docker block is in this machine's instructions (as last synced).
@@ -342,6 +344,7 @@ impl App {
             runners: Mutex::new(runners),
             runner_plans: Mutex::new(HashMap::new()),
             runner_disk_plans: Mutex::new(HashMap::new()),
+            runner_ctl_plans: Mutex::new(HashMap::new()),
             runner_auto_try: Mutex::new(HashMap::new()),
             runner_block: Mutex::new(runner_block),
             load: RwLock::new(crate::load::Load::default()),

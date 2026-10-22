@@ -25,6 +25,7 @@ mod models;
 mod runners;
 mod runners_api;
 mod runners_auto;
+mod runners_ctl;
 mod runners_disk;
 mod search;
 mod server;

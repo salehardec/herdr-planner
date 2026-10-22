@@ -17,6 +17,10 @@ export const addDialogs = {
   summary: signal<{ task: string; part: 'closing' | 'description' } | null>(null),
   /** An agent's terminal screen in a window over the page; `reviewer` reads the `<agent>-r` pane. */
   screen: signal<{ task: string; role?: 'reviewer' } | null>(null),
+  /** The log tail of one container of a shipyard. */
+  ctlLogs: signal<{ runner: string; id: string } | null>(null),
+  /** «Было → стало» of stop / restart / delete of one container; `scope` is the task whose Focus it was asked from. */
+  ctlAct: signal<{ runner: string; id: string; act: 'stop' | 'restart' | 'delete'; scope: string } | null>(null),
 };
 
 /** The todo item being corrected in a window before it leaves: its words and its files. */
@@ -42,9 +46,11 @@ export function openNewTask(id: string, repo: string): void {
 
 export const dialogOpen = (): boolean =>
   addDialogs.universe.value || addDialogs.runner.value || addDialogs.firstRun.value || !!addDialogs.popover.value || !!addDialogs.tell.value
-  || !!addDialogs.summary.value || !!addDialogs.screen.value || !!stationDlg.value || shipDlg.value || !!rememberDlg.value || !!memoryWin.value;
+  || !!addDialogs.summary.value || !!addDialogs.screen.value || !!addDialogs.ctlLogs.value || !!addDialogs.ctlAct.value || !!stationDlg.value || shipDlg.value || !!rememberDlg.value || !!memoryWin.value;
 
 export function closeDialogs(): void {
+  if (addDialogs.ctlAct.value) { addDialogs.ctlAct.value = null; return; }
+  if (addDialogs.ctlLogs.value) { addDialogs.ctlLogs.value = null; return; }
   if (addDialogs.screen.value) { addDialogs.screen.value = null; return; }
   if (memoryWin.value) { memoryWin.value = null; return; }
   if (addDialogs.summary.value) { addDialogs.summary.value = null; return; }
