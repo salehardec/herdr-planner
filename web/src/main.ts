@@ -13,6 +13,7 @@ import {
 import { connect, dropDetails, onState } from './api';
 import { setLang, lang, t } from './i18n';
 import { createWorld } from './world';
+import { freeArea } from './free-area';
 import { clearStack, getWorld, goHome, goOverview, navigateTo, openRequest, setWorld, back } from './nav';
 import { escape, installKeys, setMode } from './keys';
 import { effectiveWidth, installScale } from './scale';
@@ -42,6 +43,7 @@ const world = createWorld({
   autoSimple: !QUERY.has('noauto') && !QUERY.has('calm'),
   sensitivity: sensitivity.value,
   invertY: invertY.value,
+  freeArea,
 });
 setWorld(world);
 webgl.value = world.webgl;
