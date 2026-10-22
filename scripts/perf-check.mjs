@@ -135,6 +135,8 @@ await evalJs(`planner.navigateTo({kind:'planet',id:'s05/1'}); true`);
 await flightIdle();
 await waitFor('plannerDebug().selected?.id === "s05/1" && world.debug().labels > 0', 30000);
 await frames(5);
+// The card of the selected planet and the labels beside it settle over a few frames (a slow runner draws them seldom): wait for the state, not for a count of frames.
+await waitFor(`(() => { const r = ${labelOverlaps}; return r.shown > 0 && r.overlaps === 0; })()`, 20000);
 const lo3 = await evalJs(labelOverlaps);
 check('with a planet selected, its card does not sit on another label', lo3.shown > 0 && lo3.overlaps === 0, JSON.stringify(lo3));
 // manual flight across the Galaxy: the boundary holds
