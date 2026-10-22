@@ -386,10 +386,10 @@ mod tests {
     fn the_agents_call_uses_the_users_own_ssh_config() {
         let dir = tempfile::tempdir().unwrap();
         let cfg = test_cfg(dir.path());
-        let args = user_ssh_args(&cfg, "app-semantics", "docker version").unwrap();
+        let args = user_ssh_args(&cfg, "vm-r", "docker version").unwrap();
         assert!(!args.iter().any(|a| a.contains("known_hosts") || a.contains("ControlPath")));
         assert_eq!(args.last().unwrap(), "docker version");
-        assert_eq!(args[args.len() - 2], "app-semantics");
+        assert_eq!(args[args.len() - 2], "vm-r");
         assert!(args.contains(&"BatchMode=yes".to_string()));
         assert!(user_ssh_args(&cfg, "-oProxyCommand=x", "true").is_err());
     }
@@ -401,7 +401,7 @@ mod tests {
         let bin = dir.path().join("ssh");
         std::fs::write(
             &bin,
-            "#!/bin/sh\n[ \"$1\" = \"-G\" ] || exit 2\necho 'user me'\necho 'hostname 10.31.21.29'\necho 'port 22'\n",
+            "#!/bin/sh\n[ \"$1\" = \"-G\" ] || exit 2\necho 'user me'\necho 'hostname 192.0.2.29'\necho 'port 22'\n",
         )
         .unwrap();
         #[cfg(unix)]
@@ -410,8 +410,8 @@ mod tests {
             std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
         }
         let cfg = AppConfig { ssh_bin: bin.display().to_string(), ..cfg };
-        assert_eq!(config_host(&cfg, "app-semantics").as_deref(), Some("10.31.21.29"));
-        assert_eq!(config_host(&cfg, "app-semantics"), Some("10.31.21.29".into()));
+        assert_eq!(config_host(&cfg, "vm-r").as_deref(), Some("192.0.2.29"));
+        assert_eq!(config_host(&cfg, "vm-r"), Some("192.0.2.29".into()));
     }
 
     #[test]

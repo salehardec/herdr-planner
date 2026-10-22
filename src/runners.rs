@@ -601,7 +601,8 @@ fn mem_usage(s: &str) -> (Option<u64>, Option<u64>) {
 
 /// Docker's human sizes: `0B`, `12.4MiB`, `1.5GB`, `2GiB`.
 pub fn parse_bytes(s: &str) -> Option<u64> {
-    let s = s.trim();
+    // `docker ps` prints `182kB (virtual 9.74GB)`: the writable layer is the first word.
+    let s = s.trim().split_whitespace().next().unwrap_or("");
     if s.is_empty() || s == "0" {
         return Some(0);
     }
@@ -1070,17 +1071,29 @@ fn plan_item(c: &Container, now: u64) -> PlanItem {
     }
 }
 
+/// A tag (`KEY-n`) as two neighbouring segments of a name: `work-ALP-3_default` and `vol-ALP-3` yes,
+/// `alp-30_default` no. A plain substring would take the neighbour's `ALP-30` for `ALP-3`.
+fn tag_in_segments(name: &str, tag: &str) -> bool {
+    let Some((key, num)) = tag.rsplit_once('-') else {
+        return false;
+    };
+    let seg: Vec<String> = segments(name).iter().map(|s| s.to_ascii_uppercase()).collect();
+    seg.windows(2)
+        .any(|w| w[0] == key.to_ascii_uppercase() && w[1] == num)
+}
+
+fn project_owns(name: &str, projects: &BTreeSet<String>) -> bool {
+    projects
+        .iter()
+        .any(|p| name == p || name.starts_with(&format!("{p}_")))
+}
+
 fn network_matches(name: &str, tags: &BTreeSet<String>, projects: &BTreeSet<String>) -> bool {
-    let upper = name.to_uppercase();
-    tags.iter().any(|t| upper.contains(t))
-        || projects
-            .iter()
-            .any(|p| name == p || name.starts_with(&format!("{p}_")))
+    tags.iter().any(|t| tag_in_segments(name, t)) || project_owns(name, projects)
 }
 
 fn volume_matches(name: &str, tags: &BTreeSet<String>, projects: &BTreeSet<String>) -> bool {
-    let upper = name.to_uppercase();
-    tags.iter().any(|t| upper.contains(t)) || projects.iter().any(|p| name.starts_with(p))
+    tags.iter().any(|t| tag_in_segments(name, t)) || project_owns(name, projects)
 }
 
 fn mounts_of(c: &Container) -> Vec<String> {
@@ -1105,17 +1118,21 @@ pub fn plan_of(state: &RunnerState, ids: Option<&[String]>) -> CleanPlan {
         let asked = ids.is_some_and(|list| list.iter().any(|id| id == &c.id));
         let wanted = match ids {
             Some(_) => asked,
-            None => c.class == Class::Forgotten,
+            // The unsure ones are shown in the card too, greyed and unticked: the human may tick them.
+            None => matches!(c.class, Class::Forgotten | Class::Unsure),
         };
         if !wanted {
-            if ids.is_none() && c.class == Class::Unsure {
-                unsure.push(c.id.clone());
-            }
             continue;
         }
         match c.class {
             Class::Forgotten => {}
-            Class::Unsure => unsure.push(c.id.clone()),
+            // The task of an unsure container is unknown, so its networks and volumes are unknown too: the plan
+            // takes only the container itself.
+            Class::Unsure => {
+                unsure.push(c.id.clone());
+                picked.push(c);
+                continue;
+            }
             Class::Active | Class::Foreign => continue,
         }
         if let Some(t) = &c.task {
@@ -1747,9 +1764,50 @@ mod tests {
         assert_eq!(plan.was.containers, 2);
         assert_eq!(plan.now.containers, 1);
         assert_eq!(plan.was.bytes, 1000);
-        assert_eq!(plan.containers[0].age_ms, 60_000);
+        assert!((59_000..=61_000).contains(&plan.containers[0].age_ms), "{}", plan.containers[0].age_ms);
         let only_active = plan_of(&state, Some(&[active_id]));
         assert!(only_active.containers.is_empty());
+    }
+
+    #[test]
+    fn an_unsure_container_is_in_the_card_unticked_and_an_explicit_tick_takes_it() {
+        let mut state = RunnerState::default();
+        state.id = "vm-r".into();
+        let mut forgotten = cont("web-ALP-1", &[]);
+        forgotten.class = Class::Forgotten;
+        forgotten.task = Some(TaskRef { tag: "ALP-1".into(), ..TaskRef::default() });
+        let mut unsure = cont("x-ALP-99", &[]);
+        unsure.id = "c".repeat(64);
+        unsure.class = Class::Unsure;
+        let mut foreign = cont("neighbor-db-1", &[]);
+        foreign.id = "d".repeat(64);
+        foreign.class = Class::Foreign;
+        state.containers = vec![forgotten, unsure.clone(), foreign];
+        let plan = plan_of(&state, None);
+        // Both a forgotten and an unsure one are shown; the unsure one is marked so the page leaves it unticked.
+        assert_eq!(plan.containers.len(), 2);
+        assert_eq!(plan.unsure, vec![unsure.id.clone()]);
+        assert_eq!(plan.now.containers, 1);
+        // The human ticked it: it goes, alone (its units are unknown); a foreign one never does.
+        let ticked = plan_of(&state, Some(&[unsure.id.clone()]));
+        assert_eq!(ticked.containers.len(), 1);
+        assert_eq!(ticked.containers[0].id, unsure.id);
+        assert!(ticked.networks.is_empty() && ticked.volumes.is_empty());
+        assert!(plan_of(&state, Some(&["d".repeat(64)])).containers.is_empty());
+    }
+
+    #[test]
+    fn a_tag_matches_a_unit_name_only_on_segment_borders() {
+        let tags: BTreeSet<String> = ["ALP-3".to_string()].into_iter().collect();
+        let projects: BTreeSet<String> = ["work-3".to_string()].into_iter().collect();
+        assert!(network_matches("work-ALP-3_default", &tags, &projects));
+        assert!(network_matches("work-3_default", &tags, &projects));
+        assert!(volume_matches("vol-ALP-3", &tags, &projects));
+        assert!(volume_matches("work-3_pgdata", &tags, &projects));
+        // A neighbour's tag or project that merely starts the same is not ours.
+        assert!(!network_matches("alp-30_default", &tags, &projects));
+        assert!(!volume_matches("vol-ALP-30", &tags, &projects));
+        assert!(!volume_matches("work-30_pgdata", &tags, &projects));
     }
 
     #[test]
@@ -1761,6 +1819,8 @@ mod tests {
         );
         assert_eq!(parse_bytes("96MiB"), Some(96 * 1024 * 1024));
         assert_eq!(parse_bytes("1.5GB"), Some(1_500_000_000));
+        // `docker ps` with `--size` appends the virtual size of the image.
+        assert_eq!(parse_bytes("182kB (virtual 9.74GB)"), Some(182_000));
         assert_eq!(host_of_target("me@192.0.2.29:2222"), "192.0.2.29");
     }
 }

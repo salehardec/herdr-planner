@@ -398,7 +398,7 @@ export const en: Record<string, string | string[]> = {
   'runner.gone': 'That shipyard is no longer in the list.', 'runner.retry': 'Retry', 'runner.taskTitle': 'Shipyard',
   'runner.leftOnYard': 'containers are left on the shipyard',
   'runner.addTitle': 'Add a shipyard…', 'runner.addTarget': 'Address (ssh)', 'runner.addLabel': 'Label', 'runner.addLabelPh': 'for example, vm-r',
-  'runner.wiz.hint': 'A shipyard is a machine with Docker for this board’s tasks. The address is an alias from ~/.ssh/config (for example, app-semantics) or user@host; the planner keeps no keys: it uses the user’s ssh key.',
+  'runner.wiz.hint': 'A shipyard is a machine with Docker for this board’s tasks. The address is an alias from ~/.ssh/config (for example, vm-r) or user@host; the planner keeps no keys: it uses the user’s ssh key.',
   'runner.wiz.check': 'Check the machine', 'runner.wiz.recheck': 'Check again', 'runner.wiz.probing': 'Checking…',
   'runner.wiz.probeFailed': 'The machine did not answer', 'runner.wiz.sshOk': 'ssh {target} lets us in', 'runner.wiz.cpus': '{n} CPUs',
   'runner.wiz.noDocker': 'docker is not found in the login shell', 'runner.wiz.noGpu': 'no GPU',

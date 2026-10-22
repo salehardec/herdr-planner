@@ -351,10 +351,17 @@ pub struct AddBody {
     confirm: Option<bool>,
 }
 
-fn spawn_after_change(app: Shared) {
+/// After a change of the list: the page's snapshot at once, the agents' block, and a read of a new yard so it does
+/// not sit «нет связи» until the next poll.
+fn spawn_after_change(app: Shared, probe: bool) {
     tokio::spawn(async move {
+        if probe {
+            runners::poll_all(&app).await;
+        }
         runners::sync_blocks(&app).await;
+        app::rebuild_runners(&app).await;
         app::publish(&app).await;
+        app::index_snapshot(&app).await;
     });
 }
 
@@ -411,7 +418,7 @@ pub async fn runner_add(State(app): State<Shared>, headers: HeaderMap, Json(body
             list.push(RunnerState::from_runner(file.get(&label).unwrap()));
         }
     }
-    spawn_after_change(app.clone());
+    spawn_after_change(app.clone(), true);
     Json(json!({"ok": true, "id": label})).into_response()
 }
 
@@ -480,7 +487,7 @@ pub async fn runner_set(State(app): State<Shared>, headers: HeaderMap, Json(body
             }
         }
     }
-    spawn_after_change(app.clone());
+    spawn_after_change(app.clone(), false);
     Json(json!({"ok": true, "id": body.id})).into_response()
 }
 
@@ -542,7 +549,7 @@ pub async fn runner_remove(State(app): State<Shared>, headers: HeaderMap, Json(b
     }
     app.db.runner_remove(&body.id);
     app.runners.lock().await.retain(|s| s.id != body.id);
-    spawn_after_change(app.clone());
+    spawn_after_change(app.clone(), false);
     Json(json!({"ok": true, "warned": busy})).into_response()
 }
 

@@ -55,6 +55,8 @@ const added = signal(false);
 const err = signal('');
 
 export function openAddRunner(): void {
+  // A second visit starts clean: no probe of the yard added last time, no half-filled tags.
+  reset();
   addDialogs.runner.value = true;
 }
 

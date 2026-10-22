@@ -1,5 +1,5 @@
-/* Shipyards («верфи») in the intergalactic space: a ring with four spokes, a gauge arc for the CPU load, and a
-   small light per container of a task. The same yard is in the same place from every galaxy. */
+/* Shipyards («верфи») just outside the Galaxy's boundary: a ring with four spokes, a gauge arc for the CPU load,
+   and a small light per container of a task. */
 import {
   AdditiveBlending, BufferAttribute, BufferGeometry, CanvasTexture, Color, Group, NormalBlending, Points,
   PointsMaterial, Sprite, SpriteMaterial, Vector3,

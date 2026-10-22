@@ -66,7 +66,7 @@ describe('navigator tree', () => {
 
   it('lists the shipyards after the universes, with their containers and forgotten count', () => {
     const r = {
-      id: 'vm-r', target: 'app-semantics', ports_host: '10.31.21.29', tags: [], protected: [], note: '', ok: true,
+      id: 'vm-r', target: 'me@192.0.2.29', ports_host: '192.0.2.29', tags: [], protected: [], note: '', ok: true,
       why: null, fetched_at_ms: 1, host: {} as any, networks: [], volumes: [],
       containers: [{ class: 'active' }, { class: 'forgotten' }, { class: 'unsure' }, { class: 'foreign' }] as any,
     } as any;
