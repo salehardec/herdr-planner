@@ -211,14 +211,14 @@ fn parse_time(s: &str) -> u64 {
 
 /// Claude names a project folder after the directory: every character that is
 /// not a letter or a digit becomes `-`.
-fn project_folder(cwd: &Path) -> String {
+pub(crate) fn project_folder(cwd: &Path) -> String {
     cwd.to_string_lossy()
         .chars()
         .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
         .collect()
 }
 
-fn claude_home() -> PathBuf {
+pub(crate) fn claude_home() -> PathBuf {
     std::env::var_os("CLAUDE_CONFIG_DIR")
         .filter(|v| !v.is_empty())
         .map(PathBuf::from)

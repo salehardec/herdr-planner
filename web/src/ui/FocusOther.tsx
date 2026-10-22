@@ -8,6 +8,7 @@ import { t } from '../i18n';
 import { dayTimeOf } from '../util/dates';
 import { openStation } from './station-api';
 import { Gl } from './Gl';
+import { MemoryPanel } from './MemoryPanel';
 import { RichText } from './RichText';
 import { Translatable } from './Translatable';
 import { toast } from '../toast';
@@ -73,6 +74,7 @@ export function QuasarFocus(): JSX.Element {
       <h2>{t('quasar.voice')}</h2>
       <p class="hint">{far ? t('quasar.farText') : (c?.status_line ?? '')}</p>
       <Memory />
+      <MemoryPanel galaxy={galaxyId.value} repo="" />
       <h3>{t('quasar.waits', { n: list.length })}</h3>
       {list.length === 0 ? <div class="hint">{t('wait.none')}</div> : list.map((r, i) => (
         <button class="qrow" type="button" key={r.key} onClick={() => void openRequest(i)}>
@@ -234,6 +236,7 @@ export function UniverseFocus(props: { entity: Entity }): JSX.Element {
         </section>
       )}
       {galaxyId.value === '' && <ForkBlock repo={p.name} />}
+      <MemoryPanel galaxy={galaxyId.value} repo={p.name} />
     </div>
   );
 }

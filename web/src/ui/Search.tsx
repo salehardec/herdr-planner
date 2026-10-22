@@ -11,6 +11,7 @@ import { panels } from '../store';
 import { openChat } from '../keys';
 import { openChatAt } from '../chat';
 import { Gl } from './Gl';
+import { openMemoryEntry } from './MemoryPanel';
 import type { Entity, SearchHit } from '../types';
 import { rows as animRows } from '../anim';
 import { useRef } from 'preact/hooks';
@@ -32,11 +33,11 @@ let timer = 0;
 let seq = 0;
 
 const GROUP_ICON: Record<string, string> = {
-  galaxy: 'galaxy', quasar: 'quasar', universe: 'universe', planet: 'ship', moon: 'moon', todo: 'list', chat: 'chat',
+  galaxy: 'galaxy', quasar: 'quasar', universe: 'universe', planet: 'ship', moon: 'moon', todo: 'list', chat: 'chat', memory: 'memory', closing: 'done',
 };
 const GROUP_LABEL: Record<string, string> = {
   galaxy: 'search.galaxies', quasar: 'search.quasar', universe: 'search.universes', planet: 'search.planets',
-  moon: 'search.moons', todo: 'search.todo', chat: 'search.chat',
+  moon: 'search.moons', todo: 'search.todo', chat: 'search.chat', memory: 'search.memory', closing: 'search.closing',
 };
 
 function onType(q: string): void {
@@ -80,6 +81,8 @@ export function choose(r: Row): void {
     case 'galaxy': void (r.id === galaxyId.value ? goHome() : r.id === '' ? goHome() : enterGalaxy(r.id)); return;
     case 'todo': panels.todo.value = true; todoHighlight.value = r.id; setTimeout(() => { todoHighlight.value = null; }, 2000); return;
     case 'chat': openChat(true); void openChatAt(Number(r.id)); return;
+    case 'memory': openMemoryEntry(r.galaxy, r.id); return;
+    case 'closing': void navigateTo({ kind: 'planet', galaxy: r.galaxy, id: r.id }); return;
     default: {
       const e: Entity = { kind: r.kind as Entity['kind'], galaxy: r.galaxy, id: r.id };
       void navigateTo(e);
