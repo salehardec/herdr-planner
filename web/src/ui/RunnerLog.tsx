@@ -96,13 +96,13 @@ export function RunnerLog(props: { runner: string; stamp: string }): JSX.Element
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
 
-  // Typing is cheap for the page and not for the server: the word is asked for after a pause.
+  // Typing is cheap for the page and not for the server: the word is asked for after a pause. The rows are not cleared
+  // here: on mount this effect would wipe the first page 300 ms after it arrived, with no state change to fetch it again.
+  // A new word or a new filter starts a page of its own by `before = 0`; the old rows stay until its answer replaces them.
   useEffect(() => {
     const id = setTimeout(() => {
       setQuery(word);
       setBefore(0);
-      setEntries([]);
-      setMore(false);
     }, 300);
     return () => clearTimeout(id);
   }, [word]);

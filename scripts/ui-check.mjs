@@ -5069,6 +5069,13 @@ section('runners ctl', async () => {
   check('the search finds a container by its name across the rows', found.ok && found.entries.length >= 3 && found.entries.some((e) => e.kind === 'delete'), JSON.stringify(found.entries?.slice(0, 4)));
   check('an unknown kind is refused (400)', (await evalJs('fetch("/api/runner/log?id=vm-r&kind=kill").then((x) => x.status)')) === 400);
   check('the Focus draws the yard journal with its rows', await waitFor('document.querySelectorAll("#rf-log tbody tr").length >= 3', 12000), await text('#rf-log'));
+  // Reopen the yard from another Focus: the journal mounts anew, and its first page must survive the 300 ms search
+  // debounce that once wiped it (nothing was left to fetch it again).
+  await go('alpha/3');
+  await openYard();
+  check('reopening the yard draws the journal', await waitFor('document.querySelectorAll("#rf-log tbody tr").length >= 3', 12000), await text('#rf-log'));
+  await sleep(700); // the search debounce is 300 ms
+  check('the journal is still there when the search debounce settles after opening', (await evalJs('document.querySelectorAll("#rf-log tbody tr").length')) >= 3 && !(await evalJs('!!document.querySelector("#rf-log-empty")')), await text('#rf-log'));
   await evalJs('(() => { const s = document.querySelector("#rf-log-kind"); s.value = "delete"; s.dispatchEvent(new Event("change", { bubbles: true })); return true; })()');
   check('the filter in the Focus keeps only deletions', await waitFor('document.querySelectorAll("#rf-log tbody tr").length >= 1 && [...document.querySelectorAll("#rf-log tbody tr")].every((r) => r.dataset.kind === "delete")', 8000), await text('#rf-log'));
   await evalJs('(() => { const i = document.querySelector("#rf-log-q"); i.value = "web-ALP-15"; i.dispatchEvent(new Event("input", { bubbles: true })); return true; })()');
