@@ -411,7 +411,7 @@ export const ru: Record<string, string | string[]> = {
   'runner.gone': 'Такой верфи больше нет в списке.', 'runner.retry': 'Повторить', 'runner.taskTitle': 'Верфь',
   'runner.leftOnYard': 'остались контейнеры на верфи',
   'runner.addTitle': 'Добавить верфь…', 'runner.addTarget': 'Адрес (ssh)', 'runner.addLabel': 'Метка', 'runner.addLabelPh': 'например, vm-r',
-  'runner.wiz.hint': 'Верфь — машина с Docker для задач этой доски. Адрес — алиас из ~/.ssh/config (например, vm-r) или user@host; планировщик не хранит ключей: вход по ssh-ключу пользователя.',
+  'runner.wiz.hint': 'Верфь — машина с Docker для задач этой доски. Адрес — алиас из ~/.ssh/config (например, vm-r) или user@host[:порт]; планировщик не хранит ключей: вход по ssh-ключу пользователя.',
   'runner.wiz.check': 'Проверить машину', 'runner.wiz.recheck': 'Проверить снова', 'runner.wiz.probing': 'Проверяю…',
   'runner.wiz.probeFailed': 'Машина не ответила', 'runner.wiz.sshOk': 'ssh {target} пускает', 'runner.wiz.cpus': '{n} ядер',
   'runner.wiz.noDocker': 'docker не найден в оболочке входа', 'runner.wiz.noGpu': 'GPU нет',
@@ -426,5 +426,6 @@ export const ru: Record<string, string | string[]> = {
   'runner.stationOn': 'Блок правил в инструкциях агентов на месте.', 'runner.stationOff': 'Блок правил не подключён: агенты этой машины не знают про верфи.',
   'runner.stationStale': 'Блок правил устарел: список верфей изменился.', 'runner.stationOnBtn': 'Подключить', 'runner.stationOffBtn': 'Отключить',
   'runner.stationPreview': 'Показать текст: было → стало', 'runner.stationWas': 'Было', 'runner.stationNow': 'Станет', 'runner.stationEmpty': '(инструкции не заданы)',
+  'runner.dropOld': 'Заодно убрать старые строки про DOCKER_HOST (свои правила рядом останутся)',
   'runner.forgotToast': 'На верфи {id} забыт контейнер {name} ({tag})',
 };

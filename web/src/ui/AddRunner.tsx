@@ -60,7 +60,8 @@ export function openAddRunner(): void {
   addDialogs.runner.value = true;
 }
 
-const validTarget = (s: string): boolean => /^[A-Za-z0-9._@:-]+$/.test(s.trim());
+// `vm-r`, `me@host`, `me@host:2222` and `ssh://me@host:2222` are all accepted by the server.
+const validTarget = (s: string): boolean => /^[A-Za-z0-9._@:/[\]-]+$/.test(s.trim());
 
 function reset(): void {
   probe.value = null;
@@ -74,9 +75,6 @@ function reset(): void {
   added.value = false;
   err.value = '';
 }
-
-const localOk = (p: Probe | null): boolean =>
-  !!p?.local && p.local.docker_client && p.local.ssh_ok && p.local.docker_via_ssh.length > 0;
 
 async function probeNow(): Promise<void> {
   const addr = target.value.trim();
@@ -127,7 +125,8 @@ async function addNow(): Promise<void> {
 async function connectNow(): Promise<void> {
   err.value = '';
   try {
-    await post('/api/runner/connect', { on: true, drop_old: true, confirm: true });
+    // The human's own old docker lines are not touched here: the Station card has a separate tick for that.
+    await post('/api/runner/connect', { on: true, drop_old: false, confirm: true });
     toast(t('runner.connectedTo', { n: 1 }));
   } catch (e) {
     err.value = (e as ApiError).data?.error ?? (e as Error).message;
@@ -135,7 +134,9 @@ async function connectNow(): Promise<void> {
 }
 
 function stepStatus(k: StepKey): 'ok' | 'err' | 'todo' {
-  if (k === 'check') return localOk(probe.value) ? 'ok' : probeErr.value ? 'err' : 'todo';
+  // A red line about this machine's own way in does not block adding: the yard is still useful to watch, and the
+  // rows say plainly what is broken.
+  if (k === 'check') return probe.value?.ok ? 'ok' : probeErr.value ? 'err' : 'todo';
   if (k === 'tags') return probe.value?.ok ? 'ok' : probeErr.value ? 'err' : 'todo';
   return added.value ? 'ok' : 'todo';
 }
@@ -178,7 +179,7 @@ export function AddRunner(): JSX.Element | null {
   if (!addDialogs.runner.value) return null;
   const p = probe.value;
   const valid = validTarget(target.value);
-  const ready = localOk(p);
+  const ready = !!p?.ok;
   return (
     <div class="scrim" onMouseDown={(e) => { if (e.target === e.currentTarget) addDialogs.runner.value = false; }}>
       <section class="panel dlg wide wiz" id="addr" role="dialog" aria-label={t('runner.addTitle')}>

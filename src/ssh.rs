@@ -44,6 +44,70 @@ pub fn valid_target(s: &str) -> bool {
         })
 }
 
+fn valid_port(s: &str) -> bool {
+    !s.is_empty()
+        && s.len() <= 5
+        && s.chars().all(|c| c.is_ascii_digit())
+        && s.parse::<u16>().is_ok_and(|p| p > 0)
+}
+
+/// A target as ssh takes it: `user@host:2222` and `ssh://user@host:2222` mean the same, and the port goes to `-p`:
+/// ssh reads a bare `host:2222` as a hostname, so it would never connect.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TargetParts {
+    pub dest: String,
+    pub port: Option<String>,
+}
+
+pub fn split_target(raw: &str) -> TargetParts {
+    let t = raw.strip_prefix("ssh://").unwrap_or(raw);
+    let (user, hostpart) = match t.rsplit_once('@') {
+        Some((u, h)) => (Some(u), h),
+        None => (None, t),
+    };
+    let (host, port) = match hostpart.strip_prefix('[') {
+        Some(rest) => match rest.split_once(']') {
+            Some((h, after)) => (
+                format!("[{h}]"),
+                after.strip_prefix(':').filter(|p| valid_port(p)).map(str::to_string),
+            ),
+            None => (hostpart.to_string(), None),
+        },
+        None => match hostpart.rsplit_once(':') {
+            Some((h, p)) if valid_port(p) => (h.to_string(), Some(p.to_string())),
+            _ => (hostpart.to_string(), None),
+        },
+    };
+    TargetParts {
+        dest: user.map(|u| format!("{u}@{host}")).unwrap_or(host),
+        port,
+    }
+}
+
+/// The target in the one form the planner stores and shows: no `ssh://`, a port after `:` when there is one.
+pub fn normalize_target(raw: &str) -> String {
+    let t = split_target(raw.trim());
+    match t.port {
+        Some(p) => format!("{}:{p}", t.dest),
+        None => t.dest,
+    }
+}
+
+/// The argv that opens a terminal on the yard: `ssh -t [-p port] dest`. The caller owns the terminal.
+pub fn tty_args(target: &str) -> Result<Vec<String>, String> {
+    if !valid_target(target) {
+        return Err(format!("недопустимый адрес машины: {target:?}"));
+    }
+    let t = split_target(target);
+    let mut args = vec!["-t".to_string()];
+    if let Some(p) = t.port {
+        args.push("-p".into());
+        args.push(p);
+    }
+    args.push(t.dest);
+    Ok(args)
+}
+
 fn valid_session(s: &str) -> bool {
     !s.is_empty()
         && s.len() <= 64
@@ -69,7 +133,8 @@ pub fn ssh_args(cfg: &AppConfig, m: &MachineRef, remote_cmd: &str) -> Result<Vec
     };
     let d = &cfg.data_dir;
     let inner = format!("{session}{remote_cmd}");
-    Ok(vec![
+    let t = split_target(&m.target);
+    let mut args: Vec<String> = vec![
         "-o".into(),
         "BatchMode=yes".into(),
         "-o".into(),
@@ -86,12 +151,17 @@ pub fn ssh_args(cfg: &AppConfig, m: &MachineRef, remote_cmd: &str) -> Result<Vec
         "ControlPersist=120".into(),
         "-o".into(),
         "LogLevel=ERROR".into(),
-        m.target.clone(),
-        format!(
-            "exec \"${{SHELL:-/bin/sh}}\" -lc '{}'",
-            inner.replace('\'', "'\\''")
-        ),
-    ])
+    ];
+    if let Some(p) = t.port {
+        args.push("-p".into());
+        args.push(p);
+    }
+    args.push(t.dest);
+    args.push(format!(
+        "exec \"${{SHELL:-/bin/sh}}\" -lc '{}'",
+        inner.replace('\'', "'\\''")
+    ));
+    Ok(args)
 }
 
 /// The argv of the call the agents make (`DOCKER_HOST=ssh://…`): the user's own ssh config and known hosts, batch
@@ -100,16 +170,22 @@ pub fn user_ssh_args(_cfg: &AppConfig, target: &str, remote_cmd: &str) -> Result
     if !valid_target(target) {
         return Err(format!("недопустимый адрес машины: {target:?}"));
     }
-    Ok(vec![
-        "-o".into(),
+    let t = split_target(target);
+    let mut args = vec![
+        "-o".to_string(),
         "BatchMode=yes".into(),
         "-o".into(),
         "ConnectTimeout=6".into(),
         "-o".into(),
         "StrictHostKeyChecking=accept-new".into(),
-        target.to_string(),
-        remote_cmd.to_string(),
-    ])
+    ];
+    if let Some(p) = t.port {
+        args.push("-p".into());
+        args.push(p);
+    }
+    args.push(t.dest);
+    args.push(remote_cmd.to_string());
+    Ok(args)
 }
 
 /// How an ssh call ended, as the board reads it.
@@ -169,8 +245,14 @@ pub fn config_host(cfg: &AppConfig, target: &str) -> Option<String> {
     if !valid_target(target) {
         return None;
     }
-    let out = std::process::Command::new(&cfg.ssh_bin)
-        .args(["-G", target])
+    let t = split_target(target);
+    let mut cmd = std::process::Command::new(&cfg.ssh_bin);
+    cmd.arg("-G");
+    if let Some(p) = &t.port {
+        cmd.arg("-p").arg(p);
+    }
+    let out = cmd
+        .arg(&t.dest)
         .stdin(Stdio::null())
         .stderr(Stdio::null())
         .output()
@@ -412,6 +494,35 @@ mod tests {
         let cfg = AppConfig { ssh_bin: bin.display().to_string(), ..cfg };
         assert_eq!(config_host(&cfg, "vm-r").as_deref(), Some("192.0.2.29"));
         assert_eq!(config_host(&cfg, "vm-r"), Some("192.0.2.29".into()));
+    }
+
+    #[test]
+    fn a_port_is_split_from_the_host_and_goes_to_p() {
+        let t = split_target("me@192.0.2.29:2222");
+        assert_eq!(t.dest, "me@192.0.2.29");
+        assert_eq!(t.port.as_deref(), Some("2222"));
+        assert_eq!(normalize_target("ssh://me@192.0.2.29:2222"), "me@192.0.2.29:2222");
+        assert_eq!(normalize_target("vm-r"), "vm-r");
+        let t = split_target("[::1]:2200");
+        assert_eq!(t.dest, "[::1]");
+        assert_eq!(t.port.as_deref(), Some("2200"));
+        // A colon that is not a port is left alone (it may be part of an unbracketed IPv6).
+        assert_eq!(normalize_target("2001:db8::1"), "2001:db8::1");
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = test_cfg(dir.path());
+        let args = ssh_args(&cfg, &mref("vm-r", "me@192.0.2.29:2222", ""), "true").unwrap();
+        let n = args.len();
+        assert_eq!(args[n - 2], "me@192.0.2.29");
+        assert_eq!(args[n - 3], "2222");
+        assert_eq!(args[n - 4], "-p");
+        let args = user_ssh_args(&cfg, "ssh://me@192.0.2.29:2222", "docker version").unwrap();
+        let n = args.len();
+        assert_eq!(args[n - 1], "docker version");
+        assert_eq!(args[n - 2], "me@192.0.2.29");
+        assert_eq!(args[n - 3], "2222");
+        assert_eq!(args[n - 4], "-p");
+        assert_eq!(tty_args("me@192.0.2.29:2222").unwrap().join(" "), "-t -p 2222 me@192.0.2.29");
+        assert_eq!(tty_args("vm-r").unwrap().join(" "), "-t vm-r");
     }
 
     #[test]

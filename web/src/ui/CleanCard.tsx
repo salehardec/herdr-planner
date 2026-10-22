@@ -10,7 +10,10 @@ import { toast } from '../toast';
 import { duration } from '../util/format';
 import { Gl } from './Gl';
 
-interface Item { id: string; name: string; task: string; status: string; state: string; age_ms: number; mem_bytes: number; size_bytes: number }
+interface Item {
+  id: string; name: string; task: string; status: string; state: string; age_ms: number; mem_bytes: number;
+  size_bytes: number; networks?: string[]; volumes?: string[];
+}
 interface Counts { containers: number; networks: number; volumes: number; bytes: number }
 interface Preview {
   ok: boolean;
@@ -71,6 +74,18 @@ export function CleanCard(props: { runner: string; ids?: string[]; onDone?: () =
     });
   };
   const p = plan;
+  // «Стало» follows the ticks, not the whole plan: unticking one must change the numbers and the MB at once.
+  const ticked = p ? p.containers.filter((c) => picked[c.id]) : [];
+  const tickNets = new Set<string>();
+  const tickVols = new Set<string>();
+  let tickBytes = 0;
+  for (const c of ticked) {
+    for (const n of c.networks ?? []) tickNets.add(n);
+    for (const v of c.volumes ?? []) tickVols.add(v);
+    tickBytes += c.size_bytes || 0;
+  }
+  const netNames = p ? [...tickNets].map((id) => p.networks.find((n) => n.id === id)?.name ?? id) : [];
+  const volNames = [...tickVols];
   return (
     <section class="rf-clean" data-clean={props.runner}>
       <div class="block-hd">
@@ -97,13 +112,15 @@ export function CleanCard(props: { runner: string; ids?: string[]; onDone?: () =
           </table>
           <p class="rf-was" id="rf-was">
             {t('runner.wasNow', {
-              a: p.was.containers, b: p.now.containers, na: p.was.networks, nb: p.now.networks,
-              va: p.was.volumes, vb: p.now.volumes, mb: mb(p.was.bytes),
+              a: p.was.containers, b: p.was.containers - ticked.length,
+              na: p.was.networks, nb: p.was.networks - tickNets.size,
+              va: p.was.volumes, vb: p.was.volumes - tickVols.size,
+              mb: mb(tickBytes),
             })}
           </p>
-          {(p.networks.length > 0 || p.volumes.length > 0) && (
-            <div class="hint">{tn('runner.cleanUnits', p.networks.length + p.volumes.length, {
-              nets: p.networks.map((n) => n.name).join(', '), vols: p.volumes.map((v) => v.name).join(', '),
+          {(netNames.length > 0 || volNames.length > 0) && (
+            <div class="hint">{tn('runner.cleanUnits', netNames.length + volNames.length, {
+              nets: netNames.join(', '), vols: volNames.join(', '),
             })}</div>
           )}
           {p.unsure.length > 0 && <div class="hint">{t('runner.unsureHint')}</div>}

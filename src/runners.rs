@@ -1014,6 +1014,11 @@ pub struct PlanItem {
     pub age_ms: u64,
     pub mem_bytes: u64,
     pub size_bytes: u64,
+    /// The networks and volumes that go with this container alone: the page computes «стало» from the ticked ones.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub networks: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub volumes: Vec<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize)]
@@ -1068,6 +1073,7 @@ fn plan_item(c: &Container, now: u64) -> PlanItem {
         age_ms: now.saturating_sub(c.created_ms),
         mem_bytes: c.mem_bytes.unwrap_or(0),
         size_bytes: c.size_bytes,
+        ..PlanItem::default()
     }
 }
 
@@ -1110,9 +1116,8 @@ fn mounts_of(c: &Container) -> Vec<String> {
 /// that is active or foreign is never in a plan.
 pub fn plan_of(state: &RunnerState, ids: Option<&[String]>) -> CleanPlan {
     let now = now_ms();
-    let mut tags: BTreeSet<String> = BTreeSet::new();
-    let mut projects: BTreeSet<String> = BTreeSet::new();
-    let mut picked: Vec<&Container> = Vec::new();
+    // Each picked container with the units that belong to it alone, so the page can count «стало» for any ticks.
+    let mut picked: Vec<(&Container, Vec<String>, Vec<String>)> = Vec::new();
     let mut unsure: Vec<String> = Vec::new();
     for c in &state.containers {
         let asked = ids.is_some_and(|list| list.iter().any(|id| id == &c.id));
@@ -1130,42 +1135,60 @@ pub fn plan_of(state: &RunnerState, ids: Option<&[String]>) -> CleanPlan {
             // takes only the container itself.
             Class::Unsure => {
                 unsure.push(c.id.clone());
-                picked.push(c);
+                picked.push((c, Vec::new(), Vec::new()));
                 continue;
             }
             Class::Active | Class::Foreign => continue,
         }
+        let mut tags: BTreeSet<String> = BTreeSet::new();
+        let mut projects: BTreeSet<String> = BTreeSet::new();
         if let Some(t) = &c.task {
             tags.insert(t.tag.to_uppercase());
         }
         if let Some(p) = c.labels.get("com.docker.compose.project") {
             projects.insert(p.clone());
         }
-        picked.push(c);
+        let nets: Vec<String> = state
+            .networks
+            .iter()
+            .filter(|n| network_matches(&n.name, &tags, &projects))
+            .map(|n| n.id.clone())
+            .collect();
+        let mut vols: Vec<String> = state
+            .volumes
+            .iter()
+            .filter(|v| volume_matches(&v.name, &tags, &projects))
+            .map(|v| v.name.clone())
+            .collect();
+        for m in mounts_of(c) {
+            if !vols.contains(&m) {
+                vols.push(m);
+            }
+        }
+        picked.push((c, nets, vols));
     }
-    let containers: Vec<PlanItem> = picked.iter().map(|c| plan_item(c, now)).collect();
-    let bytes = picked.iter().map(|c| c.size_bytes).sum();
+    let mut net_ids: BTreeSet<String> = BTreeSet::new();
+    let mut vol_names: BTreeSet<String> = BTreeSet::new();
+    let mut containers: Vec<PlanItem> = Vec::new();
+    for (c, nets, vols) in &picked {
+        net_ids.extend(nets.iter().cloned());
+        vol_names.extend(vols.iter().cloned());
+        let mut item = plan_item(*c, now);
+        item.networks = nets.clone();
+        item.volumes = vols.clone();
+        containers.push(item);
+    }
+    let bytes = picked.iter().map(|(c, _, _)| c.size_bytes).sum();
     let networks: Vec<PlanItem> = state
         .networks
         .iter()
-        .filter(|n| network_matches(&n.name, &tags, &projects))
+        .filter(|n| net_ids.contains(&n.id))
         .map(|n| PlanItem {
             id: n.id.clone(),
             name: n.name.clone(),
             ..PlanItem::default()
         })
         .collect();
-    let mut vol_names: BTreeSet<String> = state
-        .volumes
-        .iter()
-        .filter(|v| volume_matches(&v.name, &tags, &projects))
-        .map(|v| v.name.clone())
-        .collect();
-    for c in &picked {
-        for m in mounts_of(c) {
-            vol_names.insert(m);
-        }
-    }
     let volumes: Vec<PlanItem> = vol_names
         .into_iter()
         .map(|name| PlanItem {
@@ -1235,11 +1258,12 @@ pub fn block_text(file: &RunnersFile) -> String {
             r.ports_host.clone()
         }
     };
+    let def_target = ssh::normalize_target(&def.target);
     let mut s = String::from(BLOCK_BEGIN);
     s.push('\n');
     s.push_str(&format!(
         "Docker-контейнеры (базы, стенды, заглушки, прокси и т.п.) не запускай на этой машине: используй верфь {} — export DOCKER_HOST=ssh://{} (вход по SSH-ключу уже настроен; проверка: ssh -o BatchMode=yes {} true). Порты контейнеров открываются на {}, не на localhost.\n",
-        def.id, def.target, def.target, host_of(def)
+        def.id, def_target, def_target, host_of(def)
     ));
     s.push_str("Каждому контейнеру, сети и тому давай имя с id своей задачи (например pg-PLN-26) и метку --label herdr.task=PLN-26; для docker compose — имя проекта с id задачи (docker compose -p pln-26 …) и та же метка в labels каждого сервиса; после себя всегда останавливай и удаляй их (docker rm -f -v, docker network rm, docker volume rm, docker compose -p pln-26 down -v), даже если работа прервалась.\n");
     let masks = file.protected_all();
@@ -1259,7 +1283,12 @@ pub fn block_text(file: &RunnersFile) -> String {
                 } else {
                     format!(", {}", r.tags.join(", "))
                 };
-                format!("{} (ssh://{}, порты {}{tags})", r.id, r.target, host_of(r))
+                format!(
+                    "{} (ssh://{}, порты {}{tags})",
+                    r.id,
+                    ssh::normalize_target(&r.target),
+                    host_of(r)
+                )
             })
             .collect::<Vec<_>>()
             .join(", ");
@@ -1794,6 +1823,42 @@ mod tests {
         assert_eq!(ticked.containers[0].id, unsure.id);
         assert!(ticked.networks.is_empty() && ticked.volumes.is_empty());
         assert!(plan_of(&state, Some(&["d".repeat(64)])).containers.is_empty());
+    }
+
+    #[test]
+    fn a_containers_units_belong_to_that_container() {
+        let mut one = cont("pg-ALP-3", &[("com.docker.compose.project", "work-3")]);
+        one.class = Class::Forgotten;
+        one.task = Some(TaskRef { tag: "ALP-3".into(), ..TaskRef::default() });
+        let mut two = cont("redis-ALP-4", &[("com.docker.compose.project", "alpha-4")]);
+        two.id = "b".repeat(64);
+        two.class = Class::Forgotten;
+        two.task = Some(TaskRef { tag: "ALP-4".into(), ..TaskRef::default() });
+        let mut state = RunnerState::default();
+        state.id = "vm-r".into();
+        state.containers = vec![one, two];
+        state.networks = vec![
+            Net { id: "n1".into(), name: "work-3_default".into(), ..Net::default() },
+            Net { id: "n2".into(), name: "alpha-4_default".into(), ..Net::default() },
+        ];
+        state.volumes = vec![
+            Vol { name: "work-3_pgdata".into(), ..Vol::default() },
+            Vol { name: "alpha-4_redis".into(), ..Vol::default() },
+        ];
+        let plan = plan_of(&state, None);
+        assert_eq!(plan.containers[0].networks, vec!["n1"]);
+        assert_eq!(plan.containers[0].volumes, vec!["work-3_pgdata"]);
+        assert_eq!(plan.containers[1].networks, vec!["n2"]);
+        assert_eq!(plan.containers[1].volumes, vec!["alpha-4_redis"]);
+        // A tick on one container brings only its own units into the plan.
+        let one = plan_of(&state, Some(&["a".repeat(64)]));
+        assert_eq!(one.containers.len(), 1);
+        assert_eq!(one.networks.len(), 1);
+        assert_eq!(one.networks[0].id, "n1");
+        assert_eq!(one.volumes.len(), 1);
+        assert_eq!(one.volumes[0].name, "work-3_pgdata");
+        assert_eq!(one.now.networks, 1);
+        assert_eq!(one.now.containers, 1);
     }
 
     #[test]

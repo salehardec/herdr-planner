@@ -246,7 +246,8 @@ pub async fn runner_probe(State(app): State<Shared>, headers: HeaderMap, Json(bo
     if !same_origin(&headers) {
         return fail(403, "cross-origin request refused");
     }
-    let target = body.target.trim().to_string();
+    // `ssh://user@host:2222` and `user@host:2222` are the same yard: store one form, no scheme.
+    let target = ssh::normalize_target(&body.target);
     if !ssh::valid_target(&target) {
         return fail(400, format!("адрес верфи не похож на ssh-адрес: {target:?}"));
     }
@@ -296,20 +297,11 @@ pub async fn runner_probe(State(app): State<Shared>, headers: HeaderMap, Json(bo
         }))
         .into_response();
     }
+    // The machine answered, so the yard can be added even if this machine's own way in is red: the rows say plainly
+    // what is broken, and the human decides (a yard is still useful to watch).
     let local_ok = local["docker_client"].as_bool().unwrap_or(false)
         && local["ssh_ok"].as_bool().unwrap_or(false)
         && !local["docker_via_ssh"].as_str().unwrap_or("").is_empty();
-    if !local_ok {
-        let hint = local["hint"].as_str().unwrap_or("").to_string();
-        return Json(json!({
-            "ok": false,
-            "step": "local",
-            "error": if hint.is_empty() { "эта машина не сможет войти на верфь так, как это делают агенты".to_string() } else { hint },
-            "probe": state,
-            "local": local,
-        }))
-        .into_response();
-    }
     let mut state2 = state.clone();
     // Suggest only masks for what no task of this board owns.
     let snap = app.snapshot.read().await.clone();
@@ -323,6 +315,7 @@ pub async fn runner_probe(State(app): State<Shared>, headers: HeaderMap, Json(bo
         "ports_host": ports_host,
         "probe": state,
         "local": local,
+        "local_ok": local_ok,
         "suggested": {
             "tags": suggested_tags(&state.host),
             "protected": protected,
@@ -373,7 +366,7 @@ pub async fn runner_add(State(app): State<Shared>, headers: HeaderMap, Json(body
     if body.confirm != Some(true) {
         return fail(400, "добавление верфи требует подтверждения");
     }
-    let target = body.target.trim().to_string();
+    let target = ssh::normalize_target(&body.target);
     let label = body.label.trim().to_string();
     if !ssh::valid_target(&target) {
         return fail(400, format!("адрес верфи не похож на ssh-адрес: {target:?}"));
@@ -575,12 +568,29 @@ pub async fn runner_connect_get(State(app): State<Shared>) -> Response {
             .unwrap_or_default();
         let connected = !block.is_empty() && runners::has_block(&current, &block);
         let stale = !block.is_empty() && runners::has_any_block(&current) && !connected;
+        // The exact value each choice writes: the card shows it instead of the bare generated block.
+        let next_on = if block.is_empty() {
+            String::new()
+        } else {
+            runners::connect_value(&current, &block, true)
+                .ok()
+                .flatten()
+                .unwrap_or_default()
+        };
+        let next_off = runners::connect_value(&current, &block, false)
+            .ok()
+            .flatten()
+            .unwrap_or_default();
+        let next_on_dropped = crate::blocks::drop_paragraphs(&next_on, runners::MARKERS, "DOCKER_HOST=");
         out.push(json!({
             "setting": name,
             "connected": connected,
             "stale": stale,
             "current": current,
             "block": block,
+            "next_on": next_on,
+            "next_on_dropped": next_on_dropped,
+            "next_off": next_off,
             "has_old_docker_paragraph": runners::has_old_docker_paragraph(&current),
         }));
     }
@@ -741,11 +751,20 @@ pub async fn runner_clean(State(app): State<Shared>, headers: HeaderMap, Json(bo
         Some(s) => s,
         None => return fail(404, "такой верфи нет в списке"),
     };
+    // No ids means «the forgotten ones of the shown plan»: an unsure container goes only when the human ticked it
+    // and the page sent its id.
     let wanted: BTreeSet<&str> = if body.ids.is_empty() {
-        plan.containers.iter().map(|c| c.id.as_str()).collect()
+        plan.containers
+            .iter()
+            .filter(|c| !plan.unsure.contains(&c.id))
+            .map(|c| c.id.as_str())
+            .collect()
     } else {
         body.ids.iter().map(String::as_str).collect()
     };
+    if wanted.is_empty() {
+        return fail(400, "ничего не выбрано");
+    }
     for id in &wanted {
         if !plan.containers.iter().any(|c| c.id == *id) {
             return fail(409, "контейнера нет в показанном плане");
@@ -935,11 +954,26 @@ pub async fn runner_terminal(
     let Some(r) = file.get(&body.id).cloned() else {
         return fail(404, "такой верфи нет в списке");
     };
-    let mut cmd = tokio::process::Command::new(&app.cfg.ssh_bin);
-    cmd.arg("-t").arg(&r.target);
-    match cmd.spawn() {
-        Ok(_) => Json(json!({"ok": true, "command": format!("ssh -t {}", r.target)})).into_response(),
-        Err(e) => fail(500, format!("не удалось запустить ssh -t {}: {e}", r.target)),
+    let args = match ssh::tty_args(&r.target) {
+        Ok(a) => a,
+        Err(e) => return fail(422, e),
+    };
+    // The same way the planner's other terminal actions go: a window of this machine's own terminal, not a bare
+    // child with no tty (that one starts ssh and shows nobody anything).
+    match tokio::process::Command::new("xdg-terminal-exec")
+        .arg(&app.cfg.ssh_bin)
+        .args(&args)
+        .spawn()
+    {
+        Ok(_) => Json(json!({
+            "ok": true,
+            "command": format!("{} {}", app.cfg.ssh_bin, args.join(" ")),
+        }))
+        .into_response(),
+        Err(e) => fail(
+            500,
+            format!("не удалось открыть терминал: {e}"),
+        ),
     }
 }
 

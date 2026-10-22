@@ -452,11 +452,15 @@ function ErrorBlock({ err, onRetry }: { err: CallError; onRetry: () => void }): 
 
 /* ───────── the shipyards' block in this machine's instructions ───────── */
 
-interface RunnerSetting { setting: string; connected: boolean; stale: boolean; current: string; block: string; has_old_docker_paragraph: boolean }
+interface RunnerSetting {
+  setting: string; connected: boolean; stale: boolean; current: string; block: string;
+  next_on: string; next_on_dropped: string; next_off: string; has_old_docker_paragraph: boolean;
+}
 
 function Shipyards(): JSX.Element {
   const [rows, setRows] = useState<RunnerSetting[] | null>(null);
   const [err, setErr] = useState('');
+  const [drop, setDrop] = useState(false);
   const load = async (): Promise<void> => {
     setErr('');
     try {
@@ -475,7 +479,8 @@ function Shipyards(): JSX.Element {
     confirmStep(key, async () => {
       setErr('');
       try {
-        await post('/api/runner/connect', { on: !on, drop_old: true, confirm: true });
+        // Dropping the old hand-written docker lines is a separate, explicit choice; never a side effect of connecting.
+        await post('/api/runner/connect', { on: !on, drop_old: on ? false : drop, confirm: true });
         toast(t('runner.saved'));
         await load();
       } catch (e) {
@@ -495,11 +500,18 @@ function Shipyards(): JSX.Element {
       {hasYards && (
         <details class="rf-block">
           <summary>{t('runner.stationPreview')}</summary>
-          <div class="hint">{t('runner.stationWas')}</div>
-          <pre>{rows[0].current || t('runner.stationEmpty')}</pre>
-          <div class="hint">{t('runner.stationNow')}</div>
-          <pre>{rows[0].block}</pre>
+          {rows.map((r) => (
+            <div key={r.setting} data-setting={r.setting}>
+              <div class="hint">{r.setting} · {t('runner.stationWas')}</div>
+              <pre>{r.current || t('runner.stationEmpty')}</pre>
+              <div class="hint">{t('runner.stationNow')}</div>
+              <pre data-next={r.setting}>{(on ? (drop ? r.next_on_dropped : r.next_on) : r.next_off) || t('runner.stationEmpty')}</pre>
+            </div>
+          ))}
         </details>
+      )}
+      {hasYards && on && rows.some((r) => r.has_old_docker_paragraph) && (
+        <label class="rf-check"><input type="checkbox" id="st-yards-drop" checked={drop} onChange={(e) => setDrop((e.target as HTMLInputElement).checked)} />{t('runner.dropOld')}</label>
       )}
       {hasYards && (
         <div class="act">

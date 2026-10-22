@@ -2835,10 +2835,18 @@ section('runners', async () => {
   check('the search finds the shipyard', await waitFor('[...document.querySelectorAll("#sres .srow")].some((e) => e.dataset.kind === "runner")', 5000), await text('#sres'));
   await evalJs('(() => { const e = [...document.querySelectorAll("#sres .srow")].find((x) => x.dataset.kind === "runner"); if (e) e.click(); return !!e; })()');
   check('a click on the shipyard opens its focus', await waitFor('plannerDebug().selected?.kind === "runner" && !!document.querySelector("[data-focus=runner]")', 15000), JSON.stringify(await pd()));
+  // The terminal button asks this machine's terminal to run ssh in it, not a bare child with no tty.
+  await click('#rf-terminal');
+  check('«Терминал» opens a terminal window with ssh -t', await waitLog(() => calls('terminal.jsonl').some((c) => (c.argv ?? []).includes('-t') && (c.argv ?? []).join(' ').includes('192.0.2.29')), 8000), JSON.stringify(calls('terminal.jsonl').slice(-2)));
   // «Было → стало»: the card, the two presses, the exact ids.
   await waitFor('!!document.querySelector("#rf-clean")', 8000);
   await click('#rf-clean');
-  check('the cleaning card shows was → now and leaves the unsure one unticked', await waitFor('!!document.querySelector("#rf-was")', 8000) && (await text('#rf-was')).includes('контейнеров 6 → 4') && (await evalJs('[...document.querySelectorAll(".rf-clean tbody input")].filter((i) => !i.checked).length')) === 1, await text('#rf-clean'));
+  check('the cleaning card shows was → now for the ticks (only the forgotten one is ticked)', await waitFor('!!document.querySelector("#rf-was")', 8000) && (await text('#rf-was')).includes('контейнеров 6 → 5') && (await evalJs('[...document.querySelectorAll(".rf-clean tbody input")].filter((i) => !i.checked).length')) === 1, await text('#rf-clean'));
+  const tickUnsure = (want) => `(() => { const tr = [...document.querySelectorAll(".rf-clean tbody tr")].find((r) => r.innerText.includes("x-ALP-99")); const i = tr?.querySelector("input"); if (!i) return false; if (i.checked !== ${want}) i.click(); return i.checked === ${want}; })()`;
+  await evalJs(tickUnsure(true));
+  check('ticking the unsure one changes «стало» at once', await waitFor('document.querySelector("#rf-was")?.textContent.includes("контейнеров 6 → 4")', 5000), await text('#rf-was'));
+  await evalJs(tickUnsure(false));
+  check('unticking it takes the numbers and the MB back', await waitFor('document.querySelector("#rf-was")?.textContent.includes("контейнеров 6 → 5")', 5000), await text('#rf-was'));
   const before = calls('ssh.jsonl').filter((c) => c.runner).length;
   await twoPresses('#rf-clean-go');
   check('the clean removes exactly the ticked id and nothing else', await waitLog(() => calls('ssh.jsonl').some((c) => c.runner && c.inner === 'docker rm -f -v ' + 'b'.repeat(64)) && calls('ssh.jsonl').filter((c) => c.runner).length > before, 20000), JSON.stringify(calls('ssh.jsonl').filter((c) => c.runner).slice(-2)));

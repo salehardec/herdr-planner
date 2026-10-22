@@ -98,13 +98,51 @@ pub fn has_paragraph(text: &str, m: Markers, needle: &str) -> bool {
         .any(|p| p.contains(needle))
 }
 
-/// Drops every paragraph outside the block that mentions `needle`; the rest of the text stays as it is.
+/// A line that belongs to the old hand-written docker rule: it speaks of docker, its containers or their ports.
+fn docker_line(line: &str) -> bool {
+    let l = line.to_lowercase();
+    l.contains("docker") || l.contains("контейнер") || l.contains("container")
+}
+
+/// The text without the lines of the old hand-written docker rule: a line mentioning `needle` and the neighbouring
+/// lines of that same rule (while they speak of docker). A human's rule on the next line, even without a blank line
+/// between them, stays: dropping a whole `\n\n`-paragraph could take it along.
 pub fn drop_paragraphs(text: &str, m: Markers, needle: &str) -> String {
     let keep = |part: &str| -> String {
-        part.split("\n\n")
-            .filter(|p| !p.contains(needle))
+        let lines: Vec<&str> = part.split('\n').collect();
+        let mut drop = vec![false; lines.len()];
+        for (i, l) in lines.iter().enumerate() {
+            if l.contains(needle) {
+                drop[i] = true;
+            }
+        }
+        // Grow every marked run through the neighbouring lines of the same docker rule.
+        loop {
+            let mut grew = false;
+            for i in 0..lines.len() {
+                if drop[i] || !docker_line(lines[i]) {
+                    continue;
+                }
+                let up = i > 0 && drop[i - 1];
+                let down = i + 1 < lines.len() && drop[i + 1];
+                if up || down {
+                    drop[i] = true;
+                    grew = true;
+                }
+            }
+            if !grew {
+                break;
+            }
+        }
+        lines
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| !drop[*i])
+            .map(|(_, l)| *l)
             .collect::<Vec<_>>()
-            .join("\n\n")
+            .join("\n")
+            .trim()
+            .to_string()
     };
     let Some((a, b)) = block_range(text, m) else {
         return keep(text);
@@ -158,6 +196,28 @@ mod tests {
         assert!(!out.contains("тут"));
         assert!(out.contains("Правило первое.") && out.contains("Правило третье."));
         assert!(out.contains("DOCKER_HOST=in block"));
+    }
+
+    #[test]
+    fn a_humans_rule_on_the_next_line_without_a_blank_line_stays() {
+        // The shape the human's own instructions can have: one line about docker, then two unrelated rules, no
+        // blank lines at all. Dropping the whole `\n\n`-chunk would take the rules along.
+        let text = "Docker-контейнеры не запускай тут: DOCKER_HOST=ssh://vm-r, порты на 192.0.2.29.\n\
+                    Проверки: браузер закрывай сразу после них.\n\
+                    Коммиты подписывай по-русски.\n";
+        let out = drop_paragraphs(text, M, "DOCKER_HOST=");
+        assert!(!out.contains("DOCKER_HOST=ssh://vm-r"), "{out}");
+        assert!(out.contains("Проверки: браузер закрывай сразу после них."), "{out}");
+        assert!(out.contains("Коммиты подписывай по-русски."), "{out}");
+        // The rest of a multi-line docker rule (still speaking of docker) goes with its first line.
+        let multi = "Docker-контейнеры не запускай тут: используй верфь.\n\
+                     Порты таких контейнеров открываются на 192.0.2.29, не на localhost.\n\
+                     Давай контейнерам имена с id задачи; export DOCKER_HOST=ssh://vm-r\n\
+                     Проверки в herdr-planner: полный прогон делает CI.\n";
+        let out = drop_paragraphs(multi, M, "DOCKER_HOST=");
+        assert!(!out.to_lowercase().contains("docker"), "{out}");
+        assert!(!out.contains("Порты таких контейнеров"), "{out}");
+        assert!(out.contains("Проверки в herdr-planner"), "{out}");
     }
 
     #[test]

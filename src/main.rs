@@ -295,13 +295,15 @@ fn spawn_loops(app: Shared) {
         tokio::time::sleep(Duration::from_secs(3)).await;
         let mut blocks_at = 0u64;
         loop {
-            let fast = a.bus.subscribers() > 0;
             runners::poll_all(&a).await;
             let now = crate::config::now_ms();
             if now.saturating_sub(blocks_at) > 600_000 {
                 blocks_at = now;
                 runners::sync_blocks(&a).await;
             }
+            // Asked after the poll: a page opened during it starts the 30 s rate at once instead of waiting out a
+            // 5-minute quiet spell.
+            let fast = a.bus.subscribers() > 0;
             tokio::time::sleep(Duration::from_secs(if fast { 30 } else { 300 })).await;
         }
     });

@@ -312,7 +312,7 @@ export function RunnerFocus(props: { entity: Entity }): JSX.Element {
     confirmStep(`rcn:${r.id}`, async () => {
       setErr('');
       try {
-        await post('/api/runner/connect', { on: true, drop_old: true, confirm: true });
+        await post('/api/runner/connect', { on: true, drop_old: false, confirm: true });
         toast(t('runner.connectedTo', { n: 1 }));
         setConnectOpen(false);
       } catch (e) {
@@ -391,7 +391,7 @@ export function RunnerFocus(props: { entity: Entity }): JSX.Element {
       </div>
       <div class="act">
         <button class="btn" type="button" onClick={() => void post('/api/runner/ask', { id: r.id })}><Gl n="refresh" />{t('runner.refresh')}</button>
-        {local && <button class="btn" type="button" onClick={async () => { try { await post('/api/runner/terminal', { id: r.id }); } catch (e) { toast((e as Error).message, { icon: 'failed' }); } }}><Gl n="screen" />{t('runner.terminal')}</button>}
+        {local && <button class="btn" type="button" id="rf-terminal" onClick={async () => { try { await post('/api/runner/terminal', { id: r.id }); } catch (e) { toast((e as Error).message, { icon: 'failed' }); } }}><Gl n="screen" />{t('runner.terminal')}</button>}
         <button class="btn" type="button" onClick={() => void post('/api/runner/df', { id: r.id }).then((v: { rows: Record<string, string>[] }) => toast(v.rows.map((x) => `${x.Type}: ${x.Size} (${x.Reclaimable ?? ''})`).join(' · '))).catch((e: Error) => toast(e.message, { icon: 'failed' }))}>{t('runner.df')}</button>
       </div>
       <div class="act">
