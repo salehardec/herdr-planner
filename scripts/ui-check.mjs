@@ -1743,7 +1743,7 @@ section('load', async () => {
   await resetUi();
   loadGone();
   // the real machine: this machine's three... two bars (no card on the fixture), numbers in range, the exact values in the tooltip
-  check('the top bar has the load of this machine between the crumbs and the search', await waitFor('!!document.querySelector("#loadbar #load-chip")', 8000)
+  check('the top bar has the load of this machine right of the crumbs, before the search', await waitFor('!!document.querySelector("#loadbar #load-chip")', 8000)
     && await evalJs(`(() => { const c = document.querySelector('#crumbs').getBoundingClientRect(); const l = document.querySelector('#load-chip').getBoundingClientRect(); const q = document.querySelector('#q').getBoundingClientRect(); return l.left >= c.right - 1 && l.right <= q.left + 1; })()`));
   check('the real machine is read: a CPU and a MEM bar with shares from 0 to 100', await waitFor('document.querySelector("#loadbar")?.dataset.state === "on"', 12000)
     && await evalJs(`['cpu','mem'].every((k) => { const v = parseInt(document.querySelector('#loadbar .ld-m[data-k="'+k+'"] .ld-v')?.textContent, 10); return v >= 0 && v <= 100; })`), JSON.stringify([await meter('cpu'), await meter('mem')]));
@@ -1891,6 +1891,111 @@ section('load', async () => {
   await navigate(base + '/?noauto&nocoach&bloom=0');
 }, { retry: true });
 
+// The top bar: the menu first at the left, then the crumbs, the bars and the subscriptions (the monitoring); the search; at the right
+// only «Ждёт тебя» and the flight mode. The Station is opened from the menu.
+const topRects = () => evalJs(`(() => {
+  const r = (s) => { const e = document.querySelector(s); if (!e || getComputedStyle(e).display === 'none') return null; const b = e.getBoundingClientRect(); return b.width > 0 ? { l: b.left, t: b.top, r: b.right, b: b.bottom, w: b.width, h: b.height } : null; };
+  const chip = document.querySelector('#hud-limits');
+  return { menu: r('#menu-btn'), crumbs: r('#crumbs'), load: r('#load-chip'), lim: r('#hud-limits'), q: r('#q'), wait: r('#wait-btn'), mode: r('#mode'),
+    form: chip?.dataset.form, tier: document.querySelector('#loadbar')?.dataset.tier, limText: chip ? chip.innerText.trim() : '', limTip: chip ? chip.title : '',
+    limClipped: chip ? chip.scrollWidth > chip.clientWidth + 1 || [...chip.querySelectorAll('.lim-ag')].some((e) => e.offsetParent && e.scrollWidth > e.clientWidth + 1) : false, sw: document.documentElement.scrollWidth, phone: document.documentElement.classList.contains('bp900') };
+})()`);
+
+section('top bar', async () => {
+  await resetUi();
+  loadGone();
+  check('the menu button is the first element of the top bar, before the crumbs', await waitFor('!!document.querySelector("#topl > .menu #menu-btn")', 8000)
+    && await evalJs('document.querySelector("#topl").firstElementChild === document.querySelector("#topl > .menu") && document.querySelector("#topl > .menu").nextElementSibling === document.querySelector("#crumbs")'));
+  check('right of the crumbs stand the bars and then the subscriptions, in one group', await evalJs(`[...document.querySelector('#mon').children].map((e) => e.id).join() === 'loadbar,hud-limits' && document.querySelector('#mon').previousElementSibling === document.querySelector('#crumbs')`));
+  check('the right side holds only «Ждёт тебя» and the mode', await evalJs(`[...document.querySelector('#right').children].map((e) => e.id).join() === 'wait-btn,mode'`));
+  check('the top bar has no station chip, no gear and no «своя станция»; the menu button and the subscriptions are not at the right',
+    !(await exists('#station-chip')) && !(await exists('#station-open')) && !(await text('#top')).includes('своя станция') && !(await exists('#right #menu-btn')) && !(await exists('#right #hud-limits')), await text('#top'));
+  await click('#menu-btn');
+  check('the menu opens at the left, inside the window', await waitFor('!!document.querySelector(".menupop")', 3000) && await evalJs(`(() => { const p = document.querySelector('.menupop').getBoundingClientRect(); const b = document.querySelector('#menu-btn').getBoundingClientRect(); return p.left >= -1 && Math.abs(p.left - b.left) < 12 && p.right <= innerWidth + 1; })()`));
+  await click('#menu-btn');
+  check('the Station opens from the menu', await menuPick('Станция') && await waitFor('!!document.querySelector("#station")', 6000));
+  await resetUi();
+  check('the Station is closed again', await waitFor('!document.querySelector("#station")', 4000));
+
+  const colors = join(fixture, 'theme', 'colors.toml');
+  const dark = readFileSync(colors, 'utf8');
+  const runs = [[1280, 720, 'auto'], [1920, 1080, 'auto'], [2560, 1440, 'auto'], [1280, 720, 150], [1920, 1080, 150], [1920, 1080, 200], [2560, 1440, 200], [1280, 720, 200]];
+  const room = async (theme) => {
+    for (const [w, h, scale] of runs) {
+      if (theme === 'light' && scale !== 'auto') continue;
+      await send('Emulation.setDeviceMetricsOverride', { width: w, height: h, deviceScaleFactor: 1, mobile: false });
+      await evalJs(`try { localStorage.setItem('herdr-planner.uiScale', ${JSON.stringify(String(scale))}); } catch {} true`);
+      await navigate(base + '/?noauto&nocoach&bloom=0');
+      await resized();
+      await go('alpha/6');   // the longest crumbs: host › project › task
+      setLoad(reading(55, 72, [card('Test Card', 33, 2, 8)]));
+      await waitFor('document.querySelector("#loadbar")?.dataset.state === "on"', 8000);
+      await waitFor('/\\d\\s*%/.test(document.querySelector("#hud-limits")?.innerText || "")', 8000);
+      await beat();
+      const at = `${theme} ${w}×${h}${scale === 'auto' ? '' : ` at ${scale} %`}`;
+      const m = await topRects();
+      const mid = m.q ? (m.q.l + m.q.r) / 2 : 0;
+      check(`${at}: the search stays in the middle of the top`, m.phone || Math.abs(mid - w / 2) < 12, JSON.stringify(m.q));
+      const shown = Object.entries(m).filter(([k, v]) => v && typeof v === 'object' && 'l' in v);
+      const names = shown.map(([k]) => k);
+      const clear = shown.every(([ka, a], i) => shown.slice(i + 1).every(([kb, b]) => apart(a, b)));
+      check(`${at}: nothing in the top bar overlaps, everything is inside the window`, clear && shown.every(([, a]) => a.l >= -1 && a.r <= w + 1) && m.sw <= w + 1, JSON.stringify(m));
+      check(`${at}: the menu, the crumbs and the search are always there, and the right side keeps its two buttons`, ['menu', 'crumbs', 'q', 'wait', 'mode'].every((k) => names.includes(k)), names.join());
+      if (!m.phone) {
+        const order = ['menu', 'crumbs', 'load', 'lim', 'q', 'wait', 'mode'].filter((k) => m[k]);
+        check(`${at}: left to right: ${order.join(' › ')}`, order.every((k, i) => i === 0 || m[order[i - 1]].r <= m[k].l + 1), JSON.stringify(m));
+      } else {
+        check(`${at}: a phone-sized window: the menu and the crumbs above, the search and the monitoring below`, m.menu.r <= m.crumbs.l + 1 && m.crumbs.r <= m.wait.l + 1 && m.q.t >= m.menu.b - 1 && (!m.lim || m.q.r <= m.lim.l + 1), JSON.stringify(m));
+      }
+      check(`${at}: the crumbs are whole unless the window is a phone's`, await evalJs(`[...document.querySelectorAll('#crumbs button')].every((b) => b.scrollWidth <= b.clientWidth + 1) || document.documentElement.classList.contains('bp900')`), JSON.stringify(m));
+      check(`${at}: the subscription chip (${m.form}) is whole; shortened to its percentage it keeps the words in its tooltip`, !m.limClipped
+        && (m.form === 'none' ? !m.lim : !!m.lim) && (m.form !== 'pct' || (/^\d+\s*%$/.test(m.limText) && m.limTip.includes(' · ') && /\d/.test(m.limTip))) && (m.form !== 'full' || m.limText.includes(' · ')), JSON.stringify(m));
+      if (m.phone || scale === 200) check(`${at}: narrow: the chip is a percentage and the bars the worst one`, m.form === 'pct' || m.form === 'none', JSON.stringify(m));
+      if (w >= 1920 && scale === 'auto') {
+        // with the short crumbs of the Galaxy there is room: the chip keeps the agent and the window, whole (not cut by an ellipsis)
+        await evalJs('planner.goHome(); true');
+        await waitFor('plannerDebug().selected === null && world.debug().flight === "idle"', 12000);
+        await beat();
+        const h = await topRects();
+        check(`${at}: with room to spare the chip keeps the words, whole`, h.form === 'full' && h.limText.includes(' · ') && !h.limClipped, JSON.stringify(h));
+      }
+      if (scale === 'auto' && w === 1920) await shot(`topbar-${theme}.png`);
+    }
+  };
+  await room('dark');
+  writeFileSync(colors, dark.replace('mode = "dark"', 'mode = "light"').replace('background = "#1a120c"', 'background = "#f9f1e8"').replace('foreground = "#ecded6"', 'foreground = "#372b1f"'));
+  check('the light theme is on', await waitFor('document.documentElement.dataset.mode === "light"', 20000));
+  await room('light');
+  writeFileSync(colors, dark);
+  await waitFor('document.documentElement.dataset.mode === "dark"', 20000);
+
+  // a phone's width
+  for (const [w, h] of [[430, 900], [360, 780]]) {
+    await send('Emulation.setDeviceMetricsOverride', { width: w, height: h, screenWidth: w, screenHeight: h, deviceScaleFactor: 1, mobile: false });
+    await evalJs('try { localStorage.removeItem("herdr-planner.uiScale"); } catch {} true');
+    await navigate(base + '/?noauto&nocoach&bloom=0');
+    await resized();
+    await go('alpha/6');
+    const m = await topRects();
+    const shown = Object.values(m).filter((v) => v && typeof v === 'object' && 'l' in v);
+    check(`${w}×${h}: nothing overlaps and the page does not scroll sideways`, shown.every((a, i) => shown.slice(i + 1).every((b) => apart(a, b))) && shown.every((a) => a.l >= -1 && a.r <= w + 1) && m.sw <= w + 1, JSON.stringify(m));
+    check(`${w}×${h}: the chip is a percentage with a tooltip`, m.form === 'pct' && /^\d+\s*%$/.test(m.limText) && m.limTip.length > 8, JSON.stringify(m));
+    await click('#menu-btn');
+    check(`${w}×${h}: the menu is inside the window`, await waitFor('!!document.querySelector(".menupop")', 3000) && await evalJs(`(() => { const p = document.querySelector('.menupop').getBoundingClientRect(); return p.left >= -1 && p.right <= innerWidth + 1; })()`));
+    await click('#menu-btn');
+  }
+
+  // English: the labels start with a capital; the short «Waiting» is for the narrow top bar
+  await send('Emulation.setDeviceMetricsOverride', { width: 1500, height: 950, deviceScaleFactor: 1, mobile: false });
+  await navigate(base + '/?noauto&nocoach&bloom=0');
+  await evalJs('setLang("en"); true');
+  check('English: the top bar and its menu say «Waiting for you», «Station»', await waitFor('(document.querySelector("#wait-btn")?.innerText || "").startsWith("Waiting for you")', 4000) && await menuPick('Station') && await waitFor('!!document.querySelector("#station")', 6000));
+  await resetUi();
+  await evalJs('setLang("ru"); true');
+  loadGone();
+  await navigate(base + '/?noauto&nocoach&bloom=0');
+}, { retry: true });
+
 section('limits', async () => {
   await resetUi();
   check('the top bar has a limits chip naming the worst window', await waitFor('!!document.querySelector("#hud-limits")', 8000) && /3\s*%/.test(await text('#hud-limits')), await text('#hud-limits'));
@@ -2031,7 +2136,7 @@ const twoPresses = async (sel) => { await click(sel); return secondPress(sel); }
 section('station', async () => {
   await resetUi();
   await evalJs('planner.goHome()');
-  check('the top bar names whose station it is: this machine\'s', await hasText('#station-chip', 'своя станция', 8000), await text('#station-chip'));
+  check('the top bar has no station chip and no station gear: the Station is opened from the menu', !(await exists('#station-chip')) && !(await exists('#station-open')) && !(await text('#top')).includes('своя станция'), await text('#top'));
   check('the menu opens the station of this machine', await menuPick('Станция') && await waitFor('!!document.querySelector("#station")', 4000));
   const title = await text('#station header b');
   check('the title names this machine: «Станция · host»', title === `Станция · ${HOST}`, title);
