@@ -61,8 +61,9 @@ export function AgentScreen(): JSX.Element | null {
   const shown = loaded && `${loaded.task}|${loaded.role}` === key ? loaded : null;
   const r = shown?.r;
   const at: number = shown?.at ?? 0;
-  // A queued task has no agent yet and a done one has none any more: there is nothing to read.
-  const active = !!task && task.status !== 'queued' && task.status !== 'done';
+  // A queued task has no agent yet, a done one has none any more, and an exited one has left:
+  // there is nothing to read.
+  const active = !!task && task.exited_at === 0 && task.status !== 'queued' && task.status !== 'done';
   const running = r ? r.running !== false : true;
   const paused = !active ? 'stopped' : hidden ? 'hidden' : !running ? 'herdr' : '';
 
@@ -71,7 +72,12 @@ export function AgentScreen(): JSX.Element | null {
     const target = ref.task;
     const role = ref.role ?? '';
     let alive = true;
+    let busy = false;
     const load = async (): Promise<void> => {
+      // One read at a time: a slow herdr (and the text fallback of an old one) must not pile up
+      // a process per tick.
+      if (busy) return;
+      busy = true;
       const q = '/api/coordinator/screen?target=' + encodeURIComponent(target) + (role ? '&role=' + encodeURIComponent(role) : '');
       try {
         const answer = await api<ScreenAnswer>(q);
@@ -80,6 +86,8 @@ export function AgentScreen(): JSX.Element | null {
         if (!alive) return;
         const data: Partial<ScreenAnswer> = (e as ApiError).data ?? {};
         setLoaded({ task: target, role, r: { ...data, ok: false, error: (e as Error).message }, at: Date.now() });
+      } finally {
+        busy = false;
       }
     };
     void load();

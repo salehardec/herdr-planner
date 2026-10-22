@@ -1537,8 +1537,12 @@ section('agent screen', async () => {
   check('the time of the last refresh is shown', await waitFor('/\\d\\d:\\d\\d:\\d\\d/.test(document.querySelector("#screen-updated")?.innerText || "")', 6000), await text('#screen-updated'));
   await shot('agent-screen.png');
   const at0 = await at();
-  writeFileSync(join(fixture, 'state', 'dialog.txt'), '❯ Готово: миграция записана\n  1. Yes\n  2. No');
-  check('the window reads the screen again by itself', await waitFor('(document.querySelector("#screen-term")?.innerText || "").includes("миграция записана")', 10000), (await term()).slice(0, 80));
+  // A real coloured screen is longer than the planner sends whole: the window must keep its bottom.
+  const longScreen = ['НАЧАЛО-ЭКРАНА', ...Array.from({ length: 400 }, (_, i) => `строка ${String(i).padStart(3, '0')} ${'·'.repeat(60)}`), 'СВЕЖАЯ-СТРОКА', 'КОНЕЦ-ЭКРАНА'].join('\n');
+  writeFileSync(join(fixture, 'state', 'dialog.txt'), longScreen);
+  check('the window reads the screen again by itself', await waitFor('(document.querySelector("#screen-term")?.innerText || "").includes("КОНЕЦ-ЭКРАНА")', 10000), (await term()).slice(-80));
+  check('a long screen keeps its newest lines, not only its first', !(await term()).includes('НАЧАЛО-ЭКРАНА') && (await term()).includes('СВЕЖАЯ-СТРОКА'), `${(await term()).slice(0, 40)} … ${(await term()).slice(-40)}`);
+  check('the cut of a long screen is marked', (await term()).trimStart().startsWith('…'), (await term()).slice(0, 10));
   const at1 = await at();
   check('the time of the last refresh moves with it', at1 > at0, `${at0} → ${at1}`);
   // Words from the window: the same multiline line and `tell` as the Focus, and the window stays.
@@ -1558,6 +1562,17 @@ section('agent screen', async () => {
   await evalJs('new Promise((r) => setTimeout(r, 3600))');
   await quiet();
   check('the screen of a stopped agent is not read again', (await reads()) === stoppedReads, `${stoppedReads} → ${await reads()}`);
+  await press('Escape');
+  await waitFor('!document.querySelector("#agent-screen")', 4000);
+  // A failed task whose agent has exited (`exited_at`) is not watched either.
+  await go('alpha/8');
+  await click('#focus [data-act="screen"]');
+  check('an agent that has exited is marked as stopped', await waitFor('document.querySelector("#agent-screen .agent-screen")?.dataset.paused === "stopped"', 6000) && await hasText('#agent-screen', 'не обновляется'), await text('#screen-paused'));
+  await waitFor(`Number(document.querySelector("#screen-updated")?.dataset.at || 0) > 0`, 6000);
+  const exitedReads = await reads();
+  await evalJs('new Promise((r) => setTimeout(r, 3600))');
+  await quiet();
+  check('the screen of an exited agent is not read again', (await reads()) === exitedReads, `${exitedReads} → ${await reads()}`);
   await press('Escape');
   await waitFor('!document.querySelector("#agent-screen")', 4000);
   // «Свернуть» and a click on the background close it as well.

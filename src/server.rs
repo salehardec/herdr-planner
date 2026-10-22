@@ -408,7 +408,9 @@ struct ScreenQuery {
 /// A terminal screen is read deeper than a dialog: the window over the page scrolls through it.
 const SCREEN_LINES: &str = "120";
 /// How much of a terminal screen the page receives: a long log is cut once, with a mark, not per redraw.
-const SCREEN_MAX_CHARS: usize = 16_000;
+/// The end is what is kept: a terminal's newest output, its input line and a dialog are at the bottom.
+/// 24 000 keeps a coloured 80-line screen whole in most cases while still bounding the answer.
+const SCREEN_MAX_CHARS: usize = 24_000;
 
 /// The text an agent shows in its own terminal, through `herdr agent read`.
 /// The colours come as ANSI when herdr has them; the plain text is always there for the callers
@@ -453,13 +455,14 @@ async fn api_coordinator_screen(
             }
         },
     };
-    let text = strip_ansi(&out);
+    let tail = clip_tail_to(out, SCREEN_MAX_CHARS);
+    let text = strip_ansi(&tail);
     Json(json!({
         "ok": true,
         "running": true,
         "target": name,
-        "text": clip_to(text, SCREEN_MAX_CHARS),
-        "ansi": if colored { clip_to(out, SCREEN_MAX_CHARS) } else { String::new() },
+        "text": text,
+        "ansi": if colored { tail } else { String::new() },
     }))
     .into_response()
 }
@@ -1454,6 +1457,56 @@ fn clip_to(s: String, max: usize) -> String {
     out
 }
 
+/// Keeps the end of a text instead of its start: a terminal's newest output, its input line and a
+/// dialog are at the bottom, so a cut screen with its beginning kept shows the oldest lines only.
+/// The cut falls on a line boundary where it can; a colour sequence cut in two is dropped with its
+/// half line, never drawn as letters.
+fn clip_tail_to(s: String, max: usize) -> String {
+    let total = s.chars().count();
+    if total <= max {
+        return s;
+    }
+    let cut = total - max;
+    let start = s.char_indices().nth(cut).map_or(s.len(), |(i, _)| i);
+    let rest = &s[start..];
+    let from = match rest.find('\n') {
+        Some(i) => start + i + 1,
+        // One line taller than the budget: keep its end, but never from the middle of an escape
+        // sequence (its tail would be drawn as letters).
+        None if cut_inside_escape(&s, start) => {
+            rest.find('\u{1b}').map_or(s.len(), |i| start + i)
+        }
+        None => start,
+    };
+    let mut out = String::from("…");
+    out.push_str(&s[from..]);
+    out
+}
+
+/// Is `start` (a char boundary of `s`) inside an escape sequence rather than after it?
+fn cut_inside_escape(s: &str, start: usize) -> bool {
+    let bytes = s.as_bytes();
+    let mut i = start;
+    // An escape sequence is short; a newline begins a line and no sequence spans it.
+    while i > 0 && start - i < 4096 {
+        i -= 1;
+        if bytes[i] == b'\n' {
+            return false;
+        }
+        if bytes[i] != 0x1b {
+            continue;
+        }
+        let body = &bytes[i + 1..start];
+        return match body.first() {
+            None => true,
+            Some(b'[') => !body[1..].iter().any(|c| (0x40..=0x7e).contains(c)),
+            Some(b']') => !body.windows(2).any(|w| w == b"\x1b\\") && !body.contains(&0x07),
+            Some(_) => false,
+        };
+    }
+    false
+}
+
 /// The text without its escape sequences: `herdr agent read --format ansi` colours the screen for a
 /// terminal, and the plain text is what a caller without colours draws. A sequence cut by the length
 /// limit is dropped too.
@@ -1609,6 +1662,31 @@ mod tests {
         assert_eq!(strip_ansi("line\u{1b}[38;5;"), "line");
         assert_eq!(clip_to("abcdef".into(), 3), "abc…");
         assert_eq!(clip_to("abc".into(), 3), "abc");
+    }
+
+    #[test]
+    fn a_long_screen_keeps_its_bottom() {
+        let mut screen = String::new();
+        for i in 0..400 {
+            screen.push_str(&format!("line {i:03} {}\n", "·".repeat(70)));
+        }
+        screen.push_str("❯ the input line\n");
+        let cut = clip_tail_to(screen.clone(), 2_000);
+        assert!(cut.starts_with('…'), "{cut:?}");
+        assert!(cut.ends_with("❯ the input line\n"), "{cut:?}");
+        assert!(!cut.contains("line 000"), "the oldest lines go");
+        assert!(cut.contains("line 399"), "the newest lines stay");
+        assert!(cut.chars().count() <= 2_001, "{}", cut.chars().count());
+        // A cut inside a colour sequence never draws its tail as letters.
+        let coloured = format!("{}line\n\u{1b}[38;5;196mred end", "x".repeat(100));
+        let cut = clip_tail_to(coloured, 90);
+        assert_eq!(cut, "…\u{1b}[38;5;196mred end", "{cut:?}");
+        // …and without a line to cut at the broken sequence goes altogether.
+        let one_line = format!("{}\u{1b}[38;5;196mred end", "x".repeat(100));
+        // 15 keeps the last 15 of 118 characters: the cut is inside `[38;5;196`.
+        assert_eq!(clip_tail_to(one_line, 15), "…");
+        // A whole tail of one line that is only text still keeps its end.
+        assert_eq!(clip_tail_to("abcdefghij".into(), 4), "…ghij");
     }
 
     #[test]

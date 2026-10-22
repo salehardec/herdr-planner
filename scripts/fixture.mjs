@@ -228,7 +228,7 @@ task('alpha', 4, { state: 'blocked', kind: 'permission', stage: 'approval', titl
 task('alpha', 5, { state: 'blocked', kind: 'permission', stage: 'approval', title: 'Кэш отчётов', msg: 'Review failed · 1 critical, 1 major', review: failedReview, reviewRound: 2 });
 task('alpha', 6, { app: 'omp', state: 'working', stage: 'working', title: 'Миграция базы', msg: 'Writing migration', progress: 40, eta: 12 });
 task('alpha', 7, { app: 'pi', state: 'working', stage: 'reviewing', title: 'Документация', msg: 'Under review', progress: 55, reviewRound: 1 });
-task('alpha', 8, { state: 'error', stage: 'working', title: 'Сбой сборки', msg: 'The build failed' });
+task('alpha', 8, { state: 'error', stage: 'working', title: 'Сбой сборки', msg: 'The build failed', exitedAt: NOW - 5 * MIN });
 task('alpha', 9, { state: 'working', stage: 'queued', title: 'Очередь за слотом', msg: 'Waiting for a free slot', queue: 1 });
 task('alpha', 10, { state: 'working', stage: 'after', title: 'После девятой', msg: 'queued after ALP-9' });
 task('alpha', 11, { state: 'idle', stage: 'todo', title: 'Заметка на потом', msg: '' });
@@ -435,7 +435,7 @@ for (const r of rows) {
     session: C0.uuid('session ' + r.id),
     worktree: path.join(dir, 'worktrees', `${repo}-${n}`),
     branch: `work/${n}`,
-    exitedAt: r.state === 'done' || r.archivedAt ? Math.min(NOW, created + 40 * MIN) : null,
+    exitedAt: r.exitedAt ?? (r.state === 'done' || r.archivedAt ? Math.min(NOW, created + 40 * MIN) : null),
     afterDone: m.afterDone || [],
   };
 }
