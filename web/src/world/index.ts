@@ -684,7 +684,7 @@ export function createWorld(opts: WorldOptions): World {
     links.setMoving(!simple);
     links.update(time, resolveRef);
     // The selection ring follows its thing. (The nebula we are in has none: it is the whole picture, framed.)
-    if (selected && selected.kind !== 'quasar') {
+    if (selected && ringOn(selected)) {
       const p = entityPos(selected, tmp2);
       selRing.visible = !!p && !(selected.kind === 'universe' && focusUniverse === selected.id);
       if (p && selRing.visible) {
