@@ -359,6 +359,11 @@ function Crew(props: { galaxy: string; repo: string; data: StationData; reload: 
   );
 }
 
+/** A name of a setting may break after a dot (never inside a word). */
+function dotted(name: string): JSX.Element[] {
+  return name.split('.').map((part, i, all) => <>{part}{i < all.length - 1 ? <>.<wbr /></> : null}</>);
+}
+
 /** A value of the board that is not a crew setting: a toggle for the booleans, an input for the rest. */
 function SettingRow(props: { galaxy: string; repo: string; s: StationSetting; reload: () => void }): JSX.Element {
   const { s } = props;
@@ -371,13 +376,15 @@ function SettingRow(props: { galaxy: string; repo: string; s: StationSetting; re
     void startEdit({ galaxy: props.galaxy, name: s.name, repo: props.repo, value });
   };
   return (
-    <div class="srow" data-setting={s.name}>
+    <div class="setrow" data-setting={s.name}>
       <div class="sl">
-        <code>{s.name}</code>
-        <span class="src">{fromLabel(s.from)}</span>
-        {s.own && <span class="own" title={t('st.ownTip')}>{t('st.own')}</span>}
+        <code class="nm">{dotted(s.name)}</code>
+        <span class="tags">
+          <span class="src">{fromLabel(s.from)}</span>
+          {s.own && <span class="own" title={t('st.ownTip')}>{t('st.own')}</span>}
+        </span>
       </div>
-      <div class="sv">
+      <div class="setval">
         {bool ? (
           <button type="button" class={`tog ${s.value === 'true' ? 'on' : ''}`} aria-pressed={s.value === 'true'} data-toggle={s.name}
             onClick={() => go(s.value === 'true' ? 'false' : 'true')}>
