@@ -24,10 +24,11 @@ describe('load levels', () => {
   it('takes the form that fits the room the crumbs leave', () => {
     expect([32, 24, 14, 8, 4, 3].map(tierFor)).toEqual(['host', 'full', 'stack', 'sum', 'dot', 'none']);
   });
-  it('gives the subscription chip its words only while the bars keep their full form', () => {
+  it('gives the subscription chip its words only while the bars keep at least the stack form', () => {
     expect(monFit(40, 13, 3.6, 0.5)).toEqual({ chip: 'full', tier: 'full' });
     expect(monFit(50, 13, 3.6, 0.5)).toEqual({ chip: 'full', tier: 'host' });
-    expect(monFit(30, 13, 3.6, 0.5)).toEqual({ chip: 'pct', tier: 'full' });
+    expect(monFit(28, 13, 3.6, 0.5)).toEqual({ chip: 'full', tier: 'stack' });
+    expect(monFit(25, 13, 3.6, 0.5)).toEqual({ chip: 'pct', tier: 'stack' });
     expect(monFit(10, 13, 3.6, 0.5)).toEqual({ chip: 'pct', tier: 'sum' });
     expect(monFit(4, 13, 3.6, 0.5)).toEqual({ chip: 'pct', tier: 'none' });
     expect(monFit(3, 13, 3.6, 0.5)).toEqual({ chip: 'none', tier: 'none' });

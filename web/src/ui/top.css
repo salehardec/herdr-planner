@@ -1,5 +1,5 @@
-/* left: the menu, the crumbs and the monitoring (bars, subscriptions); the search; right: only what waits and the flight mode */
-.top{position:absolute;top:0;left:0;right:0;height:3.25rem;display:grid;grid-template-columns:minmax(0,1fr) clamp(13rem,24%,26rem) auto;align-items:center;gap:0.75rem;padding:0 0.875rem;pointer-events:none;z-index:30;background:linear-gradient(180deg,color-mix(in srgb,var(--c-bg-darker) 70%,transparent),transparent)}
+/* left: the menu, the crumbs and the monitoring (bars, subscriptions); the search, centred; right: only what waits and the flight mode */
+.top{position:absolute;top:0;left:0;right:0;height:3.25rem;display:grid;grid-template-columns:minmax(0,1fr) clamp(16.25rem,30%,35rem) minmax(var(--right-w,19rem),1fr);align-items:center;gap:0.75rem;padding:0 0.875rem;pointer-events:none;z-index:30;background:linear-gradient(180deg,color-mix(in srgb,var(--c-bg-darker) 70%,transparent),transparent)}
 .top>*{pointer-events:auto}
 .crumbs{min-width:0;display:flex;gap:0.25rem;align-items:center;font-size:0.8125rem;white-space:nowrap;overflow:hidden}
 .crumbs button{min-width:0;flex:0 1 auto;overflow:hidden;text-overflow:ellipsis;background:none;border:0;padding:2px 0.3125rem;border-radius:0.25rem;color:var(--pl-dim)}
@@ -27,7 +27,7 @@
 .limchip.lim-warn{color:var(--c-yellow);border-color:color-mix(in srgb,var(--c-yellow) 45%,var(--pl-line))}
 .limchip.lim-crit{color:var(--pl-danger);border-color:color-mix(in srgb,var(--c-red) 50%,var(--pl-line))}
 .limchip{flex:none;white-space:nowrap}
-.limchip .lim-ag{color:var(--pl-faint);font-size:0.6562rem;max-width:9.375rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.limchip .lim-ag{color:var(--pl-faint);font-size:0.6562rem;max-width:18rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .limchip .lim-pc.nd{display:none}
 /* the chip shrinks to its percentage (the words stay in the tooltip) or steps aside (LoadBar.tsx measures it, data-form) */
 .limchip[data-form="pct"] .lim-ag{display:none}

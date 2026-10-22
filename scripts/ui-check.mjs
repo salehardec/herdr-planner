@@ -1898,7 +1898,7 @@ const topRects = () => evalJs(`(() => {
   const chip = document.querySelector('#hud-limits');
   return { menu: r('#menu-btn'), crumbs: r('#crumbs'), load: r('#load-chip'), lim: r('#hud-limits'), q: r('#q'), wait: r('#wait-btn'), mode: r('#mode'),
     form: chip?.dataset.form, tier: document.querySelector('#loadbar')?.dataset.tier, limText: chip ? chip.innerText.trim() : '', limTip: chip ? chip.title : '',
-    limClipped: chip ? chip.scrollWidth > chip.clientWidth + 1 : false, sw: document.documentElement.scrollWidth, phone: document.documentElement.classList.contains('bp900') };
+    limClipped: chip ? chip.scrollWidth > chip.clientWidth + 1 || [...chip.querySelectorAll('.lim-ag')].some((e) => e.offsetParent && e.scrollWidth > e.clientWidth + 1) : false, sw: document.documentElement.scrollWidth, phone: document.documentElement.classList.contains('bp900') };
 })()`);
 
 section('top bar', async () => {
@@ -1934,6 +1934,8 @@ section('top bar', async () => {
       await beat();
       const at = `${theme} ${w}×${h}${scale === 'auto' ? '' : ` at ${scale} %`}`;
       const m = await topRects();
+      const mid = m.q ? (m.q.l + m.q.r) / 2 : 0;
+      check(`${at}: the search stays in the middle of the top`, m.phone || Math.abs(mid - w / 2) < 12, JSON.stringify(m.q));
       const shown = Object.entries(m).filter(([k, v]) => v && typeof v === 'object' && 'l' in v);
       const names = shown.map(([k]) => k);
       const clear = shown.every(([ka, a], i) => shown.slice(i + 1).every(([kb, b]) => apart(a, b)));
@@ -1949,7 +1951,14 @@ section('top bar', async () => {
       check(`${at}: the subscription chip (${m.form}) is whole; shortened to its percentage it keeps the words in its tooltip`, !m.limClipped
         && (m.form === 'none' ? !m.lim : !!m.lim) && (m.form !== 'pct' || (/^\d+\s*%$/.test(m.limText) && m.limTip.includes(' · ') && /\d/.test(m.limTip))) && (m.form !== 'full' || m.limText.includes(' · ')), JSON.stringify(m));
       if (m.phone || scale === 200) check(`${at}: narrow: the chip is a percentage and the bars the worst one`, m.form === 'pct' || m.form === 'none', JSON.stringify(m));
-      if (w >= 1920 && scale === 'auto') check(`${at}: a wide window keeps the words of the chip`, m.form === 'full' && m.limText.includes(' · '), JSON.stringify(m));
+      if (w >= 1920 && scale === 'auto') {
+        // with the short crumbs of the Galaxy there is room: the chip keeps the agent and the window, whole (not cut by an ellipsis)
+        await evalJs('planner.goHome(); true');
+        await waitFor('plannerDebug().selected === null && world.debug().flight === "idle"', 12000);
+        await beat();
+        const h = await topRects();
+        check(`${at}: with room to spare the chip keeps the words, whole`, h.form === 'full' && h.limText.includes(' · ') && !h.limClipped, JSON.stringify(h));
+      }
       if (scale === 'auto' && w === 1920) await shot(`topbar-${theme}.png`);
     }
   };

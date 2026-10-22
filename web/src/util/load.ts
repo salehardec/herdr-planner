@@ -48,7 +48,7 @@ export const tierFor = (rem: number): 'host' | 'full' | 'stack' | 'sum' | 'dot' 
  *  words (the agent and the window) while the bars still get the full form, else it shrinks to its percentage, and with no room at all
  *  it steps aside. `gap` is the space between the two. */
 export function monFit(room: number, chipFull: number, chipPct: number, gap: number): { chip: 'full' | 'pct' | 'none'; tier: ReturnType<typeof tierFor> } {
-  if (room - chipFull - gap >= 22) return { chip: 'full', tier: tierFor(room - chipFull - gap) };
+  if (room - chipFull - gap >= 12.5) return { chip: 'full', tier: tierFor(room - chipFull - gap) };
   if (room >= chipPct) return { chip: 'pct', tier: tierFor(room - chipPct - gap) };
   return { chip: 'none', tier: 'none' };
 }
