@@ -17,6 +17,10 @@ pub const DEFAULT_OFFLINE_MIN: u64 = 10;
 /// A threshold beyond these is a mistake in the file, not a wish.
 pub const MAX_DISK_FREE_PCT: u64 = 99;
 pub const MAX_OFFLINE_MIN: u64 = 24 * 60;
+/// An alarm absent from complete reads for this long, and seen absent in at least two of them, has passed. A shorter
+/// absence is a container caught «Up» between restarts or a free share wobbling at the threshold, not a change.
+pub const RESOLVE_MS: u64 = 10 * 60 * 1000;
+pub const RESOLVE_READS: u32 = 2;
 
 /// When a yard is worth a word, as the human set it for that yard.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -214,13 +218,25 @@ pub fn alerts_of(st: &RunnerState, now: u64) -> Vec<Alert> {
     out
 }
 
-/// What the database keeps for one yard: the alarms shown last time and the keys the Coordinator has heard about.
+/// An alarm the Coordinator has heard about that a complete read has not shown yet: when it was first missing and
+/// how many complete reads in a row have missed it. It is only forgotten once the absence has lasted long enough.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+struct Missing {
+    key: String,
+    since_ms: u64,
+    reads: u32,
+}
+
+/// What the database keeps for one yard: the alarms shown last time, the keys the Coordinator has heard about, and
+/// the keys that are missing from complete reads but not yet gone for good.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Book {
     #[serde(default)]
     pub alerts: Vec<Alert>,
     #[serde(default)]
     pub sent: Vec<String>,
+    #[serde(default)]
+    missing: Vec<Missing>,
 }
 
 pub fn meta_key(id: &str) -> String {
@@ -245,10 +261,13 @@ fn read_is_complete(st: &RunnerState) -> bool {
 /// Fits fresh alarms into the book: the same state keeps the moment it was first seen, and an alarm whose key was
 /// not told yet is new.
 ///
-/// `certain` says the read behind `fresh` is complete — the yard answered, and an alarm that is missing from it has
-/// really passed. Then the book keeps exactly the keys shown, so a later appearance is news again. Without that (the
-/// yard is silent, or its silence is still shorter than the threshold) the list says nothing about what it does not
-/// show: the keys already told stay in the book, and an alarm that never went away is not told twice.
+/// `certain` says the read behind `fresh` is complete — the yard answered, and an alarm missing from it may have
+/// passed. But one complete read that happens to catch a crash-looping container «Up» or a disk just above its
+/// threshold is not a recovery: a told alarm is only forgotten after [`RESOLVE_MS`] of complete reads (at least
+/// [`RESOLVE_READS`] of them) without it. Until then its key stays in the book, so the same trouble flaring up again
+/// is not told twice. Without a complete read (the yard is silent, or its silence is still shorter than the threshold)
+/// the list says nothing about what it does not show: the keys already told stay in the book and the missing clocks
+/// start over once a complete read comes back.
 pub fn reconcile(
     book: &Book,
     fresh: Vec<Alert>,
@@ -256,11 +275,32 @@ pub fn reconcile(
     certain: bool,
 ) -> (Vec<Alert>, Vec<Alert>, Book) {
     let told: BTreeSet<&str> = book.sent.iter().map(String::as_str).collect();
-    let mut sent: BTreeSet<String> = if certain {
-        BTreeSet::new()
+    let shown: BTreeSet<String> = fresh.iter().map(|a| a.key.clone()).collect();
+    let mut sent: BTreeSet<String>;
+    let mut missing: Vec<Missing> = Vec::new();
+    if certain {
+        sent = shown.clone();
+        for key in &book.sent {
+            if shown.contains(key) {
+                continue;
+            }
+            let Some(old) = book.missing.iter().find(|m| &m.key == key) else {
+                missing.push(Missing { key: key.clone(), since_ms: now, reads: 1 });
+                sent.insert(key.clone());
+                continue;
+            };
+            let reads = old.reads.saturating_add(1);
+            if reads >= RESOLVE_READS && now.saturating_sub(old.since_ms) >= RESOLVE_MS {
+                continue;
+            }
+            missing.push(Missing { key: key.clone(), since_ms: old.since_ms, reads });
+            sent.insert(key.clone());
+        }
     } else {
-        book.sent.iter().cloned().collect()
-    };
+        // An uncertain read teaches nothing about what is absent: keep the keys and start the clocks over.
+        sent = book.sent.iter().cloned().collect();
+        sent.extend(shown.iter().cloned());
+    }
     let mut alerts: Vec<Alert> = Vec::with_capacity(fresh.len());
     let mut new: Vec<Alert> = Vec::new();
     for mut a in fresh {
@@ -277,6 +317,7 @@ pub fn reconcile(
     let next = Book {
         sent: sent.into_iter().collect(),
         alerts: alerts.clone(),
+        missing,
     };
     (alerts, new, next)
 }
@@ -555,14 +596,21 @@ mod tests {
         assert_eq!(alerts2[0].since_ms, 1_000);
         assert!(new2.is_empty());
         assert_eq!(book2.sent, book.sent);
-        // the alarm goes away: it is forgotten, and so is the mark
+        // one read without it is not a recovery: a crash loop caught «Up» or a disk a hair above the threshold
         let (none, new3, book3) = reconcile(&book2, Vec::new(), 100_000, true);
         assert!(none.is_empty() && new3.is_empty());
-        assert!(book3.sent.is_empty() && book3.alerts.is_empty());
+        assert_eq!(book3.sent, book.sent, "one read without it keeps the key");
+        assert_eq!(book3.missing.len(), 1, "and starts its clock");
+        // still not gone just before the grace, however many reads
+        let (_, _, book4) = reconcile(&book3, Vec::new(), 100_000 + RESOLVE_MS - 1, true);
+        assert_eq!(book4.sent, book.sent, "before the grace it stays");
+        // after the grace, and a second complete read, it is forgotten and the mark goes too
+        let (_, _, book5) = reconcile(&book4, Vec::new(), 100_000 + RESOLVE_MS, true);
+        assert!(book5.sent.is_empty() && book5.alerts.is_empty());
         // and comes back: news again
-        let (_, new4, _) = reconcile(&book3, alerts_of(&st, 200_000), 200_000, true);
-        assert_eq!(new4.len(), 1);
-        assert_eq!(new4[0].since_ms, 200_000);
+        let (_, new6, _) = reconcile(&book5, alerts_of(&st, 200_000 + RESOLVE_MS), 200_000 + RESOLVE_MS, true);
+        assert_eq!(new6.len(), 1);
+        assert_eq!(new6[0].since_ms, 200_000 + RESOLVE_MS);
     }
 
     #[test]
@@ -587,11 +635,13 @@ mod tests {
         assert_eq!(shown2.len(), 1);
         assert!(new3.is_empty(), "the same disk must not be told twice");
         assert_eq!(book3.sent, book2.sent);
-        // only a complete read that finds no disk means the trouble has passed
+        // only a sustained absence from complete reads means the trouble has passed
         let (_, _, book4) = reconcile(&book3, Vec::new(), 1_090_000, true);
-        assert!(book4.sent.is_empty());
-        let (_, new5, _) = reconcile(&book4, alerts_of(&st, 1_120_000), 1_120_000, true);
-        assert_eq!(new5.len(), 1, "back again after a recovery: news");
+        assert_eq!(book4.sent, book3.sent, "one read without it is not a recovery yet");
+        let (_, _, book5) = reconcile(&book4, Vec::new(), 1_090_000 + RESOLVE_MS, true);
+        assert!(book5.sent.is_empty());
+        let (_, new6, _) = reconcile(&book5, alerts_of(&st, 1_120_000 + RESOLVE_MS), 1_120_000 + RESOLVE_MS, true);
+        assert_eq!(new6.len(), 1, "back again after a real recovery: news");
     }
 
     #[test]
@@ -605,6 +655,56 @@ mod tests {
         st.ok = true;
         st.host.disk_size = 0;
         assert!(!read_is_complete(&st), "the disk was not measured");
+    }
+
+    #[test]
+    fn a_crash_loop_caught_running_is_not_told_again() {
+        let mut st = state();
+        st.containers = vec![container("b", "pg-crash", Class::Active, "restarting")];
+        st.containers[0].status = "Restarting (1) 20 seconds ago".into();
+        let (_, new, mut book) = reconcile(&Book::default(), alerts_of(&st, 1_000), 1_000, true);
+        assert_eq!(new.len(), 1);
+        // restarting → Up → restarting → Up, one complete read each: the same loop, not a recovery and a new fall
+        for (i, (state, status)) in [
+            ("running", "Up 2 seconds"),
+            ("restarting", "Restarting (1) 20 seconds ago"),
+            ("running", "Up 3 seconds"),
+            ("restarting", "Restarting (2) 1 second ago"),
+        ]
+        .iter()
+        .enumerate()
+        {
+            st.containers[0].state = (*state).into();
+            st.containers[0].status = (*status).into();
+            let now = 30_000 * (i as u64 + 1);
+            let (shown, n, next) = reconcile(&book, alerts_of(&st, now), now, true);
+            book = next;
+            assert!(n.is_empty(), "read {i} must not be news");
+            assert_eq!(shown.len(), usize::from(*state == "restarting"), "read {i} shows the alarm only while restarting");
+        }
+        assert_eq!(book.sent, vec!["vm-r:crash:b".to_string()], "the loop never resolved the alarm");
+    }
+
+    #[test]
+    fn a_disk_wobbling_at_the_threshold_is_told_once() {
+        let mut st = state();
+        st.host.disk_size = 100_000_000_000;
+        st.host.disk_avail = 9_900_000_000; // 9 %
+        let (_, new, mut book) = reconcile(&Book::default(), alerts_of(&st, 1_000), 1_000, true);
+        assert_eq!(new.len(), 1);
+        // 10.1 % → 9.9 % → 10.1 % → 9.9 %: the same trouble, not a recovery and a new one
+        for (i, avail) in [10_100_000_000u64, 9_900_000_000, 10_100_000_000, 9_900_000_000]
+            .iter()
+            .enumerate()
+        {
+            st.host.disk_avail = *avail;
+            let now = 30_000 * (i as u64 + 1);
+            let (shown, n, next) = reconcile(&book, alerts_of(&st, now), now, true);
+            book = next;
+            assert!(n.is_empty(), "read {i} must not be news");
+            assert_eq!(shown.len(), usize::from(*avail < 10_000_000_000), "read {i} shows the alarm only below the threshold");
+        }
+        assert_eq!(book.sent, vec!["vm-r:disk".to_string()]);
     }
 
     #[test]

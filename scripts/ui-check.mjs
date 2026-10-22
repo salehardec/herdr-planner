@@ -4701,9 +4701,13 @@ section('runners alerts', async () => {
   check('«Ждёт тебя» has no row for it either', await waitFor('!!document.querySelector("#drawer-wait")', 4000) && !(await exists('#drawer-wait [data-alert=disk]')), await text('#drawer-wait'));
   await click('#wait-btn');
   check('a recovered state is not announced either', told() === t1, `${told()} vs ${t1}`);
+  // A disk caught just above the threshold and then under it again is the same trouble, not a recovery and a new one:
+  // the told key stays until the absence has lasted the grace (10 min), so nothing is sent again here.
   yardReset({}, { ...gone, disk: { size: 100_000_000_000, avail: 8_000_000_000 } });
   await ask();
-  check('the same trouble after a recovery is news again', await waitLog(() => told() === t1 + 1, 10000), `${told()} vs ${t1 + 1}`);
+  check('back under the threshold within the grace: the alarm shows again', await waitFor('plannerSnap().runners.find((r) => r.id === "vm-r")?.alerts.map((a) => a.kind).join() === "disk"', 8000), JSON.stringify(await kinds()));
+  await quiet();
+  check('and the Coordinator is not told again about the same trouble', told() === t1, `${told()} vs ${t1}`);
   yardReset({}, gone);
   await ask();
   // ── a yard that does not answer at all
