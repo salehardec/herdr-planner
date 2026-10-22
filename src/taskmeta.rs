@@ -28,6 +28,14 @@ pub struct TaskMeta {
     pub root: String,
     /// `exitedAt` in milliseconds; 0 while the agent has not exited.
     pub exited_at_ms: u64,
+    /// `at`: the last change of the record (ms).
+    pub at_ms: u64,
+    /// `archivedAt` in milliseconds; 0 for a task that is not archived.
+    pub archived_at_ms: u64,
+    /// `last.gone`: the board saw the agent's pane gone.
+    pub gone: bool,
+    /// `last.status` is `working`: the agent is busy right now.
+    pub working: bool,
     /// Task refs this task waits for, e.g. `herdr-planner/2`.
     pub after: Vec<String>,
 }
@@ -127,6 +135,10 @@ fn parse_task(v: &Value) -> TaskMeta {
         branch: text("branch"),
         root: text("root"),
         exited_at_ms: millis("exitedAt"),
+        at_ms: millis("at"),
+        archived_at_ms: millis("archivedAt"),
+        gone: v.pointer("/last/gone").and_then(Value::as_bool).unwrap_or(false),
+        working: v.pointer("/last/status").and_then(Value::as_str) == Some("working"),
         after,
     }
 }

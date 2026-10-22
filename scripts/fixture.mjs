@@ -126,6 +126,7 @@ function common(DATA, mods) {
       created: m.created || 0, at: m.at || m.created || 0, settings: m.settings || {}, model: m.model ?? null,
       session: m.session || '', worktree: m.worktree || '', branch: m.branch || '',
       after, afterDone: m.afterDone || [], exitedAt: m.exitedAt ?? null,
+      ...(m.gone ? { last: { status: null, gone: true } } : {}),
     }, null, 2));
   };
   // The key the board suggests: the last word's first letter and the next consonants (`newrepo` → NWR).
@@ -273,7 +274,7 @@ const META = {
   'alpha/9': { ago: 2 * HOUR, desc: 'Run the nightly import of tenant reports; the worker waits for a free slot.' },
   'alpha/10': { ago: 30 * HOUR, desc: 'Follow-up of the nightly import: fix retries once ALP-9 is merged.', afterDone: [] },
   'alpha/11': { ago: 9 * DAY, desc: 'Заметка на потом: проверить, нужен ли HTTP-кеш для экспорта.' },
-  'alpha/13': { ago: 9 * DAY, desc: 'Старое дело: убрать устаревший флаг совместимости из конфига.' },
+  'alpha/13': { ago: 9 * DAY, desc: 'Старое дело: убрать устаревший флаг совместимости из конфига.', noExit: true },
   'alpha/15': { ago: 4 * HOUR, desc: 'Export button now shows progress; the job reports percent through the existing event channel.' },
   'alpha/16': { ago: 12 * MIN, desc: 'Find and remove the old branches work/1–work/9; they are all merged into main, work/10 stays.' },
   'beta/1': { ago: 9 * DAY, desc: 'Initial beta bootstrap: CI config and the first smoke test.' },
@@ -437,7 +438,9 @@ for (const r of rows) {
     session: C0.uuid('session ' + r.id),
     worktree: path.join(dir, 'worktrees', `${repo}-${n}`),
     branch: `work/${n}`,
-    exitedAt: r.exitedAt ?? (r.state === 'done' || r.archivedAt ? Math.min(NOW, created + 40 * MIN) : null),
+    // noExit: the shape of most done tasks on a real board: no exitedAt, the board only saw the pane gone (last.gone).
+    exitedAt: m.noExit ? null : (r.exitedAt ?? (r.state === 'done' || r.archivedAt ? Math.min(NOW, created + 40 * MIN) : null)),
+    gone: !!m.noExit,
     afterDone: m.afterDone || [],
   };
 }
@@ -748,8 +751,27 @@ const DATA = {
       { id: '2'.repeat(64), name: 'bridge', driver: 'bridge' },
     ],
     volumes: [
-      { name: 'work-3_pgdata', driver: 'local' },
-      { name: 'neighbor_data', driver: 'local' },
+      { name: 'work-3_pgdata', driver: 'local', size: '28MB', labels: 'com.docker.compose.project=work-3' },
+      { name: 'neighbor_data', driver: 'local', size: '1.1GB', labels: 'com.docker.compose.project=neighbor' },
+      // Unused volumes the disk card counts: a stray one of somebody else (unticked), the state of a stopped builder
+      // (its buildx rm takes it with it), a builder state nobody owns any more, and the state of the running builder.
+      { name: 'chroma_data', driver: 'local', size: '3GB', labels: 'com.docker.compose.project=chroma', links: 0 },
+      { name: 'buildx_buildkit_old0_state', driver: 'local', size: '3.1GB', labels: '', links: 0 },
+      { name: 'buildx_buildkit_gone0_state', driver: 'local', size: '8GB', labels: '', links: 0 },
+      { name: 'buildx_buildkit_x0_state', driver: 'local', size: '1GB', labels: '', links: 1 },
+    ],
+    // The disk card: `docker system df` totals, the images with their container counts, the buildx builders.
+    images: [
+      { repo: 'postgres', tag: '16', containers: 2, size: '294MB' },
+      { repo: 'nginx', tag: '1.27', containers: 1, size: '190MB' },
+      { repo: 'old/app', tag: '1', containers: 0, size: '1.2GB' },
+      { repo: 'old/tool', tag: '2', containers: 0, size: '800MB' },
+    ],
+    imagesReclaimable: '2.0GB (60%)',
+    cacheReclaimable: '2.4GB',
+    builders: [
+      { name: 'old', driver: 'docker-container', node: 'old0', status: 'inactive' },
+      { name: 'x', driver: 'docker-container', node: 'x0', status: 'running' },
     ],
   },
 };
@@ -1143,7 +1165,12 @@ function sshMain(C, DATA) {
   }
   const stateFile = path.join(C.D, 'state', 'runner.json');
   const st = C.readJson(stateFile, { ids: [], networks: [], volumes: [] });
-  st.ids = st.ids || []; st.networks = st.networks || []; st.volumes = st.volumes || [];
+  st.ids = st.ids || []; st.networks = st.networks || []; st.volumes = st.volumes || []; st.builders = st.builders || [];
+  // What a check adds to the yard on top of DATA.runnerR (containers, networks, volumes), written into this file.
+  const extra = st.extra || {};
+  const allContainers = R.containers.concat(extra.containers || []);
+  const allNetworks = R.networks.concat(extra.networks || []);
+  const allVolumes = R.volumes.concat(extra.volumes || []);
   const saveSt = () => fs.writeFileSync(stateFile, JSON.stringify(st));
   log('ssh.jsonl', { argv: args, target, inner: inner.slice(0, 400), runner: R.label });
   if (inner === 'true') return;
@@ -1152,6 +1179,25 @@ function sshMain(C, DATA) {
     console.log(JSON.stringify({ Type: 'Images', TotalCount: '152', Active: '12', Size: '159.7GB', Reclaimable: '153.1GB (96%)' }));
     console.log(JSON.stringify({ Type: 'Containers', TotalCount: '6', Active: '4', Size: '1.2GB', Reclaimable: '12MB (1%)' }));
     return;
+  }
+  if (inner.startsWith('docker rm -v ')) {
+    const ids = inner.slice('docker rm -v '.length).trim().split(/\s+/).filter(Boolean);
+    ids.forEach((id) => st.ids.push(id)); saveSt(); ids.forEach((id) => console.log(id)); return;
+  }
+  if (inner === 'docker image prune -a -f') {
+    st.imagesPruned = true; saveSt();
+    console.log('Deleted Images:\nuntagged: old/app:1\n\nTotal reclaimed space: 2GB'); return;
+  }
+  if (inner === 'docker builder prune -a -f') {
+    st.cachePruned = true; saveSt();
+    console.log('Total:\t2.4GB'); return;
+  }
+  if (inner.startsWith('docker buildx rm ')) {
+    const name = inner.slice('docker buildx rm '.length).trim();
+    const b = (R.builders || []).find((x) => x.name === name);
+    if (!b) { console.error('ERROR: no builder ' + name + ' found'); process.exit(1); }
+    if (b.status === 'running') { console.error('ERROR: builder ' + name + ' is running (the check never removes a running builder)'); process.exit(1); }
+    st.builders.push(name); st.volumes.push('buildx_buildkit_' + b.node + '_state'); saveSt(); console.log(name + ' removed'); return;
   }
   if (inner.startsWith('docker rm -f -v ')) {
     const ids = inner.slice('docker rm -f -v '.length).trim().split(/\s+/).filter(Boolean);
@@ -1189,18 +1235,42 @@ function sshMain(C, DATA) {
     row('gpu', '0, NVIDIA L4-24Q, 12, 1337, 24576, 45');
     row('gpuproc', '4242,1337\tdocker-' + 'a'.repeat(64));
     out.push('== ps');
-    R.containers.filter((c) => !gone.has(c.id)).forEach((c) => out.push(JSON.stringify({
+    allContainers.filter((c) => !gone.has(c.id)).forEach((c) => out.push(JSON.stringify({
       ID: c.id, Names: c.name, Image: c.image, State: c.state, Status: c.status, CreatedAt: c.created,
       Labels: c.labels, Ports: c.ports, Networks: c.networks, Mounts: c.mounts, Size: c.size,
     })));
     out.push('== stats');
-    R.containers.filter((c) => !gone.has(c.id)).forEach((c) => out.push(JSON.stringify({
+    allContainers.filter((c) => !gone.has(c.id)).forEach((c) => out.push(JSON.stringify({
       ID: c.id.slice(0, 12), CPUPerc: c.cpu, MemUsage: c.mem, PIDs: c.pids, NetIO: '1kB / 2kB', BlockIO: '0B / 0B',
     })));
     out.push('== net');
-    R.networks.filter((n) => !goneNet.has(n.id)).forEach((n) => out.push(JSON.stringify({ ID: n.id, Name: n.name, Driver: n.driver, Labels: '' })));
+    allNetworks.filter((n) => !goneNet.has(n.id) && !goneNet.has(n.name)).forEach((n) => out.push(JSON.stringify({ ID: n.id, Name: n.name, Driver: n.driver, Labels: n.labels || '' })));
     out.push('== vol');
-    R.volumes.filter((v) => !goneVol.has(v.name)).forEach((v) => out.push(JSON.stringify({ Name: v.name, Driver: v.driver, Labels: '' })));
+    allVolumes.filter((v) => !goneVol.has(v.name)).forEach((v) => out.push(JSON.stringify({ Name: v.name, Driver: v.driver, Labels: v.labels || '' })));
+    process.stdout.write(out.join('\n') + '\n');
+    return;
+  }
+  if (inner.includes('herdr-planner-disk 1')) {
+    const gone = new Set(st.ids);
+    const goneVol = new Set(st.volumes);
+    const cs = allContainers.filter((c) => !gone.has(c.id));
+    const vols = allVolumes.filter((v) => !goneVol.has(v.name));
+    const links = (v) => (v.links !== undefined ? v.links : cs.filter((c) => (c.mounts || '').split(',').some((m) => m.split(':')[0] === v.name)).length);
+    const imgs = (R.images || []).filter((i) => !(st.imagesPruned && i.containers === 0));
+    const builders = (R.builders || []).filter((b) => !st.builders.includes(b.name));
+    const out = ['herdr-planner-disk 1', '== df'];
+    out.push(JSON.stringify({ Type: 'Images', TotalCount: String(imgs.length), Active: String(imgs.filter((i) => i.containers > 0).length), Size: '3GB', Reclaimable: st.imagesPruned ? '0B' : R.imagesReclaimable }));
+    out.push(JSON.stringify({ Type: 'Build Cache', TotalCount: st.cachePruned ? '0' : '7', Active: '0', Size: st.cachePruned ? '0B' : '2.4GB', Reclaimable: st.cachePruned ? '0B' : R.cacheReclaimable }));
+    out.push('== dfv');
+    out.push(JSON.stringify({
+      Images: imgs.map((i) => ({ Repository: i.repo, Tag: i.tag, Containers: String(i.containers), Size: i.size, ID: 'sha256:' + i.repo.length })),
+      Containers: cs.map((c) => ({ ID: c.id, Names: c.name, Image: c.image, State: c.state, Status: c.status, CreatedAt: c.created, Labels: c.labels, Mounts: c.mounts, Networks: c.networks, Size: c.size })),
+      Volumes: vols.map((v) => ({ Name: v.name, Driver: v.driver, Links: String(links(v)), Size: v.size || '0B', Labels: v.labels || '' })),
+      BuildCache: [],
+    }));
+    out.push('', '== buildx');
+    out.push('NAME/NODE DRIVER/ENDPOINT STATUS  BUILDKIT PLATFORMS', 'default * docker', '  default default         running v0.23.1  linux/amd64');
+    builders.forEach((b) => { out.push(b.name + ' ' + b.driver, '  ' + b.node + ' unix:///var/run/docker.sock ' + b.status + (b.status === 'running' ? ' v0.12.0 linux/amd64' : '')); });
     process.stdout.write(out.join('\n') + '\n');
     return;
   }

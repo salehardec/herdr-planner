@@ -200,8 +200,10 @@ pub struct App {
     /// The last read of every shipyard (from `runners.json` and one probe each).
     pub runners: Mutex<Vec<crate::runners::RunnerState>>,
     pub runner_plans: Mutex<HashMap<String, crate::runners::CleanPlan>>,
-    /// `docker system df` answers, cached by runner id.
-    pub runner_df: Mutex<HashMap<String, (u64, serde_json::Value)>>,
+    /// The counted «уборка диска» cards, by token.
+    pub runner_disk_plans: Mutex<HashMap<String, crate::runners_disk::Plan>>,
+    /// The last auto-clean plan tried on each shipyard (signature, when), so a plan that fails is not repeated at once.
+    pub runner_auto_try: Mutex<HashMap<String, (String, u64)>>,
     /// Whether the docker block is in this machine's instructions (as last synced).
     pub runner_block: Mutex<crate::runners::BlockState>,
     /// How loaded this machine is (CPU, memory, video cards); kept fresh while a page is open.
@@ -339,7 +341,8 @@ impl App {
             lag: Mutex::new(BTreeMap::new()),
             runners: Mutex::new(runners),
             runner_plans: Mutex::new(HashMap::new()),
-            runner_df: Mutex::new(HashMap::new()),
+            runner_disk_plans: Mutex::new(HashMap::new()),
+            runner_auto_try: Mutex::new(HashMap::new()),
             runner_block: Mutex::new(runner_block),
             load: RwLock::new(crate::load::Load::default()),
             load_poke: Notify::new(),
@@ -437,6 +440,24 @@ pub async fn run_board(cfg: &AppConfig, args: &[&str], wait: Duration) -> Result
     Ok(stdout)
 }
 
+/// The moment a done or archived task stopped being worked on, from its own record; 0 when it may still be.
+fn finished_of(t: &Task, m: &taskmeta::TaskMeta) -> u64 {
+    if m.exited_at_ms > 0 {
+        return m.exited_at_ms;
+    }
+    // A busy agent is not finished, whatever the label says.
+    if m.working || !(t.archived || t.status == Status::Done) {
+        return 0;
+    }
+    if t.archived && m.archived_at_ms > 0 {
+        return m.archived_at_ms;
+    }
+    if m.gone {
+        return m.at_ms;
+    }
+    0
+}
+
 /// Merges the task's own record (`task.json`) and its repo's key into the row of `list --json`.
 fn apply_meta(t: &mut Task, meta: Option<&taskmeta::TaskMeta>, key: &str) {
     t.key = key.to_string();
@@ -448,6 +469,7 @@ fn apply_meta(t: &mut Task, meta: Option<&taskmeta::TaskMeta>, key: &str) {
         t.session = m.session.clone();
         t.worktree = m.worktree.clone();
         t.exited_at = m.exited_at_ms;
+        t.finished_ms = finished_of(t, m);
         if t.app.is_empty() {
             t.app = m.app.clone();
         }
@@ -625,8 +647,13 @@ pub async fn rebuild_runners(app: &Shared) {
     let repos = taskmeta::repos(&app.cfg.data_dir);
     let index = crate::runners::TaskIndex::build(&tasks, &archived, &repos);
     let mut states = app.runners.lock().await.clone();
+    let file = crate::runners::load(&app.cfg.runners_file()).unwrap_or_default();
     for st in &mut states {
         crate::runners::classify(&mut st.containers, &st.protected, &index);
+        if let Some(r) = file.get(&st.id) {
+            st.auto = r.auto.clone();
+        }
+        st.auto_stats = crate::runners_auto::stats_of(app, &st.id);
     }
     note_forgotten(app, &states).await;
     let block = app.runner_block.lock().await.clone();
@@ -1074,6 +1101,27 @@ pub async fn details(app: &Shared, id: &str) -> Result<Details, String> {
 mod tests {
     use super::*;
     use crate::board::parse_list;
+
+    #[test]
+    fn a_task_is_finished_when_its_agent_left_its_pane_went_or_it_was_archived() {
+        let task = |status: Status, archived: bool| Task { status, archived, ..Task::default() };
+        let meta = |f: &dyn Fn(&mut taskmeta::TaskMeta)| {
+            let mut m = taskmeta::TaskMeta { at_ms: 500, ..taskmeta::TaskMeta::default() };
+            f(&mut m);
+            m
+        };
+        // exitedAt wins.
+        assert_eq!(finished_of(&task(Status::Done, false), &meta(&|m| m.exited_at_ms = 100)), 100);
+        // The usual shape of a real board: done, no exitedAt, the pane seen gone: the record's last change.
+        assert_eq!(finished_of(&task(Status::Done, false), &meta(&|m| m.gone = true)), 500);
+        // Archived with no exitedAt: the moment of archiving.
+        assert_eq!(finished_of(&task(Status::Done, true), &meta(&|m| m.archived_at_ms = 300)), 300);
+        // Done, nothing says the agent left: not finished. A busy agent never is.
+        assert_eq!(finished_of(&task(Status::Done, false), &meta(&|_| {})), 0);
+        assert_eq!(finished_of(&task(Status::Done, true), &meta(&|m| { m.archived_at_ms = 300; m.working = true })), 0);
+        // A task still on the board is not finished because its pane went.
+        assert_eq!(finished_of(&task(Status::Working, false), &meta(&|m| m.gone = true)), 0);
+    }
 
     fn tasks() -> Vec<Task> {
         parse_list(

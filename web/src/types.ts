@@ -272,6 +272,10 @@ export interface RunnerBlock {
   why: string;
 }
 
+/** The auto-clean switch of a shipyard and what it has done. */
+export interface RunnerAuto { enabled: boolean; hours: number }
+export interface RunnerAutoStats { containers: number; networks: number; volumes: number; runs: number; last_ms: number; last_line: string }
+
 export interface Runner {
   id: string;
   target: string;
@@ -286,6 +290,8 @@ export interface Runner {
   containers: RunnerContainer[];
   networks: { id: string; name: string; driver: string; labels: Record<string, string> }[];
   volumes: { name: string; driver: string; labels: Record<string, string> }[];
+  auto: RunnerAuto;
+  auto_stats: RunnerAutoStats;
 }
 
 export interface Snapshot {

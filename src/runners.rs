@@ -10,16 +10,16 @@
 use crate::app::Shared;
 use crate::board::Task;
 use crate::config::{now_ms, AppConfig};
+use crate::runners_auto::{AutoClean, AutoStats};
 use crate::ssh::{self, CheckHint, MachineRef, Why};
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::Path;
 use std::time::{Duration, Instant};
 
 pub const FILE_VERSION: u32 = 1;
 pub const PROBE_WAIT: Duration = Duration::from_secs(25);
-pub const DF_WAIT: Duration = Duration::from_secs(120);
 /// How long a «было → стало» plan lives on the server.
 pub const PLAN_TTL_MS: u64 = 10 * 60 * 1000;
 
@@ -63,6 +63,9 @@ pub struct Runner {
     pub added_at_ms: u64,
     #[serde(default)]
     pub capacity: Option<Capacity>,
+    /// Clearing the containers, networks and volumes of finished tasks by itself.
+    #[serde(default)]
+    pub auto: AutoClean,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -293,6 +296,9 @@ pub struct TaskRef {
     pub tag: String,
     pub status: String,
     pub title: String,
+    /// When the task's agent left (ms); 0 while it has not.
+    #[serde(default)]
+    pub finished_ms: u64,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -364,11 +370,17 @@ pub struct RunnerState {
     pub containers: Vec<Container>,
     pub networks: Vec<Net>,
     pub volumes: Vec<Vol>,
+    /// The auto-clean switch of the list file and what it has done (filled when the snapshot is built).
+    #[serde(default)]
+    pub auto: AutoClean,
+    #[serde(default)]
+    pub auto_stats: AutoStats,
 }
 
 impl RunnerState {
     pub fn from_runner(r: &Runner) -> Self {
         Self {
+            auto: r.auto.clone(),
             id: r.id.clone(),
             target: r.target.clone(),
             ports_host: if r.ports_host.is_empty() {
@@ -559,7 +571,7 @@ fn s_of(v: &Value, key: &str) -> String {
     }
 }
 
-fn labels_of(s: &str) -> BTreeMap<String, String> {
+pub fn labels_of(s: &str) -> BTreeMap<String, String> {
     let mut map = BTreeMap::new();
     for part in s.split(',') {
         if let Some((k, v)) = part.split_once('=') {
@@ -571,7 +583,7 @@ fn labels_of(s: &str) -> BTreeMap<String, String> {
     map
 }
 
-fn container_of(v: &Value) -> Container {
+pub fn container_of(v: &Value) -> Container {
     let created = s_of(v, "CreatedAt");
     let size = s_of(v, "Size");
     Container {
@@ -676,6 +688,7 @@ struct Cand {
     status: String,
     archived: bool,
     exited: bool,
+    exited_ms: u64,
     title: String,
 }
 
@@ -726,7 +739,8 @@ impl TaskIndex {
             tag: tag.clone(),
             status: t.status.key().to_string(),
             archived: t.archived,
-            exited: t.exited_at > 0,
+            exited: t.finished_ms > 0,
+            exited_ms: t.finished_ms,
             title: t.title.clone(),
         };
         self.tags.entry(tag).or_default().push(cand.clone());
@@ -739,6 +753,20 @@ impl TaskIndex {
 
     fn known_key(&self, key: &str) -> bool {
         self.keys.contains(&key.to_uppercase())
+    }
+
+    /// The `herdr.task` label of a network or a volume: when its one task is done or archived and its agent has left,
+    /// the moment it left (ms). `None` for a label that names no such task.
+    pub fn finished_label(&self, label: &str) -> Option<u64> {
+        let tag = tag_from_label(label, self)?;
+        let cands = self.tags.get(&tag)?;
+        let mut uniq: BTreeMap<&str, &Cand> = BTreeMap::new();
+        for cand in cands {
+            uniq.insert(cand.id.as_str(), cand);
+        }
+        let list: Vec<&Cand> = uniq.into_values().collect();
+        let cand = (list.len() == 1).then(|| list[0])?;
+        ((cand.archived || cand.status == "done") && cand.exited).then_some(cand.exited_ms)
     }
 }
 
@@ -817,15 +845,16 @@ pub fn mask_match(mask: &str, name: &str) -> bool {
     mi == m.len()
 }
 
-fn is_protected(c: &Container, masks: &[String]) -> bool {
-    let project = c
-        .labels
-        .get("com.docker.compose.project")
-        .cloned()
-        .unwrap_or_default();
+/// Whether a network, volume or container name, or its compose project, is under one of the runner's masks.
+pub fn name_protected(name: &str, labels: &BTreeMap<String, String>, masks: &[String]) -> bool {
+    let project = labels.get("com.docker.compose.project").map(String::as_str).unwrap_or("");
     masks
         .iter()
-        .any(|m| mask_match(m, &c.name) || (!project.is_empty() && mask_match(m, &project)))
+        .any(|m| mask_match(m, name) || (!project.is_empty() && mask_match(m, project)))
+}
+
+pub fn is_protected(c: &Container, masks: &[String]) -> bool {
+    name_protected(&c.name, &c.labels, masks)
 }
 
 /// Fills `task` and `class` of every container. `herdr.task` is the rule; a tag in the name (its key known to
@@ -886,6 +915,7 @@ fn classify_one(
             tag: cand.tag.clone(),
             status: cand.status.clone(),
             title: cand.title.clone(),
+            finished_ms: cand.exited_ms,
         }),
     )
 }
@@ -1101,7 +1131,7 @@ fn network_matches(name: &str, tags: &BTreeSet<String>, projects: &BTreeSet<Stri
     tags.iter().any(|t| tag_in_segments(name, t)) || project_owns(name, projects)
 }
 
-fn volume_matches(name: &str, tags: &BTreeSet<String>, projects: &BTreeSet<String>) -> bool {
+pub fn volume_matches(name: &str, tags: &BTreeSet<String>, projects: &BTreeSet<String>) -> bool {
     tags.iter().any(|t| tag_in_segments(name, t)) || project_owns(name, projects)
 }
 
@@ -1428,29 +1458,6 @@ pub async fn sync_blocks(app: &Shared) {
     crate::app::publish(app).await;
 }
 
-/* ───────── docker system df ───────── */
-
-pub async fn disk_use(cfg: &AppConfig, r: &Runner) -> Result<Value, String> {
-    let m = machine_of(r);
-    let end = ssh::ssh_ended(
-        cfg,
-        &m,
-        "docker system df --format '{{json .}}'",
-        DF_WAIT,
-    )
-    .await?;
-    if end.timed_out || !end.error.is_empty() || end.code != Some(0) {
-        return Err(why(&end, &m).line);
-    }
-    let mut rows = Vec::new();
-    for line in end.stdout.lines().filter(|l| l.trim().starts_with('{')) {
-        if let Ok(v) = serde_json::from_str::<Value>(line) {
-            rows.push(v);
-        }
-    }
-    Ok(json!({ "ok": true, "rows": rows }))
-}
-
 /* ───────── tests ───────── */
 
 #[cfg(test)]
@@ -1467,7 +1474,7 @@ mod tests {
             key: tag_key(tag).unwrap_or_default(),
             status,
             archived,
-            exited_at: if archived || matches!(status, crate::board::Status::Done) { 1 } else { 0 },
+            finished_ms: if archived || matches!(status, crate::board::Status::Done) { 1 } else { 0 },
             title: tag.into(),
             ..Task::default()
         }
@@ -1574,7 +1581,7 @@ mod tests {
     #[test]
     fn a_done_task_whose_agent_still_runs_is_not_forgotten_yet() {
         let mut done = task("alpha/1", "ALP-1", Status::Done, false);
-        done.exited_at = 0;
+        done.finished_ms = 0;
         let idx = TaskIndex::build(&[], &[done], &[repo("alpha", "ALP")]);
         let mut list = vec![cont("web-ALP-1", &[])];
         classify(&mut list, &[], &idx);
@@ -1724,6 +1731,7 @@ mod tests {
                 note: String::new(),
                 added_at_ms: 1,
                 capacity: None,
+                auto: AutoClean::default(),
             }],
             assign: BTreeMap::new(),
             version: FILE_VERSION,
@@ -1754,6 +1762,7 @@ mod tests {
                 note: String::new(),
                 added_at_ms: 0,
                 capacity: None,
+                auto: AutoClean::default(),
             }],
             ..RunnersFile::default()
         };
@@ -1780,6 +1789,7 @@ mod tests {
                 note: String::new(),
                 added_at_ms: 0,
                 capacity: None,
+                auto: AutoClean::default(),
             }],
             ..RunnersFile::default()
         };
