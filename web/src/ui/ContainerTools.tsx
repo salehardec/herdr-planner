@@ -188,7 +188,10 @@ export function ContainerAct(): JSX.Element | null {
   const key = ref ? `${ref.runner}|${ref.id}|${ref.act}|${ref.scope}` : '';
   const [plan, setPlan] = useState<{ key: string; p: Preview | null; err: string } | null>(null);
   const [busy, setBusy] = useState(false);
+  const [actErr, setActErr] = useState('');
+  const [again, setAgain] = useState(0);
 
+  useEffect(() => { setActErr(''); }, [key]);
   useEffect(() => {
     if (!ref) return;
     let alive = true;
@@ -197,7 +200,7 @@ export function ContainerAct(): JSX.Element | null {
       .then((p) => { if (alive) setPlan({ key, p, err: '' }); })
       .catch((e: ApiError) => { if (alive) setPlan({ key, p: null, err: e.message }); });
     return () => { alive = false; };
-  }, [key]);
+  }, [key, again]);
 
   if (!ref) return null;
   const close = (): void => { addDialogs.ctlAct.value = null; };
@@ -212,9 +215,13 @@ export function ContainerAct(): JSX.Element | null {
       try {
         await post('/api/runner/container/act', { runner: ref.runner, token: p.token, confirm: true });
         toast(t(`ctl.done.${ref.act}`, { name: p.name }), { icon: 'done' });
-        close();
+        // The answer may come late: close only the card it was for, not one opened since.
+        const now = addDialogs.ctlAct.value;
+        if (now && `${now.runner}|${now.id}|${now.act}|${now.scope}` === key) close();
       } catch (e) {
-        setPlan({ key, p, err: (e as ApiError).message });
+        // The press spent its token: the card is made again from the yard as it is now, with the reason above it.
+        setActErr((e as ApiError).message);
+        setAgain((n) => n + 1);
       } finally {
         setBusy(false);
       }
@@ -232,7 +239,7 @@ export function ContainerAct(): JSX.Element | null {
         </header>
         <div class="ctl-act-body">
           {!shown && <div class="hint">{t('ctl.loading')}</div>}
-          {shown?.err && <p class="hint bad" id="ctl-act-error">{shown.err}</p>}
+          {(actErr || shown?.err) && <p class="hint bad" id="ctl-act-error">{actErr || shown?.err}</p>}
           {p && (
             <>
               <div class="kv ctl-kv">

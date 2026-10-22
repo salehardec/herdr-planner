@@ -1331,7 +1331,9 @@ pub struct CtlActBody {
 }
 
 /// `POST /api/runner/container/act`: runs the previewed action on its container, by full id, after the check is
-/// made again against a fresh read of the yard; then reads the yard again.
+/// made again on the last read of the yard (the classes taken anew from the board; the yard itself is read again
+/// only after the command, so a state seen late is harmless because `rm` has no `-f`); then reads the yard again.
+/// The token is spent only when the command is about to run: a refused press leaves the card usable.
 pub async fn container_act(State(app): State<Shared>, headers: HeaderMap, Json(body): Json<CtlActBody>) -> Response {
     if !same_origin(&headers) {
         return fail(403, "cross-origin request refused");
@@ -1340,8 +1342,8 @@ pub async fn container_act(State(app): State<Shared>, headers: HeaderMap, Json(b
         return fail(400, "действие требует подтверждения");
     }
     let plan = {
-        let mut plans = app.runner_ctl_plans.lock().await;
-        let Some(p) = plans.remove(&body.token) else {
+        let plans = app.runner_ctl_plans.lock().await;
+        let Some(p) = plans.get(&body.token).cloned() else {
             return fail(409, "план не найден или истёк: откройте карточку заново");
         };
         if p.at.elapsed().as_millis() >= runners::PLAN_TTL_MS as u128 {
@@ -1365,6 +1367,10 @@ pub async fn container_act(State(app): State<Shared>, headers: HeaderMap, Json(b
     let c = state.containers.iter().find(|x| x.id == c.id).cloned().unwrap_or(c);
     if let Err(why) = runners_ctl::gate(&c, plan.act, &plan.scope) {
         return fail(409, why);
+    }
+    // One press, one run: a second press with the same token (a double click) finds it gone.
+    if app.runner_ctl_plans.lock().await.remove(&body.token).is_none() {
+        return fail(409, "действие уже выполняется: откройте карточку заново");
     }
     let cmd = plan.act.command(&c.id);
     let ended = ssh::ssh_ended(&app.cfg, &machine_of(&r), &cmd, ACT_WAIT).await;

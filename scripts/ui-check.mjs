@@ -4025,7 +4025,8 @@ section('runners ctl', async () => {
   const locked = (name, kind) => evalJs(`${btn(name, kind)}?.disabled`);
   const stateOf = (name) => `plannerSnap().runners[0].containers.find((c) => c.name === ${JSON.stringify(name)})?.state`;
   const logCalls = () => calls('ssh.jsonl').filter((c) => c.runner && /^docker logs /.test(c.inner)).length;
-  yardReset();
+  const spare = (c, name) => ({ id: id(c), name, image: 'alpine:3', state: 'exited', status: 'Exited (0) 3 days ago', created: new Date(Date.now() - 3 * 24 * 3600 * 1000).toISOString().replace('T', ' ').slice(0, 19) + ' +0000 UTC', labels: 'herdr.task=ALP-15', ports: '', networks: 'bridge', mounts: '', size: '1MB', cpu: '0.00%', mem: '0B / 0B', pids: '0' });
+  yardReset({ containers: [spare('7', 'job-a-ALP-15'), spare('8', 'job-b-ALP-15')] });
   await post('/api/runner/ask', { id: 'vm-r' });
   check('the shipyard focus opens', await openYard());
   // Who gets which button.
@@ -4114,6 +4115,40 @@ section('runners ctl', async () => {
   check('the container leaves the yard; the others stay', await waitFor('plannerSnap().runners[0].containers.every((c) => c.name !== "web-ALP-15") && plannerSnap().runners[0].containers.some((c) => c.name === "pg-ALP-3") && plannerSnap().runners[0].containers.some((c) => c.name === "neighbor-db-1")', 30000));
   check('the journal keeps lines about the three', await waitFor('["остановлен", "перезапущен", "удалён"].every((w) => plannerSnap().journal.some((j) => j.s === "runner" && j.text.includes(w) && j.text.includes("web-ALP-15")))', 8000), JSON.stringify((await stateApi())?.journal?.slice(0, 3)));
   check('only these three commands went to the yard (no foreign id)', yardCommands(start).filter((c) => !c.startsWith('docker logs')).length === 3, JSON.stringify(yardCommands(start)));
+
+  // A late answer closes only its own card: the answer to job-a's restart comes 3 s late, and job-b's card, opened
+  // meanwhile, must stay.
+  await evalJs('(() => { const f = window.fetch; window.__realFetch = f; window.fetch = (u, o) => (String(u).includes("/container/act") ? f(u, o).then((r) => new Promise((res) => setTimeout(() => res(r), 3000))) : f(u, o)); return true; })()');
+  await click(ctl(id('7'), 'restart'));
+  await waitFor('!!document.querySelector("#ctl-go")', 12000);
+  await twoPresses('#ctl-go');
+  check('the restart of job-a is sent', await waitLog(() => yardCommands(start).includes('docker restart ' + id('7')), 30000));
+  await click(ctl(id('8'), 'restart'));
+  check('job-b’s card opens while job-a’s answer is on its way', await waitFor('(document.querySelector("#ctl-act")?.innerText || "").includes("job-b-ALP-15")', 12000), await text('#ctl-act'));
+  check('job-a runs by then (the yard published before the answer)', await waitFor(`${stateOf('job-a-ALP-15')} === "running"`, 30000));
+  await sleep(3500); // a negative: longer than the delay of the answer
+  check('the late answer does not close it', await evalJs('(document.querySelector("#ctl-act")?.innerText || "").includes("job-b-ALP-15")'), await text('#ctl-act'));
+  await evalJs('window.fetch = window.__realFetch; true');
+  await click('#ctl-cancel');
+  await waitFor('!document.querySelector("#ctl-act")', 5000);
+
+  // A press the server refuses does not spend the card: the reason is shown and the card is made anew (no dead button).
+  await click(ctl(id('8'), 'delete'));
+  await waitFor('!!document.querySelector("#ctl-go")', 12000);
+  const [, back] = await prev(id('8'), 'restart');
+  await post('/api/runner/container/act', { runner: 'vm-r', token: back.token, confirm: true });
+  await waitFor(`${stateOf('job-b-ALP-15')} === "running"`, 30000);
+  await twoPresses('#ctl-go');
+  check('the refused press says why, and the card is not left with a button that cannot work', await waitFor('(document.querySelector("#ctl-act-error")?.innerText || "").includes("сначала остановите") && !document.querySelector("#ctl-go")', 15000), await text('#ctl-act'));
+  await click('#ctl-cancel');
+  await waitFor('!document.querySelector("#ctl-act")', 5000);
+  const [, t1] = await prev(id('8'), 'stop');
+  const [, t2] = await prev(id('8'), 'stop');
+  await post('/api/runner/container/act', { runner: 'vm-r', token: t2.token, confirm: true });
+  await waitFor(`${stateOf('job-b-ALP-15')} === "exited"`, 30000);
+  const act1 = await post('/api/runner/container/act', { runner: 'vm-r', token: t1.token, confirm: true });
+  const act2 = await post('/api/runner/container/act', { runner: 'vm-r', token: t1.token, confirm: true });
+  check('a refused token is not spent: the same reason twice, not «план не найден»', act1[0] === 409 && act2[0] === 409 && act1[1].error === act2[1].error && act1[1].error.includes('уже остановлен'), JSON.stringify([act1, act2]));
 
   // The task's own Focus: its container answers there.
   await go('alpha/3');
