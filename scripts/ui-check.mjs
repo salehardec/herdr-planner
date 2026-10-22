@@ -1545,6 +1545,159 @@ section('archive', async () => {
   await post('/api/action', { action: 'archive', id: 'gamma/2' });
 });
 
+// The load of this machine in the top bar. The server reads the real machine unless load/load.json stands in for it
+// (HERDR_PLANNER_LOAD_FILE) and asks `nvidia-smi`, which on the fixture's PATH is a stand-in that prints load/nvidia.csv.
+const loadFile = () => join(fixture, 'load', 'load.json');
+const nvidiaFile = () => join(fixture, 'load', 'nvidia.csv');
+const setLoad = (o) => writeFileSync(loadFile(), JSON.stringify(o));
+const loadGone = () => { for (const f of [loadFile(), nvidiaFile()]) { try { unlinkSync(f); } catch { /* not there */ } } };
+const GB = 1073741824;
+const reading = (cpu, mem, gpus = [], extra = {}) => ({ ok: true, cpu: { percent: cpu, cores: 24 }, mem: { used: Math.round(32 * GB * mem / 100), total: 32 * GB, percent: mem }, gpus, ...extra });
+const card = (name, util, usedGb, totalGb) => ({ name, util, mem_used: usedGb * GB, mem_total: totalGb * GB });
+const meter = (k) => evalJs(`(() => { const m = document.querySelector('#loadbar .ld-m[data-k="${k}"]'); return m ? { level: m.dataset.level, v: m.querySelector('.ld-v').textContent, w: m.querySelector('.ld-bar i').getAttribute('style') } : null; })()`);
+const hoverLoad = (on) => evalJs(`document.querySelector('#load-chip').dispatchEvent(new MouseEvent('${on ? 'mouseenter' : 'mouseleave'}')); true`);
+
+section('load', async () => {
+  await resetUi();
+  loadGone();
+  // the real machine: this machine's three... two bars (no card on the fixture), numbers in range, the exact values in the tooltip
+  check('the top bar has the load of this machine between the crumbs and the search', await waitFor('!!document.querySelector("#loadbar #load-chip")', 8000)
+    && await evalJs(`(() => { const c = document.querySelector('#crumbs').getBoundingClientRect(); const l = document.querySelector('#load-chip').getBoundingClientRect(); const q = document.querySelector('#q').getBoundingClientRect(); return l.left >= c.right - 1 && l.right <= q.left + 1; })()`));
+  check('the real machine is read: a CPU and a MEM bar with shares from 0 to 100', await waitFor('document.querySelector("#loadbar")?.dataset.state === "on"', 12000)
+    && await evalJs(`['cpu','mem'].every((k) => { const v = parseInt(document.querySelector('#loadbar .ld-m[data-k="'+k+'"] .ld-v')?.textContent, 10); return v >= 0 && v <= 100; })`), JSON.stringify([await meter('cpu'), await meter('mem')]));
+  const api0 = await api('/api/load');
+  check('/api/load says what the machine has: cores, memory, a reading time', api0[0] === 200 && api0[1].ok && api0[1].cpu.cores > 0 && api0[1].mem.total > 0 && Math.abs(Date.now() - api0[1].at) < 60000, JSON.stringify(api0[1]));
+  check('a machine without a video card has no GPU bar', !(await meter('gpu')));
+  await hoverLoad(true);
+  const tip0 = (await text('#load-pop')).replace(/\s+/g, ' ');
+  check('the tooltip names the machine and gives cores, gigabytes and the time of the reading', await waitFor('getComputedStyle(document.querySelector("#load-pop")).display !== "none"', 3000)
+    && tip0.includes(HOST) && tip0.includes('эта машина') && new RegExp(`${api0[1].cpu.cores} (ядро|ядра|ядер)`).test(tip0) && /занято [\d,]+ из [\d,]+ ГБ/.test(tip0) && /обновлено \d\d:\d\d:\d\d/.test(tip0) && tip0.includes('Видеокарт нет'), tip0);
+  await hoverLoad(false);
+  check('the tooltip goes away with the pointer', await waitFor('getComputedStyle(document.querySelector("#load-pop")).display === "none"', 3000));
+
+  // the colour follows the thresholds: normal below 70 %, high from 70, critical from 90
+  setLoad(reading(69.4, 70.2, [card('Test Card', 89.6, 2, 8)]));
+  check('below 70 % is normal, 70 % is high, 90 % is critical (and the GPU bar appears with a card)', await waitFor('document.querySelector("#loadbar .ld-m[data-k=gpu]")?.dataset.level === "crit"', 8000)
+    && (await meter('cpu')).level === 'ok' && (await meter('mem')).level === 'high', JSON.stringify([await meter('cpu'), await meter('mem'), await meter('gpu')]));
+  setLoad(reading(89.4, 100, [card('Test Card', 0, 0, 8)]));
+  check('89 % is still high, 100 % is critical, an idle card is normal', await waitFor('document.querySelector("#loadbar .ld-m[data-k=mem]")?.dataset.level === "crit"', 8000)
+    && (await meter('cpu')).level === 'high' && (await meter('gpu')).level === 'ok', JSON.stringify([await meter('cpu'), await meter('mem'), await meter('gpu')]));
+  setLoad(reading(23.4, 61.6, [card('Test Card', 8, 2, 8)]));
+  check('the bars show the numbers: width and the written percentage', await waitFor('document.querySelector("#loadbar .ld-m[data-k=cpu] .ld-v")?.textContent === "23%"', 8000)
+    && (await meter('mem')).v === '62%' && /--w:\s*62%/.test((await meter('mem')).w) && (await meter('gpu')).v === '8%', JSON.stringify(await meter('mem')));
+  // the semantic colours are the theme's green, yellow and red, not its accent
+  setLoad(reading(50, 80, [card('Test Card', 95, 2, 8)]));
+  await waitFor('document.querySelector("#loadbar .ld-m[data-k=gpu]")?.dataset.level === "crit"', 8000);
+  const cols = await evalJs(`(() => { const css = getComputedStyle(document.documentElement); const px = (v) => { const d = document.createElement('i'); d.style.color = v; document.body.appendChild(d); const c = getComputedStyle(d).color; d.remove(); return c; };
+    const fill = (k) => getComputedStyle(document.querySelector('#loadbar .ld-m[data-k="'+k+'"] .ld-bar i')).backgroundColor;
+    return { ok: fill('cpu'), high: fill('mem'), crit: fill('gpu'), red: px(css.getPropertyValue('--c-red')), yellow: px(css.getPropertyValue('--c-yellow')), accent: px(css.getPropertyValue('--c-accent')) }; })()`);
+  check('high is yellow, critical is red, normal is neither, none of them is the accent', cols.crit === cols.red && cols.high === cols.yellow && cols.ok !== cols.red && cols.ok !== cols.yellow && ![cols.ok, cols.high, cols.crit].includes(cols.accent), JSON.stringify(cols));
+  check('the level is also in words (the label of the bar and the tooltip), not in colour alone', (await evalJs('document.querySelector("#load-chip").getAttribute("aria-label")')).includes('критическая') && (await evalJs('document.querySelector("#loadbar .ld-m[data-k=mem]").dataset.level')) === 'high');
+  // the tooltip with two cards: each card's share and video memory, the mean on the bar
+  setLoad(reading(50, 80, [card('Card One', 40, 2, 24), card('Card Two', 10, 1.5, 12)]));
+  await waitFor('document.querySelector("#loadbar .ld-m[data-k=gpu] .ld-v")?.textContent === "25%"', 8000);
+  await hoverLoad(true);
+  const tip1 = (await text('#load-pop')).replace(/\s+/g, ' ');
+  check('two cards: the bar is their mean, the tooltip lists each with its video memory', tip1.includes('Card One') && tip1.includes('Card Two') && /видеопамять 2,0 из 24,0 ГБ/.test(tip1) && /видеопамять 1,5 из 12,0 ГБ/.test(tip1) && /занято 25,6 из 32,0 ГБ/.test(tip1) && tip1.includes('средняя загрузка карт: 25 %'), tip1);
+  await shot('load-tooltip.png');
+  await hoverLoad(false);
+
+  // the driver: nvidia-smi (the stand-in) is what the server asks when there is no stand-in for the whole machine
+  loadGone();
+  check('without the file the real machine is read again', await waitFor('document.querySelector("#loadbar")?.dataset.state === "on" && !document.querySelector("#loadbar .ld-m[data-k=gpu]")', 12000));
+  writeFileSync(nvidiaFile(), 'NVIDIA GeForce RTX 4090, 37, 2048, 24564\nNVIDIA A100, SXM4 80GB, 5, 1024, 81920\n');
+  check('nvidia-smi is read: a GPU bar with the mean of its cards', await waitFor('document.querySelector("#loadbar .ld-m[data-k=gpu] .ld-v")?.textContent === "21%"', 12000), JSON.stringify(await meter('gpu')));
+  const gpuApi = await api('/api/load');
+  check('/api/load lists the cards with their video memory in bytes', gpuApi[1].gpus.length === 2 && gpuApi[1].gpus[1].name === 'NVIDIA A100, SXM4 80GB' && gpuApi[1].gpus[0].mem_total === 24564 * 1048576, JSON.stringify(gpuApi[1].gpus));
+  loadGone();
+  check('the card goes away when the driver does', await waitFor('!document.querySelector("#loadbar .ld-m[data-k=gpu]")', 12000));
+
+  // a machine that cannot be read, and a reading that stopped coming
+  setLoad({ ok: false, error: '/proc/stat: broken' });
+  check('an unreadable machine: grey bars with dashes and «нет связи с …»', await waitFor('document.querySelector("#loadbar")?.dataset.state === "off"', 8000)
+    && (await meter('cpu')).level === 'off' && (await meter('cpu')).v === '—' && (await evalJs('document.querySelector("#load-chip").getAttribute("aria-label")')) === `нет связи с ${HOST}`);
+  await hoverLoad(true);
+  const tipOff = (await text('#load-pop')).replace(/\s+/g, ' ');
+  check('and the tooltip says so, with the reason', tipOff.includes(`нет связи с ${HOST}`) && tipOff.includes('/proc/stat: broken'), tipOff);
+  await hoverLoad(false);
+  setLoad(reading(30, 30, [], { at: 1000 }));
+  check('a reading from long ago is not shown as the present: grey as well', await waitFor('document.querySelector("#loadbar")?.dataset.state === "off"', 8000));
+  setLoad(reading(30, 30));
+  check('the bars come back with the next good reading', await waitFor('document.querySelector("#loadbar")?.dataset.state === "on" && document.querySelector("#loadbar .ld-m[data-k=cpu] .ld-v")?.textContent === "30%"', 8000));
+
+  // English
+  await evalJs('setLang("en"); true');
+  setLoad({ ok: false, error: 'x' });
+  await waitFor('document.querySelector("#loadbar")?.dataset.state === "off"', 8000);
+  await hoverLoad(true);
+  check('English: «no connection with …»', (await text('#load-pop')).includes(`no connection with ${HOST}`) && (await evalJs('document.querySelector("#load-chip").getAttribute("aria-label")')) === `no connection with ${HOST}`, await text('#load-pop'));
+  await hoverLoad(false);
+  setLoad(reading(42, 64, [card('Test Card', 9, 1, 8)]));
+  await waitFor('document.querySelector("#loadbar")?.dataset.state === "on"', 8000);
+  await hoverLoad(true);
+  const tipEn = (await text('#load-pop')).replace(/\s+/g, ' ');
+  check('English: cores, GB in use, video memory, updated, in English', /24 cores/.test(tipEn) && /20\.5 of 32\.0 GB in use/.test(tipEn) && /video memory 1\.0 of 8\.0 GB/.test(tipEn) && /updated \d\d:\d\d:\d\d/.test(tipEn) && tipEn.includes('this machine'), tipEn);
+  await hoverLoad(false);
+  await evalJs('setLang("ru"); true');
+
+  // a click flies to the Galaxy
+  await go('alpha/6');
+  check('a task is selected before the click', (await evalJs('plannerDebug().selected?.kind')) === 'planet');
+  await click('#load-chip');
+  check('a click on the bars flies to the Galaxy (nothing is selected)', await waitFor('plannerDebug().selected === null', 8000));
+  await resetUi();
+
+  // the theme: light and dark, the same semantic colours
+  const colors = join(fixture, 'theme', 'colors.toml');
+  const dark = readFileSync(colors, 'utf8');
+  setLoad(reading(95, 75, [card('Test Card', 10, 1, 8)]));
+  const ink = () => evalJs(`(() => { const f = (s) => getComputedStyle(document.querySelector(s)); return { crit: f('#loadbar .ld-m[data-k=cpu] .ld-bar i').backgroundColor, critText: f('#loadbar .ld-m[data-k=cpu] .ld-v').color, bg: f('#top').backgroundColor, track: f('#loadbar .ld-m[data-k=cpu] .ld-bar').backgroundColor }; })()`);
+  await waitFor('document.querySelector("#loadbar .ld-m[data-k=cpu]")?.dataset.level === "crit"', 8000);
+  const inDark = await ink();
+  writeFileSync(colors, dark.replace('mode = "dark"', 'mode = "light"').replace('background = "#1a120c"', 'background = "#f9f1e8"').replace('foreground = "#ecded6"', 'foreground = "#372b1f"').replace('red = "#e48682"', 'red = "#a54746"'));
+  check('a light theme: the bars are drawn in the theme\'s red, and the text is readable', await waitFor('document.documentElement.dataset.mode === "light"', 20000) && await waitFor(`getComputedStyle(document.querySelector('#loadbar .ld-m[data-k=cpu] .ld-bar i')).backgroundColor !== ${JSON.stringify(inDark.crit)}`, 8000));
+  const inLight = await ink();
+  check('the light text on the bars is dark, the dark theme\'s is light', inLight.critText !== inDark.critText, JSON.stringify({ inDark, inLight }));
+  await shot('load-light.png');
+  writeFileSync(colors, dark);
+  await waitFor('document.documentElement.dataset.mode === "dark"', 20000);
+
+  // the room: crumbs first, then the bars in the form that fits; never over the search or the crumbs, never wider than the window
+  const runs = [[1280, 720, 'auto'], [1920, 1080, 'auto'], [2560, 1440, 'auto'], [1280, 720, 150], [1920, 1080, 150], [1920, 1080, 200], [2560, 1440, 200]];
+  for (const [w, h, scale] of runs) {
+    await send('Emulation.setDeviceMetricsOverride', { width: w, height: h, deviceScaleFactor: 1, mobile: false });
+    await evalJs(`try { localStorage.setItem('herdr-planner.uiScale', ${JSON.stringify(String(scale))}); } catch {} true`);
+    await navigate(base + '/?noauto&nocoach&bloom=0');
+    await resized();
+    await go('alpha/6');   // the longest crumbs: host › project › task
+    setLoad(reading(55, 72, [card('Test Card', 33, 2, 8)]));
+    await waitFor('document.querySelector("#loadbar")?.dataset.state === "on"', 8000);
+    await beat();
+    const at = `${w}×${h}${scale === 'auto' ? '' : ` at ${scale} %`}`;
+    const m = await evalJs(`(() => { const r = (s) => { const e = document.querySelector(s); const b = e && e.getBoundingClientRect(); return b && { l: b.left, t: b.top, r: b.right, b: b.bottom, w: b.width }; };
+      const lb = document.querySelector('#loadbar'); return { tier: lb.dataset.tier, shown: getComputedStyle(lb).display !== 'none', chip: r('#load-chip'), crumbs: r('#crumbs'), q: r('#q'), right: r('#right'), sw: document.documentElement.scrollWidth, root: parseFloat(getComputedStyle(document.documentElement).fontSize),
+        clipped: [...document.querySelectorAll('#load-chip .ld-m, #load-chip .ld-sum')].filter((e) => getComputedStyle(e).display !== 'none').some((e) => e.getBoundingClientRect().right > document.querySelector('#load-chip').getBoundingClientRect().right + 1) }; })()`);
+    if (m.shown) {
+      check(`${at}: the bars (${m.tier}) stand clear of the crumbs, the search and the buttons, inside the window`, m.chip.l >= m.crumbs.r - 1 - 2 && m.chip.r <= w + 1 && (apart(m.chip, m.q) || m.tier === 'sum') && apart(m.chip, m.right) && !m.clipped && m.chip.h !== 0, JSON.stringify(m));
+    } else check(`${at}: too narrow for the bars: they step aside and the crumbs stay whole`, m.tier === 'none' && m.crumbs.w > 40, JSON.stringify(m));
+    check(`${at}: the crumbs are whole (not cut for the bars) unless the window is a phone's`, await waitFor(`[...document.querySelectorAll('#crumbs button')].every((b) => b.scrollWidth <= b.clientWidth + 1) || document.documentElement.classList.contains('bp900')`, 4000), JSON.stringify(m));
+    check(`${at}: the page does not scroll sideways`, m.sw <= w + 1, String(m.sw));
+    if (m.shown) {
+      await hoverLoad(true);
+      const pop = await rectOf('#load-pop');
+      check(`${at}: the tooltip is inside the window`, pop && pop.l >= -1 && pop.r <= w + 1 && pop.b <= h + 1, JSON.stringify(pop));
+      await hoverLoad(false);
+    }
+    if (w === 1920 && scale === 'auto') await shot('load-wide.png');
+    if (w === 1280 && scale === 'auto') await shot('load-1280.png');
+    if (w === 1920 && scale === 200) await shot('load-200.png');
+  }
+  await send('Emulation.setDeviceMetricsOverride', { width: 1500, height: 950, deviceScaleFactor: 1, mobile: false });
+  await evalJs('try { localStorage.removeItem("herdr-planner.uiScale"); } catch {} true');
+  loadGone();
+  await navigate(base + '/?noauto&nocoach&bloom=0');
+}, { retry: true });
+
 section('limits', async () => {
   await resetUi();
   check('the top bar has a limits chip naming the worst window', await waitFor('!!document.querySelector("#hud-limits")', 8000) && /3\s*%/.test(await text('#hud-limits')), await text('#hud-limits'));
@@ -1885,7 +2038,7 @@ section('theme and language', async () => {
   // The Russian interface has no English left: every button, label, hint and tooltip of the open panels is read
   // (names of things — tasks, projects, machines — are the operator's own and are left out).
   const english = `(() => {
-    const SAME = new Set(['herdr', 'claude', 'codex', 'omp', 'pi', 'Ctrl', 'Esc', 'Enter', 'Shift', 'Alt', 'Tab', 'Space', 'Home', 'TLS', 'WASD', 'main', 'origin', 'upstream', 'English']);
+    const SAME = new Set(['herdr', 'claude', 'codex', 'omp', 'pi', 'Ctrl', 'Esc', 'Enter', 'Shift', 'Alt', 'Tab', 'Space', 'Home', 'TLS', 'WASD', 'main', 'origin', 'upstream', 'English', 'CPU', 'MEM', 'GPU']);
     const bad = new Set();
     const look = (t, where) => {
       t = String(t || '').replace(/\s+/g, ' ').trim();

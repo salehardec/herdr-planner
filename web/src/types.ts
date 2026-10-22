@@ -131,6 +131,18 @@ export interface AgentUsage {
   updated_at_ms?: number;
 }
 
+/** How loaded this machine is (GET /api/load, the `load` event). Shares are 0..100, memory is in bytes. */
+export interface LoadGpu { name: string; util: number; mem_used: number; mem_total: number }
+export interface LoadInfo {
+  at: number;
+  ok: boolean;
+  error: string;
+  every_ms: number;
+  cpu: { percent: number; cores: number };
+  mem: { used: number; total: number; percent: number };
+  gpus: LoadGpu[];
+}
+
 export interface Usage {
   agents: AgentUsage[];
   stale_after_secs?: number;
