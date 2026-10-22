@@ -22,7 +22,7 @@ import { dialogOpen } from '../dialogs';
 import { PendingFiles, SavedFiles } from './Attached';
 import { AutoTextarea, fitText } from './AutoText';
 import { KeyButtons } from './Keys';
-import { MenuCard } from './MenuCard';
+import { MenuSlot } from './MenuCard';
 import { chatBack, chatWide, setChatWide } from '../chat-wide';
 import { dragTodo } from '../todo-drag';
 import type { MenuData, TurnData } from '../types';
@@ -251,7 +251,7 @@ export function Chat(): JSX.Element {
   }, [draft]);
 
   return (
-    <section class={`panel chat ${chatWide.value ? 'wide' : ''} ${open ? '' : 'off'} ${todoOver.value ? 'drop' : ''} ${menu ? 'has-menu' : ''}`} id="chat" aria-label={t('chat.aria')} aria-hidden={!open} {...dropProps}>
+    <section class={`panel chat ${chatWide.value ? 'wide' : ''} ${open ? '' : 'off'} ${todoOver.value ? 'drop' : ''}`} id="chat" aria-label={t('chat.aria')} aria-hidden={!open} {...dropProps}>
       <header>
         <b>{t('quasar.label')}</b>
         <span class={`st ${err ? 'bad' : busy ? 'busy' : ''}`} id="cstate">● {status}</span>
@@ -324,25 +324,24 @@ export function Chat(): JSX.Element {
           void loadLatest();
         }}>{t('chat.toLast')}</button>
       )}
-      {dialog && menu && (
-        <MenuCard
-          target="coordinator" menu={menu} place="chat" onAnswered={() => { void fetchScreen('coordinator'); setTimeout(() => { void fetchScreen('coordinator'); void refreshNow(); }, 900); }}
-          screen={(
-            <>
-              <pre class="menu-screen">{scr?.text}</pre>
-              <KeyButtons target="coordinator" />
-            </>
-          )}
-        />
-      )}
-      {dialog && !menu && (
-        <div class="dialog" id="cdialog">
-          <div class="h">{t('chat.dialogTitle')}</div>
-          {scr?.error ? <div class="hint">{scr.error}</div> : <pre>{scr?.text || (scr?.busy ? t('chat.reading') : '')}</pre>}
-          <KeyButtons target="coordinator" />
-          {!s?.herdr.running && <div class="hint">{t('chat.dialogNoHerdr')}</div>}
-        </div>
-      )}
+      <MenuSlot
+        target="coordinator" menu={menu} place="chat"
+        onAnswered={() => { void fetchScreen('coordinator'); setTimeout(() => { void fetchScreen('coordinator'); void refreshNow(); }, 900); }}
+        screen={(
+          <>
+            <pre class="menu-screen">{scr?.text}</pre>
+            <KeyButtons target="coordinator" />
+          </>
+        )}
+        fallback={dialog ? (
+          <div class="dialog" id="cdialog">
+            <div class="h">{t('chat.dialogTitle')}</div>
+            {scr?.error ? <div class="hint">{scr.error}</div> : <pre>{scr?.text || (scr?.busy ? t('chat.reading') : '')}</pre>}
+            <KeyButtons target="coordinator" />
+            {!s?.herdr.running && <div class="hint">{t('chat.dialogNoHerdr')}</div>}
+          </div>
+        ) : null}
+      />
       {options.length > 0 && (
         <div class="variants" id="cvariants">
           {options.map((o, i) => (

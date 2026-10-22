@@ -744,6 +744,7 @@ section('chat', async () => {
   await click('#cdialog [data-act="keys"][data-keys="enter"]');
   check('a key reaches herdr agent send-keys', await waitLog(() => calls('keys.jsonl').some((c) => c.target === 'sw-coordinator' && c.keys.includes('enter')), 8000), JSON.stringify(lastCall('keys.jsonl')));
   unlinkSync(join(fixture, 'state', 'coordinator-dialog'));
+  try { unlinkSync(join(fixture, 'state', 'dialog.txt')); } catch { /* gone */ }
   await press('Escape');
   check('Esc folds the chat', await waitFor('document.querySelector("#chat").classList.contains("off")', 4000));
   check('the history answers with its page size', await evalJs(`fetch('/api/chat/history?limit=2').then(r=>r.json()).then(h => h.available && h.turns.length === 2 && h.more)`));
@@ -3422,6 +3423,17 @@ section('menu card', async () => {
   await waitFor(`(document.querySelector(${JSON.stringify(menuCard() + ' [data-menu-question]')})?.innerText || '') === 'Which engine?'`, 10000);
   check('omp\'s ask is a card too: its rows without numbers are the options', JSON.stringify(await optTexts()) === JSON.stringify(['turbo', 'diesel', 'Свой ответ']), JSON.stringify(await optTexts()));
   check('«Esc» of the program is the card\'s «Отменить»', await hasText(menuCard() + ' [data-menu="cancel"]', 'Отменить'));
+  // answered through the card, and the program draws a screen that is no menu at once (as Claude Code does): the card goes on showing the
+  // choice for a while, the raw screen does not flash in its place; later the card makes way for the screen
+  writeFileSync(join(fixture, 'state', 'after-enter.txt'), '● Принято, работаю дальше…');
+  const net0 = await evalJs('window.__net.log.filter((u) => u.includes("/api/coordinator/screen")).length');
+  await click(menuCard() + ' [data-menu-opt="0"]');
+  check('the screen has moved on after the choice (the program drew its next screen)', await waitLog(() => (existsSync(join(fixture, 'state', 'dialog.txt')) ? readFileSync(join(fixture, 'state', 'dialog.txt'), 'utf8') : '').includes('Принято'), 10000));
+  await waitFor(`window.__net.log.filter((u) => u.includes("/api/coordinator/screen")).length >= ${net0 + 3}`, 10000);
+  check('the card still shows the choice, and the raw screen has not taken its place', await cardState() === 'answered' && await hasText(menuCard() + ' [data-menu-status="done"]', 'turbo') && !(await exists('#cdialog')), `${await cardState()} ${await text('#chat .dialog')}`);
+  check('after a while the card makes way for the raw screen', await waitFor(`!document.querySelector(${JSON.stringify(menuCard())}) && !!document.querySelector('#cdialog')`, 14000), await cardState());
+  setScreen(OMP_SINGLE);
+  await waitFor(`!!document.querySelector(${JSON.stringify(menuCard())})`, 10000);
   // answered in the terminal: the screen has no menu any more, the card goes
   setScreen('● Работаю над задачей…\n\n❯ \n  ⏵⏵ accept edits on');
   check('an answer given in the terminal closes the card', await waitFor(`!document.querySelector(${JSON.stringify(menuCard())})`, 10000));

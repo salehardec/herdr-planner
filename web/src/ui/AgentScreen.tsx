@@ -12,7 +12,7 @@ import { Badge, Gl } from './Gl';
 import { TellBox } from './AgentActions';
 import { KeyButtons } from './Keys';
 import { ansiSpans, type AnsiSpan } from './ansi';
-import { MenuCard } from './MenuCard';
+import { MenuSlot } from './MenuCard';
 import type { MenuData } from '../types';
 import './agentscreen.css';
 
@@ -133,7 +133,7 @@ export function AgentScreen(): JSX.Element | null {
           </span>
         </header>
         <div class="agent-screen-body">
-          {r?.menu && !r.error && <MenuCard target={ref.task} role={ref.role} menu={r.menu} place="window" onAnswered={() => { refresh(); setTimeout(refresh, 900); }} />}
+          <MenuSlot target={ref.task} role={ref.role} menu={r?.menu && !r.error ? r.menu : null} place="window" onAnswered={() => { refresh(); setTimeout(refresh, 900); }} />
           <div class="term-wrap">
             {r?.error ? (
               <div class="hint bad" id="screen-error">{r.error}</div>

@@ -1037,6 +1037,11 @@ function herdrMain(C, DATA) {
   if (cmd === 'agent' && sub === 'send-keys') {
     if (!namesOf(world()).includes(rest[0])) { console.error('no such agent: ' + rest[0]); process.exit(1); }
     log('keys.jsonl', { target: rest[0], keys: rest.slice(1) });
+    // A program draws its next screen after a choice: `state/after-enter.txt` becomes the screen when Enter is sent.
+    if (rest.slice(1).includes('enter') && fs.existsSync(join('state', 'after-enter.txt'))) {
+      fs.writeFileSync(join('state', 'dialog.txt'), fs.readFileSync(join('state', 'after-enter.txt'), 'utf8'));
+      fs.unlinkSync(join('state', 'after-enter.txt'));
+    }
     console.log('sent');
     return;
   }

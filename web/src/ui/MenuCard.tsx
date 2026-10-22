@@ -3,6 +3,7 @@
    Several questions come one at a time (the screen shows one); a multiple choice has boxes and «Отправить»;
    «Свой ответ» opens a field. After an answer the card shows the choice and cannot be pressed again; it goes away
    when the screen has no menu any more (also when the answer was given in the terminal). */
+import { signal } from '@preact/signals';
 import type { ComponentChildren, JSX } from 'preact';
 import { useEffect, useRef, useState } from 'preact/hooks';
 import { answerMenu } from '../actions';
@@ -17,6 +18,9 @@ const LONG_DESC = 90;
 /** The card unlocks again when the same menu is still on the screen this long after an answer (the answer did not land). */
 const RELOCK_MS = 8000;
 
+/** How long the answered card stays when the program has moved on at once (the next screen is no menu): long enough to be read. */
+const GRACE_MS = 6000;
+
 interface Props {
   target: string;
   role?: string;
@@ -25,6 +29,10 @@ interface Props {
   place: 'chat' | 'window';
   /** Called after an answer, to read the screen again. */
   onAnswered?: () => void;
+  /** Set when the card is shown again after the screen lost its menu: the answer already given. */
+  answered?: { label: string; at: number };
+  /** Called with the label of the choice once the answer has gone. */
+  onDone?: (label: string) => void;
   /** The terminal's screen for the person who wants to see it (the fallback): shown under the card on demand. */
   screen?: ComponentChildren;
 }
@@ -50,7 +58,7 @@ function MenuCardBody(props: Props): JSX.Element {
   const [ctx, setCtx] = useState(false);
   const [screenOpen, setScreenOpen] = useState(false);
   const [openDesc, setOpenDesc] = useState<Set<number>>(new Set());
-  const [done, setDone] = useState<Done | null>(null);
+  const [done, setDone] = useState<Done | null>(() => (props.answered ? { sig: menu.sig, ...props.answered } : null));
   const [, relock] = useState(0);
   const ownRef = useRef<HTMLTextAreaElement>(null);
 
@@ -72,7 +80,7 @@ function MenuCardBody(props: Props): JSX.Element {
     setErr('');
     const r = await answerMenu(props.target, props.role ?? '', menu.sig, answer);
     setBusy(false);
-    if (r.ok) setDone({ sig: menu.sig, label, at: Date.now() });
+    if (r.ok) { setDone({ sig: menu.sig, label, at: Date.now() }); props.onDone?.(label); }
     else setErr(r.gone ? t('amenu.gone') : t('amenu.failed', { why: r.error }));
     props.onAnswered?.();
   };
@@ -213,5 +221,39 @@ function MenuCardBody(props: Props): JSX.Element {
       </div>
       {screenOpen && props.screen}
     </div>
+  );
+}
+
+/** What was answered through a card, by agent: the card goes on showing the choice for a while after the program has drawn
+    its next screen (which is usually no menu), instead of vanishing into the raw screen at once. */
+const answeredCards = signal<Record<string, { menu: MenuData; label: string; at: number }>>({});
+
+interface SlotProps extends Omit<Props, 'menu' | 'answered' | 'onDone'> {
+  /** The menu the screen shows now; null when there is none. */
+  menu: MenuData | null;
+  /** What to show when there is no menu and no answered card to keep: the raw dialog, or nothing. */
+  fallback?: ComponentChildren;
+}
+
+/** The place of an agent's menu card: the menu on the screen, else the card just answered (locked, with the choice), else `fallback`. */
+export function MenuSlot(props: SlotProps): JSX.Element | null {
+  const key = `${props.target}|${props.role ?? ''}`;
+  const rec = answeredCards.value[key];
+  const [, tick] = useState(0);
+  const fresh = !!rec && Date.now() - rec.at < GRACE_MS;
+  useEffect(() => {
+    if (!rec) return;
+    const id = window.setTimeout(() => tick((n) => n + 1), Math.max(0, rec.at + GRACE_MS - Date.now()) + 50);
+    return () => window.clearTimeout(id);
+  }, [rec]);
+  const { menu, fallback, ...rest } = props;
+  const shown = menu ?? (fresh ? rec.menu : null);
+  if (!shown) return <>{fallback ?? null}</>;
+  const mine = rec && rec.menu.sig === shown.sig && fresh ? { label: rec.label, at: rec.at } : undefined;
+  return (
+    <MenuCard
+      {...rest} menu={shown} answered={mine}
+      onDone={(label) => { answeredCards.value = { ...answeredCards.value, [key]: { menu: shown, label, at: Date.now() } }; }}
+    />
   );
 }

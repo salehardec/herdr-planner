@@ -176,6 +176,10 @@ fn classify(line: &str) -> Kind {
         return Kind::Blank;
     }
     let first = t.chars().next().unwrap_or(' ');
+    // Claude Code frames a command with dashed lines (`╌╌╌`): they only part the paragraphs, they end nothing
+    if t.chars().count() >= 3 && t.chars().all(|c| "╌╍┄┅┈┉".contains(c) || c == ' ') {
+        return Kind::Blank;
+    }
     let only_frame = t.chars().all(|c| frame_char(c) || c == ' ');
     // an empty line inside a box (`│      │`) is a blank line, not a rule
     if only_frame && t.chars().all(|c| BOXES.contains(&c) || c == ' ') {
@@ -673,8 +677,11 @@ mod tests {
     fn claude_permission_prompt() {
         let m = parse(CLAUDE_PERMISSION).expect("a menu");
         assert_eq!(m.question, "Do you want to proceed?");
-        assert_eq!(m.options.len(), 3);
-        assert!(m.context.contains("rm -rf build"), "{}", m.context);
+        assert_eq!(m.options.len(), 4);
+        assert_eq!(m.options[3].label, "No");
+        assert!(m.context.contains("touch made-by-test.txt"), "{}", m.context);
+        assert!(m.context.contains("Bash command") && !m.context.contains('╌'), "{}", m.context);
+        assert!(m.question.len() < 60);
     }
 
     #[test]

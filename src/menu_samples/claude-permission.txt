@@ -1,13 +1,40 @@
-● I'll clean the build directory first.
 
-────────────────────────────────────────────────────────────────────────────────
+ ▐▛███▛█   Claude Code v2.1.307
+▝▜██████▀  Haiku 5.5 · Claude Max
+ ▝▝   ▝▝   /tmp/hp-1000/c31753/PLN-29/cc
+
+
+❯ Run the bash command: touch made-by-test.txt . Nothing else.
+
+● Creating empty file made-by-test.txt
+  ⎿  $ touch made-by-test.txt
+
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────
  Bash command
-
-   rm -rf build
-   Remove the build output
-
+ Tip: auto mode handles these prompts for you — choose "switch to auto mode" below
+ Create empty file made-by-test.txt
+╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌
+ touch made-by-test.txt
+╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌
  Do you want to proceed?
  ❯ 1. Yes
-   2. Yes, and don't ask again for rm commands in /home/user/project
-   3. No, and tell Claude what to do differently (esc)
+   2. Yes, and always allow access to /tmp/hp-1000/c31753/PLN-29/cc from this project
+   3. Yes, and switch to auto mode · auto mode handles these prompts for you
+   4. No
+
+ Esc to cancel · Tab to amend
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
