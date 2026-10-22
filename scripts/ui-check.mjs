@@ -2363,6 +2363,8 @@ const NAV_TITLE_MIN_REM = 10;
 // the rows must be columns (the container query of station.css); undefined: either is right.
 const boardChecks = async (at, stacked) => {
   await waitFor('document.querySelectorAll("#st-board [data-setting]").length > 5', 40000);
+  // The shipyards' card comes from its own request: judged with the rest, not before it (else a long preview is never measured).
+  await waitFor('!!document.querySelector("#st-yards details pre")', 15000);
   const bad = await layoutProblems('#station');
   check(`${at}: the station, after its answer came: nothing wider than its box`, bad.length === 0, bad.join('; '));
   // scrolled inside the dialog only (scrollIntoView would move the page itself, which has overflow:hidden)
