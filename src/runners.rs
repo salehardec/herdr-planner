@@ -1861,11 +1861,12 @@ pub async fn poll_all(app: &Shared) {
     };
     let mut fresh: Vec<RunnerState> = Vec::new();
     for state in states {
+        let at_ms = state.fetched_at_ms;
         let prev = old.iter().find(|s| s.id == state.id);
         let mut kept = keep_last(prev, state);
         classify(&mut kept.containers, &kept.protected, &index);
         // What the yard did and what its tasks ate (PLN-46): before the read replaces the previous one.
-        crate::runners_hist::record(&app.db, prev, &kept);
+        crate::runners_hist::record(&app.db, prev, &kept, at_ms);
         if let Ok(json) = serde_json::to_string(&kept) {
             app.db.runner_put(
                 &kept.id,

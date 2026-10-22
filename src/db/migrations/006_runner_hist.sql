@@ -29,3 +29,7 @@ CREATE TABLE task_usage (
     last_ms     INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (runner, tag)
 );
+
+-- Up to what moment the CPU time of a yard's tasks has been counted: a poll and a cleanup may both re-read the yard,
+-- and the interval between them is counted once (PLN-46). `runner_put` keeps this column when it stores a read.
+ALTER TABLE runners_cache ADD COLUMN usage_at INTEGER NOT NULL DEFAULT 0;

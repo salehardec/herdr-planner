@@ -17,7 +17,6 @@ export interface UseRow {
   /** The highest sum of the memory of the task's running containers, in bytes. */
   mem_peak: number;
   first_ms: number;
-  last_ms: number;
 }
 
 export interface YardHistory { points: HistPoint[]; tasks: UseRow[] }
@@ -65,11 +64,9 @@ function mergeRows(rows: TaskUse[]): TaskUse[] {
     cur.cpu_sec += r.cpu_sec;
     cur.mem_peak = Math.max(cur.mem_peak, r.mem_peak);
     cur.first_ms = Math.min(cur.first_ms, r.first_ms);
-    cur.last_ms = Math.max(cur.last_ms, r.last_ms);
   }
   return [...out.values()].sort((a, b) => b.cpu_sec - a.cpu_sec);
 }
-
 
 /** A yard's rows, one per task. */
 export function yardUsage(rows: UseRow[], runner: string): TaskUse[] {
@@ -88,19 +85,17 @@ export function taskUsage(data: HistData | null, task: { id: string; tag: string
 }
 
 /** What those rows add up to: CPU time; the peak memory of the worst yard at one moment, not a sum over time. */
-export function totalUsage(rows: TaskUse[]): { cpu_sec: number; mem_peak: number; first_ms: number; last_ms: number } | null {
+export function totalUsage(rows: TaskUse[]): { cpu_sec: number; mem_peak: number; first_ms: number } | null {
   if (!rows.length) return null;
   let cpu = 0;
   let peak = 0;
   let first = 0;
-  let last = 0;
   for (const r of rows) {
     cpu += r.cpu_sec;
     peak = Math.max(peak, r.mem_peak);
     first = first ? Math.min(first, r.first_ms) : r.first_ms;
-    last = Math.max(last, r.last_ms);
   }
-  return { cpu_sec: cpu, mem_peak: peak, first_ms: first, last_ms: last };
+  return { cpu_sec: cpu, mem_peak: peak, first_ms: first };
 }
 
 /** CPU time as the page says it: seconds, minutes, then hours with a tenth. */

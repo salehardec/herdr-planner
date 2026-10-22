@@ -96,10 +96,12 @@ fn cores(c: &crate::runners::Container) -> Option<f64> {
     c.cpu_pct.map(|p| (p / 100.0).max(0.0))
 }
 
-/// What the containers of every task ate since the previous read: CPU by a trapezoid over the gap, memory as the sum
-/// at this read. A task whose containers are gone gets the last CPU it was seen using for the whole gap (that is the
-/// only honest guess: the read cannot know when it stopped); a gap over [`USAGE_GAP_MS`] counts no CPU at all.
-fn usage_of(prev: Option<&RunnerState>, fresh: &RunnerState) -> Vec<Delta> {
+/// What the containers of every task ate since the moment `from_ms` (the end of the previous count, never older than
+/// the read before): CPU by a trapezoid over the gap, memory as the sum at this read. A task whose containers are gone
+/// gets the last CPU it was seen using for the whole gap (that is the only honest guess: the read cannot know when it
+/// stopped); a gap over [`USAGE_GAP_MS`] counts no CPU at all. A container the previous read did not have is charged
+/// from its own `created` on, not from that read.
+fn usage_of(prev: Option<&RunnerState>, fresh: &RunnerState, from_ms: u64) -> Vec<Delta> {
     let mut out: BTreeMap<String, Delta> = BTreeMap::new();
     let running: Vec<&crate::runners::Container> =
         fresh.containers.iter().filter(|c| c.state == "running").collect();
@@ -115,18 +117,24 @@ fn usage_of(prev: Option<&RunnerState>, fresh: &RunnerState) -> Vec<Delta> {
         }
         d.mem_peak += c.mem_bytes.unwrap_or(0);
     }
-    let Some(prev) = prev.filter(|p| p.ok) else {
-        return out.into_values().collect();
-    };
-    let gap = fresh.fetched_at_ms.saturating_sub(prev.fetched_at_ms);
-    if gap == 0 || gap > USAGE_GAP_MS {
+    let gap = fresh.fetched_at_ms.saturating_sub(from_ms);
+    if from_ms == 0 || gap == 0 || gap > USAGE_GAP_MS {
         return out.into_values().collect();
     }
     let dt = gap as f64 / 1000.0;
-    let before: BTreeMap<&str, &crate::runners::Container> =
-        prev.containers.iter().map(|c| (c.id.as_str(), c)).collect();
+    // A failed read keeps the last good containers and its moment (`keep_last`): `ok` says nothing about them.
+    let before: BTreeMap<&str, &crate::runners::Container> = prev
+        .map(|p| {
+            p.containers
+                .iter()
+                .filter(|c| c.state == "running")
+                .map(|c| (c.id.as_str(), c))
+                .collect()
+        })
+        .unwrap_or_default();
     for c in &running {
-        let used = match (before.get(c.id.as_str()).and_then(|p| cores(p)), cores(c)) {
+        let previous = before.get(c.id.as_str()).copied();
+        let used = match (previous.and_then(cores), cores(c)) {
             (Some(a), Some(b)) => (a + b) / 2.0,
             (Some(a), None) => a,
             (None, Some(b)) => b,
@@ -135,18 +143,26 @@ fn usage_of(prev: Option<&RunnerState>, fresh: &RunnerState) -> Vec<Delta> {
         if used <= 0.0 {
             continue;
         }
+        // Between the previous read and this one, the container may have been born.
+        let since = match (previous, c.created_ms) {
+            (None, created) if created > 0 => {
+                fresh.fetched_at_ms.saturating_sub(created).min(gap) as f64 / 1000.0
+            }
+            _ => dt,
+        };
         if let Some(tag) = tag_of(c) {
             let d = out.entry(tag.clone()).or_insert_with(|| Delta {
                 tag,
                 task: task_of(c),
                 ..Delta::default()
             });
-            d.cpu_sec += used * dt;
+            d.cpu_sec += used * since;
         }
     }
     let seen: HashSet<&str> = fresh.containers.iter().map(|c| c.id.as_str()).collect();
     for c in prev
-        .containers
+        .map(|p| p.containers.as_slice())
+        .unwrap_or_default()
         .iter()
         .filter(|c| c.state == "running" && !seen.contains(c.id.as_str()))
     {
@@ -161,30 +177,34 @@ fn usage_of(prev: Option<&RunnerState>, fresh: &RunnerState) -> Vec<Delta> {
     out.into_values().collect()
 }
 
-/// Stores one read of a yard: its load, the usage of every task, the fold and the pruning. A failed read stores
-/// nothing; a yard that answered after a silence leaves a hole, which is the truth.
-pub fn record(db: &Db, prev: Option<&RunnerState>, fresh: &RunnerState) {
-    if !fresh.ok {
-        return;
-    }
-    let at_ms = fresh.fetched_at_ms;
+/// Stores one read of a yard: its load, the usage of every task, the fold and the pruning. `at_ms` is the moment of
+/// the read (or of the silence, when the yard did not answer): a failed read leaves a hole in the line, so a silence
+/// is never drawn as a straight line across it. The CPU interval up to `at_ms` is claimed once — a poll, a cleanup and
+/// its own re-read can all see the same stretch of time, and it is counted for the first of them only.
+pub fn record(db: &Db, prev: Option<&RunnerState>, state: &RunnerState, at_ms: u64) {
     let at = at_ms / 1000;
-    let host = &fresh.host;
-    db.hist_put(
-        &fresh.id,
-        FINE_STEP,
-        at - at % FINE_STEP,
-        load_percent(host.load1, host.cpus),
-        percent(host.mem_total.saturating_sub(host.mem_avail), host.mem_total),
-        percent(host.disk_size.saturating_sub(host.disk_avail), host.disk_size),
-    );
+    if state.ok {
+        let host = &state.host;
+        db.hist_put(
+            &state.id,
+            FINE_STEP,
+            at - at % FINE_STEP,
+            load_percent(host.load1, host.cpus),
+            percent(host.mem_total.saturating_sub(host.mem_avail), host.mem_total),
+            percent(host.disk_size.saturating_sub(host.disk_avail), host.disk_size),
+        );
+        let counted = db.runner_usage_take(&state.id, at_ms);
+        let from = counted.max(prev.map(|p| p.fetched_at_ms).unwrap_or(0));
+        for d in usage_of(prev, state, from) {
+            db.usage_add(&state.id, &d.tag, &d.task, d.cpu_sec, d.mem_peak, at_ms);
+        }
+    } else {
+        db.hist_hole(&state.id, FINE_STEP, at - at % FINE_STEP);
+    }
     // Whole coarse rows only: a row is folded once, from all of its minutes.
     let cut = (at.saturating_sub(FINE_KEEP_SEC) / COARSE_STEP) * COARSE_STEP;
-    db.hist_fold(&fresh.id, cut, COARSE_STEP, at.saturating_sub(KEEP_SEC));
+    db.hist_fold(&state.id, cut, COARSE_STEP, at.saturating_sub(KEEP_SEC));
     db.usage_prune(at_ms.saturating_sub(USAGE_KEEP_MS));
-    for d in usage_of(prev, fresh) {
-        db.usage_add(&fresh.id, &d.tag, &d.task, d.cpu_sec, d.mem_peak, at_ms);
-    }
 }
 
 fn round1(v: Option<f64>) -> Option<f64> {
@@ -290,7 +310,7 @@ mod tests {
         b.cpu_pct = Some(300.0);
         b.mem_bytes = Some(400);
         let fresh = state(true, 1_010_000, vec![b]);
-        let d = usage_of(Some(&prev), &fresh);
+        let d = usage_of(Some(&prev), &fresh, prev.fetched_at_ms);
         assert_eq!(d.len(), 1);
         assert_eq!(d[0].tag, "ALP-3");
         assert_eq!(d[0].mem_peak, 400, "the sum at this read");
@@ -309,7 +329,7 @@ mod tests {
                 container('d', "old-ALP-3", "ALP-3", "exited", 0.0, 100),
             ],
         );
-        let d = usage_of(None, &fresh);
+        let d = usage_of(None, &fresh, 0);
         let row = d.iter().find(|x| x.tag == "ALP-3").unwrap();
         assert_eq!(row.mem_peak, 500, "the label is one task in any case, an exited container is not running");
         assert!(row.cpu_sec == 0.0, "one read gives no time");
@@ -320,7 +340,7 @@ mod tests {
         let a = container('a', "pg-ALP-3", "ALP-3", "running", 200.0, 100);
         let prev = state(true, 1_000_000, vec![a]);
         let fresh = state(true, 1_005_000, vec![]);
-        let d = usage_of(Some(&prev), &fresh);
+        let d = usage_of(Some(&prev), &fresh, prev.fetched_at_ms);
         assert_eq!(d.len(), 1);
         assert!((d[0].cpu_sec - 10.0).abs() < 1e-9, "5 s at 2 cores: {}", d[0].cpu_sec);
         assert_eq!(d[0].mem_peak, 0);
@@ -331,17 +351,73 @@ mod tests {
         let a = container('a', "pg-ALP-3", "ALP-3", "running", 100.0, 100);
         let prev = state(true, 1_000_000, vec![a.clone()]);
         let fresh = state(true, 1_000_000 + USAGE_GAP_MS + 1, vec![a]);
-        assert!(usage_of(Some(&prev), &fresh).iter().all(|d| d.cpu_sec == 0.0));
+        assert!(usage_of(Some(&prev), &fresh, prev.fetched_at_ms).iter().all(|d| d.cpu_sec == 0.0));
         // The memory of what runs is still worth knowing.
-        assert_eq!(usage_of(Some(&prev), &fresh)[0].mem_peak, 100);
+        assert_eq!(usage_of(Some(&prev), &fresh, prev.fetched_at_ms)[0].mem_peak, 100);
     }
 
     #[test]
-    fn a_failed_previous_read_gives_no_time() {
+    fn a_failed_read_keeps_the_last_good_one_to_count_from() {
+        // `keep_last` keeps the last good containers and their moment with ok = false: that CPU time is real, and a
+        // silence longer than the gap is refused by `a_long_silence_counts_no_cpu` instead.
         let a = container('a', "pg-ALP-3", "ALP-3", "running", 100.0, 100);
         let prev = state(false, 1_000_000, vec![a.clone()]);
         let fresh = state(true, 1_010_000, vec![a]);
-        assert_eq!(usage_of(Some(&prev), &fresh)[0].cpu_sec, 0.0);
+        assert!((usage_of(Some(&prev), &fresh, prev.fetched_at_ms)[0].cpu_sec - 10.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn a_container_is_charged_from_its_created_on() {
+        let prev = state(true, 1_000_000, vec![]);
+        let mut c = container('a', "pg-ALP-3", "ALP-3", "running", 100.0, 10);
+        // Born four minutes after the previous read, a minute before this one.
+        c.created_ms = 1_240_000;
+        let fresh = state(true, 1_300_000, vec![c]);
+        let d = usage_of(Some(&prev), &fresh, prev.fetched_at_ms);
+        assert_eq!(d.len(), 1);
+        assert!((d[0].cpu_sec - 60.0).abs() < 1e-9, "one core for its 60 s, not for 300: {}", d[0].cpu_sec);
+    }
+
+    #[test]
+    fn storing_a_read_keeps_the_moment_cpu_was_counted_to() {
+        let db = Db::memory().unwrap();
+        db.runner_usage_take("vm-r", 1_000);
+        db.runner_put("vm-r", "{}", true, "");
+        assert_eq!(db.runner_usage_take("vm-r", 2_000), 1_000, "a stored read must not rewind the claim");
+    }
+
+    #[test]
+    fn a_silent_yard_leaves_a_hole_in_the_line() {
+        let db = Db::memory().unwrap();
+        let s = host(1.0, 4, 100, 40, 200, 50);
+        let first = RunnerState { fetched_at_ms: 1_000_000, ..s.clone() };
+        let dead = RunnerState { ok: false, fetched_at_ms: 1_120_000, ..s.clone() };
+        let later = RunnerState { fetched_at_ms: 1_240_000, ..s.clone() };
+        record(&db, None, &first, first.fetched_at_ms);
+        record(&db, Some(&first), &dead, dead.fetched_at_ms);
+        record(&db, Some(&dead), &later, later.fetched_at_ms);
+        let h = history(&db, &["vm-r".into()], later.fetched_at_ms);
+        let points = &h["vm-r"].points;
+        assert_eq!(points.len(), 3, "{points:?}");
+        assert_eq!(points[0].cpu, Some(25.0));
+        assert_eq!(points[1].cpu, None, "the silence is a hole, not a line across it");
+        assert_eq!(points[2].cpu, Some(25.0));
+    }
+
+    #[test]
+    fn an_interval_is_counted_once_though_a_poll_and_a_cleanup_both_read() {
+        let db = Db::memory().unwrap();
+        let a = container('a', "pg-ALP-3", "ALP-3", "running", 100.0, 100);
+        let t0 = 1_000_000u64;
+        let start = state(true, t0, vec![a.clone()]);
+        record(&db, None, &start, t0);
+        // A poll stores a read 300 s later; the cleanup, which started from the older read, ends 60 s after it.
+        let polled = state(true, t0 + 300_000, vec![a.clone()]);
+        record(&db, Some(&start), &polled, polled.fetched_at_ms);
+        let cleaned = state(true, t0 + 360_000, vec![a]);
+        record(&db, Some(&start), &cleaned, cleaned.fetched_at_ms);
+        let rows = db.usage_rows("vm-r");
+        assert!((rows[0].2 - 360.0).abs() < 1e-9, "300 s and 60 s, each once: {}", rows[0].2);
     }
 
     #[test]
@@ -354,7 +430,7 @@ mod tests {
             mem_bytes: Some(1),
             ..Container::default()
         };
-        assert!(usage_of(None, &state(true, 1_000_000, vec![c])).is_empty(), "no label, no row");
+        assert!(usage_of(None, &state(true, 1_000_000, vec![c]), 0).is_empty(), "no label, no row");
     }
 
     #[test]
@@ -363,10 +439,10 @@ mod tests {
         let t0 = 10_000_000u64;
         let s = host(1.0, 4, 100, 40, 200, 50);
         let first = RunnerState { fetched_at_ms: t0 * 1000, ..s.clone() };
-        record(&db, None, &first);
+        record(&db, None, &first, first.fetched_at_ms);
         // A day later the old minute has been folded into a wide row, and both are still in the history.
         let later = RunnerState { fetched_at_ms: (t0 + 21 * 3600) * 1000, ..s.clone() };
-        record(&db, Some(&first), &later);
+        record(&db, Some(&first), &later, later.fetched_at_ms);
         let h = history(&db, &["vm-r".into()], (t0 + 21 * 3600) * 1000);
         let h = &h["vm-r"];
         assert_eq!(h.points.len(), 2, "a wide row of the day and a fresh minute: {:?}", h.points);
@@ -379,7 +455,7 @@ mod tests {
         assert_eq!(h.points[1].at, (t0 + 21 * 3600) - (t0 + 21 * 3600) % FINE_STEP);
         // Nothing older than the day and a little survives the next fold.
         let day = RunnerState { fetched_at_ms: (t0 + 30 * 3600) * 1000, ..s.clone() };
-        record(&db, Some(&later), &day);
+        record(&db, Some(&later), &day, day.fetched_at_ms);
         let h = history(&db, &["vm-r".into()], (t0 + 30 * 3600) * 1000);
         assert!(h["vm-r"].points.iter().all(|p| p.at >= t0 + 30 * 3600 - KEEP_SEC), "{:?}", h["vm-r"].points);
     }
@@ -404,8 +480,8 @@ mod tests {
         let prev = state(true, 1_000_000, vec![a]);
         let fresh = state(true, 1_010_000, vec![b]);
         let later = state(true, 1_020_000, vec![fresh.containers[0].clone()]);
-        record(&db, Some(&prev), &fresh);
-        record(&db, Some(&fresh), &later);
+        record(&db, Some(&prev), &fresh, fresh.fetched_at_ms);
+        record(&db, Some(&fresh), &later, later.fetched_at_ms);
         let rows = db.usage_rows("vm-r");
         assert_eq!(rows.len(), 1);
         let (tag, task, cpu, peak, first, last) = &rows[0];
@@ -423,7 +499,7 @@ mod tests {
     fn a_removed_yard_leaves_no_history() {
         let db = Db::memory().unwrap();
         let s = host(1.0, 4, 100, 40, 200, 50);
-        record(&db, None, &s);
+        record(&db, None, &s, s.fetched_at_ms);
         assert_eq!(db.hist_runners(), vec!["vm-r".to_string()]);
         db.hist_remove("vm-r");
         db.usage_remove("vm-r");

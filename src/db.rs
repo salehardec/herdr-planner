@@ -446,15 +446,35 @@ impl Db {
 
     // ---- shipyards (верфи) ----
 
-    /// Stores what a runner's probe said (`json`), or why it could not be reached.
+    /// Stores what a runner's probe said (`json`), or why it could not be reached. The moment the CPU time of its
+    /// tasks was counted last stays (see [`Db::runner_usage_take`]).
     pub fn runner_put(&self, id: &str, json: &str, ok: bool, why: &str) {
         self.with("runner_put", |c| {
             c.execute(
-                "INSERT OR REPLACE INTO runners_cache (id, json, fetched_at, ok, why) \
-                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                "INSERT INTO runners_cache (id, json, fetched_at, ok, why) VALUES (?1, ?2, ?3, ?4, ?5) \
+                 ON CONFLICT(id) DO UPDATE SET json = excluded.json, fetched_at = excluded.fetched_at, \
+                   ok = excluded.ok, why = excluded.why",
                 params![id, json, now_ms() as i64, ok, why],
             )?;
             Ok(())
+        })
+    }
+
+    /// Claims the CPU time of a yard's tasks up to `at_ms` and returns the end of the previous claim (0 — none). One
+    /// interval is counted once however many reads see it: a poll, a cleanup and its re-read all come here.
+    pub fn runner_usage_take(&self, id: &str, at_ms: u64) -> u64 {
+        self.with("runner_usage_take", |c| {
+            let tx = c.transaction()?;
+            let prev: Option<i64> = tx
+                .query_row("SELECT usage_at FROM runners_cache WHERE id = ?1", [id], |r| r.get(0))
+                .optional()?;
+            tx.execute(
+                "INSERT INTO runners_cache (id, usage_at) VALUES (?1, ?2) \
+                 ON CONFLICT(id) DO UPDATE SET usage_at = excluded.usage_at",
+                params![id, at_ms as i64],
+            )?;
+            tx.commit()?;
+            Ok(prev.unwrap_or(0).max(0) as u64)
         })
     }
 
@@ -514,6 +534,18 @@ impl Db {
                 ))
             })?;
             rows.collect()
+        })
+    }
+
+    /// A hole of a minute: the yard did not answer then, so the line breaks instead of joining the reads around it.
+    /// A known sample of the same minute is never replaced by it.
+    pub fn hist_hole(&self, runner: &str, step: u64, at: u64) {
+        self.with("hist_hole", |c| {
+            c.execute(
+                "INSERT OR IGNORE INTO runner_hist (runner, step, at, cpu, mem, disk) VALUES (?1, ?2, ?3, NULL, NULL, NULL)",
+                params![runner, step as i64, at as i64],
+            )?;
+            Ok(())
         })
     }
 

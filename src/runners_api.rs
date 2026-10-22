@@ -129,6 +129,7 @@ pub async fn runner_ask(State(app): State<Shared>, headers: HeaderMap, Json(body
         return fail(404, "такой верфи нет в списке");
     };
     let fresh = runners::probe(&app.cfg, &r).await;
+    let at_ms = fresh.fetched_at_ms;
     // The first read of a yard gives it the limits of the machine's share (PLN-43) before the marks are made of them.
     runners::learn_limits(&app, std::slice::from_ref(&fresh)).await;
     let state = {
@@ -137,7 +138,7 @@ pub async fn runner_ask(State(app): State<Shared>, headers: HeaderMap, Json(body
         let snap = app.snapshot.read().await.clone();
         classify_now(&app, &snap, &mut kept);
         // The classes are set: the usage rows can name the board task (PLN-46).
-        crate::runners_hist::record(&app.db, prev.as_ref(), &kept);
+        crate::runners_hist::record(&app.db, prev.as_ref(), &kept, at_ms);
         kept
     };
     if let Ok(json) = serde_json::to_string(&state) {
@@ -943,12 +944,13 @@ pub fn safe_volume(s: &str) -> bool {
 /// Reads the yard again after a change, keeps the answer (the database, the list) and hands it back.
 async fn reprobe(app: &Shared, r: &Runner, prev: &RunnerState) -> RunnerState {
     let fresh = runners::probe(&app.cfg, r).await;
+    let at_ms = fresh.fetched_at_ms;
     let mut after = runners::keep_last(Some(prev), fresh);
     {
         let snap = app.snapshot.read().await.clone();
         classify_now(app, &snap, &mut after);
     }
-    crate::runners_hist::record(&app.db, Some(prev), &after);
+    crate::runners_hist::record(&app.db, Some(prev), &after, at_ms);
     if let Ok(json) = serde_json::to_string(&after) {
         app.db.runner_put(
             &after.id,
@@ -1240,8 +1242,9 @@ pub async fn disk_clean(State(app): State<Shared>, headers: HeaderMap, Json(body
     let steps = runners_disk::execute(&app.cfg, &r, &cmds).await;
     // Read the yard again for the page, then count anew for «стало».
     let fresh_state = runners::probe(&app.cfg, &r).await;
+    let at_ms = fresh_state.fetched_at_ms;
     let kept = runners::keep_last(Some(&state), fresh_state);
-    crate::runners_hist::record(&app.db, Some(&state), &kept);
+    crate::runners_hist::record(&app.db, Some(&state), &kept, at_ms);
     if let Ok(json) = serde_json::to_string(&kept) {
         app.db.runner_put(&kept.id, &json, kept.ok, kept.why.as_ref().map(|w| w.line.as_str()).unwrap_or(""));
     }

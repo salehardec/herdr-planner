@@ -4152,6 +4152,9 @@ section('runners', async () => {
       && (await evalJs('[...document.querySelectorAll("#rf-hist svg.spark")].every((s) => Number(s.dataset.points) >= 1)'))
       && (await evalJs('document.querySelector("#rf-hist").dataset.window')) === 'hours',
     await text('#rf-hist'));
+  check('the numbers beside the lines fit their column: «сейчас N % · пик M %» is cut off otherwise',
+    await evalJs('[...document.querySelectorAll("#rf-hist .num")].length === 3 && [...document.querySelectorAll("#rf-hist .num")].every((n) => n.scrollWidth <= n.clientWidth + 1)'),
+    await evalJs('[...document.querySelectorAll("#rf-hist .num")].map((n) => n.scrollWidth + "/" + n.clientWidth).join(" ")'));
   await click('#rf-hist [data-hist-window=day]');
   check('the window switches to the day', await waitFor('document.querySelector("#rf-hist").dataset.window === "day"', 4000)
     && (await evalJs('Number(document.querySelector("#rf-hist svg.spark").dataset.points)')) >= 1,

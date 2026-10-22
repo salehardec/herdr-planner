@@ -183,8 +183,9 @@ async fn ran(app: &Shared, m: &MachineRef, cmd: &str) -> Result<(), String> {
 /// Reads the shipyard again after a removal and stores the read; the numbers of `rebuild_runners` follow it.
 async fn reread(app: &Shared, r: &Runner, prev: &RunnerState) -> RunnerState {
     let fresh = runners::probe(&app.cfg, r).await;
+    let at_ms = fresh.fetched_at_ms;
     let kept = runners::keep_last(Some(prev), fresh);
-    crate::runners_hist::record(&app.db, Some(prev), &kept);
+    crate::runners_hist::record(&app.db, Some(prev), &kept, at_ms);
     if let Ok(json) = serde_json::to_string(&kept) {
         app.db.runner_put(&kept.id, &json, kept.ok, kept.why.as_ref().map(|w| w.line.as_str()).unwrap_or(""));
     }
