@@ -20,7 +20,7 @@ import { frameUniverse, wholeView, type Rect } from './framing';
 import { Labels, type LabelCandidate } from './labels';
 import { computeLayout, QUASAR_R, type Layout } from './layout';
 import { Links } from './links';
-import { Docks, type DockEntry } from './docks';
+import { Docks, DOCK_RADIUS, type DockEntry } from './docks';
 import { Nebulae } from './nebulae';
 import { DEFAULT_COLORS, makePalette, type Palette } from './palette';
 import { Quasar } from './quasar';
@@ -191,6 +191,7 @@ export function createWorld(opts: WorldOptions): World {
   const quasar = new Quasar();
   const links = new Links();
   const docks = new Docks();
+  docks.setMotion(!opts.simple);
   const ship = new Ship();
   const warp = new WarpTunnel();
   const fxGroup = new Group();
@@ -267,6 +268,8 @@ export function createWorld(opts: WorldOptions): World {
   let warpNow = 0;
   const tmp = new Vector3();
   const tmp2 = new Vector3();
+  const tmp3 = new Vector3();
+  const tmp4 = new Vector3();
   const tmpQ = new Quaternion();
 
   function mkItem(kind: Entity['kind'], id: string, radius: number, priority: number): Item {
@@ -336,7 +339,7 @@ export function createWorld(opts: WorldOptions): World {
     }
     quasar.setCoordinator(d.coordinator);
     quasar.setLimits(d.limits);
-    selRing.visible = !!selected;
+    selRing.visible = ringOn(selected);
     requestRender();
   }
 
@@ -352,8 +355,8 @@ export function createWorld(opts: WorldOptions): World {
       const dock = docks.sprites.get(p.runner);
       const planet = bodies.positionOf(p.task, new Vector3());
       if (!dock || !planet) continue;
-      const geom = new BufferGeometry().setFromPoints([planet, dock.pos]);
-      const line = new Line(geom, new LineBasicMaterial({ color: pal.accent, transparent: true, opacity: 0.28, depthWrite: false }));
+      const geom = new BufferGeometry().setFromPoints([planet, docks.linkEnd(p.runner, planet, new Vector3())]);
+      const line = new Line(geom, new LineBasicMaterial({ color: pal.accent, transparent: true, opacity: dock.ok ? 0.2 : 0.07, depthWrite: false }));
       docks.group.add(line);
       dockLines.push({ task: p.task, runner: p.runner, line });
     }
@@ -373,6 +376,7 @@ export function createWorld(opts: WorldOptions): World {
     if (data) {
       universeSig = '';
       sig = '';
+      dockSig = '';
       setData(data);
     }
     if (changedMode) buildComposer();
@@ -412,9 +416,13 @@ export function createWorld(opts: WorldOptions): World {
     return null;
   }
 
+  /** A yard is marked by its own glow, not by a ring around it. */
+  const ringOn = (e: Entity | null): boolean => !!e && e.kind !== 'quasar' && e.kind !== 'runner';
+
   function setSelection(e: Entity | null): void {
     selected = e;
-    selRing.visible = !!e && e.kind !== 'quasar';
+    selRing.visible = ringOn(e);
+    docks.setSelected(e?.kind === 'runner' ? e.id : null);
     requestRender();
   }
 
@@ -445,7 +453,9 @@ export function createWorld(opts: WorldOptions): World {
         case 'moon':
           out.rig = { focus: p, yaw: outward + 0.3, pitch: 0.4, dist: 15 }; out.follow = e.id; out.enter = u; out.leave = !u; break;
         case 'runner':
-          out.rig = { focus: p, yaw: keepYaw, pitch: 0.45, dist: 90 }; out.follow = null; out.enter = null; out.leave = true; break;
+          // the whole yard in the frame with room around it (the narrower side counts), a little raised above the ship
+          p.y -= 6;
+          out.rig = { focus: p, yaw: keepYaw, pitch: 0.45, dist: Math.max(100, DOCK_RADIUS * 1.9 / (Math.tan((FOV * Math.PI) / 360) * Math.min(1, camera.aspect))) }; out.follow = null; out.enter = null; out.leave = true; break;
       }
     }
     const rp = rigPosition(out.rig);
@@ -664,12 +674,12 @@ export function createWorld(opts: WorldOptions): World {
     nebulae.update(time, dt, scale, camera.position);
     bodies.update(time, camera.position, scale, focusUniverse, fxGroup, camera.quaternion);
     quasar.update(time, camera.position);
-    docks.update(time);
+    docks.update(time, camera.position, scale);
     for (const l of dockLines) {
       const dock = docks.sprites.get(l.runner);
       const planet = bodies.positionOf(l.task, tmp);
       if (!dock || !planet) continue;
-      l.line.geometry.setFromPoints([planet, dock.pos]);
+      l.line.geometry.setFromPoints([planet, docks.linkEnd(l.runner, planet, tmp2)]);
     }
     links.setMoving(!simple);
     links.update(time, resolveRef);
@@ -678,7 +688,7 @@ export function createWorld(opts: WorldOptions): World {
       const p = entityPos(selected, tmp2);
       selRing.visible = !!p && !(selected.kind === 'universe' && focusUniverse === selected.id);
       if (p && selRing.visible) {
-        const r = selected.kind === 'planet' ? bodies.radiusOf(selected.id) : selected.kind === 'moon' ? 0.9 : selected.kind === 'universe' ? (layout.byName.get(selected.id)?.radius ?? 20) : selected.kind === 'runner' ? 60 : 4;
+        const r = selected.kind === 'planet' ? bodies.radiusOf(selected.id) : selected.kind === 'moon' ? 0.9 : selected.kind === 'universe' ? (layout.byName.get(selected.id)?.radius ?? 20) : 4;
         const rr = selected.kind === 'universe' ? r * 1.05 : Math.max(r * 1.7, (Math.max(1, camera.position.distanceTo(p)) / scale) * 11);
         selRing.position.copy(p);
         selRing.scale.setScalar(rr);
@@ -737,7 +747,7 @@ export function createWorld(opts: WorldOptions): World {
   function project(w: number, h: number): void {
     projs = [];
     const dockItems: Item[] = [...docks.sprites.entries()].map(([id, rec]) => {
-      const it = mkItem('runner', id, 60, 60);
+      const it = mkItem('runner', id, DOCK_RADIUS, 60);
       it.pos.copy(rec.pos);
       it.label = id;
       return it;
@@ -870,9 +880,9 @@ export function createWorld(opts: WorldOptions): World {
       } else if (e.kind === 'runner') {
         const rec = data?.runners.find((x) => x.id === e.id);
         cands.push({
-          key: it.key, kind: 'runner', x: p.x, y: p.y, lift: Math.max(12, p.rpx + 8),
+          key: it.key, kind: 'runner', x: p.x, y: p.y, lift: Math.max(12, p.rpx * 0.62 + 14),
           priority: isSel ? 100 : isHover ? 92 : 60, force: isSel || isHover,
-          text: it.label, sub: rec ? (rec.ok ? `CPU ${Math.round(rec.load * 100)} %` : t('runner.offline')) : '',
+          text: it.label, sub: rec ? (rec.ok ? `CPU ${Math.round(rec.load * 100)} % · MEM ${Math.round(rec.mem * 100)} %` : t('runner.offline')) : '',
           badge: rec && rec.forgotten > 0 ? `⚑ ${rec.forgotten}` : '', selected: isSel, hovered: isHover, dim: rec ? !rec.ok : false,
         });
       } else if (e.kind === 'moon') {
@@ -900,6 +910,7 @@ export function createWorld(opts: WorldOptions): World {
     nebulae.setSimple(simple);
     bodies.setSimple(simple);
     quasar.setSimple(simple);
+    docks.setMotion(!simple);
     buildComposer();
     universeSig = '';
     sig = '';
@@ -1161,7 +1172,16 @@ export function createWorld(opts: WorldOptions): World {
         universes: layout.universes.length, quiet: layout.universes.filter((u) => u.quiet).length,
         links: (data?.view.links ?? []).map((l) => ({ from: l.from, to: l.to, kind: l.kind })),
         selected, hovered,
-        docks: Object.fromEntries([...docks.sprites.entries()].map(([id, y]) => [id, { x: Math.round(y.pos.x), y: Math.round(y.pos.y), z: Math.round(y.pos.z), ok: y.ok }])),
+        docks: Object.fromEntries([...docks.sprites.entries()].map(([id, y]) => {
+          // where the yard's outermost scale is on the screen: the centre and the radius in pixels
+          const c = projectPoint(y.pos);
+          const e = projectPoint(tmp3.copy(y.pos).addScaledVector(tmp4.setFromMatrixColumn(camera.matrixWorld, 0), DOCK_RADIUS));
+          return [id, {
+            x: Math.round(y.pos.x), y: Math.round(y.pos.y), z: Math.round(y.pos.z), ok: y.ok, lights: y.lights, warm: y.warm,
+            load: y.load, mem: y.mem, radius: DOCK_RADIUS, yaw: Math.round(y.ring.rotation.y * 1000) / 1000, light: y.light,
+            screen: c.ok && e.ok ? { x: Math.round(c.x), y: Math.round(c.y), r: Math.round(Math.hypot(e.x - c.x, e.y - c.y)) } : null,
+          }];
+        })),
         updateMs: Math.round(updateMs * 100) / 100, fps, frameMs: sorted.length ? Math.round((sorted[Math.floor(sorted.length / 2)] ?? 0) * 10) / 10 : 0,
         labels: labels.count, collisions: labels.collisions, overlaps: labels.overlaps,
         limitArcs: quasar.limitArcs, limitCrit: quasar.limitCrit, quasar: { color: quasar.colorNow, state: quasar.stateNow },

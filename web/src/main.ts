@@ -105,6 +105,7 @@ effect(() => {
     runners: (s.runners ?? []).map((r) => ({
       id: r.id, ok: r.ok,
       load: r.host.cpus > 0 ? Math.min(1, r.host.load1 / r.host.cpus) : 0,
+      mem: r.host.mem_total > 0 ? Math.max(0, Math.min(1, 1 - r.host.mem_avail / r.host.mem_total)) : 0,
       containers: r.containers.filter((c) => c.class !== 'foreign').length,
       forgotten: r.containers.filter((c) => c.class === 'forgotten' || c.class === 'unsure').length,
     })),
