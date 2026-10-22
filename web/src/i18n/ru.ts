@@ -87,7 +87,7 @@ export const ru: Record<string, string | string[]> = {
   'amenu.title': 'Агент ждёт выбора', 'amenu.step': 'Вопрос {n} из {m}', 'amenu.own': 'Свой ответ', 'amenu.ownPlaceholder': 'Напишите свой ответ…',
   'amenu.send': 'Отправить', 'amenu.cancel': 'Отменить', 'amenu.cancelTip': 'Esc: отменить вопрос в программе агента', 'amenu.context': 'Подробнее', 'amenu.contextLess': 'Скрыть подробности',
   'amenu.more': 'Ещё', 'amenu.less': 'Свернуть', 'amenu.screen': 'Экран', 'amenu.screenHide': 'Скрыть экран', 'amenu.multiHint': 'Отметьте варианты и нажмите «Отправить»',
-  'amenu.sending': 'Отправляю…', 'amenu.answered': 'Ответ отправлен: {a}', 'amenu.answeredMulti': 'Ответ отправлен', 'amenu.stillThere': 'Меню всё ещё на экране: можно ответить снова.',
+  'amenu.sending': 'Отправляю…', 'amenu.answered': 'Ответ отправлен: {a}', 'amenu.answeredMulti': 'Ответ отправлен', 'amenu.stillThere': 'На экране снова это меню: можно ответить.',
   'amenu.gone': 'Меню уже изменилось, ответ не отправлен.', 'amenu.failed': 'Не удалось ответить: {why}', 'amenu.ownSent': 'свой ответ',
   'perm.allow.text': 'Да, разрешаю.', 'perm.deny.text': 'Нет, не делай этого.',
   // спутники

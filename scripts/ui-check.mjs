@@ -3622,6 +3622,16 @@ section('menu card', async () => {
   const k9 = calls('keys.jsonl').length;
   await click(menuCard() + ' [data-menu-opt="0"]');
   check('and it can be answered', await waitLog(() => keysSince(k9, 'sw-coordinator').length >= 1, 10000), JSON.stringify(keysSince(k9)));
+  // the same question comes back with no screen between (Claude Code's second parallel edit of one file, drawn some 30 ms after Enter):
+  // the card does not hold the old answer for long, it opens for the new question
+  await waitFor(`document.querySelector(${JSON.stringify(menuCard())})?.dataset.state === 'open'`, 10000);
+  writeFileSync(join(fixture, 'state', 'after-enter.txt'), OMP_SINGLE);
+  const k10 = calls('keys.jsonl').length;
+  const t10 = Date.now();
+  await click(menuCard() + ' [data-menu-opt="1"]');
+  await waitLog(() => keysSince(k10, 'sw-coordinator').length >= 1, 10000);
+  check('an identical question right after an answer opens the card again within a few seconds', await waitFor(`document.querySelector(${JSON.stringify(menuCard())})?.dataset.state === 'open' && !document.querySelector(${JSON.stringify(menuCard() + ' [data-menu-status="done"]')})`, 10000) && Date.now() - t10 < 7000, `${await cardState()} ${Date.now() - t10} ms`);
+  try { unlinkSync(join(fixture, 'state', 'after-enter.txt')); } catch { /* used */ }
   setScreen('Готово.');
   check('the retired answer is not shown again when the menu goes', await waitFor(`!document.querySelector(${JSON.stringify(menuCard())}) || document.querySelector(${JSON.stringify(menuCard())})?.dataset.state === 'answered'`, 5000));
   await waitFor(`!document.querySelector(${JSON.stringify(menuCard())})`, 14000);

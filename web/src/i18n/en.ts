@@ -81,7 +81,7 @@ export const en: Record<string, string | string[]> = {
   'amenu.title': 'The agent is waiting for a choice', 'amenu.step': 'Question {n} of {m}', 'amenu.own': 'Your own answer', 'amenu.ownPlaceholder': 'Write your own answer…',
   'amenu.send': 'Send', 'amenu.cancel': 'Cancel', 'amenu.cancelTip': 'Esc: cancel the question in the agent’s program', 'amenu.context': 'Details', 'amenu.contextLess': 'Hide details',
   'amenu.more': 'More', 'amenu.less': 'Less', 'amenu.screen': 'Screen', 'amenu.screenHide': 'Hide screen', 'amenu.multiHint': 'Tick the options and press «Send»',
-  'amenu.sending': 'Sending…', 'amenu.answered': 'Answer sent: {a}', 'amenu.answeredMulti': 'Answer sent', 'amenu.stillThere': 'The menu is still on the screen: you can answer again.',
+  'amenu.sending': 'Sending…', 'amenu.answered': 'Answer sent: {a}', 'amenu.answeredMulti': 'Answer sent', 'amenu.stillThere': 'The menu is on the screen again: you can answer.',
   'amenu.gone': 'The menu has changed already, nothing was sent.', 'amenu.failed': 'Could not answer: {why}', 'amenu.ownSent': 'your own answer',
   'perm.allow.text': 'Yes, I allow it.', 'perm.deny.text': 'No, do not do it.',
   'moon.title': 'Sub-agent', 'moon.parent': 'parent', 'moon.duration': 'running for', 'moon.started': 'started', 'moon.doing': 'Doing now', 'moon.noDoing': 'no data',

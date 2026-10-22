@@ -15,8 +15,9 @@ import './menucard.css';
 
 /** A description longer than this is folded to two lines with «Ещё». */
 const LONG_DESC = 90;
-/** The card unlocks again when the same menu is still on the screen this long after an answer (the answer did not land). */
-const RELOCK_MS = 8000;
+/** The card unlocks again when the same menu is still on the screen this long after an answer: either the answer did not land or
+    the program asked the same question again (two edits of one file); both are answered from the open card. */
+const RELOCK_MS = 3000;
 
 /** How long the answered card stays when the program has moved on at once (the next screen is no menu): long enough to be read. */
 const GRACE_MS = 6000;
@@ -31,6 +32,8 @@ interface Props {
   onAnswered?: () => void;
   /** Set when the card is shown again after the screen lost its menu: the answer already given. */
   answered?: { label: string; at: number };
+  /** The screen has no menu now: the card only keeps the answer in view. */
+  frozen?: boolean;
   /** Changes when the same question comes again: the card starts over. */
   epoch?: number;
   /** Called with the label of the choice once the answer has gone. */
@@ -72,7 +75,7 @@ function MenuCardBody(props: Props): JSX.Element {
 
   useEffect(() => { if (ownOpen) ownRef.current?.focus(); }, [ownOpen]);
 
-  const locked = !!done && done.sig === menu.sig && Date.now() - done.at < RELOCK_MS;
+  const locked = !!done && done.sig === menu.sig && (!!props.frozen || Date.now() - done.at < RELOCK_MS);
   const stale = !!done && done.sig === menu.sig && !locked;
   const off = locked || busy;
 
@@ -230,7 +233,7 @@ function MenuCardBody(props: Props): JSX.Element {
     its next screen (which is usually no menu), instead of vanishing into the raw screen at once. */
 const answeredCards = signal<Record<string, { menu: MenuData; label: string; at: number }>>({});
 
-interface SlotProps extends Omit<Props, 'menu' | 'answered' | 'onDone'> {
+interface SlotProps extends Omit<Props, 'menu' | 'answered' | 'onDone' | 'frozen' | 'epoch'> {
   /** The menu the screen shows now; null when there is none. */
   menu: MenuData | null;
   /** What to show when there is no menu and no answered card to keep: the raw dialog, or nothing. */
@@ -264,7 +267,7 @@ export function MenuSlot(props: SlotProps): JSX.Element | null {
   const mine = live && rec.menu.sig === shown.sig ? { label: rec.label, at: rec.at } : undefined;
   return (
     <MenuCard
-      {...rest} menu={shown} answered={mine} epoch={gen.current}
+      {...rest} menu={shown} answered={mine} frozen={!menu} epoch={gen.current}
       onDone={(label) => { answeredCards.value = { ...answeredCards.value, [key]: { menu: shown, label, at: Date.now() } }; }}
     />
   );
