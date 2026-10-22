@@ -739,8 +739,8 @@ impl TaskIndex {
             tag: tag.clone(),
             status: t.status.key().to_string(),
             archived: t.archived,
-            exited: t.exited_at > 0,
-            exited_ms: t.exited_at,
+            exited: t.finished_ms > 0,
+            exited_ms: t.finished_ms,
             title: t.title.clone(),
         };
         self.tags.entry(tag).or_default().push(cand.clone());
@@ -1474,7 +1474,7 @@ mod tests {
             key: tag_key(tag).unwrap_or_default(),
             status,
             archived,
-            exited_at: if archived || matches!(status, crate::board::Status::Done) { 1 } else { 0 },
+            finished_ms: if archived || matches!(status, crate::board::Status::Done) { 1 } else { 0 },
             title: tag.into(),
             ..Task::default()
         }
@@ -1581,7 +1581,7 @@ mod tests {
     #[test]
     fn a_done_task_whose_agent_still_runs_is_not_forgotten_yet() {
         let mut done = task("alpha/1", "ALP-1", Status::Done, false);
-        done.exited_at = 0;
+        done.finished_ms = 0;
         let idx = TaskIndex::build(&[], &[done], &[repo("alpha", "ALP")]);
         let mut list = vec![cont("web-ALP-1", &[])];
         classify(&mut list, &[], &idx);

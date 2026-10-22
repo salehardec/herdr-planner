@@ -312,6 +312,8 @@ pub fn report_of(
         owned.extend(vols.iter().cloned());
         let bytes: u64 = raw.volumes.iter().filter(|v| vols.contains(&v.name)).map(|v| v.bytes).sum();
         let running = b.nodes.iter().any(|(_, s)| s == "running");
+        // A builder whose container name is under a protection mask is offered, but only when the human ticks it.
+        let masked = b.nodes.iter().any(|(n, _)| runners::name_protected(&format!("buildx_buildkit_{n}"), &BTreeMap::new(), protected));
         if !safe_builder(&b.name) {
             continue;
         }
@@ -322,7 +324,7 @@ pub fn report_of(
             bytes,
             kind: "builder".into(),
             sub: b.driver.clone(),
-            on: !running,
+            on: !running && !masked,
             locked: if running { "running".into() } else { String::new() },
         });
     }
@@ -335,7 +337,8 @@ pub fn report_of(
                 bytes: v.bytes,
                 kind: "state".into(),
                 sub: String::new(),
-                on: true,
+                // Under a protection mask (`buildx_*` covers these volumes) it is offered, not ticked.
+                on: !runners::name_protected(&v.name, &v.labels, protected),
                 locked: String::new(),
             });
         }
@@ -604,7 +607,7 @@ mod tests {
             tag: tag.into(),
             key: "ALP".into(),
             status,
-            exited_at: exited,
+            finished_ms: exited,
             title: tag.into(),
             ..Task::default()
         };
@@ -665,6 +668,24 @@ mod tests {
         // A state volume of a builder in use (links) or of a listed builder is not a second item.
         assert!(r.builders.items.iter().all(|i| i.key != "s:buildx_buildkit_live0_state" && i.key != "s:buildx_buildkit_old-ci0_state"));
         assert_eq!(r.builders.items[0].key, "s:buildx_buildkit_gone0_state");
+    }
+
+    #[test]
+    fn a_builder_or_its_leftover_under_a_protection_mask_is_offered_unticked() {
+        let raw = parse_raw(&out()).unwrap();
+        let r = report_of(&raw, "vm-r", &["buildx_*".into()], &index(), (1000, 400), 42);
+        let by = |k: &str| r.builders.items.iter().find(|i| i.key == k).unwrap();
+        assert!(!by("b:old-ci").on && by("b:old-ci").locked.is_empty());
+        assert!(!by("s:buildx_buildkit_gone0_state").on);
+        assert!(r.builders.items.iter().all(|i| !i.on));
+        // Without the mask they are ticked, as before.
+        assert!(by_unmasked("b:old-ci") && by_unmasked("s:buildx_buildkit_gone0_state"));
+    }
+
+    fn by_unmasked(key: &str) -> bool {
+        let raw = parse_raw(&out()).unwrap();
+        let r = report_of(&raw, "vm-r", &["supabase".into()], &index(), (1000, 400), 42);
+        r.builders.items.iter().find(|i| i.key == key).unwrap().on
     }
 
     #[test]

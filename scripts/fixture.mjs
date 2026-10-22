@@ -126,6 +126,7 @@ function common(DATA, mods) {
       created: m.created || 0, at: m.at || m.created || 0, settings: m.settings || {}, model: m.model ?? null,
       session: m.session || '', worktree: m.worktree || '', branch: m.branch || '',
       after, afterDone: m.afterDone || [], exitedAt: m.exitedAt ?? null,
+      ...(m.gone ? { last: { status: null, gone: true } } : {}),
     }, null, 2));
   };
   // The key the board suggests: the last word's first letter and the next consonants (`newrepo` → NWR).
@@ -273,7 +274,7 @@ const META = {
   'alpha/9': { ago: 2 * HOUR, desc: 'Run the nightly import of tenant reports; the worker waits for a free slot.' },
   'alpha/10': { ago: 30 * HOUR, desc: 'Follow-up of the nightly import: fix retries once ALP-9 is merged.', afterDone: [] },
   'alpha/11': { ago: 9 * DAY, desc: 'Заметка на потом: проверить, нужен ли HTTP-кеш для экспорта.' },
-  'alpha/13': { ago: 9 * DAY, desc: 'Старое дело: убрать устаревший флаг совместимости из конфига.' },
+  'alpha/13': { ago: 9 * DAY, desc: 'Старое дело: убрать устаревший флаг совместимости из конфига.', noExit: true },
   'alpha/15': { ago: 4 * HOUR, desc: 'Export button now shows progress; the job reports percent through the existing event channel.' },
   'alpha/16': { ago: 12 * MIN, desc: 'Find and remove the old branches work/1–work/9; they are all merged into main, work/10 stays.' },
   'beta/1': { ago: 9 * DAY, desc: 'Initial beta bootstrap: CI config and the first smoke test.' },
@@ -437,7 +438,9 @@ for (const r of rows) {
     session: C0.uuid('session ' + r.id),
     worktree: path.join(dir, 'worktrees', `${repo}-${n}`),
     branch: `work/${n}`,
-    exitedAt: r.exitedAt ?? (r.state === 'done' || r.archivedAt ? Math.min(NOW, created + 40 * MIN) : null),
+    // noExit: the shape of most done tasks on a real board: no exitedAt, the board only saw the pane gone (last.gone).
+    exitedAt: m.noExit ? null : (r.exitedAt ?? (r.state === 'done' || r.archivedAt ? Math.min(NOW, created + 40 * MIN) : null)),
+    gone: !!m.noExit,
     afterDone: m.afterDone || [],
   };
 }

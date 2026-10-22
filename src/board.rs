@@ -124,6 +124,11 @@ pub struct Task {
     pub session: String,
     pub worktree: String,
     pub exited_at: u64,
+    /// When the task's work left the machine for good (ms), 0 while it may still be there: the agent exited, or the
+    /// task is archived, or it is done and the board saw its pane gone (`exitedAt` alone is set only when the pane is
+    /// alive and the agent is gone, which is the rarer case on a real board).
+    #[serde(skip)]
+    pub finished_ms: u64,
     /// The project's key (`PLN`).
     pub key: String,
     /// Sub-agents of the task's agent, newest first.

@@ -440,6 +440,24 @@ pub async fn run_board(cfg: &AppConfig, args: &[&str], wait: Duration) -> Result
     Ok(stdout)
 }
 
+/// The moment a done or archived task stopped being worked on, from its own record; 0 when it may still be.
+fn finished_of(t: &Task, m: &taskmeta::TaskMeta) -> u64 {
+    if m.exited_at_ms > 0 {
+        return m.exited_at_ms;
+    }
+    // A busy agent is not finished, whatever the label says.
+    if m.working || !(t.archived || t.status == Status::Done) {
+        return 0;
+    }
+    if t.archived && m.archived_at_ms > 0 {
+        return m.archived_at_ms;
+    }
+    if m.gone {
+        return m.at_ms;
+    }
+    0
+}
+
 /// Merges the task's own record (`task.json`) and its repo's key into the row of `list --json`.
 fn apply_meta(t: &mut Task, meta: Option<&taskmeta::TaskMeta>, key: &str) {
     t.key = key.to_string();
@@ -451,6 +469,7 @@ fn apply_meta(t: &mut Task, meta: Option<&taskmeta::TaskMeta>, key: &str) {
         t.session = m.session.clone();
         t.worktree = m.worktree.clone();
         t.exited_at = m.exited_at_ms;
+        t.finished_ms = finished_of(t, m);
         if t.app.is_empty() {
             t.app = m.app.clone();
         }
@@ -1082,6 +1101,27 @@ pub async fn details(app: &Shared, id: &str) -> Result<Details, String> {
 mod tests {
     use super::*;
     use crate::board::parse_list;
+
+    #[test]
+    fn a_task_is_finished_when_its_agent_left_its_pane_went_or_it_was_archived() {
+        let task = |status: Status, archived: bool| Task { status, archived, ..Task::default() };
+        let meta = |f: &dyn Fn(&mut taskmeta::TaskMeta)| {
+            let mut m = taskmeta::TaskMeta { at_ms: 500, ..taskmeta::TaskMeta::default() };
+            f(&mut m);
+            m
+        };
+        // exitedAt wins.
+        assert_eq!(finished_of(&task(Status::Done, false), &meta(&|m| m.exited_at_ms = 100)), 100);
+        // The usual shape of a real board: done, no exitedAt, the pane seen gone: the record's last change.
+        assert_eq!(finished_of(&task(Status::Done, false), &meta(&|m| m.gone = true)), 500);
+        // Archived with no exitedAt: the moment of archiving.
+        assert_eq!(finished_of(&task(Status::Done, true), &meta(&|m| m.archived_at_ms = 300)), 300);
+        // Done, nothing says the agent left: not finished. A busy agent never is.
+        assert_eq!(finished_of(&task(Status::Done, false), &meta(&|_| {})), 0);
+        assert_eq!(finished_of(&task(Status::Done, true), &meta(&|m| { m.archived_at_ms = 300; m.working = true })), 0);
+        // A task still on the board is not finished because its pane went.
+        assert_eq!(finished_of(&task(Status::Working, false), &meta(&|m| m.gone = true)), 0);
+    }
 
     fn tasks() -> Vec<Task> {
         parse_list(

@@ -1094,6 +1094,50 @@ pub struct AutoBody {
     confirm: Option<bool>,
 }
 
+#[derive(Deserialize)]
+pub struct AutoPreviewBody {
+    id: String,
+    #[serde(default)]
+    hours: Option<u64>,
+}
+
+/// `POST /api/runner/auto/preview`: what the auto-clean would remove right now with these hours (the saved ones when
+/// none are given). Nothing is removed; the page shows it before switching on or shortening the time.
+pub async fn runner_auto_preview(State(app): State<Shared>, headers: HeaderMap, Json(body): Json<AutoPreviewBody>) -> Response {
+    if !same_origin(&headers) {
+        return fail(403, "cross-origin request refused");
+    }
+    let file = match file_of(&app) {
+        Ok(f) => f,
+        Err(r) => return r,
+    };
+    let Some(r) = file.get(&body.id) else {
+        return fail(404, "такой верфи нет в списке");
+    };
+    let hours = body.hours.unwrap_or(r.auto.hours);
+    if hours == 0 || hours > runners_auto::MAX_HOURS {
+        return fail(422, format!("время автоуборки: от 1 до {} часов", runners_auto::MAX_HOURS));
+    }
+    let Some(state) = state_now(&app, &body.id).await else {
+        return fail(404, "такой верфи нет в списке");
+    };
+    let index = {
+        let snap = app.snapshot.read().await;
+        index_of(&app, &snap)
+    };
+    let plan = runners_auto::plan_of(&state, &index, hours, now_ms());
+    let cap = |v: Vec<String>| -> Vec<String> { v.into_iter().take(30).collect() };
+    Json(json!({
+        "ok": state.ok,
+        "hours": hours,
+        "containers": cap(plan.containers.iter().map(|(_, name)| name.clone()).collect()),
+        "networks": cap(plan.networks.clone()),
+        "volumes": cap(plan.volumes.clone()),
+        "counts": {"containers": plan.containers.len(), "networks": plan.networks.len(), "volumes": plan.volumes.len()},
+    }))
+    .into_response()
+}
+
 /// `POST /api/runner/auto`: the switch and the time of the auto-clean. Switching on is the consent to remove what the
 /// manual card would offer, without asking each time.
 pub async fn runner_auto(State(app): State<Shared>, headers: HeaderMap, Json(body): Json<AutoBody>) -> Response {

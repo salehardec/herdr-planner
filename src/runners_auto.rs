@@ -310,7 +310,7 @@ mod tests {
             key: tag.split('-').next().unwrap_or("").into(),
             status,
             archived,
-            exited_at,
+            finished_ms: exited_at,
             title: tag.into(),
             ..Task::default()
         }

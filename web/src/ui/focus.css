@@ -109,3 +109,4 @@
 .rf-auto-time{display:flex;align-items:center;flex-wrap:wrap;gap:0.375rem;margin:0.375rem 0;font-size:0.75rem;color:var(--pl-dim)}
 .rf-auto-time .field{width:4.5rem}
 .rf-auto-count{font-size:0.75rem;color:var(--pl-accent-ink);margin:0.375rem 0 0}
+.rf-auto-preview{margin:0.375rem 0;font-size:0.75rem}.rf-auto-preview ul{margin:0.25rem 0 0.25rem 1rem;padding:0}.rf-auto-preview li{margin:0.0625rem 0}

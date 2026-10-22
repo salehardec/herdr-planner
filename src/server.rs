@@ -109,6 +109,7 @@ pub fn router(app: Shared) -> Router {
         .route("/api/runner/disk", post(crate::runners_api::disk_measure))
         .route("/api/runner/disk/clean", post(crate::runners_api::disk_clean))
         .route("/api/runner/auto", post(crate::runners_api::runner_auto))
+        .route("/api/runner/auto/preview", post(crate::runners_api::runner_auto_preview))
         .route("/api/runner/terminal", post(crate::runners_api::runner_terminal))
         .route("/api/station", get(station::station_get))
         .route("/api/station/models", get(station::station_models))

@@ -438,7 +438,7 @@ export const en: Record<string, string | string[]> = {
   'disk.stopped': 'Stopped containers', 'disk.stoppedLine': ['{n} container · ≈ {size}', '{n} containers · ≈ {size}', '{n} containers · ≈ {size}'],
   'disk.stoppedHint': 'Only the forgotten containers of finished tasks (docker rm without -f). Stopped foreign ones and those of tasks in work: {n} — not touched.',
   'disk.builders': 'buildx builders', 'disk.buildersLine': ['{n} builder · ≈ {size}', '{n} builders · ≈ {size}', '{n} builders · ≈ {size}'],
-  'disk.buildersHint': 'docker buildx rm with the builder’s data; what a builder left behind goes as a volume. Running builders are not touched. The protection masks do not apply to builders: the tick decides.',
+  'disk.buildersHint': 'docker buildx rm with the builder’s data; what a builder left behind goes as a volume. Running builders are not touched. Builders and leftovers under a protection mask are shown unticked: your tick decides.',
   'disk.kindState': 'builder leftover', 'disk.lockedRunning': 'running — not touched',
   'disk.volumes': 'Unused volumes', 'disk.volumesLine': ['{n} volume · ≈ {size}', '{n} volumes · ≈ {size}', '{n} volumes · ≈ {size}'],
   'disk.volumesWarn': 'Careful: a volume without a container may hold somebody’s data (the database of a neighbour that is down now), and what is removed does not come back. Nothing is ticked beforehand. Not shown, under a protection mask or of tasks in work: {n}.',
@@ -453,6 +453,8 @@ export const en: Record<string, string | string[]> = {
   'auto.after': 'After', 'auto.hoursUnit': 'h since the task finished', 'auto.save': 'Save the time', 'auto.saved': 'The auto-clean time is saved',
   'auto.badHours': 'The time is a whole number of hours, at least one',
   'auto.count': 'Removed automatically: containers {c} · networks {n} · volumes {v}', 'auto.last': 'last time {when}', 'auto.never': 'nothing yet',
+  'auto.previewNow': 'Right after this it removes ({h} h after finishing): containers {c} · networks {n} · volumes {v}. Press again to confirm.', 'auto.previewNone': 'Nothing matches {h} h right now: nothing goes at once. Press again to confirm.',
+  'auto.kindContainer': 'container', 'auto.kindNetwork': 'network', 'auto.kindVolume': 'volume', 'auto.saveConfirm': 'Save for sure',
   'runner.autoToast': 'Shipyard {id}: removed automatically — {n}',
 
   'load.cpu': 'CPU', 'load.mem': 'MEM', 'load.gpu': 'GPU', 'load.short': 'Load',
