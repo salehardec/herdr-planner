@@ -312,8 +312,8 @@ pub fn parse(screen: &str) -> Option<Menu> {
     };
     // The tail of the group: lines after the last row up to a blank are its description unless they are the hint.
     let mut tail_end = end;
-    for j in end + 1..lines.len() {
-        match &lines[j] {
+    for (j, k) in lines.iter().enumerate().skip(end + 1) {
+        match k {
             Kind::Text(t) if !is_hint(t) => tail_end = j,
             _ => break,
         }

@@ -2458,10 +2458,15 @@ const layoutRun = async (w, h, dsf, scale = 'auto') => {
     // card (or the window's edge), where its messages are
     const col = await evalJs(`(() => { const c = document.querySelector('#chat').getBoundingClientRect(); const px = parseFloat(getComputedStyle(document.documentElement).fontSize); return { w: c.width / px, l: c.left, r: c.right, px }; })()`);
     check(`${at}: the wide chat is no wider than 64 rem (${col?.w?.toFixed(1)})`, col && col.w <= 64.1, JSON.stringify(col));
-    const l = await rectOf('#chat'); const nv = await rectOf('#nav'); const td = await rectOf('#todo'); const fc = await rectOf('#focus');
-    const left = td && td.r > nv.r ? td : nv;
-    const right = fc && fc.l < w - 30 ? fc.l : w;
-    check(`${at}: and it stands in the middle of the space between the column on its left and the focus card (${Math.round((l.l + l.r) / 2)} vs ${Math.round((left.r + right) / 2)})`, Math.abs((l.l + l.r) / 2 - (left.r + right) / 2) <= 3, JSON.stringify({ l, left: left.r, right }));
+    // (the chat slides to its place: judged once it has stopped)
+    const mid = (x) => {
+      const left = x.todo && x.todo.r > x.nav.r ? x.todo : x.nav;
+      const right = x.focus && x.focus.l < w - 30 ? x.focus.l : w;
+      return { left: left.r, right, centre: (x.chat.l + x.chat.r) / 2, want: (left.r + right) / 2 };
+    };
+    const [centred, cr] = await settled({ chat: '#chat', nav: '#nav', todo: '#todo', focus: '#focus' }, (x) => { const m = mid(x); return Math.abs(m.centre - m.want) <= 3; }, 6000);
+    const m = mid(cr);
+    check(`${at}: and it stands in the middle of the space between the column on its left and the focus card (${Math.round(m.centre)} vs ${Math.round(m.want)})`, centred, JSON.stringify({ chat: cr.chat, m }));
   });
   // the navigator dragged as far as it goes, and a width kept from a bigger window: the chat still has room (words whole, buttons clear of the focus card)
   if (dsf === 1 && eff > 1000) {
