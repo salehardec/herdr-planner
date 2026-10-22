@@ -370,3 +370,36 @@ export interface SearchHit {
 export const entityKey = (e: Entity): string => `${e.kind}|${e.id}`;
 export const sameEntity = (a: Entity | null, b: Entity | null): boolean =>
   !!a && !!b && a.kind === b.kind && a.id === b.id;
+
+/** A choice of a selection menu an agent shows in its terminal (see src/menu.rs). */
+export interface MenuOption {
+  /** The row in the program's list: where the cursor has to go. */
+  at: number;
+  label: string;
+  desc: string;
+  checked: boolean;
+  /** The row that takes the person's own words («Type something», «Other»). */
+  own: boolean;
+}
+
+export interface MenuData {
+  program: string;
+  /** Changes with the question and its choices, not with the cursor or the ticks. */
+  sig: string;
+  question: string;
+  context: string;
+  options: MenuOption[];
+  multi: boolean;
+  cursor: number;
+  submit_at: number | null;
+  own_editor: boolean;
+  step: number;
+  steps: number;
+  tabs: string[];
+}
+
+export type MenuAnswer =
+  | { kind: 'pick'; at: number }
+  | { kind: 'own'; text: string }
+  | { kind: 'multi'; picked: number[]; own?: string }
+  | { kind: 'cancel' };

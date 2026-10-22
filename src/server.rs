@@ -69,6 +69,7 @@ pub fn router(app: Shared) -> Router {
         .route("/api/details", get(api_details))
         .route("/api/coordinator/screen", get(api_coordinator_screen))
         .route("/api/action", post(api_action))
+        .route("/api/menu/answer", post(crate::menu_api::menu_answer))
         .route("/api/chat", post(api_chat))
         .route("/api/chat/history", get(api_chat_history))
         .route(
@@ -474,18 +475,21 @@ async fn api_coordinator_screen(
     };
     let tail = clip_tail_to(out, SCREEN_MAX_CHARS);
     let text = strip_ansi(&tail);
+    // A selection menu on the screen (a question with choices) comes parsed: the page draws it as buttons.
+    let menu = crate::menu::parse(&text);
     Json(json!({
         "ok": true,
         "running": true,
         "target": name,
         "text": text,
+        "menu": menu,
         "ansi": if colored { tail } else { String::new() },
     }))
     .into_response()
 }
 
 /// `sw-coordinator` for the Coordinator, `sw-<repo>-<n>` for a task's agent.
-fn agent_name(target: &str, role: Option<&str>) -> Result<String, String> {
+pub(crate) fn agent_name(target: &str, role: Option<&str>) -> Result<String, String> {
     if target == "coordinator" {
         return Ok("sw-coordinator".into());
     }
@@ -582,7 +586,7 @@ fn valid_key(k: &str) -> bool {
 }
 
 /// Runs the herdr CLI (`HERDR_BIN` overrides the binary name for checks).
-async fn run_herdr(args: &[&str], wait: Duration) -> Result<String, String> {
+pub(crate) async fn run_herdr(args: &[&str], wait: Duration) -> Result<String, String> {
     run_herdr_with(args, wait, false).await
 }
 
@@ -1527,7 +1531,7 @@ fn cut_inside_escape(s: &str, start: usize) -> bool {
 /// The text without its escape sequences: `herdr agent read --format ansi` colours the screen for a
 /// terminal, and the plain text is what a caller without colours draws. A sequence cut by the length
 /// limit is dropped too.
-fn strip_ansi(s: &str) -> String {
+pub(crate) fn strip_ansi(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     let mut chars = s.chars().peekable();
     while let Some(c) = chars.next() {

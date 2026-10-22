@@ -116,7 +116,7 @@ job_release() { printf 'x\n' >&9; }
 n=0
 for only in "boot,live,navigator,buttons,autopilot,manual,stack,queue,search" \
             "chat,todo" \
-            "lag,universes,remote,scale,runners" \
+            "lag,universes,remote,scale,runners,menu card" \
             "station,crew,ship,theme,simple,narrow" \
             "focus,agent screen,requests,links,archive,load,limits,memory,layout narrow" \
             "layout 1280" "layout 1920,layout 1600" "layout 2560" "layout 1366,layout big"; do

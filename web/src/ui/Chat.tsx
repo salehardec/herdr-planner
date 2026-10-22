@@ -22,9 +22,10 @@ import { dialogOpen } from '../dialogs';
 import { PendingFiles, SavedFiles } from './Attached';
 import { AutoTextarea, fitText } from './AutoText';
 import { KeyButtons } from './Keys';
+import { MenuCard } from './MenuCard';
 import { chatBack, chatWide, setChatWide } from '../chat-wide';
 import { dragTodo } from '../todo-drag';
-import type { TurnData } from '../types';
+import type { MenuData, TurnData } from '../types';
 import './chat.css';
 
 const wide = signal<Set<number>>(new Set());
@@ -129,11 +130,19 @@ export function Chat(): JSX.Element {
   const lastReply = (showTurns ? c.turns[c.turns.length - 1].a : '') || reply;
   const options = dialog || busy ? [] : parseOptions(lastReply);
   const scr = screens.value.coordinator;
+  // The Coordinator's selection menu, read from its screen: shown as a card with buttons while the screen has it.
+  const menu: MenuData | null = dialog && !scr?.error ? (scr?.menu ?? null) : null;
 
   // Load the transcript when the chat opens and when it grows.
   useEffect(() => { if (open) void loadLatest(); }, [open]);
   useEffect(() => onChatEvent(() => { if (panels.chat.value) void loadLatest(); }), []);
   useEffect(() => { if (open && dialog) void fetchScreen('coordinator'); }, [open, dialog, coord?.reply]);
+  // While the Coordinator waits for a choice the card follows the screen: an answer given in the terminal closes it.
+  useEffect(() => {
+    if (!open || !dialog) return;
+    const id = window.setInterval(() => { if (!document.hidden) void fetchScreen('coordinator'); }, 1500);
+    return () => window.clearInterval(id);
+  }, [open, dialog]);
   useEffect(() => { reconcile(); }, [coord?.history.length]);
 
   // Keep the end in view unless the reader scrolled up; keep the place after older turns are added.
@@ -242,7 +251,7 @@ export function Chat(): JSX.Element {
   }, [draft]);
 
   return (
-    <section class={`panel chat ${chatWide.value ? 'wide' : ''} ${open ? '' : 'off'} ${todoOver.value ? 'drop' : ''}`} id="chat" aria-label={t('chat.aria')} aria-hidden={!open} {...dropProps}>
+    <section class={`panel chat ${chatWide.value ? 'wide' : ''} ${open ? '' : 'off'} ${todoOver.value ? 'drop' : ''} ${menu ? 'has-menu' : ''}`} id="chat" aria-label={t('chat.aria')} aria-hidden={!open} {...dropProps}>
       <header>
         <b>{t('quasar.label')}</b>
         <span class={`st ${err ? 'bad' : busy ? 'busy' : ''}`} id="cstate">● {status}</span>
@@ -315,7 +324,18 @@ export function Chat(): JSX.Element {
           void loadLatest();
         }}>{t('chat.toLast')}</button>
       )}
-      {dialog && (
+      {dialog && menu && (
+        <MenuCard
+          target="coordinator" menu={menu} place="chat" onAnswered={() => { void fetchScreen('coordinator'); setTimeout(() => { void fetchScreen('coordinator'); void refreshNow(); }, 900); }}
+          screen={(
+            <>
+              <pre class="menu-screen">{scr?.text}</pre>
+              <KeyButtons target="coordinator" />
+            </>
+          )}
+        />
+      )}
+      {dialog && !menu && (
         <div class="dialog" id="cdialog">
           <div class="h">{t('chat.dialogTitle')}</div>
           {scr?.error ? <div class="hint">{scr.error}</div> : <pre>{scr?.text || (scr?.busy ? t('chat.reading') : '')}</pre>}

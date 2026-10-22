@@ -18,6 +18,8 @@ mod history;
 mod memory;
 mod memory_api;
 mod memory_guard;
+mod menu;
+mod menu_api;
 mod load;
 mod models;
 mod runners;

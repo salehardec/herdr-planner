@@ -328,7 +328,7 @@ section('buttons', async () => {
   // a runner's id «vm-r») is not a label, so those are left out; a label that starts with an arrow
   // or a digit has no first letter to capitalise.
   const smallLabels = () => evalJs(`(() => {
-    const skip = '#crumbs, [data-prog], .prog, #load-chip, .rf-task .k';
+    const skip = '#crumbs, [data-prog], .prog, #load-chip, .rf-task .k, .menu-opt:not(.own)';
     const bad = [];
     for (const b of document.querySelectorAll('button')) {
       const r = b.getBoundingClientRect();
@@ -2454,13 +2454,14 @@ const layoutRun = async (w, h, dsf, scale = 'auto') => {
   }, async () => {
     const [ok, r] = await settled({ chat: '#chat', todo: '#todo', nav: '#nav', focus: '#focus' }, (x) => x.chat.l >= x.todo.r - 1 && x.todo.l >= x.nav.r - 1 && x.chat.r <= w + 1);
     check(`${at}: the wide chat stands right of the todos and inside the window`, ok, JSON.stringify(r));
-    // the chat is bounded and stands next to the column on its left (not in the middle of a wide empty space): its messages are
-    // where the eye is, however large the window is
-    const col = await evalJs(`(() => { const c = document.querySelector('#chat').getBoundingClientRect(); const px = parseFloat(getComputedStyle(document.documentElement).fontSize); const t = document.querySelector('#clog .turn .txt, #clog .turn .q'); const tr = t ? t.getBoundingClientRect() : null; return { w: c.width / px, l: c.left, r: c.right, textL: tr ? tr.left : null, px }; })()`);
+    // the chat is bounded (64 rem) and stands in the middle of the space right of the todos' column (or the navigator) and left of the focus
+    // card (or the window's edge), where its messages are
+    const col = await evalJs(`(() => { const c = document.querySelector('#chat').getBoundingClientRect(); const px = parseFloat(getComputedStyle(document.documentElement).fontSize); return { w: c.width / px, l: c.left, r: c.right, px }; })()`);
     check(`${at}: the wide chat is no wider than 64 rem (${col?.w?.toFixed(1)})`, col && col.w <= 64.1, JSON.stringify(col));
-    const l = await rectOf('#chat'); const nv = await rectOf('#nav'); const td = await rectOf('#todo');
+    const l = await rectOf('#chat'); const nv = await rectOf('#nav'); const td = await rectOf('#todo'); const fc = await rectOf('#focus');
     const left = td && td.r > nv.r ? td : nv;
-    check(`${at}: and it stands next to the column on its left (${Math.round(l.l - left.r)} px), its text starts ${Math.round((col.textL ?? l.l) - l.l)} px into it`, l.l - left.r <= 2 * col.px && (col.textL === null || col.textL - l.l <= 12 * col.px), JSON.stringify({ l, left: left.r, textL: col.textL }));
+    const right = fc && fc.l < w - 30 ? fc.l : w;
+    check(`${at}: and it stands in the middle of the space between the column on its left and the focus card (${Math.round((l.l + l.r) / 2)} vs ${Math.round((left.r + right) / 2)})`, Math.abs((l.l + l.r) / 2 - (left.r + right) / 2) <= 3, JSON.stringify({ l, left: left.r, right }));
   });
   // the navigator dragged as far as it goes, and a width kept from a bigger window: the chat still has room (words whole, buttons clear of the focus card)
   if (dsf === 1 && eff > 1000) {
@@ -3269,6 +3270,254 @@ section('runners', async () => {
   check('and the navigator forgets it', await waitFor('plannerSnap().runners.every((r) => r.id !== "vm-r2")', 8000), JSON.stringify((await stateApi())?.journal?.slice(-2)));
   await shot('shipyard.png');
 }, { retry: false });
+
+
+// ── the selection menu of an agent as a card with buttons ─────────────────────────────────────────────
+// The screens are what the programs draw (Claude Code's AskUserQuestion, omp's ask), read from real sessions. The server parses the
+// screen (src/menu.rs) and answers with keys: the fixture's herdr logs `send-keys` (keys.jsonl) and `pane send-text` (text.jsonl).
+const RULE = '─'.repeat(70);
+const CLAUDE_Q1 = [RULE, '←  ☐ Lib  ☐ Features  ✔ Submit  →', '', 'Which library?', '',
+  '❯ 1. date-fns', '     Modular, tree-shakeable, works with any date type, and it has a very long description that explains why it is the best pick for most projects',
+  '  2. dayjs', '     Small', '  3. Type something.', RULE, '  4. Chat about this', '', 'Enter to select · Tab/Arrow keys to navigate · Esc to cancel'].join('\n');
+const CLAUDE_Q2 = [RULE, '←  ☒ Lib  ☐ Features  ✔ Submit  →', '', 'Which features?', '',
+  '❯ 1. [ ] A', '         First', '  2. [ ] B', '         Second', '  3. [ ] C', '         Third', '  4. [ ] Type something', '     Submit', RULE, '  5. Chat about this', '',
+  'Enter to select · Tab/Arrow keys to navigate · Esc to cancel'].join('\n');
+const CLAUDE_OWN = [RULE, '←  ☐ Database  ✔ Submit  →', '', 'Which database?', '',
+  '❯ 1. Postgres', '     Relational', '  2. SQLite', '     Embedded', '  3. Type something.', RULE, '  4. Chat about this', '', 'Enter to select · Tab/Arrow keys to navigate · Esc to cancel'].join('\n');
+const OMP_SINGLE = ['╭─ Ask ' + '─'.repeat(40) + '╮', '│  lib    feat    Submit' + ' '.repeat(18) + '│', '│ Which engine?' + ' '.repeat(30) + '│', '├' + '─'.repeat(48) + '┤',
+  '│   turbo' + ' '.repeat(33) + '│', '│    diesel' + ' '.repeat(33) + '│', '│    Other (type your own)' + ' '.repeat(21) + '│', '│' + ' '.repeat(48) + '│', '├' + '─'.repeat(48) + '┤',
+  '│ 󰌑 select · n note · ↑/↓ move · 󱊷 cancel' + ' '.repeat(10) + '│', '╰' + '─'.repeat(48) + '╯'].join('\n');
+const setScreen = (t) => writeFileSync(join(fixture, 'state', 'dialog.txt'), t);
+const keysSince = (n, target) => calls('keys.jsonl').slice(n).filter((c) => !target || c.target === target).flatMap((c) => c.keys);
+const menuCard = (root = '#chat') => `${root} [data-menu-card]`;
+const optTexts = (root = '#chat') => evalJs(`[...document.querySelectorAll(${JSON.stringify(menuCard(root) + ' .menu-opt')})].map((b) => b.querySelector('.mo-l')?.innerText || '')`);
+const cardState = (root = '#chat') => evalJs(`document.querySelector(${JSON.stringify(menuCard(root))})?.dataset.state || ''`);
+
+section('menu card', async () => {
+  await resetUi();
+  const dialogFlag = join(fixture, 'state', 'coordinator-dialog');
+  writeFileSync(dialogFlag, '1');
+  setScreen(CLAUDE_Q1);
+  await evalJs('planner.goOverview(); true');
+  await waitFor('world.debug().flight === "idle" && plannerDebug().selected === null', 15000);
+  await press('Slash', '/');
+  await waitFor('!document.querySelector("#chat").classList.contains("off")', 3000);
+  // ── the Coordinator, the small chat
+  check('a question of the Coordinator\'s menu is a card in the chat, not the raw screen', await waitFor(`!!document.querySelector(${JSON.stringify(menuCard())})`, 15000) && !(await exists('#cdialog')), await text('#chat .dialog'));
+  check('the card says what is asked and offers the options with their descriptions', (await text(menuCard() + ' [data-menu-question]')) === 'Which library?' && JSON.stringify(await optTexts()) === JSON.stringify(['date-fns', 'dayjs', 'Свой ответ']) && (await text(menuCard())).includes('Modular') && (await text(menuCard())).includes('Small'), JSON.stringify(await optTexts()));
+  check('it shows which question of several this is', (await text(menuCard() + ' [data-menu-step]')).includes('Вопрос 1 из 2'), await text(menuCard() + ' [data-menu-step]'));
+  const geo = await evalJs(`(() => { const c = document.querySelector(${JSON.stringify(menuCard())}).getBoundingClientRect(); const ch = document.querySelector('#chat').getBoundingClientRect();
+    const bs = [...document.querySelectorAll(${JSON.stringify(menuCard() + ' .menu-opt')})].map((b) => b.getBoundingClientRect());
+    return { inChat: c.left >= ch.left - 1 && c.right <= ch.right + 1 && c.top >= ch.top - 1 && c.bottom <= ch.bottom + 1, column: bs.every((b, i) => Math.abs(b.left - bs[0].left) < 1.5 && (i === 0 || b.top >= bs[i - 1].bottom - 1)), n: bs.length, cardW: c.width }; })()`);
+  check('in the small chat the options stand one under another inside it', geo?.inChat && geo.column && geo.n === 3, JSON.stringify(geo));
+  const room = await evalJs(`(() => { const c = document.querySelector(${JSON.stringify(menuCard())}); const l = document.querySelector('#clog'); const ch = document.querySelector('#chat').getBoundingClientRect(); return { scroll: c.scrollHeight, shown: c.clientHeight, log: l.getBoundingClientRect().height, chatH: ch.height, vh: innerHeight }; })()`);
+  check('on a window of this height the card is shown whole, the log keeps its room above it', room && room.scroll <= room.shown + 1 && room.log >= 80, JSON.stringify(room));
+  check('a long description is folded to two lines, with «Ещё»', await evalJs(`(() => { const d = document.querySelector(${JSON.stringify(menuCard() + ' .mo-d')}); return !!d && d.classList.contains('clamp') && getComputedStyle(d).webkitLineClamp === '2'; })()`) && await hasText(menuCard() + ' [data-menu="more"]', 'Ещё'), await text(menuCard() + ' [data-menu="more"]'));
+  await click(menuCard() + ' [data-menu="more"]');
+  check('«Ещё» unfolds it and reads «Свернуть»', await waitFor(`!document.querySelector(${JSON.stringify(menuCard() + ' .mo-d')}).classList.contains('clamp')`, 3000) && await hasText(menuCard() + ' [data-menu="more"]', 'Свернуть'));
+  check('the raw screen and the keys wait behind «Экран»', !(await exists(menuCard() + ' .menu-screen')) && await hasText(menuCard() + ' [data-menu="screen"]', 'Экран'));
+  await click(menuCard() + ' [data-menu="screen"]');
+  check('«Экран» shows what the terminal shows, with the keys, as the fallback', await waitFor(`(document.querySelector(${JSON.stringify(menuCard() + ' .menu-screen')})?.innerText || '').includes('Which library?') && !!document.querySelector(${JSON.stringify(menuCard() + ' [data-act="keys"]')})`, 5000));
+  await click(menuCard() + ' [data-menu="screen"]');
+  await shot('menu-card-chat.png');
+  // a button gives exactly its choice: the second option, from the cursor on the first, is «down», «enter»
+  const k0 = calls('keys.jsonl').length;
+  await click(menuCard() + ' [data-menu-opt="1"]');
+  check('«dayjs» sends down, enter to the Coordinator', await waitLog(() => JSON.stringify(keysSince(k0, 'sw-coordinator')) === JSON.stringify(['down', 'enter']), 10000), JSON.stringify(keysSince(k0)));
+  check('the card shows the choice and cannot be pressed again', await waitFor(`document.querySelector(${JSON.stringify(menuCard())})?.dataset.state === 'answered'`, 5000) && await hasText(menuCard() + ' [data-menu-status="done"]', 'dayjs') && (await evalJs(`[...document.querySelectorAll(${JSON.stringify(menuCard() + ' .menu-opt, ' + menuCard() + ' [data-menu="cancel"]')})].every((b) => b.disabled)`)), await text(menuCard()));
+  await click(menuCard() + ' [data-menu-opt="0"]');
+  await pageTurn();
+  check('a second press does nothing', keysSince(k0, 'sw-coordinator').length === 2, JSON.stringify(keysSince(k0)));
+  check('the card is not locked for good: the same menu still on the screen after a while can be answered again', await waitFor(`document.querySelector(${JSON.stringify(menuCard())})?.dataset.state === 'open' && !!document.querySelector(${JSON.stringify(menuCard() + ' [data-menu-status="stale"]')})`, 14000), await cardState());
+  // the next question comes on its own: a multiple choice with boxes
+  setScreen(CLAUDE_Q2);
+  check('the next question is a new card: a multiple choice with boxes and «Отправить»', await waitFor(`(document.querySelector(${JSON.stringify(menuCard() + ' [data-menu-question]')})?.innerText || '') === 'Which features?'`, 10000) && (await text(menuCard() + ' [data-menu-step]')).includes('Вопрос 2 из 2') && (await evalJs(`document.querySelectorAll(${JSON.stringify(menuCard() + ' [role="checkbox"]')}).length`)) === 4 && await hasText(menuCard() + ' [data-menu="send"]', 'Отправить'), JSON.stringify(await optTexts()));
+  check('«Отправить» waits for a choice', await evalJs(`document.querySelector(${JSON.stringify(menuCard() + ' [data-menu="send"]')}).disabled`));
+  await click(menuCard() + ' [data-menu-opt="0"]');
+  await click(menuCard() + ' [data-menu-opt="2"]');
+  check('the boxes tick', await waitFor(`document.querySelector(${JSON.stringify(menuCard() + ' [data-menu-opt="0"]')}).getAttribute('aria-checked') === 'true' && document.querySelector(${JSON.stringify(menuCard() + ' [data-menu-opt="2"]')}).getAttribute('aria-checked') === 'true' && document.querySelector(${JSON.stringify(menuCard() + ' [data-menu-opt="1"]')}).getAttribute('aria-checked') === 'false'`, 3000));
+  const k1 = calls('keys.jsonl').length;
+  await click(menuCard() + ' [data-menu="send"]');
+  check('«Отправить» ticks A and C and presses Submit: space, down, down, space, down, down, enter', await waitLog(() => JSON.stringify(keysSince(k1, 'sw-coordinator')) === JSON.stringify(['space', 'down', 'down', 'space', 'down', 'down', 'enter']), 10000), JSON.stringify(keysSince(k1)));
+  check('the answered card is locked', await waitFor(`document.querySelector(${JSON.stringify(menuCard())})?.dataset.state === 'answered'`, 5000));
+  // «Свой ответ»: the field, the words typed into the own row, Enter
+  setScreen(CLAUDE_OWN);
+  await waitFor(`(document.querySelector(${JSON.stringify(menuCard() + ' [data-menu-question]')})?.innerText || '') === 'Which database?'`, 10000);
+  check('a new question unlocks the card', await cardState() === 'open');
+  await click(menuCard() + ' [data-own]');
+  check('«Свой ответ» opens a field for the words', await waitFor('!!document.querySelector("#menu-own-in")', 3000));
+  await evalJs('(() => { const i = document.querySelector("#menu-own-in"); i.value = "Своя база: DuckDB"; i.dispatchEvent(new Event("input", { bubbles: true })); i.focus(); return true; })()');
+  const k2 = calls('keys.jsonl').length; const x2 = calls('text.jsonl').length;
+  await press('Enter');
+  check('Enter sends it: to the own row (down, down), the words into the pane, then Enter', await waitLog(() => JSON.stringify(keysSince(k2, 'sw-coordinator')) === JSON.stringify(['down', 'down', 'enter']) && calls('text.jsonl').length === x2 + 1 && calls('text.jsonl').at(-1).text === 'Своя база: DuckDB' && calls('text.jsonl').at(-1).pane === 'w1:p-sw-coordinator', 10000), JSON.stringify({ keys: keysSince(k2), text: calls('text.jsonl').slice(x2) }));
+  // a menu of another program: omp's box with glyph rows, «Other» opens an editor of its own
+  setScreen(OMP_SINGLE);
+  await waitFor(`(document.querySelector(${JSON.stringify(menuCard() + ' [data-menu-question]')})?.innerText || '') === 'Which engine?'`, 10000);
+  check('omp\'s ask is a card too: its rows without numbers are the options', JSON.stringify(await optTexts()) === JSON.stringify(['turbo', 'diesel', 'Свой ответ']), JSON.stringify(await optTexts()));
+  check('«Esc» of the program is the card\'s «Отменить»', await hasText(menuCard() + ' [data-menu="cancel"]', 'Отменить'));
+  // answered in the terminal: the screen has no menu any more, the card goes
+  setScreen('● Работаю над задачей…\n\n❯ \n  ⏵⏵ accept edits on');
+  check('an answer given in the terminal closes the card', await waitFor(`!document.querySelector(${JSON.stringify(menuCard())})`, 10000));
+  check('the screen that is no menu falls back to the raw screen and its keys, the chat does not break', await waitFor('!!document.querySelector("#cdialog") && !!document.querySelector("#cdialog [data-act=\\"keys\\"]")', 10000) && (await text('#cdialog')).includes('Работаю над задачей'), await text('#cdialog'));
+  // the wide chat
+  setScreen(CLAUDE_Q1);
+  await waitFor(`!!document.querySelector(${JSON.stringify(menuCard())})`, 10000);
+  const small = await evalJs(`document.querySelector(${JSON.stringify(menuCard())}).getBoundingClientRect().width`);
+  await click('#cwide');
+  await waitFor('document.querySelector("#win").classList.contains("chat-wide")', 3000);
+  const [wideOk, wr] = await settled({ card: menuCard(), chat: '#chat' }, (x) => x.card && x.chat && x.card.l >= x.chat.l - 1 && x.card.r <= x.chat.r + 1 && x.card.w > small + 40, 6000);
+  check('in the wide chat the card has more room and stays inside it', wideOk, JSON.stringify({ small, ...wr }));
+  const k3 = calls('keys.jsonl').length;
+  await click(menuCard() + ' [data-menu-opt="0"]');
+  check('and its buttons work there too', await waitLog(() => JSON.stringify(keysSince(k3, 'sw-coordinator')) === JSON.stringify(['enter']), 10000), JSON.stringify(keysSince(k3)));
+  await shot('menu-card-wide.png');
+  await click('#cwide');
+  try { unlinkSync(dialogFlag); } catch { /* gone */ }
+  setScreen('Готово.');
+  await waitFor(`!document.querySelector(${JSON.stringify(menuCard())})`, 10000);
+  await press('Escape');
+  await waitFor('document.querySelector("#chat").classList.contains("off")', 4000);
+
+  // ── the server: an answer to a menu that has changed is refused, never sent into the next one
+  setScreen(CLAUDE_Q1);
+  const shown = await api('/api/coordinator/screen?target=coordinator');
+  const sig = shown?.[1]?.menu?.sig;
+  check('the screen answer carries the parsed menu', !!sig && shown[1].menu.options.length === 3 && shown[1].menu.cursor === 0 && shown[1].menu.steps === 2, JSON.stringify(shown?.[1]?.menu)?.slice(0, 200));
+  const k4 = calls('keys.jsonl').length;
+  const stale = await post('/api/menu/answer', { target: 'coordinator', sig: 'not-the-menu', answer: { kind: 'pick', at: 0 } });
+  check('an answer to another menu is refused with 409 and sends no key', stale[0] === 409 && stale[1]?.gone === true && keysSince(k4).length === 0, JSON.stringify(stale));
+  setScreen('Просто текст, меню нет.');
+  const none = await post('/api/menu/answer', { target: 'coordinator', sig, answer: { kind: 'pick', at: 0 } });
+  check('with no menu on the screen nothing is sent either', none[0] === 409 && keysSince(k4).length === 0, JSON.stringify(none));
+  setScreen(CLAUDE_Q1);
+  const own = await post('/api/menu/answer', { target: 'coordinator', sig, answer: { kind: 'pick', at: 2 } });
+  check('the own row needs words: refused', own[0] === 400 && keysSince(k4).length === 0, JSON.stringify(own));
+  const ctl = await post('/api/menu/answer', { target: 'coordinator', sig, answer: { kind: 'own', text: 'a\nb' } });
+  check('words with a line break are refused: Enter would be pressed in the middle', ctl[0] === 400 && keysSince(k4).length === 0 && calls('text.jsonl').every((c) => !c.text.includes('\n')), JSON.stringify(ctl));
+  const bad = await post('/api/menu/answer', { target: 'not a task', sig, answer: { kind: 'pick', at: 0 } });
+  check('a bad target is a 400', bad[0] === 400, JSON.stringify(bad));
+  setScreen(OMP_SINGLE);
+  const omp = (await api('/api/coordinator/screen?target=coordinator'))?.[1]?.menu;
+  const k5 = calls('keys.jsonl').length; const x5 = calls('text.jsonl').length;
+  const ownOmp = await post('/api/menu/answer', { target: 'coordinator', sig: omp?.sig, answer: { kind: 'own', text: 'свой движок' } });
+  check('omp\'s own answer: to the row, Enter opens its editor, the words, Enter', ownOmp[0] === 200 && JSON.stringify(keysSince(k5)) === JSON.stringify(['down', 'down', 'enter', 'enter']) && calls('text.jsonl').slice(x5).map((c) => c.text).join() === 'свой движок', JSON.stringify({ ownOmp, keys: keysSince(k5), text: calls('text.jsonl').slice(x5) }));
+
+  // ── an agent of a task, in the window of its screen
+  setScreen(CLAUDE_Q1);
+  await go('alpha/6');
+  await click('#focus [data-act="screen"]');
+  check('the agent\'s window shows its menu as a card above the terminal', await waitFor(`!!document.querySelector(${JSON.stringify(menuCard('#agent-screen'))}) && !!document.querySelector('#screen-term')`, 10000));
+  const wbox = await evalJs(`(() => { const c = document.querySelector(${JSON.stringify(menuCard('#agent-screen'))}).getBoundingClientRect(); const w = document.querySelector('#agent-screen .agent-screen').getBoundingClientRect(); const t = document.querySelector('#agent-screen .term-wrap').getBoundingClientRect(); return { inside: c.left >= w.left - 1 && c.right <= w.right + 1 && c.top >= w.top - 1 && c.bottom <= w.bottom + 1, above: c.bottom <= t.top + 1, termH: t.height }; })()`);
+  check('it is inside the window, above the terminal, which keeps room', wbox?.inside && wbox.above && wbox.termH > 120, JSON.stringify(wbox));
+  await shot('menu-card-window.png');
+  const k6 = calls('keys.jsonl').length;
+  await click(menuCard('#agent-screen') + ' [data-menu-opt="1"]');
+  check('a button sends its choice to this task\'s agent', await waitLog(() => JSON.stringify(keysSince(k6, 'sw-alpha-6')) === JSON.stringify(['down', 'enter']), 10000), JSON.stringify(calls('keys.jsonl').slice(k6)));
+  check('the window\'s card is locked after the answer', await waitFor(`document.querySelector(${JSON.stringify(menuCard('#agent-screen'))})?.dataset.state === 'answered'`, 5000));
+  setScreen(CLAUDE_Q2);
+  await waitFor(`(document.querySelector(${JSON.stringify(menuCard('#agent-screen') + ' [data-menu-question]')})?.innerText || '') === 'Which features?'`, 10000);
+  await click(menuCard('#agent-screen') + ' [data-menu-opt="1"]');
+  const k7 = calls('keys.jsonl').length;
+  await click(menuCard('#agent-screen') + ' [data-menu="send"]');
+  check('a multiple choice in the window: space on B, down ×3, Enter on Submit', await waitLog(() => JSON.stringify(keysSince(k7, 'sw-alpha-6')) === JSON.stringify(['down', 'space', 'down', 'down', 'down', 'enter']), 10000), JSON.stringify(keysSince(k7)));
+  setScreen(CLAUDE_OWN);
+  await waitFor(`(document.querySelector(${JSON.stringify(menuCard('#agent-screen') + ' [data-menu-question]')})?.innerText || '') === 'Which database?'`, 10000);
+  const k8 = calls('keys.jsonl').length;
+  await click(menuCard('#agent-screen') + ' [data-menu="cancel"]');
+  check('«Отменить» is Esc', await waitLog(() => JSON.stringify(keysSince(k8, 'sw-alpha-6')) === JSON.stringify(['esc']), 10000), JSON.stringify(keysSince(k8)));
+  setScreen('Ответ принят, иду дальше.');
+  check('an answer given in the terminal closes the card in the window too', await waitFor(`!document.querySelector(${JSON.stringify(menuCard('#agent-screen'))})`, 10000));
+  check('the terminal stays', await hasText('#screen-term', 'Ответ принят'));
+  // English
+  setScreen(CLAUDE_Q2);
+  await evalJs('window.setLang("en"); true');
+  check('the card is in English, its buttons start with a capital', await waitFor(`(document.querySelector(${JSON.stringify(menuCard('#agent-screen'))})?.innerText || '').toLowerCase().includes('the agent is waiting for a choice')`, 10000) && await hasText(menuCard('#agent-screen') + ' [data-menu="send"]', 'Send') && await hasText(menuCard('#agent-screen') + ' [data-menu="cancel"]', 'Cancel') && (await text(menuCard('#agent-screen') + ' [data-menu-step]')).includes('Question 2 of 2') && await hasText(menuCard('#agent-screen') + ' [data-own]', 'Your own answer'), await text(menuCard('#agent-screen')));
+  await press('Escape');
+  await waitFor('!document.querySelector("#agent-screen")', 4000);
+  try { unlinkSync(join(fixture, 'state', 'dialog.txt')); } catch { /* gone */ }
+  await resetPage();
+}, { retry: false });
+
+
+// ── the chat: its width when folded, and its place between the navigator and the focus card ──────────────
+// The chat stands in the middle of the free space between the navigator and the focus card (a closed panel leaves its side to the
+// window's edge), folded or wide, at every window and scale; the folded chat is as wide as the room allows up to 54 rem (and 40 % of a
+// big window), never over a neighbour. The measuring takes the panels as they are drawn.
+const chatCenter = async (w, h, scales) => {
+  await resetUi();
+  const wideKeys = 'try { localStorage.removeItem("herdr-planner.chatWide"); localStorage.removeItem("herdr-planner.chatWideTodo"); localStorage.removeItem("herdr-planner.navW"); } catch {} true';
+  const open = (sel) => evalJs(`(() => { const e = document.querySelector(${JSON.stringify(sel)}); return !!e && !e.classList.contains('off'); })()`);
+  const setPanel = async (sel, key, want) => {
+    await evalJs('document.activeElement?.blur(); true');
+    if ((await open(sel)) !== want) await press(key[0], key[1]);
+    await waitFor(`${want ? '!' : ''}document.querySelector(${JSON.stringify(sel)}).classList.contains('off')`, 4000);
+  };
+  const free = (r, w) => ({
+    // a closed panel sits outside the window (its right edge is left of 0, its left edge right of the window)
+    l: r.nav && r.nav.r > 10 ? r.nav.r : 0,
+    r: r.focus && r.focus.l < w - 30 ? r.focus.l : w,
+  });
+  {
+    for (const scale of scales) {
+      const eff = w / (scale / 100);
+      if (eff <= 1000) continue;   // narrower: the chat is docked at the bottom, its own layout (the section «narrow»)
+      await send('Emulation.setDeviceMetricsOverride', { width: w, height: h, screenWidth: w, screenHeight: h, deviceScaleFactor: 1, mobile: false });
+      await waitFor(`innerWidth === ${w}`, 5000);
+      await evalJs(wideKeys);
+      await evalJs(`try { localStorage.setItem('herdr-planner.uiScale', '${scale}'); } catch {} true`);
+      await navigate(base + '/?noauto&nocoach&bloom=0');
+      await waitFor('window.world && world.debug().planets > 0', 20000);
+      await resized();
+      const root = await evalJs('parseFloat(getComputedStyle(document.documentElement).fontSize)');
+      const at = `${w}×${h} at ${scale} %`;
+      await evalJs('planner.goOverview(); true');
+      await waitFor('world.debug().flight === "idle"', 15000);
+      for (const [navOn, focusOn] of [[true, true], [false, true], [true, false], [false, false]]) {
+        await setPanel('#nav', ['KeyN', 'n'], navOn);
+        await setPanel('#focus', ['KeyF', 'f'], focusOn);
+        for (const wide of [false, true]) {
+          await evalJs('document.activeElement?.blur(); true');
+          if (await open('#chat') === false) { await click('#bchat'); await waitFor('!document.querySelector("#chat").classList.contains("off")', 4000); }
+          const isWide = await exists('#win.chat-wide');
+          if (wide !== isWide) { await click('#cwide'); await waitFor(`${wide ? '' : '!'}document.querySelector("#win").classList.contains("chat-wide")`, 4000); }
+          // the todos beside the wide chat are not part of this: their column is left out of the free space
+          if (wide && await exists('#win.todo-open')) await click('#cwide-todo');
+          const [ok, r] = await settled({ chat: '#chat', nav: '#nav', focus: '#focus' }, (x) => {
+            if (!x.chat) return false;
+            const f = free(x, w);
+            return Math.abs((x.chat.l + x.chat.r) / 2 - (f.l + f.r) / 2) <= 3;
+          }, 6000);
+          const f = free(r, w);
+          const what = `${at}, ${wide ? 'wide' : 'folded'} chat, navigator ${navOn ? 'open' : 'closed'}, focus ${focusOn ? 'open' : 'closed'}`;
+          check(`${what}: the chat is in the middle of the free space (centre ${Math.round((r.chat.l + r.chat.r) / 2)}, space ${Math.round(f.l)}–${Math.round(f.r)}, centre ${Math.round((f.l + f.r) / 2)})`, ok, JSON.stringify({ ...r, f }));
+          check(`${what}: it is over no neighbour`, r.chat.l >= f.l - 1 && r.chat.r <= f.r + 1, JSON.stringify({ ...r, f }));
+          if (!wide) {
+            const room = f.r - f.l - 1.5 * root;
+            const want = Math.min(54 * root, eff > 1400 ? 0.4 * w : Infinity, room);
+            check(`${what}: the folded chat is ${Math.round(r.chat.w)} px: as wide as the room (${Math.round(room)}) and its limit (${Math.round(Math.min(54 * root, eff > 1400 ? 0.4 * w : Infinity))}) allow`, Math.abs(r.chat.w - want) <= 2, JSON.stringify({ want, root, ...r }));
+            if (scale === 100 && navOn && focusOn && w >= 1920) check(`${what}: on a big window it is 760–880 px`, r.chat.w >= 760 && r.chat.w <= 880, String(r.chat.w));
+            // the text column of a reply is not wider than 80 characters (a probe of 80ch in the same text)
+            const col = await evalJs(`(() => { const t = document.querySelector('#clog .a .txt'); if (!t) return null; const p = document.createElement('span'); p.style.cssText = 'position:absolute;visibility:hidden;width:80ch'; t.appendChild(p); const w80 = p.getBoundingClientRect().width; p.remove(); return { w: t.getBoundingClientRect().width, w80 }; })()`);
+            if (col) check(`${what}: a reply's text column is at most 80 characters wide (${Math.round(col.w)} of ${Math.round(col.w80)} px)`, col.w <= col.w80 + 1, JSON.stringify(col));
+          }
+          if (wide) await shot(`chat-center-${w}-${scale}-${navOn ? 'n' : '-'}${focusOn ? 'f' : '-'}.png`);
+        }
+      }
+      await setPanel('#nav', ['KeyN', 'n'], true);
+      await setPanel('#focus', ['KeyF', 'f'], true);
+      await resetUi();
+    }
+  }
+  await send('Emulation.setDeviceMetricsOverride', { width: 1500, height: 950, deviceScaleFactor: 1, mobile: false });
+  await waitFor('innerWidth === 1500', 5000);
+  await evalJs('try { localStorage.removeItem("herdr-planner.uiScale"); } catch {} true');
+  await evalJs(wideKeys);
+  await resetPage();
+};
+// one section per window size, named like the layout rounds so that their shards take them (run-checks.sh)
+for (const [w, h, scales] of [[1280, 800, [100, 125]], [1920, 1080, [100, 150]], [2560, 1440, [100]]]) {
+  section(`layout ${w} chat`, () => chatCenter(w, h, scales), { retry: true });
+}
 
 for (const [name, fn, opts] of sections) {
   if (only.length && !only.some((o) => name.includes(o))) continue;

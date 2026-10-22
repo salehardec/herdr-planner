@@ -1040,6 +1040,20 @@ function herdrMain(C, DATA) {
     console.log('sent');
     return;
   }
+  if (cmd === 'agent' && sub === 'get') {
+    log('herdr.jsonl', { argv: process.argv.slice(2) });
+    const name = rest[0];
+    if (!namesOf(world()).includes(name)) { console.error('no such agent: ' + name); process.exit(1); }
+    console.log(JSON.stringify({ id: 'cli:agent:get', result: { agent: { name, pane_id: 'w1:p-' + name }, type: 'agent_info' } }));
+    return;
+  }
+  // Literal text into a pane (the own answer of a selection menu): the pane is named `w1:p-<agent>`.
+  if (cmd === 'pane' && sub === 'send-text') {
+    log('herdr.jsonl', { argv: process.argv.slice(2) });
+    log('text.jsonl', { pane: rest[0], text: rest.slice(1).join(' ') });
+    console.log('sent');
+    return;
+  }
   console.error('fixture herdr: unsupported ' + process.argv.slice(2).join(' '));
   process.exit(2);
 }

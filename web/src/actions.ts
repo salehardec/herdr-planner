@@ -8,7 +8,7 @@ import { ApiError, api, post, refreshNow } from './api';
 import { toast } from './toast';
 import { t } from './i18n';
 import { afterAnswered } from './nav';
-import type { Entity, Task } from './types';
+import type { Entity, MenuAnswer, Task } from './types';
 
 export const ACTION_LABEL: Record<string, string> = {
   approve: 'act.approve', anyway: 'act.anyway', retry: 'act.retry', review: 'act.review', stop: 'act.stop',
@@ -136,6 +136,20 @@ export async function sendKey(target: string, key: string, role = ''): Promise<v
     if (screens.value[target]) setTimeout(() => { void fetchScreen(target, role); }, 500);
     toast(t('toast.key', { key }));
   } catch { /* shown */ }
+}
+
+/** The result of an answer to a selection menu: sent, or refused because the menu on the screen is not the one the page showed. */
+export type MenuResult = { ok: true } | { ok: false; gone: boolean; error: string };
+
+/** Answers a selection menu of an agent: the server reads the screen again and presses the keys that make the choice. */
+export async function answerMenu(target: string, role: string, sig: string, answer: MenuAnswer): Promise<MenuResult> {
+  try {
+    await post('/api/menu/answer', { target, role: role || undefined, sig, answer });
+    return { ok: true };
+  } catch (e) {
+    const err = e as ApiError;
+    return { ok: false, gone: err.status === 409, error: err.message };
+  }
 }
 
 /* ───────── links (`after`) ───────── */
