@@ -117,7 +117,7 @@ n=0
 for only in "boot,live,navigator,buttons,autopilot,manual,stack,queue,search" \
             "chat,todo,hints" \
             "lag,universes,framing,remote,scale,runners,menu card" \
-            "station,crew,ship,theme,simple,planet states,narrow" \
+            "station,crew,ship,theme,simple,planet states,narrow,top cards" \
             "focus,agent screen,requests,links,archive,load,top bar,limits,memory,layout narrow" \
             "layout 1280" "layout 1920,layout 1600" "layout 2560" "layout 1366,layout big"; do
   n=$((n + 1))
