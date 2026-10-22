@@ -59,7 +59,7 @@ function TaskFocus(props: { task: Task }): JSX.Element {
   const moons = task.subagents.filter((s) => s.state !== 'done' || Date.now() - s.last_at_ms < 5 * 60000);
   const agentLabel = [task.app, task.model || task.worker_agent.split('/').slice(1).join('/')].filter(Boolean).join(' · ');
   const linkCard = linkSel.value && linkSel.value.to === task.id ? linkSel.value : null;
-  const yard = runners.value.flatMap((r) => r.containers.filter((c) => c.task?.id === task.id && c.task?.galaxy === galaxyId.value).map((c) => ({ r, c })));
+  const yard = runners.value.flatMap((r) => r.containers.filter((c) => c.task?.id === task.id).map((c) => ({ r, c })));
   const [clean, setClean] = useState(false);
 
   useEffect(() => { void fetchDetails(task.id); void loadClosing(task); }, [task.id, task.status, task.msg]);

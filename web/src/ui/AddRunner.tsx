@@ -1,11 +1,11 @@
-/* «Добавить верфь…»: an ssh address becomes a shipyard every galaxy can use. Four steps: what is on the machine,
-   whether this machine and the galaxies reach it, the tags and the protected masks, and the summary that writes the
-   list and offers to connect the agents. Nothing here stores a key: the ssh agent and ~/.ssh/config do that. */
+/* «Добавить верфь…»: an ssh address becomes a shipyard of this board's agents. Three steps: what is on the machine
+   and whether this machine can enter it the way the agents will, the tags and the protected masks, and the summary
+   that writes the list and offers to connect the agents. Nothing here stores a key: ssh agent and ~/.ssh/config do. */
 import { signal } from '@preact/signals';
 import type { JSX } from 'preact';
 import { addDialogs } from '../dialogs';
-import { ApiError, post, onProgress } from '../api';
-import { armed, galaxies, snap } from '../store';
+import { ApiError, post } from '../api';
+import { armed, snap } from '../store';
 import { confirmStep } from '../actions';
 import { t, tn } from '../i18n';
 import { toast } from '../toast';
@@ -13,24 +13,28 @@ import { Gl } from './Gl';
 import type { Runner } from '../types';
 import './AddGalaxy.css';
 
+interface Local {
+  docker_client: boolean;
+  ssh_ok: boolean;
+  docker_via_ssh: string;
+  hint: string;
+}
 interface Probe {
   ok: boolean;
   label: string;
   target: string;
   ports_host: string;
   probe: Runner;
-  suggested: { tags: string[]; protected: string[]; ports_host: string };
+  local?: Local;
+  suggested?: { tags: string[]; protected: string[]; ports_host: string };
   error?: string;
   step?: string;
 }
-interface Row { id: string; label: string; state: 'wait' | 'run' | 'ok' | 'err'; detail: string }
-interface ReachRow { galaxy: string; docker_client: boolean; reach: string; hint: string }
 
-type StepKey = 'check' | 'reach' | 'tags' | 'done';
-const STEPS: StepKey[] = ['check', 'reach', 'tags', 'done'];
+type StepKey = 'check' | 'tags' | 'done';
+const STEPS: StepKey[] = ['check', 'tags', 'done'];
 const STEP_TITLE: Record<StepKey, string> = {
   check: 'runner.wiz.check',
-  reach: 'runner.wiz.reach',
   tags: 'runner.wiz.tags',
   done: 'runner.wiz.done',
 };
@@ -41,9 +45,6 @@ const probe = signal<Probe | null>(null);
 const probing = signal(false);
 const probeErr = signal('');
 const cur = signal<StepKey>('check');
-const rows = signal<Row[]>([]);
-const reach = signal<ReachRow[] | null>(null);
-const reachErr = signal('');
 const busy = signal(false);
 const tags = signal('');
 const masks = signal('');
@@ -63,9 +64,6 @@ function reset(): void {
   probe.value = null;
   probeErr.value = '';
   cur.value = 'check';
-  rows.value = [];
-  reach.value = null;
-  reachErr.value = '';
   tags.value = '';
   masks.value = '';
   ports.value = '';
@@ -75,24 +73,8 @@ function reset(): void {
   err.value = '';
 }
 
-const latest = new Map<string, any>();
-const watchers = new Map<string, (p: any) => void>();
-onProgress((p) => {
-  if (!p || typeof p.job !== 'string') return;
-  latest.set(p.job, p);
-  if (latest.size > 60) latest.delete(latest.keys().next().value as string);
-  watchers.get(p.job)?.(p);
-  if (p.done) watchers.delete(p.job);
-});
-function follow(id: string, fn: (p: any) => void): Promise<any> {
-  return new Promise((resolve) => {
-    const each = (p: any): void => { fn(p); if (p.done) resolve(p); };
-    const seen = latest.get(id);
-    if (seen?.done) { each(seen); return; }
-    if (seen) fn(seen);
-    watchers.set(id, each);
-  });
-}
+const localOk = (p: Probe | null): boolean =>
+  !!p?.local && p.local.docker_client && p.local.ssh_ok && p.local.docker_via_ssh.length > 0;
 
 async function probeNow(): Promise<void> {
   const addr = target.value.trim();
@@ -102,15 +84,15 @@ async function probeNow(): Promise<void> {
   try {
     const r = await post<Probe>('/api/runner/probe', { target: addr, label: label.value.trim() || undefined });
     if (!r.ok) {
-      probe.value = null;
+      probe.value = r.probe ? r : null;
       probeErr.value = r.error ?? t('runner.wiz.probeFailed');
       return;
     }
     probe.value = r;
-    tags.value = r.suggested.tags.join(', ');
+    tags.value = (r.suggested?.tags ?? []).join(', ');
     makeDefault.value = (snap.value?.runners?.length ?? 0) === 0;
-    masks.value = r.suggested.protected.join(', ');
-    ports.value = r.suggested.ports_host;
+    masks.value = (r.suggested?.protected ?? []).join(', ');
+    ports.value = r.suggested?.ports_host ?? r.ports_host;
     label.value = r.label;
   } catch (e) {
     probe.value = null;
@@ -120,33 +102,9 @@ async function probeNow(): Promise<void> {
   }
 }
 
-async function reachNow(): Promise<void> {
-  const p = probe.value;
-  if (!p) return;
-  reachErr.value = '';
-  rows.value = [
-    { id: 'here', label: t('runner.wiz.thisDocker'), state: 'wait', detail: '' },
-    { id: 'here-runner', label: t('runner.wiz.thisToYard'), state: 'wait', detail: '' },
-  ];
-  busy.value = true;
-  try {
-    const r = await post<{ job: string }>('/api/runner/reach', { target: p.target });
-    const out = await follow(r.job, (pp) => { rows.value = pp.steps ?? rows.value; });
-    if (out.ok) {
-      reach.value = out.result?.rows ?? [];
-    } else {
-      reachErr.value = out.error ?? t('runner.wiz.reachFailed');
-    }
-  } catch (e) {
-    reachErr.value = (e as Error).message;
-  } finally {
-    busy.value = false;
-  }
-}
-
 async function addNow(): Promise<void> {
   const p = probe.value;
-  if (!p) return;
+  if (!p || !p.ok) return;
   err.value = '';
   try {
     await post('/api/runner/add', {
@@ -166,21 +124,17 @@ async function addNow(): Promise<void> {
 
 async function connectNow(): Promise<void> {
   err.value = '';
-  const labels = ['', ...galaxies.value.map((g) => g.label)];
-  let n = 0;
-  for (const galaxy of labels) {
-    try {
-      await post('/api/runner/connect', { galaxy, on: true, drop_old: true, confirm: true });
-      n += 1;
-    } catch { /* the summary says how many answered */ }
+  try {
+    await post('/api/runner/connect', { on: true, drop_old: true, confirm: true });
+    toast(t('runner.connectedTo', { n: 1 }));
+  } catch (e) {
+    err.value = (e as ApiError).data?.error ?? (e as Error).message;
   }
-  toast(t('runner.connectedTo', { n }));
 }
 
 function stepStatus(k: StepKey): 'ok' | 'err' | 'todo' {
-  if (k === 'check') return probe.value ? 'ok' : probeErr.value ? 'err' : 'todo';
-  if (k === 'reach') return reach.value ? 'ok' : reachErr.value ? 'err' : 'todo';
-  if (k === 'tags') return probe.value ? 'ok' : 'todo';
+  if (k === 'check') return localOk(probe.value) ? 'ok' : probeErr.value ? 'err' : 'todo';
+  if (k === 'tags') return probe.value?.ok ? 'ok' : probeErr.value ? 'err' : 'todo';
   return added.value ? 'ok' : 'todo';
 }
 
@@ -193,7 +147,7 @@ function ProbeList({ p }: { p: Probe }): JSX.Element {
   );
   return (
     <ul class="steps wchecks">
-      {line(true, t('runner.wiz.sshOk', { target: p.target }))}
+      {line(p.ok || p.local?.ssh_ok === true, t('runner.wiz.sshOk', { target: p.target }))}
       {line(true, `${h.os || '?'} · ${h.arch || '?'} · ${t('runner.wiz.cpus', { n: h.cpus })}`)}
       {line(!!h.docker_version, h.docker_version ? `Docker ${h.docker_version}${h.compose_version ? ` · compose ${h.compose_version}` : ''}` : t('runner.wiz.noDocker'))}
       {line(h.gpu.length > 0, h.gpu.length > 0 ? h.gpu.map((g) => `${g.name} ${Math.round((g.mem_total_mib ?? 0) / 1024)} GB`).join(', ') : t('runner.wiz.noGpu'))}
@@ -202,10 +156,27 @@ function ProbeList({ p }: { p: Probe }): JSX.Element {
   );
 }
 
+function LocalList({ p }: { p: Probe }): JSX.Element | null {
+  const l = p.local;
+  if (!l) return null;
+  const row = (ok: boolean, text: string): JSX.Element => (
+    <li class={ok ? 'w-ok' : 'w-miss'}><span class="i">{ok ? '✓' : '✗'}</span><div>{text}</div></li>
+  );
+  return (
+    <ul class="steps wchecks" id="r-local">
+      {row(l.docker_client, t('runner.wiz.thisDocker'))}
+      {row(l.ssh_ok, t('runner.wiz.thisToYard', { target: p.target }))}
+      {row(l.docker_via_ssh.length > 0, l.docker_via_ssh ? `Docker ${l.docker_via_ssh}` : t('runner.wiz.noDockerViaSsh'))}
+      {l.hint && <li class="w-todo"><span class="i">!</span><div class="hint">{l.hint}</div></li>}
+    </ul>
+  );
+}
+
 export function AddRunner(): JSX.Element | null {
   if (!addDialogs.runner.value) return null;
   const p = probe.value;
   const valid = validTarget(target.value);
+  const ready = localOk(p);
   return (
     <div class="scrim" onMouseDown={(e) => { if (e.target === e.currentTarget) addDialogs.runner.value = false; }}>
       <section class="panel dlg wide wiz" id="addr" role="dialog" aria-label={t('runner.addTitle')}>
@@ -238,31 +209,8 @@ export function AddRunner(): JSX.Element | null {
                     {open && k === 'check' && (
                       <div class="wbody">
                         <ProbeList p={p} />
-                        <div class="act"><button class="btn primary" type="button" onClick={() => void reachNow()}>{t('runner.wiz.next')}</button></div>
-                      </div>
-                    )}
-                    {open && k === 'reach' && (
-                      <div class="wbody">
-                        <ul class="steps wrows">
-                          {rows.value.map((r) => <li class={r.state} key={r.id}><span class="i">{r.state === 'ok' ? '✓' : r.state === 'err' ? '✕' : r.state === 'run' ? '…' : '·'}</span><div>{r.label}{r.detail && <div class="hint wdetail">{r.detail}</div>}</div></li>)}
-                        </ul>
-                        {reach.value && (
-                          <table class="rft reach">
-                            <thead><tr><th>{t('runner.wiz.machine')}</th><th>{t('runner.dockerShort')}</th><th>{t('runner.wiz.reaches')}</th></tr></thead>
-                            <tbody>{reach.value.map((r) => (
-                              <tr key={r.galaxy || 'home'}>
-                                <td>{r.galaxy || snap.value?.host}</td>
-                                <td>{r.docker_client ? '✓' : '✗'}</td>
-                                <td>{r.reach || <span class="hint">{r.hint || '—'}</span>}</td>
-                              </tr>
-                            ))}</tbody>
-                          </table>
-                        )}
-                        {reachErr.value && <p class="hint bad">{reachErr.value}</p>}
-                        <div class="act">
-                          <button class="btn primary" type="button" id="r-reach" disabled={busy.value} onClick={() => void reachNow()}>{busy.value ? t('runner.wiz.reaching') : t('runner.wiz.checkReach')}</button>
-                          {reach.value && <button class="btn" type="button" id="r-reach-next" onClick={() => { cur.value = 'tags'; }}>{t('runner.wiz.next')}</button>}
-                        </div>
+                        <LocalList p={p} />
+                        <div class="act"><button class="btn primary" type="button" id="r-check-next" disabled={!ready} onClick={() => { cur.value = 'tags'; }}>{t('runner.wiz.next')}</button></div>
                       </div>
                     )}
                     {open && k === 'tags' && (
@@ -281,7 +229,6 @@ export function AddRunner(): JSX.Element | null {
                         <div class="info wsum">
                           <b>{t('runner.wiz.sumTitle', { id: label.value || p.label })}</b>
                           <div>{t('runner.wiz.sumFile', { path: t('runner.wiz.filePath') })}</div>
-                          <div>{tn('runner.wiz.sumGalaxies', 1 + galaxies.value.length)}</div>
                         </div>
                         <div class="act">
                           <button class={`btn primary ${armed.value?.key === 'rconn' ? 'arm' : ''}`} type="button" id="r-connect" onClick={() => confirmStep('rconn', () => void connectNow())}>{armed.value?.key === 'rconn' ? t('runner.wiz.connectConfirm') : t('runner.wiz.connect')}</button>

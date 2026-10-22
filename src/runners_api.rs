@@ -1,13 +1,13 @@
-//! The shipyards' HTTP calls: the list, one probe, the wizard's reach check, adding and removing a yard, the copies
-//! and the agents' block, «было → стало» cleaning, `docker system df` and the terminal.
+//! The shipyards' HTTP calls: the list, one probe (with the agents' own way in), adding and removing a yard, the
+//! agents' block, «было → стало» cleaning, `docker system df` and the terminal.
 
 use crate::app::{self, Shared};
-use crate::config::now_ms;
-use crate::machines::{self, MachineRef};
+use crate::config::{now_ms, AppConfig};
+use crate::ssh::{self, MachineRef};
 use crate::runners::{self, Class, CleanPlan, Runner, RunnerState, RunnersFile};
 use crate::server::{client_is_local, same_origin};
 use crate::station;
-use axum::extract::{ConnectInfo, Query, State};
+use axum::extract::{ConnectInfo, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::Json;
@@ -31,10 +31,10 @@ fn file_of(app: &Shared) -> Result<RunnersFile, Response> {
     runners::load(&app.cfg.runners_file()).map_err(|e| fail(500, e))
 }
 
-/// Fills the classes of a state with the tasks the snapshot holds (a probe itself knows nothing about tasks).
-fn classify_now(app: &Shared, snap: &app::Snapshot, live: &[machines::Galaxy], cached: &[Value], state: &mut RunnerState) {
+/// Fills the classes of a state with the tasks this board's snapshot holds (a probe knows nothing about tasks).
+fn classify_now(app: &Shared, snap: &app::Snapshot, state: &mut RunnerState) {
     let repos = crate::taskmeta::repos(&app.cfg.data_dir);
-    let idx = runners::TaskIndex::build(&snap.tasks, &snap.archived, &repos, live, cached);
+    let idx = runners::TaskIndex::build(&snap.tasks, &snap.archived, &repos);
     runners::classify(&mut state.containers, &state.protected, &idx);
 }
 
@@ -48,12 +48,12 @@ async fn state_now(app: &Shared, id: &str) -> Option<RunnerState> {
         .cloned()
 }
 
-fn index_of(app: &Shared, snap: &app::Snapshot, live: &[machines::Galaxy], cached: &[Value]) -> runners::TaskIndex {
+fn index_of(app: &Shared, snap: &app::Snapshot) -> runners::TaskIndex {
     let repos = crate::taskmeta::repos(&app.cfg.data_dir);
-    runners::TaskIndex::build(&snap.tasks, &snap.archived, &repos, live, cached)
+    runners::TaskIndex::build(&snap.tasks, &snap.archived, &repos)
 }
 
-/// The state of the file and the runner reads, plus the copies and the block states.
+/// The state of the file and the runner reads, plus the agents' block state.
 pub async fn runners_get(State(app): State<Shared>) -> Response {
     let (file, error) = match runners::load(&app.cfg.runners_file()) {
         Ok(f) => (f, String::new()),
@@ -70,8 +70,7 @@ pub async fn runners_get(State(app): State<Shared>) -> Response {
             "runners": file.runners,
         },
         "runners": snap.runners,
-        "mirrors": snap.runners.first().map(|r| r.mirrors.clone()).unwrap_or_default(),
-        "blocks": snap.runner_blocks,
+        "block": snap.runner_block,
     }))
     .into_response()
 }
@@ -93,13 +92,14 @@ pub async fn runner_ask(State(app): State<Shared>, headers: HeaderMap, Json(body
     let Some(r) = file.get(&body.id).cloned() else {
         return fail(404, "такой верфи нет в списке");
     };
-    let mut state = runners::probe(&app.cfg, &r).await;
-    {
+    let fresh = runners::probe(&app.cfg, &r).await;
+    let state = {
+        let prev = state_now(&app, &body.id).await;
+        let mut kept = runners::keep_last(prev.as_ref(), fresh);
         let snap = app.snapshot.read().await.clone();
-        let live = app.galaxies.lock().await.clone();
-        let cached = app.cached.lock().await.clone();
-        classify_now(&app, &snap, &live, &cached, &mut state);
-    }
+        classify_now(&app, &snap, &mut kept);
+        kept
+    };
     if let Ok(json) = serde_json::to_string(&state) {
         app.db.runner_put(
             &state.id,
@@ -177,13 +177,77 @@ pub fn suggested_tags(host: &runners::HostState) -> Vec<String> {
     tags
 }
 
-/// `POST /api/runner/probe`: one read, nothing changed; the wizard's checklist and its suggestions.
+fn docker_client_here() -> bool {
+    let path = std::env::var("PATH").unwrap_or_default();
+    path.split(':').any(|dir| {
+        let p = std::path::Path::new(dir).join("docker");
+        p.is_file()
+    })
+}
+
+/// The way the agents will come in: the user's own ssh config and known hosts, then docker through it. Nothing on
+/// the far side is changed; a fresh host key is accepted once, as `DOCKER_HOST=ssh://` will accept it.
+async fn local_checks(cfg: &AppConfig, target: &str) -> Value {
+    let client = docker_client_here();
+    let (ssh_ok, mut hint) = match ssh::user_ssh_ended(cfg, target, "true", Duration::from_secs(15)).await {
+        Ok(e) if !e.timed_out && e.error.is_empty() && e.code == Some(0) => (true, String::new()),
+        Ok(e) if e.timed_out => (false, "ssh не дозвонилась за 15 с".to_string()),
+        Ok(e) => {
+            let m = MachineRef { label: "эта машина".into(), target: target.into(), session: String::new() };
+            let w = ssh::why_not_with(
+                &e,
+                &m,
+                &ssh::CheckHint { test: format!("ssh {target} true"), program: "ssh".into(), board: false },
+            );
+            (false, w.line)
+        }
+        Err(e) => (false, e),
+    };
+    let mut via = String::new();
+    if ssh_ok {
+        match ssh::user_ssh_ended(
+            cfg,
+            target,
+            "docker version --format '{{.Server.Version}}'",
+            Duration::from_secs(20),
+        )
+        .await
+        {
+            Ok(e) if !e.timed_out && e.error.is_empty() && e.code == Some(0) => {
+                via = e.stdout.lines().last().unwrap_or("").trim().to_string();
+            }
+            Ok(e) if e.timed_out => hint = "docker не ответил за 20 с".to_string(),
+            Ok(e) => {
+                let m = MachineRef { label: "эта машина".into(), target: target.into(), session: String::new() };
+                hint = ssh::why_not_with(
+                    &e,
+                    &m,
+                    &ssh::CheckHint { test: format!("ssh {target} docker version"), program: "docker".into(), board: false },
+                )
+                .line;
+            }
+            Err(e) => hint = e,
+        }
+    }
+    if !client && hint.is_empty() {
+        hint = "на этой машине нет клиента docker".to_string();
+    }
+    json!({
+        "docker_client": client,
+        "ssh_ok": ssh_ok,
+        "docker_via_ssh": via,
+        "hint": hint,
+    })
+}
+
+/// `POST /api/runner/probe`: one read, nothing changed; the wizard's checklist, the agents' way in and the
+/// suggestions for the tags and the protected masks.
 pub async fn runner_probe(State(app): State<Shared>, headers: HeaderMap, Json(body): Json<ProbeBody>) -> Response {
     if !same_origin(&headers) {
         return fail(403, "cross-origin request refused");
     }
     let target = body.target.trim().to_string();
-    if !machines::valid_target(&target) {
+    if !ssh::valid_target(&target) {
         return fail(400, format!("адрес верфи не похож на ssh-адрес: {target:?}"));
     }
     let label = body
@@ -192,29 +256,33 @@ pub async fn runner_probe(State(app): State<Shared>, headers: HeaderMap, Json(bo
         .map(str::trim)
         .filter(|l| !l.is_empty())
         .map(str::to_string)
-        .unwrap_or_else(|| machines::short_label(&target));
-    if !machines::valid_label(&label) {
+        .unwrap_or_else(|| ssh::short_label(&target));
+    if !ssh::valid_label(&label) {
         return fail(400, format!("метка верфи: буквы, цифры, «-», «_», «.»: {label:?}"));
     }
+    let ports_host = ssh::config_host(&app.cfg, &target)
+        .unwrap_or_else(|| runners::host_of_target(&target));
     let r = Runner {
         id: label.clone(),
         target: target.clone(),
-        ports_host: runners::host_of_target(&target),
+        ports_host: ports_host.clone(),
         tags: Vec::new(),
         protected: Vec::new(),
         note: String::new(),
         added_at_ms: 0,
         capacity: None,
     };
+    let local = local_checks(&app.cfg, &target).await;
     let state = runners::probe(&app.cfg, &r).await;
     if !state.ok {
         let why = state.why.clone().unwrap_or_default();
         return Json(json!({
             "ok": false,
-            "step": if state.host.docker_version.is_empty() { "probe" } else { "ssh" },
+            "step": "probe",
             "error": if why.line.is_empty() { "верфь не ответила".to_string() } else { why.line.clone() },
             "why": why,
             "probe": state,
+            "local": local,
         }))
         .into_response();
     }
@@ -224,144 +292,44 @@ pub async fn runner_probe(State(app): State<Shared>, headers: HeaderMap, Json(bo
             "step": "probe",
             "error": "docker не найден в оболочке входа (или пользователь не в группе docker)",
             "probe": state,
+            "local": local,
+        }))
+        .into_response();
+    }
+    let local_ok = local["docker_client"].as_bool().unwrap_or(false)
+        && local["ssh_ok"].as_bool().unwrap_or(false)
+        && !local["docker_via_ssh"].as_str().unwrap_or("").is_empty();
+    if !local_ok {
+        let hint = local["hint"].as_str().unwrap_or("").to_string();
+        return Json(json!({
+            "ok": false,
+            "step": "local",
+            "error": if hint.is_empty() { "эта машина не сможет войти на верфь так, как это делают агенты".to_string() } else { hint },
+            "probe": state,
+            "local": local,
         }))
         .into_response();
     }
     let mut state2 = state.clone();
-    // Suggest only masks for what no task owns: the index of every board the planner knows.
+    // Suggest only masks for what no task of this board owns.
     let snap = app.snapshot.read().await.clone();
-    let live = app.galaxies.lock().await.clone();
-    let cached = app.cached.lock().await.clone();
-    let idx = index_of(&app, &snap, &live, &cached);
+    let idx = index_of(&app, &snap);
     runners::classify(&mut state2.containers, &[], &idx);
     let protected = suggest_protected(&state2.containers);
     Json(json!({
         "ok": true,
         "label": label,
         "target": target,
-        "ports_host": runners::host_of_target(&target),
+        "ports_host": ports_host,
         "probe": state,
+        "local": local,
         "suggested": {
             "tags": suggested_tags(&state.host),
             "protected": protected,
-            "ports_host": runners::host_of_target(&target),
+            "ports_host": ports_host,
         },
     }))
     .into_response()
-}
-
-/* ───────── the progress of a reach check ───────── */
-
-fn emit(app: &Shared, job: &str, steps: &[(String, String, String)], done: bool, extra: Value) {
-    let rows: Vec<Value> = steps
-        .iter()
-        .map(|(id, label, detail)| json!({"id": id, "label": label, "state": if done { "ok" } else { "run" }, "detail": detail, "percent": null}))
-        .collect();
-    let mut v = json!({"job": job, "steps": rows, "done": done});
-    if let (Value::Object(base), Value::Object(more)) = (&mut v, extra) {
-        base.extend(more);
-    }
-    app.bus.send("progress", v.to_string());
-}
-
-#[derive(Deserialize)]
-pub struct ReachBody {
-    target: String,
-}
-
-fn docker_client_here() -> bool {
-    let path = std::env::var("PATH").unwrap_or_default();
-    path.split(':').any(|dir| {
-        let p = std::path::Path::new(dir).join("docker");
-        p.is_file()
-    })
-}
-
-/// `POST /api/runner/reach`: whether this machine and every galaxy have a docker client and can reach the yard.
-pub async fn runner_reach(State(app): State<Shared>, headers: HeaderMap, Json(body): Json<ReachBody>) -> Response {
-    if !same_origin(&headers) {
-        return fail(403, "cross-origin request refused");
-    }
-    let target = body.target.trim().to_string();
-    if !machines::valid_target(&target) {
-        return fail(400, format!("адрес верфи не похож на ssh-адрес: {target:?}"));
-    }
-    let job = format!("r{}", now_ms());
-    let app2 = app.clone();
-    let job2 = job.clone();
-    tokio::spawn(async move {
-        let mut steps: Vec<(String, String, String)> = Vec::new();
-        let mut rows: Vec<Value> = Vec::new();
-        steps.push(("here".into(), "эта машина: клиент docker".into(), String::new()));
-        emit(&app2, &job2, &steps, false, json!({}));
-        let client = docker_client_here();
-        steps[0].2 = if client { "есть".into() } else { "нет клиента docker".into() };
-        let mut here_reach = String::new();
-        if client {
-            let m = MachineRef {
-                label: "local".into(),
-                target: target.clone(),
-                session: String::new(),
-            };
-            match machines::ssh_ended(&app2.cfg, &m, "docker version --format {{.Server.Version}}", Duration::from_secs(15)).await {
-                Ok(e) if !e.timed_out && e.error.is_empty() && e.code == Some(0) => {
-                    here_reach = e.stdout.lines().last().unwrap_or("").trim().to_string();
-                }
-                Ok(e) => {
-                    here_reach = format!("не дозвонилась: {}", machines::why_not(&e, &m).line);
-                }
-                Err(e) => here_reach = e,
-            }
-        }
-        rows.push(json!({
-            "galaxy": "",
-            "docker_client": client,
-            "reach": here_reach.clone(),
-            "hint": if client && !here_reach.is_empty() && !here_reach.starts_with("не ") { "" } else if client { "ключ этой машины не пускает на верфь: ssh-copy-id для пользователя верфи" } else { "поставьте клиент docker на эту машину" }
-        }));
-        steps.push(("here-runner".into(), "эта машина → верфь".into(), here_reach.clone()));
-        emit(&app2, &job2, &steps, false, json!({}));
-        let galaxies = app2.galaxies.lock().await.clone();
-        for g in galaxies.iter().filter(|g| g.ok) {
-            let line = format!(
-                "command -v docker >/dev/null && ssh -o BatchMode=yes -o ConnectTimeout=6 -o StrictHostKeyChecking=accept-new {} docker version --format {{{{.Server.Version}}}}",
-                target
-            );
-            let m = MachineRef {
-                label: g.label.clone(),
-                target: g.target.clone(),
-                session: String::new(),
-            };
-            let (client, reach, hint) = match machines::ssh_ended(&app2.cfg, &m, &line, Duration::from_secs(20)).await {
-                Ok(e) if !e.timed_out && e.error.is_empty() && e.code == Some(0) => {
-                    let v = e.stdout.lines().last().unwrap_or("").trim().to_string();
-                    (true, v, String::new())
-                }
-                Ok(e) if e.stdout.contains("NODOCKER") => (
-                    false,
-                    String::new(),
-                    "нет клиента docker на этой машине".to_string(),
-                ),
-                Ok(e) => (
-                    true,
-                    String::new(),
-                    format!("ключ этой машины не пускает на верфь: {}", machines::why_not(&e, &m).line),
-                ),
-                Err(e) => (false, String::new(), e),
-            };
-            rows.push(json!({"galaxy": g.label, "docker_client": client, "reach": reach, "hint": hint}));
-            steps.push((format!("g:{}", g.label), format!("{} → верфь", g.label), reach));
-            emit(&app2, &job2, &steps, false, json!({}));
-        }
-        emit(
-            &app2,
-            &job2,
-            &steps,
-            true,
-            json!({"ok": true, "result": {"rows": rows}}),
-        );
-    });
-    Json(json!({"ok": true, "job": job})).into_response()
 }
 
 /* ───────── add, set, remove ───────── */
@@ -385,13 +353,12 @@ pub struct AddBody {
 
 fn spawn_after_change(app: Shared) {
     tokio::spawn(async move {
-        runners::mirror_all(&app).await;
         runners::sync_blocks(&app).await;
         app::publish(&app).await;
     });
 }
 
-/// `POST /api/runner/add`: writes the list and starts the copies and the agents' block.
+/// `POST /api/runner/add`: writes the list and refreshes the agents' block if it was connected.
 pub async fn runner_add(State(app): State<Shared>, headers: HeaderMap, Json(body): Json<AddBody>) -> Response {
     if !same_origin(&headers) {
         return fail(403, "cross-origin request refused");
@@ -401,10 +368,10 @@ pub async fn runner_add(State(app): State<Shared>, headers: HeaderMap, Json(body
     }
     let target = body.target.trim().to_string();
     let label = body.label.trim().to_string();
-    if !machines::valid_target(&target) {
+    if !ssh::valid_target(&target) {
         return fail(400, format!("адрес верфи не похож на ssh-адрес: {target:?}"));
     }
-    if !machines::valid_label(&label) {
+    if !ssh::valid_label(&label) {
         return fail(400, format!("метка верфи: буквы, цифры, «-», «_», «.»: {label:?}"));
     }
     let mut file = match file_of(&app) {
@@ -415,7 +382,8 @@ pub async fn runner_add(State(app): State<Shared>, headers: HeaderMap, Json(body
         return fail(409, format!("верфь с меткой «{label}» уже есть"));
     }
     let ports_host = if body.ports_host.trim().is_empty() {
-        runners::host_of_target(&target)
+        ssh::config_host(&app.cfg, &target)
+            .unwrap_or_else(|| runners::host_of_target(&target))
     } else {
         body.ports_host.trim().to_string()
     };
@@ -578,27 +546,12 @@ pub async fn runner_remove(State(app): State<Shared>, headers: HeaderMap, Json(b
     Json(json!({"ok": true, "warned": busy})).into_response()
 }
 
-/* ───────── the copies and the agents' block ───────── */
+/* ───────── the agents' block ───────── */
 
-#[derive(Deserialize)]
-pub struct ConnectQuery {
-    #[serde(default)]
-    galaxy: String,
-}
-
-/// `GET /api/runner/connect?galaxy=`: the two instruction settings, the block as it would be, and whether it is in.
-pub async fn runner_connect_get(
-    State(app): State<Shared>,
-    Query(q): Query<ConnectQuery>,
-) -> Response {
-    let galaxy = q.galaxy;
-    if !galaxy.is_empty() && !machines::valid_label(&galaxy) {
-        return fail(400, "bad machine label");
-    }
-    let place = match station::place_of(&galaxy).await {
-        Ok(p) => p,
-        Err(e) => return e.into_response(),
-    };
+/// `GET /api/runner/connect`: the two instruction settings of this machine, the block as it would be, and whether
+/// it is in.
+pub async fn runner_connect_get(State(app): State<Shared>) -> Response {
+    let place = station::Place::Home;
     let file = match file_of(&app) {
         Ok(f) => f,
         Err(r) => return r,
@@ -625,21 +578,20 @@ pub async fn runner_connect_get(
             "has_old_docker_paragraph": runners::has_old_docker_paragraph(&current),
         }));
     }
-    Json(json!({"ok": true, "galaxy": galaxy, "settings": out})).into_response()
+    let state = app.runner_block.lock().await.clone();
+    Json(json!({"ok": true, "block": state, "settings": out})).into_response()
 }
 
 #[derive(Deserialize)]
 pub struct ConnectBody {
-    #[serde(default)]
-    galaxy: String,
     on: bool,
     #[serde(default)]
     drop_old: bool,
     confirm: Option<bool>,
 }
 
-/// `POST /api/runner/connect`: puts the block into both instruction settings (or takes it out), keeping the
-/// human's own text; `drop_old` removes the hand-written docker paragraph from before.
+/// `POST /api/runner/connect`: puts the block into both instruction settings of this machine (or takes it out),
+/// keeping the human's own text; `drop_old` removes the hand-written docker paragraph from before.
 pub async fn runner_connect(State(app): State<Shared>, headers: HeaderMap, Json(body): Json<ConnectBody>) -> Response {
     if !same_origin(&headers) {
         return fail(403, "cross-origin request refused");
@@ -647,14 +599,7 @@ pub async fn runner_connect(State(app): State<Shared>, headers: HeaderMap, Json(
     if body.confirm != Some(true) {
         return fail(400, "подключение к агентам требует подтверждения");
     }
-    let galaxy = body.galaxy.clone();
-    if !galaxy.is_empty() && !machines::valid_label(&galaxy) {
-        return fail(400, "bad machine label");
-    }
-    let place = match station::place_of(&galaxy).await {
-        Ok(p) => p,
-        Err(e) => return e.into_response(),
-    };
+    let place = station::Place::Home;
     let file = match file_of(&app) {
         Ok(f) => f,
         Err(r) => return r,
@@ -694,28 +639,19 @@ pub async fn runner_connect(State(app): State<Shared>, headers: HeaderMap, Json(
         }
     }
     {
-        let mut blocks = app.runner_blocks.lock().await;
-        blocks.retain(|b| b.galaxy != galaxy);
-        blocks.push(runners::BlockState {
-            galaxy: galaxy.clone(),
-            connected: body.on,
-            stale: false,
-            at: now_ms(),
-            why: String::new(),
-        });
-        if let Ok(json) = serde_json::to_string(&*blocks) {
-            app.db.meta_set("runner_blocks", &json);
+        let mut state = app.runner_block.lock().await;
+        state.connected = body.on;
+        state.stale = false;
+        state.at = now_ms();
+        state.why = String::new();
+        if let Ok(json) = serde_json::to_string(&*state) {
+            app.db.meta_set("runner_block", &json);
         }
     }
-    match &place {
-        station::Place::Home => app::refresh(&app).await,
-        station::Place::Far(m) => {
-            let _ = crate::api::ask_galaxy(&app, &m.label).await;
-        }
-    }
+    app::refresh(&app).await;
     app::rebuild_extras(&app).await;
     app::publish(&app).await;
-    Json(json!({"ok": true, "galaxy": galaxy, "settings": results})).into_response()
+    Json(json!({"ok": true, "settings": results})).into_response()
 }
 
 /* ───────── cleaning ───────── */
@@ -855,7 +791,7 @@ pub async fn runner_clean(State(app): State<Shared>, headers: HeaderMap, Json(bo
     };
     let cmd = format!("docker rm -f -v {}", ids.join(" "));
     let mut failed: Vec<Value> = Vec::new();
-    match machines::ssh_ended(&app.cfg, &m, &cmd, CLEAN_WAIT).await {
+    match ssh::ssh_ended(&app.cfg, &m, &cmd, CLEAN_WAIT).await {
         Ok(e) if !e.timed_out && e.error.is_empty() && e.code == Some(0) => {}
         Ok(e) => {
             let line = if e.stderr.trim().is_empty() { e.stdout.trim().to_string() } else { e.stderr.trim().to_string() };
@@ -872,7 +808,7 @@ pub async fn runner_clean(State(app): State<Shared>, headers: HeaderMap, Json(bo
     let mut removed_nets = 0usize;
     if !nets.is_empty() && failed.is_empty() {
         let cmd = format!("docker network rm {}", nets.join(" "));
-        if let Ok(e) = machines::ssh_ended(&app.cfg, &m, &cmd, CLEAN_WAIT).await {
+        if let Ok(e) = ssh::ssh_ended(&app.cfg, &m, &cmd, CLEAN_WAIT).await {
             if e.code == Some(0) {
                 removed_nets = nets.len();
             }
@@ -881,18 +817,17 @@ pub async fn runner_clean(State(app): State<Shared>, headers: HeaderMap, Json(bo
     let mut removed_vols = 0usize;
     if !vols.is_empty() && failed.is_empty() {
         let cmd = format!("docker volume rm {}", vols.join(" "));
-        if let Ok(e) = machines::ssh_ended(&app.cfg, &m, &cmd, CLEAN_WAIT).await {
+        if let Ok(e) = ssh::ssh_ended(&app.cfg, &m, &cmd, CLEAN_WAIT).await {
             if e.code == Some(0) {
                 removed_vols = vols.len();
             }
         }
     }
-    let mut after = runners::probe(&app.cfg, &r).await;
+    let fresh = runners::probe(&app.cfg, &r).await;
+    let mut after = runners::keep_last(Some(&state), fresh);
     {
         let snap = app.snapshot.read().await.clone();
-        let live = app.galaxies.lock().await.clone();
-        let cached = app.cached.lock().await.clone();
-        classify_now(&app, &snap, &live, &cached, &mut after);
+        classify_now(&app, &snap, &mut after);
     }
     if let Ok(json) = serde_json::to_string(&after) {
         app.db.runner_put(

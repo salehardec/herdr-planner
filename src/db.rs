@@ -517,36 +517,6 @@ impl Db {
         })
     }
 
-    /// What the last copy of the shipyard list written to a galaxy was.
-    pub fn mirror_put(&self, galaxy: &str, hash: &str, at: u64, ok: bool, why: &str) {
-        self.with("mirror_put", |c| {
-            c.execute(
-                "INSERT OR REPLACE INTO runner_mirror (galaxy, hash, at, ok, why) \
-                 VALUES (?1, ?2, ?3, ?4, ?5)",
-                params![galaxy, hash, at as i64, ok, why],
-            )?;
-            Ok(())
-        })
-    }
-
-    /// `(galaxy, hash, at, ok, why)` for every copy, by galaxy.
-    pub fn mirror_all(&self) -> Vec<(String, String, u64, bool, String)> {
-        self.with("mirror_all", |c| {
-            let mut st =
-                c.prepare("SELECT galaxy, hash, at, ok, why FROM runner_mirror ORDER BY galaxy")?;
-            let rows = st.query_map([], |r| {
-                Ok((
-                    r.get(0)?,
-                    r.get(1)?,
-                    r.get::<_, i64>(2)? as u64,
-                    r.get(3)?,
-                    r.get(4)?,
-                ))
-            })?;
-            rows.collect()
-        })
-    }
-
     // ---- main-branch lag per repository ----
 
     pub fn gitlag_put(&self, galaxy: &str, repo: &str, json: &str, at: u64) {

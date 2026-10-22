@@ -55,7 +55,6 @@ pub fn router(app: Shared) -> Router {
         .route("/api/runners", get(crate::runners_api::runners_get))
         .route("/api/runner/ask", post(crate::runners_api::runner_ask))
         .route("/api/runner/probe", post(crate::runners_api::runner_probe))
-        .route("/api/runner/reach", post(crate::runners_api::runner_reach))
         .route("/api/runner/add", post(crate::runners_api::runner_add))
         .route("/api/runner/set", post(crate::runners_api::runner_set))
         .route("/api/runner/remove", post(crate::runners_api::runner_remove))

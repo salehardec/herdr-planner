@@ -1,17 +1,16 @@
 //! Shipyards («верфи»): machines that run the docker containers of the board's tasks (PLN-26).
 //!
-//! A runner is not a galaxy: it has no board, no herdr and no agents. Every galaxy's agents reach it with
+//! A runner is not a galaxy: it has no board, no herdr and no agents. The agents of this board reach it with
 //! `DOCKER_HOST=ssh://…`; the planner reads its state (one fixed ssh script), matches its containers to the tasks of
-//! all galaxies and removes the forgotten ones by exact id, after a «было → стало» card.
+//! this board and removes the forgotten ones by exact id, after a «было → стало» card.
 //!
-//! The source of truth is `~/.herdr-projects/settings/runners.json` (the same path on every machine); the planner
-//! mirrors it to the far galaxies and keeps the generated docker rule in their `worker.instructions` and
-//! `reviewer.instructions`.
+//! The source of truth is `~/.herdr-projects/settings/runners.json`; the planner keeps the generated docker rule in
+//! this machine's `worker.instructions` and `reviewer.instructions`. No copy is written to another machine.
 
 use crate::app::Shared;
 use crate::board::Task;
 use crate::config::{now_ms, AppConfig};
-use crate::machines::{self, MachineRef, Why};
+use crate::ssh::{self, CheckHint, MachineRef, Why};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -135,16 +134,16 @@ pub fn validate(file: &RunnersFile) -> Result<(), String> {
     }
     let mut ids = BTreeSet::new();
     for r in &file.runners {
-        if !machines::valid_label(&r.id) {
+        if !ssh::valid_label(&r.id) {
             return Err(format!("runners.json: недопустимая метка верфи: {:?}", r.id));
         }
         if !ids.insert(r.id.clone()) {
             return Err(format!("runners.json: метка верфи повторяется: {}", r.id));
         }
-        if !machines::valid_target(&r.target) {
+        if !ssh::valid_target(&r.target) {
             return Err(format!("runners.json: недопустимый адрес верфи {}: {:?}", r.id, r.target));
         }
-        if !r.ports_host.is_empty() && !machines::valid_target(&r.ports_host) {
+        if !r.ports_host.is_empty() && !ssh::valid_target(&r.ports_host) {
             return Err(format!("runners.json: недопустимый адрес портов верфи {}: {:?}", r.id, r.ports_host));
         }
         for m in &r.protected {
@@ -282,7 +281,7 @@ pub enum Class {
     Active,
     /// A container of a task that is done or archived.
     Forgotten,
-    /// A tag whose task is not found (removed, or its galaxy is away), or one tag in two galaxies.
+    /// A tag whose task is not found (removed from the board), or one tag in two tasks.
     Unsure,
     /// Not a board task, or under a protected mask: never touched.
     Foreign,
@@ -290,7 +289,6 @@ pub enum Class {
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct TaskRef {
-    pub galaxy: String,
     pub id: String,
     pub tag: String,
     pub status: String,
@@ -344,17 +342,7 @@ pub struct Vol {
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-pub struct Mirror {
-    pub galaxy: String,
-    pub ok: bool,
-    pub at: u64,
-    pub why: String,
-}
-
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct BlockState {
-    /// Empty for this machine.
-    pub galaxy: String,
     pub connected: bool,
     pub stale: bool,
     pub at: u64,
@@ -376,8 +364,6 @@ pub struct RunnerState {
     pub containers: Vec<Container>,
     pub networks: Vec<Net>,
     pub volumes: Vec<Vol>,
-    #[serde(default)]
-    pub mirrors: Vec<Mirror>,
 }
 
 impl RunnerState {
@@ -684,20 +670,21 @@ pub fn host_of_target(target: &str) -> String {
 
 #[derive(Debug, Clone)]
 struct Cand {
-    galaxy: String,
     id: String,
     tag: String,
     status: String,
     archived: bool,
+    exited: bool,
     title: String,
 }
 
+/// The tasks of this board, by tag, and the keys of its repositories (current and `had`).
 #[derive(Debug, Clone, Default)]
 pub struct TaskIndex {
     tags: BTreeMap<String, Vec<Cand>>,
     keys: BTreeSet<String>,
-    /// hostname (lower case) → galaxy label.
-    hosts: HashMap<String, String>,
+    /// Every key of a repository, so a container labelled with an older key still finds the task.
+    repo_keys: BTreeMap<String, Vec<String>>,
 }
 
 impl TaskIndex {
@@ -705,69 +692,19 @@ impl TaskIndex {
         active: &[Task],
         archived: &[Task],
         repos: &[crate::taskmeta::RepoInfo],
-        galaxies: &[machines::Galaxy],
-        cached: &[Value],
     ) -> TaskIndex {
         let mut idx = TaskIndex::default();
         for r in repos {
-            if !r.key.is_empty() {
-                idx.keys.insert(r.key.to_uppercase());
+            let mut list: Vec<String> = r.keys.iter().chain(std::iter::once(&r.key)).map(|k| k.to_uppercase()).filter(|k| !k.is_empty()).collect();
+            list.sort();
+            list.dedup();
+            for k in &list {
+                idx.keys.insert(k.clone());
             }
+            idx.repo_keys.insert(r.name.clone(), list);
         }
         for t in active.iter().chain(archived.iter()) {
             idx.local_task(t);
-        }
-        for g in galaxies {
-            if !g.host.is_empty() {
-                idx.hosts.insert(g.host.to_lowercase(), g.label.clone());
-            }
-            idx.hosts.entry(g.label.to_lowercase()).or_insert(g.label.clone());
-            for p in &g.projects {
-                if !p.key.is_empty() {
-                    idx.keys.insert(p.key.to_uppercase());
-                }
-            }
-            for t in &g.tasks {
-                idx.remote_task(
-                    &g.label,
-                    &t.id,
-                    &t.tag,
-                    &t.key,
-                    t.n,
-                    t.status.key(),
-                    t.archived,
-                    &t.title,
-                );
-            }
-        }
-        for v in cached {
-            let label = v.get("label").and_then(Value::as_str).unwrap_or("");
-            if label.is_empty() {
-                continue;
-            }
-            if let Some(h) = v.get("host").and_then(Value::as_str).filter(|s| !s.is_empty()) {
-                idx.hosts.insert(h.to_lowercase(), label.to_string());
-            }
-            idx.hosts.entry(label.to_lowercase()).or_insert(label.to_string());
-            if let Some(ps) = v.get("projects").and_then(Value::as_array) {
-                for p in ps {
-                    if let Some(k) = p.get("key").and_then(Value::as_str).filter(|s| !s.is_empty()) {
-                        idx.keys.insert(k.to_uppercase());
-                    }
-                }
-            }
-            if let Some(ts) = v.get("tasks").and_then(Value::as_array) {
-                for t in ts {
-                    let id = t.get("id").and_then(Value::as_str).unwrap_or("");
-                    let tag = t.get("tag").and_then(Value::as_str).unwrap_or("");
-                    let key = t.get("key").and_then(Value::as_str).unwrap_or("");
-                    let n = t.get("n").and_then(Value::as_u64).unwrap_or(0);
-                    let status = t.get("status").and_then(Value::as_str).unwrap_or("");
-                    let archived = t.get("archived").and_then(Value::as_bool).unwrap_or(false);
-                    let title = t.get("title").and_then(Value::as_str).unwrap_or("");
-                    idx.remote_task(label, id, tag, key, n, status, archived, title);
-                }
-            }
         }
         idx
     }
@@ -783,62 +720,24 @@ impl TaskIndex {
         } else {
             t.tag.to_uppercase()
         };
-        self.tags.entry(tag.clone()).or_default().push(Cand {
-            galaxy: String::new(),
+        let cand = Cand {
             id: t.id.clone(),
-            tag,
+            tag: tag.clone(),
             status: t.status.key().to_string(),
             archived: t.archived,
+            exited: t.exited_at > 0,
             title: t.title.clone(),
-        });
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    fn remote_task(
-        &mut self,
-        galaxy: &str,
-        id: &str,
-        tag: &str,
-        key: &str,
-        n: u64,
-        status: &str,
-        archived: bool,
-        title: &str,
-    ) {
-        if id.is_empty() {
-            return;
-        }
-        let key = tag_key(tag)
-            .or_else(|| {
-                let k = key.to_uppercase();
-                (!k.is_empty()).then_some(k)
-            })
-            .unwrap_or_default();
-        if key.is_empty() {
-            return;
-        }
-        self.keys.insert(key.clone());
-        let tag = if tag.is_empty() {
-            format!("{key}-{n}")
-        } else {
-            tag.to_uppercase()
         };
-        self.tags.entry(tag.clone()).or_default().push(Cand {
-            galaxy: galaxy.to_string(),
-            id: id.to_string(),
-            tag,
-            status: status.to_string(),
-            archived,
-            title: title.to_string(),
-        });
+        self.tags.entry(tag).or_default().push(cand.clone());
+        // A container may carry a key the board used before (`had`); the number is the same task.
+        for k in self.repo_keys.get(&t.repo).cloned().unwrap_or_default() {
+            let alias = format!("{k}-{}", t.n);
+            self.tags.entry(alias).or_default().push(cand.clone());
+        }
     }
 
     fn known_key(&self, key: &str) -> bool {
         self.keys.contains(&key.to_uppercase())
-    }
-
-    fn galaxy_of_host(&self, host: &str) -> Option<String> {
-        self.hosts.get(&host.to_lowercase()).cloned()
     }
 }
 
@@ -850,19 +749,25 @@ fn tag_key(tag: &str) -> Option<String> {
     Some(key.to_uppercase())
 }
 
+/// A board key: 2–5 characters, the first a Latin letter, then letters or digits (`PLN`, `SSP9`).
+fn valid_key(key: &str) -> bool {
+    (2..=5).contains(&key.len())
+        && key.chars().next().is_some_and(|c| c.is_ascii_alphabetic())
+        && key.chars().all(|c| c.is_ascii_alphanumeric())
+}
+
 fn segments(name: &str) -> Vec<&str> {
     name.split(|c| matches!(c, '-' | '_' | '.')).collect()
 }
 
-/// The first `KEY-n` in a name whose key is known to some galaxy.
+/// The first `KEY-n` in a name whose key is a key of this board.
 fn tag_in_name(name: &str, index: &TaskIndex) -> Option<String> {
     let seg = segments(name);
     let mut i = 0;
     while i + 1 < seg.len() {
         let key = seg[i];
         let num = seg[i + 1];
-        if (2..=6).contains(&key.len())
-            && key.chars().all(|c| c.is_ascii_alphabetic())
+        if valid_key(key)
             && (1..=6).contains(&num.len())
             && num.chars().all(|c| c.is_ascii_digit())
             && index.known_key(key)
@@ -877,7 +782,7 @@ fn tag_in_name(name: &str, index: &TaskIndex) -> Option<String> {
 fn tag_from_label(value: &str, index: &TaskIndex) -> Option<String> {
     let v = value.trim();
     let (key, n) = v.rsplit_once('-')?;
-    if !(1..=6).contains(&n.len()) || !n.chars().all(|c| c.is_ascii_digit()) {
+    if !valid_key(key) || !(1..=6).contains(&n.len()) || !n.chars().all(|c| c.is_ascii_digit()) {
         return None;
     }
     index
@@ -922,8 +827,8 @@ fn is_protected(c: &Container, masks: &[String]) -> bool {
         .any(|m| mask_match(m, &c.name) || (!project.is_empty() && mask_match(m, &project)))
 }
 
-/// Fills `task` and `class` of every container. `herdr.task` is the rule; a tag in the name (its key known to a
-/// galaxy) is the fallback; compose containers are read by their project, never by their generated name.
+/// Fills `task` and `class` of every container. `herdr.task` is the rule; a tag in the name (its key known to
+/// this board) is the fallback; compose containers are read by their project, never by their generated name.
 pub fn classify(containers: &mut [Container], protected: &[String], index: &TaskIndex) {
     for c in containers.iter_mut() {
         let (class, task) = classify_one(c, protected, index);
@@ -962,35 +867,20 @@ fn classify_one(
     let Some(cands) = index.tags.get(&tag) else {
         return (Class::Unsure, None);
     };
-    let mut uniq: BTreeMap<(String, String), &Cand> = BTreeMap::new();
+    let mut uniq: BTreeMap<&str, &Cand> = BTreeMap::new();
     for cand in cands {
-        uniq.insert((cand.galaxy.clone(), cand.id.clone()), cand);
+        uniq.insert(cand.id.as_str(), cand);
     }
     let list: Vec<&Cand> = uniq.into_values().collect();
-    let host_label = c.labels.get("herdr.galaxy").map(String::as_str).unwrap_or("");
-    let chosen: Option<&Cand> = if list.len() == 1 {
-        list.first().copied()
-    } else if !host_label.is_empty() {
-        let galaxy = index.galaxy_of_host(host_label);
-        match galaxy {
-            Some(g) => {
-                let hits: Vec<&Cand> = list.iter().copied().filter(|c| c.galaxy == g).collect();
-                (hits.len() == 1).then(|| hits[0])
-            }
-            None => None,
-        }
-    } else {
-        None
-    };
-    let Some(cand) = chosen else {
+    // One tag in two tasks of this board (an old key and a new one, or a reused number): not sure enough to touch.
+    let Some(cand) = (list.len() == 1).then(|| list[0]) else {
         return (Class::Unsure, None);
     };
-    let done = cand.archived || cand.status == "done";
+    let done = (cand.archived || cand.status == "done") && cand.exited;
     let class = if done { Class::Forgotten } else { Class::Active };
     (
         class,
         Some(TaskRef {
-            galaxy: cand.galaxy.clone(),
             id: cand.id.clone(),
             tag: cand.tag.clone(),
             status: cand.status.clone(),
@@ -1000,6 +890,31 @@ fn classify_one(
 }
 
 /* ───────── polling ───────── */
+
+/// The planner's words for a runner whose ssh call failed: the hand check is the agents' own command.
+fn why(end: &ssh::Ended, m: &MachineRef) -> Why {
+    ssh::why_not_with(
+        end,
+        m,
+        &CheckHint {
+            test: format!("Проверить с этой машины: ssh {} docker version", m.target),
+            program: "docker".into(),
+            board: false,
+        },
+    )
+}
+
+/// A failed probe keeps the last good read: the page shows it dimmed with the reason and when it was read.
+pub fn keep_last(prev: Option<&RunnerState>, fresh: RunnerState) -> RunnerState {
+    match prev.filter(|p| p.fetched_at_ms > 0 && !fresh.ok) {
+        Some(p) => RunnerState {
+            ok: false,
+            why: fresh.why,
+            ..p.clone()
+        },
+        None => fresh,
+    }
+}
 
 fn machine_of(r: &Runner) -> MachineRef {
     MachineRef {
@@ -1012,7 +927,7 @@ fn machine_of(r: &Runner) -> MachineRef {
 pub async fn probe(cfg: &AppConfig, r: &Runner) -> RunnerState {
     let mut state = RunnerState::from_runner(r);
     let m = machine_of(r);
-    let end = match machines::ssh_ended(cfg, &m, PROBE_SCRIPT, PROBE_WAIT).await {
+    let end = match ssh::ssh_ended(cfg, &m, PROBE_SCRIPT, PROBE_WAIT).await {
         Ok(e) => e,
         Err(e) => {
             state.why = Some(Why {
@@ -1024,7 +939,7 @@ pub async fn probe(cfg: &AppConfig, r: &Runner) -> RunnerState {
         }
     };
     if end.timed_out || !end.error.is_empty() || end.code != Some(0) {
-        state.why = Some(machines::why_not(&end, &m));
+        state.why = Some(why(&end, &m));
         state.fetched_at_ms = now_ms();
         return state;
     }
@@ -1062,22 +977,24 @@ pub async fn poll_all(app: &Shared) {
     let mut old = app.runners.lock().await.clone();
     // A runner taken out of the file leaves the state too (its cache row is dropped by the page's own remove call).
     old.retain(|s| file.get(&s.id).is_some());
-    for state in &states {
-        if let Ok(json) = serde_json::to_string(state) {
+    let mut fresh: Vec<RunnerState> = Vec::new();
+    for state in states {
+        let kept = keep_last(old.iter().find(|s| s.id == state.id), state);
+        if let Ok(json) = serde_json::to_string(&kept) {
             app.db.runner_put(
-                &state.id,
+                &kept.id,
                 &json,
-                state.ok,
-                state
-                    .why
+                kept.ok,
+                kept.why
                     .as_ref()
                     .map(|w| w.line.as_str())
                     .unwrap_or(""),
             );
         }
-        old.retain(|s| s.id != state.id);
+        old.retain(|s| s.id != kept.id);
+        fresh.push(kept);
     }
-    old.extend(states);
+    old.extend(fresh);
     old.sort_by(|a, b| a.id.cmp(&b.id));
     *app.runners.lock().await = old;
     crate::app::rebuild_extras(app).await;
@@ -1289,24 +1206,26 @@ pub const MARKERS: crate::blocks::Markers = crate::blocks::Markers {
     end: BLOCK_END,
 };
 
-/// The docker rule for the board's agents. The same text on every galaxy: the machine's name is taken from
-/// `hostname` by the agent, so a task sent to another machine still works.
+/// The docker rule for the board's agents, generated from the list. It names the default yard, every other one, the
+/// protected masks, and the task label the planner reads back.
 pub fn block_text(file: &RunnersFile) -> String {
     let Some(def) = file.default_runner() else {
         return String::new();
     };
-    let ports = if def.ports_host.is_empty() {
-        host_of_target(&def.target)
-    } else {
-        def.ports_host.clone()
+    let host_of = |r: &Runner| {
+        if r.ports_host.is_empty() {
+            host_of_target(&r.target)
+        } else {
+            r.ports_host.clone()
+        }
     };
     let mut s = String::from(BLOCK_BEGIN);
     s.push('\n');
     s.push_str(&format!(
         "Docker-контейнеры (базы, стенды, заглушки, прокси и т.п.) не запускай на этой машине: используй верфь {} — export DOCKER_HOST=ssh://{} (вход по SSH-ключу уже настроен; проверка: ssh -o BatchMode=yes {} true). Порты контейнеров открываются на {}, не на localhost.\n",
-        def.id, def.target, def.target, ports
+        def.id, def.target, def.target, host_of(def)
     ));
-    s.push_str("Каждому контейнеру, сети и тому давай имя с id своей задачи (например pg-PLN-26) и метки --label herdr.task=PLN-26 --label herdr.galaxy=$(hostname); для docker compose — имя проекта с id задачи (docker compose -p pln-26 …) и те же метки в labels каждого сервиса; после себя всегда останавливай и удаляй их (docker rm -f -v, docker network rm, docker volume rm, docker compose -p pln-26 down -v), даже если работа прервалась.\n");
+    s.push_str("Каждому контейнеру, сети и тому давай имя с id своей задачи (например pg-PLN-26) и метку --label herdr.task=PLN-26; для docker compose — имя проекта с id задачи (docker compose -p pln-26 …) и та же метка в labels каждого сервиса; после себя всегда останавливай и удаляй их (docker rm -f -v, docker network rm, docker volume rm, docker compose -p pln-26 down -v), даже если работа прервалась.\n");
     let masks = file.protected_all();
     if !masks.is_empty() {
         s.push_str(&format!(
@@ -1319,12 +1238,12 @@ pub fn block_text(file: &RunnersFile) -> String {
         let list = others
             .iter()
             .map(|r| {
-                let p = if r.ports_host.is_empty() {
-                    host_of_target(&r.target)
+                let tags = if r.tags.is_empty() {
+                    String::new()
                 } else {
-                    r.ports_host.clone()
+                    format!(", {}", r.tags.join(", "))
                 };
-                format!("{} (ssh://{}, порты {})", r.id, r.target, p)
+                format!("{} (ssh://{}, порты {}{tags})", r.id, r.target, host_of(r))
             })
             .collect::<Vec<_>>()
             .join(", ");
@@ -1359,188 +1278,102 @@ pub fn has_old_docker_paragraph(text: &str) -> bool {
     crate::blocks::has_paragraph(text, MARKERS, "DOCKER_HOST=")
 }
 
-/* ───────── mirrors ───────── */
+/* ───────── the agents' block ───────── */
 
-fn sha256_hex(s: &str) -> String {
-    use sha2::{Digest, Sha256};
-    let mut h = Sha256::new();
-    h.update(s.as_bytes());
-    h.finalize().iter().map(|b| format!("{b:02x}")).collect()
-}
-
-/// The far-side command: the file written atomically (base64 keeps the text intact), then its hash printed.
-pub fn mirror_script(content: &str) -> String {
-    use base64::Engine;
-    let b64 = base64::engine::general_purpose::STANDARD.encode(content.as_bytes());
-    format!(
-        "mkdir -p ~/.herdr-projects/settings && printf %s '{}' | base64 -d > ~/.herdr-projects/settings/runners.json.tmp && chmod 600 ~/.herdr-projects/settings/runners.json.tmp && mv ~/.herdr-projects/settings/runners.json.tmp ~/.herdr-projects/settings/runners.json && sha256sum ~/.herdr-projects/settings/runners.json",
-        b64
-    )
-}
-
-/// Writes the list to every galaxy that is on line (one ssh call each), remembering the hash that arrived.
-pub async fn mirror_all(app: &Shared) {
-    let path = app.cfg.runners_file();
-    let content = match std::fs::read_to_string(&path) {
-        Ok(c) => c,
-        Err(_) => serde_json::to_string_pretty(&RunnersFile::default()).unwrap_or_default(),
-    };
-    let hash = sha256_hex(&content);
-    let script = mirror_script(&content);
-    let galaxies = app.galaxies.lock().await.clone();
-    let calls = galaxies.iter().map(|g| {
-        let script = script.clone();
-        async move {
-            if !g.ok || g.target.is_empty() {
-                return (g.label.clone(), false, String::new(), now_ms(), "нет связи".to_string());
-            }
-            let m = MachineRef {
-                label: g.label.clone(),
-                target: g.target.clone(),
-                session: String::new(),
-            };
-            let end = machines::ssh_ended(&app.cfg, &m, &script, PROBE_WAIT).await;
-            let (ok, got, why) = match end {
-                Ok(e) if !e.timed_out && e.error.is_empty() && e.code == Some(0) => {
-                    let got = e.stdout.split_whitespace().next().unwrap_or("").to_string();
-                    (true, got, String::new())
-                }
-                Ok(e) => (false, String::new(), machines::why_not(&e, &m).line),
-                Err(e) => (false, String::new(), e),
-            };
-            (g.label.clone(), ok, got, now_ms(), why)
-        }
-    });
-    let done = futures_util::future::join_all(calls).await;
-    for (galaxy, ok, got, at, why) in done {
-        app.db.mirror_put(
-            &galaxy,
-            if got.is_empty() { &hash } else { &got },
-            at,
-            ok,
-            &why,
-        );
-    }
-    crate::app::rebuild_extras(app).await;
-}
-
-/// Rewrites the docker block in every galaxy that had it (the consent was given when it was connected).
+/// Rewrites the docker block in this machine's instructions when the list changed. The consent was given when the
+/// block was connected on the Station; before that nothing is touched. The last runner gone — the block goes too.
 pub async fn sync_blocks(app: &Shared) {
-    // Nothing was ever connected: there is no block to update (and no board to ask).
-    if !app.runner_blocks.lock().await.iter().any(|b| b.connected) {
-        return;
-    }
     let file = match load(&app.cfg.runners_file()) {
         Ok(f) => f,
         Err(_) => return,
     };
     let block = block_text(&file);
-    let known = app.runner_blocks.lock().await.clone();
-    let mut out: Vec<BlockState> = Vec::new();
-    // This machine first.
-    let mut places: Vec<(String, crate::station::Place)> = vec![(
-        String::new(),
-        crate::station::Place::Home,
-    )];
-    for g in app.galaxies.lock().await.iter() {
-        if let Ok(place) = crate::station::place_of(&g.label).await {
-            places.push((g.label.clone(), place));
+    let was = app.runner_block.lock().await.clone();
+    let place = crate::station::Place::Home;
+    let settings = match crate::station::read_settings(&app.cfg, &place, "").await {
+        Ok(s) => s,
+        Err(e) => {
+            *app.runner_block.lock().await = BlockState {
+                connected: was.connected,
+                stale: was.connected,
+                at: now_ms(),
+                why: e.message(),
+            };
+            return;
         }
-    }
-    for (label, place) in places {
-        let was_connected = known
-            .iter()
-            .find(|b| b.galaxy == label)
-            .map(|b| b.connected)
-            .unwrap_or(false);
-        let settings = match crate::station::read_settings(&app.cfg, &place, "").await {
-            Ok(s) => s,
+    };
+    let mut connected = false;
+    let mut stale = false;
+    let mut why = String::new();
+    let mut changed = false;
+    for name in ["worker.instructions", "reviewer.instructions"] {
+        let Some(setting) = crate::station::find(&settings, name) else {
+            continue;
+        };
+        let current = if setting.from == "built in" || setting.value.trim() == "none" {
+            String::new()
+        } else {
+            setting.value.clone()
+        };
+        if !has_any_block(&current) {
+            continue;
+        }
+        connected = true;
+        if !block.is_empty() && !has_block(&current, &block) {
+            stale = true;
+        }
+        if !was.connected {
+            continue;
+        }
+        let value = match connect_value(&current, &block, !block.is_empty()) {
+            Ok(Some(v)) => v,
+            Ok(None) => {
+                let args = vec!["unset".to_string(), name.to_string()];
+                match crate::station::board_run(&app.cfg, &place, &args, crate::station::BOARD_WAIT)
+                    .await
+                {
+                    Ok(_) => changed = true,
+                    Err(e) => why = e.message(),
+                }
+                continue;
+            }
             Err(e) => {
-                out.push(BlockState {
-                    galaxy: label,
-                    connected: was_connected,
-                    stale: was_connected,
-                    at: now_ms(),
-                    why: e.message(),
-                });
+                why = e;
                 continue;
             }
         };
-        let mut connected = false;
-        let mut stale = false;
-        let mut why = String::new();
-        let mut changed = false;
-        for name in ["worker.instructions", "reviewer.instructions"] {
-            let Some(setting) = crate::station::find(&settings, name) else {
-                continue;
-            };
-            let current = if setting.from == "built in" || setting.value.trim() == "none" {
-                String::new()
-            } else {
-                setting.value.clone()
-            };
-            if !has_any_block(&current) {
-                continue;
-            }
-            connected = true;
-            if !block.is_empty() && !has_block(&current, &block) {
-                stale = true;
-            }
-            if !was_connected {
-                continue;
-            }
-            let value = match connect_value(&current, &block, !block.is_empty()) {
-                Ok(Some(v)) => v,
-                Ok(None) => {
-                    let args = vec![
-                        "unset".to_string(),
-                        name.to_string(),
-                    ];
-                    if let Err(e) = crate::station::board_run(
-                        &app.cfg,
-                        &place,
-                        &args,
-                        crate::station::BOARD_WAIT,
-                    )
-                    .await
-                    {
-                        why = e.message();
-                        continue;
-                    }
-                    changed = true;
-                    continue;
-                }
-                Err(e) => {
-                    why = e;
-                    continue;
-                }
-            };
-            if value == current {
-                continue;
-            }
-            let args = vec!["set".to_string(), name.to_string(), value];
-            match crate::station::board_run(&app.cfg, &place, &args, crate::station::BOARD_WAIT)
-                .await
-            {
-                Ok(o) if o.ok() => changed = true,
-                Ok(o) => why = o.words(),
-                Err(e) => why = e.message(),
-            }
+        if value == current {
+            continue;
         }
-        if changed {
-            stale = false;
+        let args = vec!["set".to_string(), name.to_string(), value];
+        match crate::station::board_run(&app.cfg, &place, &args, crate::station::BOARD_WAIT).await {
+            Ok(o) if o.ok() => changed = true,
+            Ok(o) => why = o.words(),
+            Err(e) => why = e.message(),
         }
-        out.push(BlockState {
-            galaxy: label,
-            connected,
-            stale,
-            at: now_ms(),
-            why,
-        });
     }
-    *app.runner_blocks.lock().await = out.clone();
-    if let Ok(json) = serde_json::to_string(&out) {
-        app.db.meta_set("runner_blocks", &json);
+    if block.is_empty() && changed {
+        connected = false;
+    }
+    if changed {
+        stale = false;
+        crate::app::journal_note(
+            app,
+            "runner/block",
+            "runner",
+            "блок правил о верфях обновлён в инструкциях агентов",
+        )
+        .await;
+    }
+    let state = BlockState {
+        connected,
+        stale,
+        at: now_ms(),
+        why,
+    };
+    *app.runner_block.lock().await = state.clone();
+    if let Ok(json) = serde_json::to_string(&state) {
+        app.db.meta_set("runner_block", &json);
     }
     crate::app::rebuild_extras(app).await;
     crate::app::publish(app).await;
@@ -1550,7 +1383,7 @@ pub async fn sync_blocks(app: &Shared) {
 
 pub async fn disk_use(cfg: &AppConfig, r: &Runner) -> Result<Value, String> {
     let m = machine_of(r);
-    let end = machines::ssh_ended(
+    let end = ssh::ssh_ended(
         cfg,
         &m,
         "docker system df --format '{{json .}}'",
@@ -1558,7 +1391,7 @@ pub async fn disk_use(cfg: &AppConfig, r: &Runner) -> Result<Value, String> {
     )
     .await?;
     if end.timed_out || !end.error.is_empty() || end.code != Some(0) {
-        return Err(machines::why_not(&end, &m).line);
+        return Err(why(&end, &m).line);
     }
     let mut rows = Vec::new();
     for line in end.stdout.lines().filter(|l| l.trim().starts_with('{')) {
@@ -1585,6 +1418,7 @@ mod tests {
             key: tag_key(tag).unwrap_or_default(),
             status,
             archived,
+            exited_at: if archived || matches!(status, crate::board::Status::Done) { 1 } else { 0 },
             title: tag.into(),
             ..Task::default()
         }
@@ -1611,24 +1445,49 @@ mod tests {
         assert!(!mask_match("neighbor*", "nope"));
     }
 
+    fn repo(name: &str, key: &str) -> crate::taskmeta::RepoInfo {
+        crate::taskmeta::RepoInfo {
+            name: name.into(),
+            key: key.into(),
+            keys: vec![key.into()],
+            root: String::new(),
+        }
+    }
+
     #[test]
-    fn the_name_parser_takes_only_keys_a_galaxy_knows() {
+    fn the_name_parser_takes_only_keys_this_board_knows() {
         let mut idx = TaskIndex::default();
-        idx.keys.insert("ALP".into());
-        idx.keys.insert("PLN".into());
+        for k in ["ALP", "PLN", "SSP9"] {
+            idx.keys.insert(k.into());
+        }
         assert_eq!(tag_in_name("pg-ALP-3", &idx).as_deref(), Some("ALP-3"));
         assert_eq!(tag_in_name("alp-3-pg-1", &idx).as_deref(), Some("ALP-3"));
         assert_eq!(tag_in_name("pg-PLN-26", &idx).as_deref(), Some("PLN-26"));
+        // A key with a digit is a board key too (samsungs9plus → SSP9).
+        assert_eq!(tag_in_name("pg-SSP9-3", &idx).as_deref(), Some("SSP9-3"));
+        assert_eq!(tag_in_name("ssp9-3-pg-1", &idx).as_deref(), Some("SSP9-3"));
+        assert_eq!(tag_in_name("ssp9-3_default", &idx).as_deref(), Some("SSP9-3"));
+        // Compose names are not tags unless their key is a key of this board.
         assert_eq!(tag_in_name("myapp-db-1", &idx), None);
         assert_eq!(tag_in_name("neighbor-server-x-app-1", &idx), None);
         assert_eq!(tag_in_name("neighbor-db-1", &idx), None);
+        its_foreign(&["myapp-db-1", "gigam-server-x-gigam-1"]);
+    }
+
+    /// The containers of a board without these keys stay foreign (a name alone is never enough).
+    fn its_foreign(names: &[&str]) {
+        let idx = TaskIndex::default();
+        for n in names {
+            assert_eq!(tag_in_name(n, &idx), None, "{n}");
+        }
     }
 
     #[test]
     fn the_four_classes_follow_the_snapshot() {
         let active = vec![task("alpha/3", "ALP-3", Status::Working, false)];
         let archived = vec![task("alpha/1", "ALP-1", Status::Done, true)];
-        let idx = TaskIndex::build(&active, &archived, &[], &[], &[]);
+        let repos = vec![repo("alpha", "ALP")];
+        let idx = TaskIndex::build(&active, &archived, &repos);
         let mut list = vec![
             cont("pg-ALP-3", &[("com.docker.compose.project", "work-3")]),
             cont("web-ALP-1", &[]),
@@ -1648,9 +1507,35 @@ mod tests {
     }
 
     #[test]
+    fn an_older_key_of_the_repository_finds_the_same_task() {
+        let active = vec![task("alpha/4", "ALP-4", Status::Working, false)];
+        let repos = vec![crate::taskmeta::RepoInfo {
+            name: "alpha".into(),
+            key: "ALP".into(),
+            keys: vec!["AL9".into(), "ALP".into()],
+            root: String::new(),
+        }];
+        let idx = TaskIndex::build(&active, &[], &repos);
+        let mut list = vec![cont("pg-AL9-4", &[("herdr.task", "AL9-4")])];
+        classify(&mut list, &[], &idx);
+        assert_eq!(list[0].class, Class::Active);
+        assert_eq!(list[0].task.as_ref().unwrap().id, "alpha/4");
+    }
+
+    #[test]
+    fn a_done_task_whose_agent_still_runs_is_not_forgotten_yet() {
+        let mut done = task("alpha/1", "ALP-1", Status::Done, false);
+        done.exited_at = 0;
+        let idx = TaskIndex::build(&[], &[done], &[repo("alpha", "ALP")]);
+        let mut list = vec![cont("web-ALP-1", &[])];
+        classify(&mut list, &[], &idx);
+        assert_eq!(list[0].class, Class::Active);
+    }
+
+    #[test]
     fn compose_containers_are_read_by_their_project_not_their_name() {
         let active = vec![task("alpha/3", "ALP-3", Status::Working, false)];
-        let idx = TaskIndex::build(&active, &[], &[], &[], &[]);
+        let idx = TaskIndex::build(&active, &[], &[repo("alpha", "ALP")]);
         let mut list = vec![cont(
             "some-PLN-3-name",
             &[("com.docker.compose.project", "neighbor")],
@@ -1666,9 +1551,28 @@ mod tests {
     }
 
     #[test]
+    fn a_key_with_a_digit_is_read_through_its_project_and_name() {
+        let active = vec![task("samsungs9plus/3", "SSP9-3", Status::Working, false)];
+        let idx = TaskIndex::build(&active, &[], &[repo("samsungs9plus", "SSP9")]);
+        let mut list = vec![
+            cont("pg-SSP9-3", &[]),
+            cont("ssp9-3-pg-1", &[("com.docker.compose.project", "ssp9-3")]),
+            cont("ssp9-3_default", &[]),
+        ];
+        classify(&mut list, &[], &idx);
+        assert_eq!(list[0].class, Class::Active);
+        assert_eq!(list[0].task.as_ref().unwrap().id, "samsungs9plus/3");
+        assert_eq!(list[1].class, Class::Active);
+        assert_eq!(list[2].class, Class::Active);
+        let foreign = TaskIndex::build(&[], &[], &[repo("alpha", "ALP")]);
+        classify(&mut list, &[], &foreign);
+        assert!(list.iter().all(|c| c.class == Class::Foreign));
+    }
+
+    #[test]
     fn the_label_wins_and_an_unknown_key_is_foreign() {
         let active = vec![task("alpha/3", "ALP-3", Status::Working, false)];
-        let idx = TaskIndex::build(&active, &[], &[], &[], &[]);
+        let idx = TaskIndex::build(&active, &[], &[repo("alpha", "ALP")]);
         let mut list = vec![
             cont("anything", &[("herdr.task", "ALP-3")]),
             cont("pg-ALP-3", &[("herdr.task", "ZZZ-9")]),
@@ -1679,23 +1583,33 @@ mod tests {
     }
 
     #[test]
-    fn the_same_tag_in_two_galaxies_needs_the_host_label() {
-        let mut gal = machines::Galaxy::default();
-        gal.label = "vm-a".into();
-        gal.host = "orion".into();
-        gal.tasks = vec![task("alpha/3", "ALP-3", Status::Working, false)];
-        let local = vec![task("alpha/7", "ALP-3", Status::Working, false)];
-        let idx = TaskIndex::build(&local, &[], &[], &[gal], &[]);
-        let mut list = vec![
-            cont("pg-ALP-3", &[]),
-            cont("pg-ALP-3", &[("herdr.galaxy", "vm-a")]),
-            cont("pg-ALP-3", &[("herdr.galaxy", "elsewhere")]),
+    fn one_tag_in_two_tasks_is_unsure() {
+        let active = vec![
+            task("alpha/3", "ALP-3", Status::Working, false),
+            task("alpha/7", "ALP-3", Status::Working, false),
         ];
+        let idx = TaskIndex::build(&active, &[], &[repo("alpha", "ALP")]);
+        let mut list = vec![cont("pg-ALP-3", &[])];
         classify(&mut list, &[], &idx);
         assert_eq!(list[0].class, Class::Unsure);
-        assert_eq!(list[1].class, Class::Active);
-        assert_eq!(list[1].task.as_ref().unwrap().galaxy, "vm-a");
-        assert_eq!(list[2].class, Class::Unsure);
+    }
+
+    #[test]
+    fn a_failed_probe_keeps_the_last_good_read() {
+        let mut good = RunnerState::default();
+        good.ok = true;
+        good.fetched_at_ms = 7;
+        good.host.cpus = 16;
+        good.containers = vec![cont("pg-ALP-3", &[])];
+        let mut fresh = RunnerState::default();
+        fresh.why = Some(Why { line: "не ответила вовремя".into(), detail: vec![] });
+        fresh.fetched_at_ms = 9;
+        let kept = keep_last(Some(&good), fresh);
+        assert!(!kept.ok);
+        assert_eq!(kept.host.cpus, 16);
+        assert_eq!(kept.containers.len(), 1);
+        assert_eq!(kept.fetched_at_ms, 7);
+        assert_eq!(kept.why.unwrap().line, "не ответила вовремя");
     }
 
     #[test]

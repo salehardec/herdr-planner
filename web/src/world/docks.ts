@@ -25,17 +25,22 @@ interface SpriteRec {
 const SIZE = 256;
 const RING = 92;
 
-/** Where a yard sits: the same deterministic ring as the far galaxies, one radius closer to the Galaxy. */
+/** Where a yard sits: just outside the Galaxy's boundary, at an angle from its label, never closer to another yard
+    than 120 units along the ring. Deterministic: the same list gives the same places. */
 export function dockPositions(ids: string[], radius: number): Map<string, Vector3> {
   const out = new Map<string, Vector3>();
-  ids.forEach((id, i) => {
-    const a = (hash(id) % 360) / 360 * Math.PI * 2 + i * 0.5;
-    out.set(id, new Vector3(
-      Math.cos(a) * radius,
-      ((hash(id + 'y') % 40) - 20) * 2.5,
-      Math.sin(a) * radius,
-    ));
-  });
+  const placed: number[] = [];
+  const apart = 2 * Math.asin(Math.min(1, 60 / Math.max(1, radius)));
+  const gap = (a: number, b: number): number => {
+    const d = Math.abs(a - b) % (Math.PI * 2);
+    return Math.min(d, Math.PI * 2 - d);
+  };
+  for (const id of [...ids].sort()) {
+    let a = (hash(id) % 3600) / 3600 * Math.PI * 2;
+    for (let k = 0; k < 3600 && placed.some((b) => gap(a, b) < apart); k++) a += apart;
+    placed.push(a);
+    out.set(id, new Vector3(Math.cos(a) * radius, 0, Math.sin(a) * radius));
+  }
   return out;
 }
 

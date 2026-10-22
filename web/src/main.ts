@@ -110,7 +110,7 @@ effect(() => {
       forgotten: r.containers.filter((c) => c.class === 'forgotten' || c.class === 'unsure').length,
     })),
     dockLinks: [...new Map((s.runners ?? []).flatMap((r) => r.containers
-      .filter((c) => c.task && c.task.galaxy === galaxyId.value && c.class !== 'foreign')
+      .filter((c) => c.task && c.class !== 'foreign')
       .map((c) => [`${c.task!.id}|${r.id}`, { task: c.task!.id, runner: r.id }] as const))).values()],
   });
 });

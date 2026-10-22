@@ -109,6 +109,8 @@ function common(DATA, mods) {
     fs.writeFileSync(path.join(D, 'board', 'repos.json'), JSON.stringify(w.folders, null, 1));
     const had = {};
     for (const [name, key] of Object.entries(w.keys)) had[key] = name;
+    // An older key of alpha, kept in `had`: containers labelled AL9-4 belong to alpha/4 too.
+    had.AL9 = 'alpha';
     fs.writeFileSync(path.join(D, 'board', 'repo-keys.json'), JSON.stringify({ upgraded: true, had }, null, 1));
   };
   // The task's own record: board/tasks/<repo>/<n>/task.json, as the board keeps it.
@@ -1295,16 +1297,6 @@ function sshMain(C, DATA) {
     if (r.stderr) process.stderr.write(r.stderr);
     process.exit(r.status === null ? 255 : r.status);
   }
-  // The planner's copies of the shipyard list and the reach check run without a herdr session.
-  if (inner.includes('runners.json.tmp')) {
-    const home = path.join(C.D, 'state', 'vm-a-home');
-    fs.mkdirSync(home, { recursive: true });
-    log('mirror.jsonl', { host: 'vm-a' });
-    const r = require('node:child_process').spawnSync('/bin/sh', ['-c', inner], { env: { HOME: home, PATH: process.env.PATH, LANG: 'C' }, encoding: 'utf8' });
-    if (r.stdout) process.stdout.write(r.stdout);
-    if (r.stderr) process.stderr.write(r.stderr);
-    process.exit(r.status === null ? 255 : r.status);
-  }
   if (inner.startsWith('command -v docker')) {
     console.log('28.3.0');
     return;
@@ -1547,9 +1539,10 @@ DATA.runnerR = {
   host: '192.0.2.29',
   ports: '192.0.2.29',
   containers: [
-    { id: 'a'.repeat(64), name: 'pg-ALP-3', image: 'postgres:16', state: 'running', status: 'Up 1 hour', created: dockerTime(NOW - HOUR), labels: 'herdr.task=ALP-3,herdr.galaxy=orion,com.docker.compose.project=work-3', ports: '0.0.0.0:15432->5432/tcp', networks: 'work-3_default', mounts: 'work-3_pgdata:/var/lib/postgresql/data', size: '28MB', cpu: '0.40%', mem: '96MiB / 1GiB', pids: '7' },
-    { id: 'b'.repeat(64), name: 'web-ALP-15', image: 'nginx:1.27', state: 'exited', status: 'Exited (0) 2 hours ago', created: dockerTime(NOW - 2 * DAY), labels: 'herdr.task=ALP-15,herdr.galaxy=orion', ports: '', networks: 'bridge', mounts: '', size: '12MB', cpu: '0.00%', mem: '0B / 0B', pids: '0' },
-    { id: 'c'.repeat(64), name: 'x-ALP-99', image: 'alpine:3', state: 'exited', status: 'Exited (0) 5 days ago', created: dockerTime(NOW - 5 * DAY), labels: 'herdr.task=ALP-99,herdr.galaxy=orion', ports: '', networks: 'bridge', mounts: '', size: '4MB', cpu: '0.00%', mem: '0B / 0B', pids: '0' },
+    { id: 'a'.repeat(64), name: 'pg-ALP-3', image: 'postgres:16', state: 'running', status: 'Up 1 hour', created: dockerTime(NOW - HOUR), labels: 'herdr.task=ALP-3,com.docker.compose.project=work-3', ports: '0.0.0.0:15432->5432/tcp', networks: 'work-3_default', mounts: 'work-3_pgdata:/var/lib/postgresql/data', size: '28MB', cpu: '0.40%', mem: '96MiB / 1GiB', pids: '7' },
+    { id: 'b'.repeat(64), name: 'web-ALP-15', image: 'nginx:1.27', state: 'exited', status: 'Exited (0) 2 hours ago', created: dockerTime(NOW - 2 * DAY), labels: 'herdr.task=ALP-15', ports: '', networks: 'bridge', mounts: '', size: '12MB', cpu: '0.00%', mem: '0B / 0B', pids: '0' },
+    { id: 'c'.repeat(64), name: 'x-ALP-99', image: 'alpine:3', state: 'exited', status: 'Exited (0) 5 days ago', created: dockerTime(NOW - 5 * DAY), labels: 'herdr.task=ALP-99', ports: '', networks: 'bridge', mounts: '', size: '4MB', cpu: '0.00%', mem: '0B / 0B', pids: '0' },
+    { id: '4'.repeat(64), name: 'pg-AL9-4', image: 'postgres:16', state: 'running', status: 'Up 3 hours', created: dockerTime(NOW - 3 * HOUR), labels: 'herdr.task=AL9-4,com.docker.compose.project=work-4', ports: '0.0.0.0:15433->5432/tcp', networks: 'work-4_default', mounts: '', size: '31MB', cpu: '0.10%', mem: '72MiB / 1GiB', pids: '6' },
     { id: 'd'.repeat(64), name: 'neighbor-db-1', image: 'postgres:15', state: 'running', status: 'Up 3 days', created: dockerTime(NOW - 3 * DAY), labels: 'com.docker.compose.project=neighbor', ports: '5432/tcp', networks: 'neighbor_default', mounts: 'neighbor_data:/var/lib/postgresql/data', size: '1.2GB', cpu: '1.20%', mem: '210MiB / 512MiB', pids: '9' },
     { id: 'e'.repeat(64), name: 'buildx_buildkit_x0', image: 'moby/buildkit:latest', state: 'running', status: 'Up 2 months', created: dockerTime(NOW - 60 * DAY), labels: '', ports: '', networks: 'host', mounts: '', size: '0B', cpu: '0.10%', mem: '34MiB / 0B', pids: '4' },
   ],

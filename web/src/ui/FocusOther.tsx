@@ -339,7 +339,7 @@ export function RunnerFocus(props: { entity: Entity }): JSX.Element {
   const memPct = host.mem_total > 0 ? (memUsed / host.mem_total) * 100 : 0;
   const diskUsed = Math.max(0, host.disk_size - host.disk_avail);
   const diskPct = host.disk_size > 0 ? (diskUsed / host.disk_size) * 100 : 0;
-  const blocks = snap.value?.runner_blocks ?? [];
+  const block = snap.value?.runner_block;
   const openEdit = (): void => {
     setTags(r.tags.join(', '));
     setMasks(r.protected.join(', '));
@@ -386,16 +386,13 @@ export function RunnerFocus(props: { entity: Entity }): JSX.Element {
   const connectAll = (): void => {
     confirmStep(`rcn:${r.id}`, async () => {
       setErr('');
-      const labels = ['', ...galaxies.value.map((g) => g.label)];
-      let n = 0;
-      for (const galaxy of labels) {
-        try {
-          await post('/api/runner/connect', { galaxy, on: true, drop_old: true, confirm: true });
-          n += 1;
-        } catch { /* a machine that is away is shown in the rows */ }
+      try {
+        await post('/api/runner/connect', { on: true, drop_old: true, confirm: true });
+        toast(t('runner.connectedTo', { n: 1 }));
+        setConnectOpen(false);
+      } catch (e) {
+        setErr((e as Error).message);
       }
-      toast(t('runner.connectedTo', { n }));
-      setConnectOpen(false);
     });
   };
   const cleanIds = [...forgotten, ...unsure].map((c) => c.id);
@@ -419,16 +416,16 @@ export function RunnerFocus(props: { entity: Entity }): JSX.Element {
         {host.gpu.map((g) => yardGauge(`GPU ${g.name}`, g.mem_total_mib ? ((g.mem_used_mib ?? 0) / g.mem_total_mib) * 100 : 0,
           `${(((g.mem_used_mib ?? 0) / 1024)).toFixed(1)} / ${(((g.mem_total_mib ?? 0) / 1024)).toFixed(0)} GB`))}
       </section>
-      <h3>{t('runner.taskContainers')} <span class="cnt">{active.length + unsure.length}</span></h3>
-      {active.length + unsure.length === 0 ? <div class="hint">{t('runner.noContainers')}</div> : (
+      <h3>{t('runner.taskContainers')} <span class="cnt">{active.length}</span></h3>
+      {active.length === 0 ? <div class="hint">{t('runner.noContainers')}</div> : (
         <table class="rft" id="rf-tasks">
           <thead><tr><th>{t('runner.colContainer')}</th><th>{t('runner.colTask')}</th><th>{t('runner.colLives')}</th><th>CPU</th><th>{t('runner.colMemory')}</th><th>{t('runner.colPorts')}</th></tr></thead>
           <tbody>
-            {[...active, ...unsure].map((c) => (
-              <tr key={c.id} class={c.class === 'unsure' ? 'dim' : ''} data-class={c.class}>
+            {active.map((c) => (
+              <tr key={c.id} data-class={c.class}>
                 <td><code>{c.name}</code></td>
                 <td>{c.task
-                  ? <button class="k" type="button" onClick={() => void navigateTo({ kind: 'planet', galaxy: c.task!.galaxy, id: c.task!.id })}>{c.task.tag}</button>
+                  ? <button class="k" type="button" onClick={() => void navigateTo({ kind: 'planet', galaxy: '', id: c.task!.id })}>{c.task.tag}</button>
                   : <span class="hint">{t('runner.unsureShort')}</span>}</td>
                 <td>{c.created_ms ? yardAge(Date.now() - c.created_ms) : '—'}</td>
                 <td>{c.cpu_pct == null ? '—' : `${c.cpu_pct.toFixed(1)} %`}</td>
@@ -439,16 +436,16 @@ export function RunnerFocus(props: { entity: Entity }): JSX.Element {
           </tbody>
         </table>
       )}
-      <h3>{t('runner.forgotten')} <span class="cnt">{forgotten.length}</span></h3>
+      <h3>{t('runner.forgotten')} <span class="cnt">{forgotten.length + unsure.length}</span></h3>
       <p class="hint">{t('runner.forgottenHint')}</p>
-      {forgotten.length === 0 ? <div class="hint">{t('runner.forgottenNone')}</div> : (
+      {forgotten.length + unsure.length === 0 ? <div class="hint">{t('runner.forgottenNone')}</div> : (
         <table class="rft" id="rf-forgotten">
           <thead><tr><th>{t('runner.colContainer')}</th><th>{t('runner.colTask')}</th><th>{t('runner.colLives')}</th><th>{t('runner.colMemory')}</th></tr></thead>
           <tbody>
-            {forgotten.map((c) => (
-              <tr key={c.id} data-class="forgotten">
+            {[...forgotten, ...unsure].map((c) => (
+              <tr key={c.id} class={c.class === 'unsure' ? 'dim' : ''} data-class={c.class}>
                 <td><code>{c.name}</code></td>
-                <td>{c.task ? <button class="k" type="button" onClick={() => void navigateTo({ kind: 'planet', galaxy: c.task!.galaxy, id: c.task!.id })}>{c.task.tag}</button> : '—'}</td>
+                <td>{c.task ? <button class="k" type="button" onClick={() => void navigateTo({ kind: 'planet', galaxy: '', id: c.task!.id })}>{c.task.tag}</button> : <span class="hint">{t('runner.unsureShort')}</span>}</td>
                 <td>{c.created_ms ? yardAge(Date.now() - c.created_ms) : '—'}</td>
                 <td>{c.mem_bytes == null ? '—' : `${(c.mem_bytes / (1024 * 1024)).toFixed(0)} MB`}</td>
               </tr>
@@ -464,12 +461,8 @@ export function RunnerFocus(props: { entity: Entity }): JSX.Element {
         <summary>{t('runner.foreign', { n: foreign.length })}{foreign.length > 0 ? ` · ${t('runner.foreignHint')}` : ''}</summary>
         <div class="hint">{foreign.map((c) => c.name).join(' · ')}</div>
       </details>
-      <h3>{t('runner.copies')}</h3>
       <div class="hint">
-        {r.mirrors.length === 0 ? t('runner.copiesNone') : r.mirrors.map((m) => `${m.galaxy} ${m.ok ? '✓' : '✗'} ${dayTimeOf(m.at)}${m.why ? ` (${m.why})` : ''}`).join(' · ')}
-      </div>
-      <div class="hint">
-        {t('runner.blocks')}: {blocks.length === 0 ? t('runner.blocksNone') : blocks.map((b) => `${b.galaxy || snap.value?.host || ''} ${b.connected ? (b.stale ? '↻' : '✓') : '—'}`).join(' · ')}
+        {t('runner.blocks')}: {!block || !block.connected ? t('runner.blocksNone') : `${block.stale ? '↻' : '✓'} ${dayTimeOf(block.at)}`}
       </div>
       <div class="act">
         <button class="btn" type="button" onClick={() => void post('/api/runner/ask', { id: r.id })}><Gl n="refresh" />{t('runner.refresh')}</button>
@@ -508,11 +501,7 @@ export function RunnerFocus(props: { entity: Entity }): JSX.Element {
           <h3>{t('runner.connectTitle')}</h3>
           <p class="hint">{t('runner.connectText')}</p>
           <ul class="steps">
-            {['', ...galaxies.value.map((g) => g.label)].map((label) => {
-              const b = blocks.find((x) => x.galaxy === label);
-              const name = label || snap.value?.host || '';
-              return <li key={label || 'home'} class={b?.connected ? 'w-ok' : 'w-todo'}><span class="i">{b?.connected ? (b.stale ? '↻' : '✓') : '·'}</span><div>{name}{b?.why ? <div class="hint">{b.why}</div> : null}</div></li>;
-            })}
+            <li class={block?.connected ? 'w-ok' : 'w-todo'}><span class="i">{block?.connected ? (block.stale ? '↻' : '✓') : '·'}</span><div>{snap.value?.host || ''}{block?.why ? <div class="hint">{block.why}</div> : null}</div></li>
           </ul>
           <div class="act">
             <button class={`btn primary ${armed.value?.key === `rcn:${r.id}` ? 'arm' : ''}`} type="button" id="rf-connect-go" onClick={connectAll}>{armed.value?.key === `rcn:${r.id}` ? t('runner.saveConfirm') : t('runner.connectGo')}</button>

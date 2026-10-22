@@ -149,8 +149,8 @@ pub struct Snapshot {
     pub galaxies: Vec<serde_json::Value>,
     /// Shipyards: machines the tasks' containers run on.
     pub runners: Vec<crate::runners::RunnerState>,
-    /// Whether the docker block is in each galaxy's agent instructions.
-    pub runner_blocks: Vec<crate::runners::BlockState>,
+    /// Whether the docker block is in this machine's agent instructions.
+    pub runner_block: crate::runners::BlockState,
     /// The same project in two galaxies.
     pub bridges: Vec<BridgeOut>,
     pub theme: Theme,
@@ -234,8 +234,8 @@ pub struct App {
     pub runner_plans: Mutex<HashMap<String, crate::runners::CleanPlan>>,
     /// `docker system df` answers, cached by runner id.
     pub runner_df: Mutex<HashMap<String, (u64, serde_json::Value)>>,
-    /// Whether the docker block is in each galaxy's instructions (as last synced).
-    pub runner_blocks: Mutex<Vec<crate::runners::BlockState>>,
+    /// Whether the docker block is in this machine's instructions (as last synced).
+    pub runner_block: Mutex<crate::runners::BlockState>,
 }
 
 pub type Shared = Arc<App>;
@@ -302,7 +302,7 @@ impl App {
             },
             galaxies: Vec::new(),
             runners: Vec::new(),
-            runner_blocks: Vec::new(),
+            runner_block: crate::runners::BlockState::default(),
             bridges: Vec::new(),
             theme,
             herdr: HerdrInfo {
@@ -339,32 +339,25 @@ impl App {
             })
             .collect();
         // The last reads of the shipyards survive a restart too; they are not live until a probe says so.
-        let mirrors: Vec<crate::runners::Mirror> = db
-            .mirror_all()
-            .into_iter()
-            .map(|(galaxy, _, at, ok, why)| crate::runners::Mirror {
-                galaxy,
-                ok,
-                at,
-                why,
-            })
-            .collect();
-        let runners: Vec<crate::runners::RunnerState> = db
+        let mut runners: Vec<crate::runners::RunnerState> = db
             .runner_all()
             .into_iter()
             .filter_map(|(_, json, _, _, _)| serde_json::from_str(&json).ok())
             .map(|mut s: crate::runners::RunnerState| {
                 s.ok = false;
-                s.mirrors = mirrors.clone();
                 s
             })
             .collect();
-        let runner_blocks: Vec<crate::runners::BlockState> = db
-            .meta_get("runner_blocks")
+        // A shipyard taken out of the file (even by hand) leaves the page too.
+        if let Ok(file) = crate::runners::load(&cfg.runners_file()) {
+            runners.retain(|s| file.get(&s.id).is_some());
+        }
+        let runner_block: crate::runners::BlockState = db
+            .meta_get("runner_block")
             .and_then(|t| serde_json::from_str(&t).ok())
             .unwrap_or_default();
         snapshot.runners = runners.clone();
-        snapshot.runner_blocks = runner_blocks.clone();
+        snapshot.runner_block = runner_block.clone();
         let auth = crate::auth::Auth::new(
             cfg.auth_required(),
             cfg.user.clone(),
@@ -393,7 +386,7 @@ impl App {
             runners: Mutex::new(runners),
             runner_plans: Mutex::new(HashMap::new()),
             runner_df: Mutex::new(HashMap::new()),
-            runner_blocks: Mutex::new(runner_blocks),
+            runner_block: Mutex::new(runner_block),
         })
     }
 }
@@ -603,6 +596,36 @@ fn to_project_lag(l: &gitlag::Lag) -> ProjectLag {
     }
 }
 
+/// A forgotten container is news once: a journal line and a toast for each id the page has not seen before.
+async fn note_forgotten(app: &Shared, states: &[crate::runners::RunnerState]) {
+    for st in states {
+        for c in st.containers.iter().filter(|c| c.class == crate::runners::Class::Forgotten) {
+            let key = format!("runner_seen:{}:{}", st.id, c.id);
+            if app.db.meta_get(&key).is_some() {
+                continue;
+            }
+            app.db.meta_set(&key, "1");
+            let tag = c.task.as_ref().map(|t| t.tag.clone()).unwrap_or_default();
+            journal_note(
+                app,
+                &format!("runner/{}", st.id),
+                "runner",
+                &format!("на верфи {} забыт контейнер {} ({tag})", st.id, c.name),
+            )
+            .await;
+            app.bus.send(
+                "toast",
+                serde_json::json!({
+                    "key": "runner.forgotToast",
+                    "vars": {"id": st.id, "name": c.name, "tag": tag},
+                    "icon": "failed",
+                })
+                .to_string(),
+            );
+        }
+    }
+}
+
 /// The page's view of far galaxies, the lag of every clone and the bridges between the same projects.
 /// No IO: reads what the background loops stored.
 pub async fn rebuild_extras(app: &Shared) {
@@ -618,7 +641,7 @@ pub async fn rebuild_extras(app: &Shared) {
         let s = app.snapshot.read().await;
         (s.tasks.clone(), s.archived.clone())
     };
-    let task_index = crate::runners::TaskIndex::build(&tasks_now, &archived_now, &repos, &live, &cached);
+    let task_index = crate::runners::TaskIndex::build(&tasks_now, &archived_now, &repos);
 
     // Comparison of this machine's clones with the others', by origin.
     let mut vs: BTreeMap<String, Vec<board::LagVs>> = BTreeMap::new();
@@ -716,28 +739,17 @@ pub async fn rebuild_extras(app: &Shared) {
     }
 
     // The containers' classes change with the tasks, so they are recomputed on every snapshot, not only on a probe.
-    let mirrors: Vec<crate::runners::Mirror> = app
-        .db
-        .mirror_all()
-        .into_iter()
-        .map(|(galaxy, _, at, ok, why)| crate::runners::Mirror {
-            galaxy,
-            ok,
-            at,
-            why,
-        })
-        .collect();
     let mut runner_states = app.runners.lock().await.clone();
     for st in &mut runner_states {
         crate::runners::classify(&mut st.containers, &st.protected, &task_index);
-        st.mirrors = mirrors.clone();
     }
-    let runner_blocks = app.runner_blocks.lock().await.clone();
+    note_forgotten(app, &runner_states).await;
+    let runner_block = app.runner_block.lock().await.clone();
 
     let mut snap = app.snapshot.write().await;
     snap.galaxies = out;
     snap.runners = runner_states;
-    snap.runner_blocks = runner_blocks;
+    snap.runner_block = runner_block;
     snap.bridges = bridges;
     for p in snap.projects.iter_mut() {
         if let Some(l) = lag_out.get(&p.name) {

@@ -61,7 +61,7 @@ describe('navigator tree', () => {
   it('lists the shipyards in their own group, before «Добавить галактику»', () => {
     const r = {
       id: 'vm-r', target: 'me@192.0.2.29', ports_host: '192.0.2.29', tags: [], protected: [], note: '', ok: true,
-      why: null, fetched_at_ms: 1, host: {} as Runner['host'], networks: [], volumes: [], mirrors: [],
+      why: null, fetched_at_ms: 1, host: {} as Runner['host'], networks: [], volumes: [],
       containers: [
         { class: 'active' }, { class: 'forgotten' },
       ] as Runner['containers'],

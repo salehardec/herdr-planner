@@ -205,7 +205,6 @@ export interface Galaxy {
 }
 
 export interface RunnerTaskRef {
-  galaxy: string;
   id: string;
   tag: string;
   status: string;
@@ -263,15 +262,7 @@ export interface RunnerContainer {
   class: 'active' | 'forgotten' | 'unsure' | 'foreign';
 }
 
-export interface RunnerMirror {
-  galaxy: string;
-  ok: boolean;
-  at: number;
-  why: string;
-}
-
 export interface RunnerBlock {
-  galaxy: string;
   connected: boolean;
   stale: boolean;
   at: number;
@@ -292,7 +283,6 @@ export interface Runner {
   containers: RunnerContainer[];
   networks: { id: string; name: string; driver: string; labels: Record<string, string> }[];
   volumes: { name: string; driver: string; labels: Record<string, string> }[];
-  mirrors: RunnerMirror[];
 }
 
 export interface Bridge {
@@ -344,7 +334,7 @@ export interface Snapshot {
   coordinator: CoordinatorState;
   galaxies: Galaxy[];
   runners: Runner[];
-  runner_blocks: RunnerBlock[];
+  runner_block: RunnerBlock;
   bridges: Bridge[];
   theme: Theme;
   herdr: { running: boolean; socket: string };

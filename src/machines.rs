@@ -7,7 +7,7 @@
 use crate::board::{self, Link, Task};
 use crate::config::{now_ms, AppConfig};
 use base64::Engine;
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
 use std::process::Stdio;
@@ -29,20 +29,10 @@ const DO_ACTIONS: &[&str] = &[
     "restore", "pin", "delegate",
 ];
 
-/// A saved machine as the planner reaches it: its label, its ssh target and its herdr session (`""` = default).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct MachineRef {
-    pub label: String,
-    pub target: String,
-    pub session: String,
-}
-
-/// Why a machine did not answer: one line for the page, and what to do about it.
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-pub struct Why {
-    pub line: String,
-    pub detail: Vec<String>,
-}
+pub use crate::ssh::{short_label, ssh_args, valid_label, valid_target, MachineRef, Why};
+pub(crate) use crate::ssh::{sh_quote, ssh_ended, test_line, why_not, Ended};
+#[cfg(test)]
+pub(crate) use crate::ssh::test_cfg;
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize)]
 pub struct TalkLine {
@@ -104,86 +94,6 @@ pub(crate) fn herdr_bin() -> String {
         .unwrap_or_else(|| "herdr".to_string())
 }
 
-/// A machine label: starts with a letter or digit, then letters, digits, `_`, `.`, `-`.
-pub fn valid_label(s: &str) -> bool {
-    s.len() <= 64
-        && s.chars().next().is_some_and(|c| c.is_ascii_alphanumeric())
-        && s.chars()
-            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '-'))
-}
-
-/// An ssh target: `host`, `user@host`, `user@host:port`, `ssh://user@host:port`. No spaces, no leading `-`.
-pub fn valid_target(s: &str) -> bool {
-    !s.is_empty()
-        && s.len() <= 200
-        && !s.starts_with('-')
-        && s.chars().all(|c| {
-            c.is_ascii_alphanumeric() || matches!(c, '@' | '.' | '_' | ':' | '/' | '[' | ']' | '-')
-        })
-}
-
-fn valid_session(s: &str) -> bool {
-    !s.is_empty()
-        && s.len() <= 64
-        && s.chars()
-            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '-'))
-}
-
-/// POSIX shell quoting: bare when every character is harmless, otherwise single-quoted.
-pub(crate) fn sh_quote(s: &str) -> String {
-    let bare = !s.is_empty()
-        && s.chars()
-            .all(|c| c.is_ascii_alphanumeric() || "_./:@%+=,-".contains(c));
-    if bare {
-        s.to_string()
-    } else {
-        format!("'{}'", s.replace('\'', "'\\''"))
-    }
-}
-
-/// The argv of the planner's ssh call to a machine; the program is `cfg.ssh_bin`. Copied from herdr-projects 1.2.4
-/// crates/flow/src/remote.rs (`ssh_command`): the board's own known-hosts file and control sockets, batch mode (no
-/// password prompt), and a login shell on the far side so its PATH is set. `HERDR_SESSION=<s> ` is put in front of
-/// the remote command only when the saved machine uses a session other than `default`.
-pub fn ssh_args(cfg: &AppConfig, m: &MachineRef, remote_cmd: &str) -> Result<Vec<String>, String> {
-    if !valid_label(&m.label) {
-        return Err(format!("недопустимая метка машины: {:?}", m.label));
-    }
-    if !valid_target(&m.target) {
-        return Err(format!("недопустимый адрес машины: {:?}", m.target));
-    }
-    let session = match m.session.as_str() {
-        "" | "default" => String::new(),
-        s if valid_session(s) => format!("HERDR_SESSION={s} "),
-        s => return Err(format!("недопустимая сессия herdr: {s:?}")),
-    };
-    let d = &cfg.data_dir;
-    let inner = format!("{session}{remote_cmd}");
-    Ok(vec![
-        "-o".into(),
-        "BatchMode=yes".into(),
-        "-o".into(),
-        "ConnectTimeout=6".into(),
-        "-o".into(),
-        "StrictHostKeyChecking=accept-new".into(),
-        "-o".into(),
-        format!("UserKnownHostsFile={}", d.join("known_hosts").display()),
-        "-o".into(),
-        "ControlMaster=auto".into(),
-        "-o".into(),
-        format!("ControlPath={}", d.join("ssh-%C").display()),
-        "-o".into(),
-        "ControlPersist=120".into(),
-        "-o".into(),
-        "LogLevel=ERROR".into(),
-        m.target.clone(),
-        format!(
-            "exec \"${{SHELL:-/bin/sh}}\" -lc '{}'",
-            inner.replace('\'', "'\\''")
-        ),
-    ])
-}
-
 /// The board's request line: `herdr-projects remote <what> [<base64 of the JSON payload>]`.
 pub fn remote_line(what: &str, payload: Option<&Value>) -> String {
     match payload {
@@ -196,52 +106,7 @@ pub fn remote_line(what: &str, payload: Option<&Value>) -> String {
     }
 }
 
-/// How an ssh call ended, as the board reads it.
-#[derive(Debug, Clone, Default)]
-pub(crate) struct Ended {
-    pub code: Option<i32>,
-    pub stdout: String,
-    pub stderr: String,
-    pub timed_out: bool,
-    pub error: String,
-    pub wait_ms: u64,
-}
 
-/// Runs the planner's ssh call. `Err` only when the machine's settings are refused before ssh starts.
-pub(crate) async fn ssh_ended(
-    cfg: &AppConfig,
-    m: &MachineRef,
-    remote_cmd: &str,
-    wait: Duration,
-) -> Result<Ended, String> {
-    let args = ssh_args(cfg, m, remote_cmd)?;
-    let mut cmd = Command::new(&cfg.ssh_bin);
-    cmd.args(&args)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .kill_on_drop(true);
-    let wait_ms = wait.as_millis() as u64;
-    Ok(match timeout(wait, cmd.output()).await {
-        Err(_) => Ended {
-            timed_out: true,
-            wait_ms,
-            ..Ended::default()
-        },
-        Ok(Err(e)) => Ended {
-            error: format!("{}: {e}", cfg.ssh_bin),
-            wait_ms,
-            ..Ended::default()
-        },
-        Ok(Ok(out)) => Ended {
-            code: out.status.code(),
-            stdout: String::from_utf8_lossy(&out.stdout).into_owned(),
-            stderr: String::from_utf8_lossy(&out.stderr).into_owned(),
-            wait_ms,
-            ..Ended::default()
-        },
-    })
-}
 
 /// The board's answer: the last JSON object of stdout, where a shell's start-up files may print before it. An
 /// object that is the board's own (a task list, or one with `ok`) wins over any other.
@@ -273,140 +138,6 @@ pub fn last_json(stdout: &str) -> Option<Value> {
 
 fn str_of(v: &Value, key: &str) -> String {
     v.get(key).and_then(Value::as_str).unwrap_or("").to_string()
-}
-
-fn test_line(m: &MachineRef) -> String {
-    format!(
-        "Проверить с этой машины: ssh {} 'exec $SHELL -lc \"herdr-projects remote list\"' | tail -c 200",
-        m.target
-    )
-}
-
-/// Why an ssh call did not give the board's answer (the words of the board's own `why_not`).
-pub(crate) fn why_not(end: &Ended, m: &MachineRef) -> Why {
-    let name = if m.label.is_empty() {
-        "эта машина".to_string()
-    } else {
-        m.label.clone()
-    };
-    let make = |line: &str, mut detail: Vec<String>| {
-        detail.push(test_line(m));
-        Why {
-            line: line.to_string(),
-            detail,
-        }
-    };
-    let err = end.stderr.to_lowercase();
-    let all = format!("{}\n{}", end.stderr, end.stdout).to_lowercase();
-    if end.timed_out {
-        return make(
-            "не ответила вовремя",
-            vec![
-                format!(
-                    "{name} не ответила за {} с. Доска спросит снова сама.",
-                    (end.wait_ms as f64 / 1000.0).round()
-                ),
-                "Если так и будет: машина занята, или файл запуска её оболочки ждёт ввода (пароль, сетевой диск).".into(),
-            ],
-        );
-    }
-    if !end.error.is_empty() {
-        return make(
-            "ssh здесь не запускается",
-            vec![
-                format!("Этот компьютер не смог запустить ssh: {}", end.error),
-                "Установите клиент OpenSSH, чтобы `ssh` был в PATH.".into(),
-            ],
-        );
-    }
-    if end.code == Some(255) || err.contains("ssh:") {
-        if err.contains("host key verification failed")
-            || err.contains("remote host identification has changed")
-        {
-            return make(
-                "у машины другой ключ хоста",
-                vec![
-                    format!("{name} показывает другой ключ, чем тот, что сохранила доска, поэтому ssh отказал."),
-                    "Если машину переустановили, забудьте старый ключ в known_hosts папки данных доски (ssh-keygen -R).".into(),
-                ],
-            );
-        }
-        if err.contains("permission denied") || err.contains("too many authentication failures") {
-            return make(
-                "она не пускает доску",
-                vec![
-                    format!("{name} отказала во входе. Доска не вводит пароль: ssh работает в пакетном режиме, ключ должен подходить сам."),
-                    format!("Положите свой публичный ключ на машину (ssh-copy-id {}) или загрузите ключ в ssh-agent, из которого работает этот сервис.", m.target),
-                ],
-            );
-        }
-        let how = if err.contains("could not resolve hostname") {
-            "её имя не известно"
-        } else if err.contains("timed out") {
-            "соединение не успело"
-        } else if err.contains("connection refused") {
-            "она отказала в соединении"
-        } else if err.contains("no route to host") || err.contains("network is unreachable") {
-            "до неё нет пути отсюда"
-        } else {
-            ""
-        };
-        let line = if how.is_empty() {
-            "ssh не смог подключиться".to_string()
-        } else {
-            format!("не подключиться ({how})")
-        };
-        return make(
-            &line,
-            vec![
-                format!(
-                    "Эта машина не достаёт {name} ({}){}.",
-                    m.target,
-                    if how.is_empty() {
-                        "; что ответил ssh, см. ниже".to_string()
-                    } else {
-                        format!(": {how}")
-                    }
-                ),
-                "Проверьте, что она включена и в сети, и что адрес и порт верны (herdr machine list).".into(),
-            ],
-        );
-    }
-    if all.contains("herdr-projects") && all.contains("not found") || end.code == Some(127) {
-        return make(
-            "herdr-projects там не найден",
-            vec![
-                format!("Оболочка входа на {name} не находит `herdr-projects`."),
-                "Положите его в PATH входа: в ~/.profile (bash) или ~/.zprofile (zsh), либо сделайте ссылку в ~/.local/bin.".into(),
-            ],
-        );
-    }
-    if all.contains("remote") && (all.contains("does not know") || all.contains("unknown")) {
-        return make(
-            OLD_PLUGIN_LINE,
-            vec![format!("{name} не знает команды `remote`: там старая версия herdr-projects. Обновите её на той машине.")],
-        );
-    }
-    if let Some(code) = end.code.filter(|c| *c != 0) {
-        return make(
-            "ответила ошибкой и без ответа",
-            vec![format!(
-                "`herdr-projects remote` на {name} завершился с кодом {code} и не ответил."
-            )],
-        );
-    }
-    if end.stdout.trim().is_empty() {
-        return make(
-            "ничего не ответила",
-            vec![format!("{name} выполнила команду и ничего не напечатала.")],
-        );
-    }
-    make(
-        "ответила не то, что ждёт доска",
-        vec![format!(
-            "{name} напечатала текст, но ни одна строка в нём не ответ доски."
-        )],
-    )
 }
 
 /// The answer of a machine as a JSON object, or why there is none.
@@ -474,24 +205,6 @@ pub fn parse_saved(v: &Value) -> Vec<MachineRef> {
         .collect()
 }
 
-/// The board's name for a machine: no user, no domain, only `[A-Za-z0-9_.-]` (the board's `short_label`).
-pub fn short_label(raw: &str) -> String {
-    raw.rsplit('@')
-        .next()
-        .unwrap_or("")
-        .split('.')
-        .next()
-        .unwrap_or("")
-        .chars()
-        .map(|c| {
-            if c.is_ascii_alphanumeric() || "_.-".contains(c) {
-                c
-            } else {
-                '-'
-            }
-        })
-        .collect()
-}
 
 /// Reads `herdr machine list --json` through the given herdr binary; no herdr or no answer means no saved machines.
 pub(crate) async fn saved_machines_with(herdr: &str) -> Vec<MachineRef> {
@@ -1044,28 +757,6 @@ pub fn machine_add_command(target: &str, label: &str) -> Result<Vec<String>, Str
     ])
 }
 
-/// An AppConfig for the tests, with every path under `dir`.
-#[cfg(test)]
-pub(crate) fn test_cfg(dir: &std::path::Path) -> AppConfig {
-    AppConfig {
-        listen: "127.0.0.1".into(),
-        port: 0,
-        data_dir: dir.join("data"),
-        data_named: true,
-        config_file: dir.join("config.toml"),
-        state_dir: dir.join("state"),
-        herdr_projects: "herdr-projects".into(),
-        herdr_socket: dir.join("herdr.sock"),
-        user: "herdr".into(),
-        password_hash: String::new(),
-        tls_cert: None,
-        tls_key: None,
-        translator: "claude/claude-haiku-5-5".into(),
-        ssh_bin: "ssh".into(),
-        projects_dir: dir.join("Projects"),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1172,71 +863,6 @@ esac
             target: target.into(),
             session: session.into(),
         }
-    }
-
-    #[test]
-    fn ssh_args_are_the_boards_form() {
-        let dir = tempfile::tempdir().unwrap();
-        let cfg = test_cfg(dir.path());
-        let args = ssh_args(
-            &cfg,
-            &mref("vm-a", "user@vm-a.lan", ""),
-            "herdr-projects remote list",
-        )
-        .unwrap();
-        for want in [
-            "BatchMode=yes",
-            "ConnectTimeout=6",
-            "StrictHostKeyChecking=accept-new",
-            "ControlMaster=auto",
-            "ControlPersist=120",
-            "LogLevel=ERROR",
-        ] {
-            assert!(args.contains(&want.to_string()), "{want} in {args:?}");
-        }
-        let known = format!(
-            "UserKnownHostsFile={}",
-            dir.path().join("data/known_hosts").display()
-        );
-        assert!(args.contains(&known));
-        let n = args.len();
-        assert_eq!(args[n - 2], "user@vm-a.lan");
-        assert_eq!(
-            args[n - 1],
-            "exec \"${SHELL:-/bin/sh}\" -lc 'herdr-projects remote list'"
-        );
-    }
-
-    #[test]
-    fn the_session_prefix_only_for_a_named_session() {
-        let dir = tempfile::tempdir().unwrap();
-        let cfg = test_cfg(dir.path());
-        let with = ssh_args(
-            &cfg,
-            &mref("vm-a", "vm-a", "work"),
-            "herdr-projects remote list",
-        )
-        .unwrap();
-        assert!(with
-            .last()
-            .unwrap()
-            .ends_with("-lc 'HERDR_SESSION=work herdr-projects remote list'"));
-        for s in ["default", ""] {
-            let plain =
-                ssh_args(&cfg, &mref("vm-a", "vm-a", s), "herdr-projects remote list").unwrap();
-            assert!(!plain.last().unwrap().contains("HERDR_SESSION"), "{s}");
-        }
-    }
-
-    #[test]
-    fn a_quote_in_the_remote_command_is_escaped_for_the_login_shell() {
-        let dir = tempfile::tempdir().unwrap();
-        let cfg = test_cfg(dir.path());
-        let args = ssh_args(&cfg, &mref("vm-a", "vm-a", ""), "echo 'a'").unwrap();
-        assert_eq!(
-            args.last().unwrap(),
-            "exec \"${SHELL:-/bin/sh}\" -lc 'echo '\\''a'\\'''"
-        );
     }
 
     #[test]

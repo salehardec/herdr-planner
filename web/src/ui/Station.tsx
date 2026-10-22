@@ -468,28 +468,28 @@ function ErrorBlock({ err, onRetry }: { err: CallError; onRetry: () => void }): 
 
 interface RunnerSetting { setting: string; connected: boolean; stale: boolean; current: string; block: string; has_old_docker_paragraph: boolean }
 
-function Shipyards(props: { galaxy: string }): JSX.Element {
+function Shipyards(): JSX.Element {
   const [rows, setRows] = useState<RunnerSetting[] | null>(null);
   const [err, setErr] = useState('');
   const load = async (): Promise<void> => {
     setErr('');
     try {
-      const r = await apiGet(props.galaxy);
+      const r = await apiGet();
       setRows(r);
     } catch (e) {
       setRows(null);
       setErr((e as Error).message);
     }
   };
-  useEffect(() => { void load(); }, [props.galaxy]);
-  const key = `sy:${props.galaxy}`;
+  useEffect(() => { void load(); }, []);
+  const key = 'sy:home';
   const on = !!rows && rows.some((r) => r.connected);
   const stale = !!rows && rows.some((r) => r.stale);
   const go = (): void => {
     confirmStep(key, async () => {
       setErr('');
       try {
-        await post('/api/runner/connect', { galaxy: props.galaxy, on: !on, drop_old: true, confirm: true });
+        await post('/api/runner/connect', { on: !on, drop_old: true, confirm: true });
         toast(t('runner.saved'));
         await load();
       } catch (e) {
@@ -526,8 +526,8 @@ function Shipyards(props: { galaxy: string }): JSX.Element {
   );
 }
 
-async function apiGet(galaxy: string): Promise<RunnerSetting[]> {
-  const data = await api<{ settings: RunnerSetting[] }>(`/api/runner/connect?galaxy=${encodeURIComponent(galaxy)}`);
+async function apiGet(): Promise<RunnerSetting[]> {
+  const data = await api<{ settings: RunnerSetting[] }>('/api/runner/connect');
   return data.settings;
 }
 
@@ -598,7 +598,7 @@ function StationBody(props: { galaxy: string; wizard: boolean }): JSX.Element {
               <button class="btn" type="button" id="st-all" onClick={() => openStation(galaxy, false)}>{t('st.allSettings')}</button>
             </div>
           )}
-          {!wizard && <Shipyards galaxy={galaxy} />}
+          {!wizard && galaxy === "" && <Shipyards />}
           {!wizard && <Board galaxy={galaxy} repo={level === 'repo' ? repo : ''} data={data} reload={reload} />}
         </>
       )}

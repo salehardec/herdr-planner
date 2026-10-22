@@ -202,10 +202,11 @@ git and node (and npm, from node), no curl, no herdr, no plugin, no agents.
 - `settings/runners.json` (next to `board/`, where the planner reads it): one yard `vm-r`, target `me@192.0.2.29`,
   ports on `192.0.2.29`, tags `docker28 gpu x86_64`, masks `buildx_*` and `neighbor` (the compose project next door).
 - `state/runner.json`: ids, networks and volume names already removed; the probe leaves them out.
-- Five containers: `pg-ALP-3` (a live task, compose project `work-3`), `web-ALP-15` (task ALP-15 is done → forgotten),
+- Six containers: `pg-ALP-3` (a live task, compose project `work-3`), `pg-AL9-4` (the same task alpha/4 under the
+  repository's older key `AL9`, from `repo-keys.json` `had`), `web-ALP-15` (task ALP-15 is done → forgotten),
   `x-ALP-99` (tag with no such task → unsure), `neighbor-db-1` (compose project `neighbor`) and
   `buildx_buildkit_x0` (protected by mask). Two networks and two volumes belong to the first and the neighbour project.
-- `log/ssh.jsonl` gets a line with `runner: "vm-r"` for every such call; `log/mirror.jsonl` records the copies of the list
-  written to vm-a (`state/vm-a-home/.herdr-projects/settings/runners.json`).
-- The reach check: this machine's `bin/docker` and the stand-in ssh answer `28.3.0`; vm-a does the same; vm-c has its own
-  `docker` and `ssh` in `machines/vm-c/bin`; vm-b refuses.
+- `log/ssh.jsonl` gets a line with `runner: "vm-r"` for every such call. No copy of the list goes to another machine.
+- The wizard's local check: `ssh -G me@192.0.2.29` prints its `hostname`, `bin/docker` exists, and the stand-in ssh
+  answers `true` and `docker version` with `28.3.0`. vm-c has its own `docker` and `ssh` in `machines/vm-c/bin`; vm-b
+  refuses.
