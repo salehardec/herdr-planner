@@ -8,7 +8,6 @@ import { setMode } from '../keys';
 import { t } from '../i18n';
 import { LimitsChip } from './Limits';
 import { Menu } from './Menu';
-import { StationChip } from './StationChip';
 import { LoadBar, LoadPop } from './LoadBar';
 import './top.css';
 
@@ -77,22 +76,26 @@ export function Top(): JSX.Element {
   return (
     <div class="top" id="top" ref={topRef}>
       <div class="topl" id="topl">
+        <Menu />
         <Crumbs />
-        <LoadBar />
+        <div class="mon" id="mon">
+          <LoadBar />
+          <LimitsChip />
+        </div>
       </div>
       <Search />
       <div class="right" id="right" ref={rightRef}>
-        <StationChip />
         <button
           class={`btn waitbtn ${waits ? 'hot' : ''}`} id="wait-btn" type="button" title="B" aria-pressed={panels.wait.value}
           onClick={() => { panels.wait.value = !panels.wait.value; if (panels.wait.value) fromQueue.value = false; }}
-        >{t('wait.button', { n: waits })}</button>
-        <LimitsChip />
+        >
+          <span class="long">{t('wait.button', { n: waits })}</span>
+          <span class="short">{t('wait.short', { n: waits })}</span>
+        </button>
         <div id="mode" class="modeswitch" role="group" aria-label={t('mode.aria')}>
           <button type="button" data-mode="auto" class={m === 'auto' ? 'on' : ''} aria-pressed={m === 'auto'} title="P" onClick={() => setMode('auto')}>{t('mode.auto')}</button>
           <button type="button" data-mode="manual" class={m === 'manual' ? 'on' : ''} aria-pressed={m === 'manual'} title="P" onClick={() => setMode('manual', true)}>{t('mode.manual')}</button>
         </div>
-        <Menu />
       </div>
       <LoadPop />
     </div>
