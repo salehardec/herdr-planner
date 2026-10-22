@@ -193,7 +193,7 @@ export function UniverseFocus(props: { entity: Entity }): JSX.Element {
         {p.origin && <><span>origin</span><b title={p.origin}>{p.origin}</b></>}
         <span>{t('universe.tasks')}</span><b>{tasks.length} · {t('universe.live', { n: tasks.filter((x) => x.status !== 'done').length })}</b>
       </div>
-      <div class="chips">{counts.map(([s, n]) => <span class={`badge s-${s}`} key={s}><Gl n={s} />{t(`status.${s}`)} {n}</span>)}</div>
+      <div class="chips">{counts.map(([s, n]) => <span class={`badge s-${s}`} key={s} title={t(`legend.${s}`)}><Gl n={s} />{t(`status.${s}`)} {n}</span>)}</div>
       {lag && (
         <section class="lag">
           <h3>{t('universe.lag')}</h3>
