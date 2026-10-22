@@ -604,6 +604,11 @@ for (let i = 1; i <= 10; i++) {
 // The last assistant turn is the one with the big usage (i = 9 above).
 write(path.join(dir, 'claude', 'projects', chatFolder, 'fixture.jsonl'), transcript.join('\n') + '\n');
 write(path.join(dir, 'board', 'coordinator', 'default', 'state.json'), JSON.stringify({ run: { kind: 'claude' }, session: 'fixture' }));
+// What the Coordinator's program knows as commands (the `/` list): a skill of the person's own folder,
+// a command there, and a command of the Coordinator's own folder. Claude Code's built-ins come with the planner.
+write(path.join(dir, 'claude', 'skills', 'fixture-skill', 'SKILL.md'), '---\nname: fixture-skill\ndescription: Навык фикстуры: проверяет подсказки ввода\n---\n\n# Fixture skill\n');
+write(path.join(dir, 'claude', 'commands', 'fixture-cmd.md'), '---\ndescription: Команда фикстуры\n---\n\nDo the fixture thing.\n');
+write(path.join(chatDir, '.claude', 'commands', 'here-cmd.md'), '---\ndescription: Команда папки Координатора\n---\n\nHere.\n');
 
 // Memory (Markdown files; the planner indexes them). The Galaxy's own: two entries and no MEMORY.md (the planner makes it).
 const memEntry = (id, title, desc, type, body, extra = '') => `---\nname: ${id}\ntitle: ${title}\ndescription: ${desc}\ntype: ${type}\nadded: 2026-10-19\nsource: chat\n${extra}---\n\n${body}\n`;

@@ -53,6 +53,8 @@ pub struct ServerInfo {
     pub tls: bool,
     /// Where a repository added by address is cloned.
     pub projects_dir: String,
+    /// The folder with the files attached to messages: a picture of the chat is named in a message by its path here.
+    pub attachments_dir: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -291,6 +293,7 @@ impl App {
                 local_only: cfg.is_loopback(),
                 tls: cfg.tls().is_some(),
                 projects_dir: cfg.projects_dir_now().display().to_string(),
+                attachments_dir: cfg.attachments_dir().display().to_string(),
             },
         };
         let held = held_files(&db.todo_list());

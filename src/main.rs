@@ -14,6 +14,7 @@ mod coordinator;
 mod db;
 mod events;
 mod gitlag;
+mod hints;
 mod history;
 mod memory;
 mod memory_api;

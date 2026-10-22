@@ -85,6 +85,8 @@ pub fn router(app: Shared) -> Router {
         .route("/api/subagent", get(api::subagent_api))
         .route("/api/task/closing", get(api::closing_api))
         .route("/api/fs/complete", get(api::fs_complete))
+        .route("/api/hints/slash", get(crate::hints::slash_get))
+        .route("/api/hints/files", get(crate::hints::files_get))
         .route("/api/universe/inspect", post(api::universe_inspect))
         .route("/api/universe/add", post(api::universe_add))
         .route("/api/universe/info", get(api::universe_info))

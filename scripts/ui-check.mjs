@@ -792,6 +792,93 @@ section('chat', async () => {
   await press('Escape');
 });
 
+// ── the hints of `/` and `@`: the program's commands, and what to name in a message ──
+
+section('hints', async () => {
+  await resetUi();
+  await evalJs('planner.goOverview(); true');
+  await waitFor('world.debug().flight === "idle" && plannerDebug().selected === null', 15000);
+  const line = (value) => evalJs(`(() => {
+    const el = document.querySelector('#ask-in'); el.focus();
+    el.value = ${JSON.stringify(value)}; el.setSelectionRange(el.value.length, el.value.length);
+    el.dispatchEvent(new Event('input', { bubbles: true })); return true;
+  })()`);
+  const rows = () => evalJs('[...document.querySelectorAll("#ask-complete .ci")].map((e) => ({ label: e.querySelector(".lb").innerText, hint: e.querySelector(".hn")?.innerText || "", cur: e.classList.contains("cur") }))');
+  const headings = () => evalJs('[...document.querySelectorAll("#ask-complete .cg")].map((e) => e.innerText.trim())');
+  await press('Slash', '/');
+  check('/ opens the chat and focuses the line', await waitFor('document.querySelector("#chat").classList.contains("off") === false && document.activeElement.id === "ask-in"', 5000));
+  await line('/');
+  check('a slash at the start shows the program\'s own commands', await waitFor('!!document.querySelector("#ask-complete")', 10000) && (await headings()).map((h) => h.toLowerCase()).includes('команды программы'), JSON.stringify(await headings()));
+  const all = await rows();
+  check('Claude Code\'s built-in commands are there, with words about them', all.some((r) => r.label === '/compact' && r.hint.length > 0), JSON.stringify(all.slice(0, 4)));
+  check('the skill and the commands of this machine are there too', ['/fixture-skill', '/fixture-cmd', '/here-cmd'].every((l) => all.some((r) => r.label === l)), JSON.stringify(all.map((r) => r.label)));
+  check('the commands come first, the skill and the folder commands after them', all.findIndex((r) => r.label === '/here-cmd') > all.findIndex((r) => r.label === '/compact'));
+  const [listBox, taBox] = [await rectOf('#ask-complete'), await rectOf('#ask-in')];
+  check('the list sits right above the line, inside the chat', listBox.b <= taBox.t + 4 && taBox.t - listBox.b < 24 && listBox.t > 0 && listBox.w > 100, JSON.stringify({ listBox, taBox }));
+  const shown = await evalJs(`(() => {
+    const l = document.querySelector('#ask-complete').getBoundingClientRect();
+    const c = document.querySelector('#chat').getBoundingClientRect();
+    const at = document.elementFromPoint((l.left + l.right) / 2, (l.top + l.bottom) / 2);
+    return { inChat: l.left >= c.left - 1 && l.right <= c.right + 1, onTop: !!at?.closest('.cmpl'), bg: getComputedStyle(document.querySelector('#ask-complete')).backgroundColor };
+  })()`);
+  check('the list is inside the chat and on top of it', shown.inChat && shown.onTop && !/, 0\)$/.test(shown.bg), JSON.stringify(shown));
+  await shot('hints-commands.png');
+  await line('/fix');
+  check('the list narrows as the words are typed', await waitFor('[...document.querySelectorAll("#ask-complete .ci")].length === 2', 4000) && (await rows()).every((r) => r.label.includes('fixture')), JSON.stringify(await rows()));
+  await press('Tab');
+  check('Tab inserts the chosen command, with a space for its words', await waitFor('document.querySelector("#ask-in").value === "/fixture-skill "', 3000), await evalJs('document.querySelector("#ask-in").value'));
+  check('and the list closes after the insertion', await waitFor('!document.querySelector("#ask-complete")', 3000));
+  await line('/comp');
+  await waitFor('!!document.querySelector("#ask-complete")', 4000);
+  const sentBefore = calls('coordinator.jsonl').length;
+  await press('Enter');
+  check('Enter picks a row instead of sending the message', await waitFor('document.querySelector("#ask-in").value === "/compact "', 3000) && calls('coordinator.jsonl').length === sentBefore, JSON.stringify({ value: await evalJs('document.querySelector("#ask-in").value'), sent: calls('coordinator.jsonl').length - sentBefore, last: lastCall('coordinator.jsonl') }));
+  await line('/co');
+  await waitFor('!!document.querySelector("#ask-complete")', 4000);
+  await press('Escape');
+  check('Esc closes the list and keeps the words and the chat', await waitFor('!document.querySelector("#ask-complete")', 3000) && (await evalJs('document.querySelector("#ask-in").value')) === '/co' && await evalJs('!document.querySelector("#chat").classList.contains("off")'), JSON.stringify({ value: await evalJs('document.querySelector("#ask-in").value'), off: await evalJs('document.querySelector("#chat").classList.contains("off")') }));
+  // @: the tasks, the universes, the files — with the id, the folder and the full path.
+  await line('@ALP-2');
+  check('@ searches the tasks of the board', await waitFor('[...document.querySelectorAll("#ask-complete .cg")].some((e) => e.innerText.trim().toLowerCase() === "задачи")', 4000) && (await rows()).some((r) => r.label === 'ALP-2'), JSON.stringify(await rows()));
+  await press('Enter');
+  check('a task goes in as its id', await waitFor('document.querySelector("#ask-in").value === "ALP-2"', 3000), await evalJs('document.querySelector("#ask-in").value'));
+  await line('@READM');
+  check('@ finds the files of the repositories', await waitFor('[...document.querySelectorAll("#ask-complete .ci")].some((e) => e.querySelector(".lb").innerText === "README.md")', 8000), await evalJs('document.querySelector("#ask-complete")?.innerText'));
+  await press('Enter');
+  const filePath = await evalJs('document.querySelector("#ask-in").value');
+  check('a file goes in as its full path on this machine', typeof filePath === 'string' && filePath.startsWith(fixture) && filePath.endsWith('/README.md') && existsSync(filePath), filePath);
+  const alphaRoot = (await stateApi()).projects.find((p) => p.name === 'alpha')?.root;
+  await line('@alph');
+  check('@ finds the universes', await waitFor('[...document.querySelectorAll("#ask-complete .ci")].some((e) => e.querySelector(".lb").innerText === "alpha")', 8000), await evalJs('document.querySelector("#ask-complete")?.innerText'));
+  await shot('hints-mentions.png');
+  await press('Enter');
+  check('a universe goes in as the folder of its repository', (await evalJs('document.querySelector("#ask-in").value')) === alphaRoot, JSON.stringify({ got: await evalJs('document.querySelector("#ask-in").value'), alphaRoot }));
+  await evalJs('(() => { const el = document.querySelector("#ask-in"); el.value = ""; el.dispatchEvent(new Event("input", { bubbles: true })); return true; })()');
+  await press('Escape');
+  check('Esc folds the chat back', await waitFor('document.querySelector("#chat").classList.contains("off")', 4000));
+  // The same list in «Написать агенту» of a task: the program of THAT task.
+  await go('alpha/2');
+  check('the reply field of a task takes the same hints', await waitFor('!!document.querySelector("#tell")', 10000));
+  await evalJs('(() => { const el = document.querySelector("#tell"); el.focus(); el.value = "/"; el.setSelectionRange(1, 1); el.dispatchEvent(new Event("input", { bubbles: true })); return true; })()');
+  check('a slash there shows the commands of the task agent\'s program', await waitFor('!!document.querySelector("#tell-complete")', 10000) && (await evalJs('[...document.querySelectorAll("#tell-complete .cg")].map((e) => e.innerText.trim().toLowerCase())')).includes('команды программы'), await evalJs('document.querySelector("#tell-complete")?.innerText'));
+  await shot('hints-tell.png');
+  check('the list of the reply field is whole: not clipped by the panel', await evalJs(`(() => {
+    const l = document.querySelector('#tell-complete').getBoundingClientRect();
+    const f = document.querySelector('#focus').getBoundingClientRect();
+    const at = document.elementFromPoint((l.left + l.right) / 2, l.top + 6);
+    return l.top >= f.top - 1 && l.bottom <= f.bottom + 1 && !!at?.closest('#tell-complete');
+  })()`));
+  const tellsBefore = calls().filter((c) => c.argv[0] === 'tell').length;
+  await press('Enter');
+  check('Enter picks a command there too, instead of telling the agent', await waitFor('document.querySelector("#tell").value === "/add-dir "', 3000) && calls().filter((c) => c.argv[0] === 'tell').length === tellsBefore, JSON.stringify({ value: await evalJs('document.querySelector("#tell").value'), tells: calls().filter((c) => c.argv[0] === 'tell').length - tellsBefore, last: lastCall() }));
+  await evalJs('(() => { const el = document.querySelector("#tell"); el.value = "@ALP-2"; el.setSelectionRange(6, 6); el.dispatchEvent(new Event("input", { bubbles: true })); return true; })()');
+  check('@ in the reply field names a task by its id as well', await waitFor('[...document.querySelectorAll("#tell-complete .ci")].some((e) => e.querySelector(".lb").innerText === "ALP-2")', 5000), await evalJs('document.querySelector("#tell-complete")?.innerText'));
+  await press('Enter');
+  check('and inserts it', (await evalJs('document.querySelector("#tell").value')) === 'ALP-2', await evalJs('document.querySelector("#tell").value'));
+  await evalJs('(() => { const el = document.querySelector("#tell"); el.value = ""; el.dispatchEvent(new Event("input", { bubbles: true })); return true; })()');
+  await resetUi();
+}, { retry: true });
+
 // ── the todo list: a drawer from the top (quake), next to the chat at the bottom ──
 
 const rectOf = (sel) => evalJs(`(() => { const e = document.querySelector(${JSON.stringify(sel)}); if (!e) return null; const r = e.getBoundingClientRect(); return { l: r.left, t: r.top, r: r.right, b: r.bottom, w: r.width, h: r.height }; })()`);

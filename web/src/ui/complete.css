@@ -1,0 +1,13 @@
+/* The `/` and `@` list: above the field it belongs to, never over the words being typed. */
+.cmpl{position:absolute;left:0;right:0;bottom:calc(100% + 0.25rem);max-height:15rem;overflow-y:auto;overscroll-behavior:contain;z-index:6;background:var(--pl-panel-solid);border:1px solid var(--pl-line);border-radius:0.375rem;box-shadow:0 0.5rem 1.5rem rgba(0,0,0,.35);padding:0.25rem;font-size:0.8125rem;line-height:1.35;scrollbar-width:thin}
+.cmpl .cg{display:flex;align-items:center;gap:0.3125rem;padding:0.3125rem 0.375rem 0.125rem;color:var(--pl-faint);font-size:0.6562rem;letter-spacing:.06em;text-transform:uppercase}
+.cmpl .cg svg{width:0.75rem;height:0.75rem}
+.cmpl .ci{display:grid;grid-template-columns:auto auto minmax(0,1fr);gap:0 0.5rem;align-items:baseline;padding:0.1875rem 0.375rem;border-radius:0.25rem;cursor:pointer}
+.cmpl .ci .ic{color:var(--pl-dim);display:inline-flex;align-self:center}
+.cmpl .ci .ic svg{width:0.8125rem;height:0.8125rem}
+.cmpl .ci .lb{color:var(--pl-title);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:60%}
+.cmpl .ci .hn{color:var(--pl-faint);font-size:0.75rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;direction:ltr}
+.cmpl .ci.cur{background:var(--pl-hover)}
+.cmpl .ci.cur .lb{color:var(--pl-accent-ink)}
+.cmpl .ci.cur .ic{color:var(--pl-accent-ink)}
+.cmpl .cf{position:sticky;bottom:-0.25rem;margin-top:0.1875rem;padding:0.25rem 0.375rem;border-top:1px solid var(--pl-line);background:var(--pl-panel-solid);color:var(--pl-faint);font-size:0.6875rem}

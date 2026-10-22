@@ -95,6 +95,10 @@ running, create `DIR/state/coordinator-busy`: `herdr-projects coordinator` then 
 - `herdr-projects coordinator tell -- <text>` logs `coordinator.jsonl` (text, argv), and so does
   `tell -- /compact`. `coordinator new` logs `commands.jsonl` and prints `ok`.
 - `state/coordinator-dialog` makes it blocked (dialog); `state/coordinator-busy` makes it working.
+- Commands for the `/` list: `claude/skills/fixture-skill/SKILL.md` («Навык фикстуры…»),
+  `claude/commands/fixture-cmd.md` («Команда фикстуры») and `board/coordinator/default/chat/.claude/commands/here-cmd.md`
+  («Команда папки Координатора»). Claude Code's built-in commands are the planner's own table (`src/hints.rs`); the
+  `@` files are the repositories' (`projects/AI/alpha/README.md` and `projects/AI/beta/README.md` are the shortest).
 
 ## Machines the board knows (`vm-a`, `vm-b`)
 The planner works with its own board only. The stand-ins still answer as a board with other machines configured
