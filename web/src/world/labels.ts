@@ -63,12 +63,17 @@ export class Labels {
     return { w: w * k, h: h * k };
   }
 
+  /** A task's chip carries the glyph of its state, so the state reads without the colour. */
+  private glyphW(c: LabelCandidate): number {
+    return c.kind === 'planet' && c.status ? 16 : 0;
+  }
+
   private baseSize(c: LabelCandidate): { w: number; h: number } {
     if (c.full) {
-      const w = Math.min(260, Math.max(120, Math.max((c.text.length + 8) * CHAR_W, (c.sub?.length ?? 0) * 6.2, (c.line?.length ?? 0) * 6)));
+      const w = Math.min(260, Math.max(120, Math.max((c.text.length + 8) * CHAR_W + this.glyphW(c), (c.sub?.length ?? 0) * 6.2, (c.line?.length ?? 0) * 6)));
       return { w, h: 44 + (c.line ? 14 : 0) };
     }
-    const w = (c.text.length + (c.sub ? c.sub.length + 1 : 0) + (c.badge ? c.badge.length + 2 : 0) + 3) * CHAR_W + 14;
+    const w = (c.text.length + (c.sub ? c.sub.length + 1 : 0) + (c.badge ? c.badge.length + 2 : 0) + 3) * CHAR_W + 14 + this.glyphW(c);
     return { w: Math.min(240, w), h: 20 };
   }
 
@@ -120,9 +125,12 @@ export class Labels {
       this.slots.set(c.key, slot);
     }
     const cls = `lb ${c.kind}${c.status ? ` s-${c.status}` : ''}${c.selected ? ' sel' : ''}${c.hovered ? ' hover' : ''}${c.drop ? ' drop' : ''}${c.dim ? ' dim' : ''}${c.full ? ' full' : ''}`;
+    const gl = c.kind === 'planet' && c.status
+      ? `<svg class="gl st${c.status === 'working' ? ' spin' : c.status === 'review' ? ' beat' : ''}" aria-hidden="true"><use href="#g-${c.status}"/></svg>`
+      : '';
     const html = c.full
-      ? `<span class="in"><b class="k">${esc(c.text)}</b>${c.badge ? `<span class="bd">${esc(c.badge)}</span>` : ''}</span><span class="ttl">${esc(c.sub ?? '')}</span>${c.line ? `<span class="line">${esc(c.line)}</span>` : ''}`
-      : `<span class="in"><b class="k">${esc(c.text)}</b>${c.sub ? `<span class="sub">${esc(c.sub)}</span>` : ''}${c.badge ? `<span class="bd">${esc(c.badge)}</span>` : ''}</span>`;
+      ? `<span class="in">${gl}<b class="k">${esc(c.text)}</b>${c.badge ? `<span class="bd">${esc(c.badge)}</span>` : ''}</span><span class="ttl">${esc(c.sub ?? '')}</span>${c.line ? `<span class="line">${esc(c.line)}</span>` : ''}`
+      : `<span class="in">${gl}<b class="k">${esc(c.text)}</b>${c.sub ? `<span class="sub">${esc(c.sub)}</span>` : ''}${c.badge ? `<span class="bd">${esc(c.badge)}</span>` : ''}</span>`;
     if (slot.html !== html) { slot.el.innerHTML = html; slot.html = html; }
     if (slot.el.className !== cls) slot.el.className = cls;
     const style = `${Math.round(left)}|${Math.round(top)}|${Math.round(w)}`;

@@ -108,6 +108,10 @@ await frames(5);
 const inside = await evalJs('(() => { const x = world.debug(); return { level: x.level, labels: x.labels, updateMs: x.updateMs }; })()');
 const lo2 = await evalJs(labelOverlaps);
 const upd2 = await bestUpdate();
+// close to the planets is where the ripples and rings are drawn (the overview draws none): they stay bounded
+await waitFor('world.debug().auras + world.debug().halos > 0', 30000);
+const fxBound = await evalJs('(() => { const x = world.debug(); return { auras: x.auras, halos: x.halos, planets: x.planets }; })()');
+check('inside a nebula the ripples of the working planets are drawn, at most 64, and the rings at most two per planet', fxBound.auras <= 64 && fxBound.halos <= 2 * fxBound.planets && fxBound.auras + fxBound.halos > 0, JSON.stringify(fxBound));
 check('inside a nebula: the labels stay few and apart', inside.level === 'nebula' && inside.labels <= 24 && lo2.overlaps === 0 && upd2.ms < upd2.limit, JSON.stringify({ ...inside, ...lo2, upd: upd2 }));
 // the selected planet's card and the one under the pointer must not sit on other labels either
 await evalJs(`planner.navigateTo({kind:'planet',id:'s05/1'}); true`);

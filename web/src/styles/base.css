@@ -87,6 +87,8 @@ mark{background:color-mix(in srgb,var(--pl-accent) 38%,transparent);color:inheri
 .win.manual #scene{cursor:crosshair}
 .gl{width:0.8125rem;height:0.8125rem;flex:none;fill:none;stroke:currentColor;stroke-width:1.6;stroke-linecap:round;stroke-linejoin:round}
 .gl.spin{animation:spin 1.1s linear infinite}
+.gl.beat{animation:beat 2.2s ease-in-out infinite}
+@keyframes beat{50%{opacity:.4}}
 @keyframes spin{to{transform:rotate(360deg)}}
 .lbl{font-size:0.625rem;letter-spacing:.1em;text-transform:uppercase;color:var(--pl-faint)}
 .sr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0)}
@@ -141,6 +143,7 @@ input.field:focus,textarea.field:focus,select.field:focus{border-color:var(--pl-
 .lb .line{display:block;color:var(--pl-faint);font-size:0.6562rem;max-width:14.375rem;overflow:hidden;text-overflow:ellipsis}
 .lb.planet{border-color:var(--s-line)}
 .lb.planet .k{color:var(--s-ink)}
+.lb .gl.st{width:0.75rem;height:0.75rem;color:var(--s-ink,var(--pl-dim))}
 .lb.quasar{border-color:color-mix(in srgb,var(--c-accent) 55%,var(--pl-line));background:var(--pl-panel-solid);font-weight:700;font-size:0.7812rem}
 .lb.universe{background:color-mix(in srgb,var(--pl-bg) 66%,transparent)}
 .lb.universe .k{color:var(--pl-title)}

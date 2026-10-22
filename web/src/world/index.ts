@@ -644,7 +644,7 @@ export function createWorld(opts: WorldOptions): World {
     ship.update(dt, speed01, mode === 'manual' ? shipS.roll : 0, simple);
     warp.set(warpNow, time);
     nebulae.update(time, dt, scale, camera.position);
-    bodies.update(time, camera.position, scale, focusUniverse, fxGroup);
+    bodies.update(time, camera.position, scale, focusUniverse, fxGroup, camera.quaternion);
     quasar.update(time, camera.position);
     docks.update(time);
     for (const l of dockLines) {
@@ -1146,10 +1146,11 @@ export function createWorld(opts: WorldOptions): World {
         updateMs: Math.round(updateMs * 100) / 100, fps, frameMs: sorted.length ? Math.round((sorted[Math.floor(sorted.length / 2)] ?? 0) * 10) / 10 : 0,
         labels: labels.count, collisions: labels.collisions, overlaps: labels.overlaps,
         limitArcs: quasar.limitArcs, limitCrit: quasar.limitCrit, quasar: { color: quasar.colorNow, state: quasar.stateNow },
-        particles: nebulae.particleCount, lod: nebulae.lodSample, moons: bodies.moonStates(), halos: st.halos, rings: st.rings,
+        particles: nebulae.particleCount, lod: nebulae.lodSample, moons: bodies.moonStates(), halos: st.halos, rings: st.rings, auras: st.auras,
         camera: { x: Math.round(camera.position.x), y: Math.round(camera.position.y), z: Math.round(camera.position.z), fov: Math.round(camera.fov) },
         ship: { x: Math.round(shipS.pos.x), y: Math.round(shipS.pos.y), z: Math.round(shipS.pos.z), yaw: shipS.yaw, pitch: shipS.pitch, speed: Math.round(shipS.vel.length()), cruise: Math.round(shipS.cruise), roll: shipS.roll },
         flight: flight ? flight.phase : 'idle', locked, edge: edgeOn, bloom: !!composer, aimed: aimed ? aimed.entity : null,
+        fxAt: (id: string, time: number) => bodies.fxAt(id, time), fxKinds: bodies.kinds(),
         positionOf: (id: string) => { const p = bodies.positionOf(id) ?? docks.sprites.get(id)?.pos; return p ? { x: p.x, y: p.y, z: p.z } : null; },
         project: (id: string) => { const p = bodies.positionOf(id) ?? docks.sprites.get(id)?.pos; return p ? projectPoint(p) : null; },
       };

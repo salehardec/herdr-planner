@@ -3,7 +3,7 @@
    hundred planets are a handful of draw calls. */
 
 import {
-  AdditiveBlending, BoxGeometry, BufferAttribute, BufferGeometry, Color, DynamicDrawUsage, Group,
+  AdditiveBlending, NormalBlending, BoxGeometry, BufferAttribute, BufferGeometry, Color, DynamicDrawUsage, Group,
   InstancedBufferAttribute, InstancedMesh, LineBasicMaterial, LineSegments, Matrix4, MeshBasicMaterial,
   Mesh, OctahedronGeometry, Points, PointsMaterial, RingGeometry, Quaternion, ShaderMaterial, SphereGeometry, TetrahedronGeometry,
   TorusGeometry, Vector3, Euler,
@@ -14,6 +14,8 @@ import type { Palette } from './palette';
 import { PROGRAM_SHAPE } from './palette';
 import type { Entity, Status, Subagent, Task } from '../types';
 import { hash } from '../util/format';
+import type { Fx } from './fx';
+import { kindOf, newFx, stateFx } from './fx';
 
 const PLANET_VERT = /* glsl */ `
 attribute float aGlow;
@@ -58,6 +60,10 @@ void main() {
 
 const MOON_LIMIT = 12;
 const NEAR = 260;
+/** The ripples of working planets are drawn this close, and for at most this many (a crowd of ripples is noise). */
+const AURA_NEAR = 420;
+const AURA_MAX = 64;
+const HALOS_PER_PLANET = 2;
 
 export interface Item {
   key: string;
@@ -108,6 +114,7 @@ export class Bodies {
   private planetMat: ShaderMaterial;
   private halos!: InstancedMesh;
   private rings!: InstancedMesh;
+  private auras!: InstancedMesh;
   private marks: Record<string, InstancedMesh> = {};
   private moons!: InstancedMesh;
   private tails!: InstancedMesh;
@@ -134,6 +141,7 @@ export class Bodies {
   private hoverId: string | null = null;
   private fresh: Record<string, number> = {};
   private lastTime = 0;
+  private fx: Fx = newFx();
 
   constructor() {
     this.planetMat = new ShaderMaterial({
@@ -157,7 +165,7 @@ export class Bodies {
   private allocate(cap: number, moonCap: number): void {
     this.cap = cap;
     this.moonCap = moonCap;
-    for (const m of [this.planets, this.halos, this.rings, this.moons, this.tails, ...Object.values(this.marks)]) {
+    for (const m of [this.planets, this.halos, this.rings, this.auras, this.moons, this.tails, ...Object.values(this.marks)]) {
       if (m) { this.group.remove(m); m.dispose(); }
     }
     const planetGeo = new SphereGeometry(1, 12, 9);
@@ -170,8 +178,13 @@ export class Bodies {
     this.planets.frustumCulled = false;
     this.planets.renderOrder = 4;
     const basic = (opacity: number): MeshBasicMaterial => new MeshBasicMaterial({ transparent: true, opacity, depthWrite: false });
-    this.halos = new InstancedMesh(new TorusGeometry(1, 0.07, 6, 32), basic(0.85), cap);
+    // A failed planet takes two of them (a cage), so there is room for two per planet.
+    this.halos = new InstancedMesh(new TorusGeometry(1, 0.07, 6, 32), basic(0.85), cap * HALOS_PER_PLANET);
     this.rings = new InstancedMesh(new TorusGeometry(1, 0.045, 6, 36), basic(0.7), cap);
+    // The ripple of a working planet: a flat ring turned to the camera; it fades by its colour (additive).
+    this.auras = new InstancedMesh(new RingGeometry(0.93, 1, 48), new MeshBasicMaterial({
+      transparent: true, opacity: 1, depthWrite: false, blending: AdditiveBlending, side: 2,
+    }), cap);
     const shapes: Record<string, BufferGeometry> = {
       sphere: new SphereGeometry(0.5, 8, 6), box: new BoxGeometry(0.8, 0.8, 0.8),
       octa: new OctahedronGeometry(0.62), tetra: new TetrahedronGeometry(0.68),
@@ -183,7 +196,7 @@ export class Bodies {
     this.moons = new InstancedMesh(new SphereGeometry(0.4, 8, 6), new MeshBasicMaterial({ transparent: true, opacity: 0.95 }), moonCap);
     this.tails = new InstancedMesh(new SphereGeometry(0.3, 6, 4), new MeshBasicMaterial({ transparent: true, opacity: 0.6, depthWrite: false, blending: AdditiveBlending }), moonCap * 6);
     this.planets.setColorAt(0, _c.set(0xffffff));
-    for (const m of [this.halos, this.rings, ...Object.values(this.marks), this.moons, this.tails]) {
+    for (const m of [this.halos, this.rings, this.auras, ...Object.values(this.marks), this.moons, this.tails]) {
       // The colour attribute must exist before the first draw, or the program is built without it.
       m.setColorAt(0, _c.set(0xffffff));
       m.instanceMatrix.setUsage(DynamicDrawUsage);
@@ -194,17 +207,26 @@ export class Bodies {
     }
     this.group.add(this.planets);
     this.colorsDirty = true;
+    if (this.pal) this.lightAura();
   }
 
   setSimple(v: boolean): void { this.simple = v; }
   setHover(id: string | null): void { if (id !== this.hoverId) { this.hoverId = id; this.colorsDirty = true; } }
   setFilter(f: Status[] | null): void { this.filter = f && f.length ? f : null; this.colorsDirty = true; }
   setFresh(f: Record<string, number>): void { this.fresh = f; }
-  setPalette(p: Palette): void { this.pal = p; this.colorsDirty = true; }
+  setPalette(p: Palette): void { this.pal = p; this.colorsDirty = true; this.lightAura(); }
+
+  /** The ripple adds light on a dark sky; on a light one it must be painted over it, or it shows white. */
+  private lightAura(): void {
+    const mat = this.auras.material as MeshBasicMaterial;
+    const blending = this.pal.mode === 'light' ? NormalBlending : AdditiveBlending;
+    if (mat.blending !== blending) { mat.blending = blending; mat.needsUpdate = true; }
+  }
 
   /** Rebuilds the instances for a layout; moons are kept by id so they can fade out. */
   build(layout: Layout, tasks: Task[], pal: Palette, coordinatorMoons: Subagent[], now: number): void {
     this.pal = pal;
+    this.lightAura();
     this.layout = layout;
     this.tasks = new Map(tasks.map((t) => [t.id, t]));
     this.coordMoons = coordinatorMoons;
@@ -331,12 +353,14 @@ export class Bodies {
   }
 
   /** Per-frame: positions, matrices, glow. `camPos` decides which decorations are close enough to draw. */
-  update(time: number, camPos: Vector3, scale: number, focusUniverse: string | null, group: Group): void {
+  update(time: number, camPos: Vector3, scale: number, focusUniverse: string | null, group: Group, camQuat: Quaternion = _qi): void {
     this.planetMat.uniforms.uScale.value = scale;
     this.lastTime = time;
     const moving = !this.simple;
     let halo = 0;
     let ring = 0;
+    let aura = 0;
+    const fx = this.fx;
     const markCount: Record<string, number> = { sphere: 0, box: 0, octa: 0, tetra: 0 };
     const attrs = this.planets.instanceMatrix;
     void attrs;
@@ -349,50 +373,69 @@ export class Bodies {
       const focusFade = focusUniverse !== null && u.name !== focusUniverse;
       // In the galaxy view the done belt is not drawn (it only adds noise).
       const showBelt = !p.belt || focusUniverse === u.name || camPos.distanceToSquared(item.pos) < 90000;
-      const s = hidden || !showBelt ? 0 : p.size * (this.hoverId === p.id ? 1.25 : 1);
+      stateFx(p.status, time, rec.phase, moving, fx);
+      const s = hidden || !showBelt ? 0 : p.size * (this.hoverId === p.id ? 1.25 : 1) * fx.breathe;
       _s.setScalar(s);
       _m.compose(_p, _q.identity(), _s);
       this.planets.setMatrixAt(rec.idx, _m);
-      const pulse = p.status === 'waiting' || p.status === 'failed' ? 0.55 + 0.45 * Math.sin(time * 3 + rec.phase) : p.status === 'ready' ? 0.35 : p.status === 'working' ? 0.18 : 0;
-      this.glowAttr.array[rec.idx] = moving ? pulse : (pulse > 0 ? 0.4 : 0);
-      this.dimAttr.array[rec.idx] = dimmed ? 0.14 : focusFade ? 0.55 : 1;
+      this.glowAttr.array[rec.idx] = fx.glow;
+      this.dimAttr.array[rec.idx] = dimmed ? 0.14 : Math.min(fx.dim, focusFade ? 0.55 : 1);
       // Decorations only near the camera.
       const near = camPos.distanceToSquared(item.pos) < NEAR * NEAR && !p.belt;
-      if (near && (p.status === 'ready' || p.status === 'review' || p.status === 'failed' || p.status === 'waiting' || p.status === 'plan') && !dimmed) {
-        _e.set(Math.PI / 2 + 0.25, time * 0.5 + rec.phase, 0);
-        _q.setFromEuler(_e);
-        const hs = p.size * (p.status === 'failed' ? 2.25 : 1.95) * (1 + (p.status === 'waiting' && moving ? 0.06 * Math.sin(time * 4 + rec.phase) : 0));
-        _m.compose(_p, _q, _s.setScalar(hs));
-        this.halos.setMatrixAt(halo, _m);
-        this.halos.setColorAt(halo, _c.copy(this.pal.status[p.status]));
-        halo++;
+      // A steady ring for what waits for the human (one ring) and for what failed (a cage of two); it brightens with the flash.
+      if (near && fx.halo > 0 && !dimmed) {
+        const rings = p.status === 'failed' ? 2 : 1;
+        for (let k = 0; k < rings && halo < this.cap * HALOS_PER_PLANET; k++) {
+          _e.set(Math.PI / 2 + 0.25 + k * 1.1, time * 0.5 + rec.phase + k * 1.6, k * 0.8);
+          _q.setFromEuler(_e);
+          const hs = p.size * (p.status === 'failed' ? 2.25 : 1.95);
+          _m.compose(_p, _q, _s.setScalar(hs));
+          this.halos.setMatrixAt(halo, _m);
+          this.halos.setColorAt(halo, _c.copy(this.pal.bg).lerp(this.pal.status[p.status], fx.halo));
+          halo++;
+        }
       }
-      if (near && rec.task && rec.task.app) {
+      // The ripple of a working planet (and a frozen bright ring when motion is off).
+      if (fx.aura > 0 && !dimmed && aura < Math.min(AURA_MAX, this.cap) && camPos.distanceToSquared(item.pos) < AURA_NEAR * AURA_NEAR) {
+        _m.compose(_p, camQuat, _s.setScalar(p.size * fx.auraR));
+        this.auras.setMatrixAt(aura, _m);
+        _c.copy(this.pal.status[p.status]);
+        if (this.pal.mode === 'light') _c.lerp(this.pal.bg, 1 - fx.aura); else _c.multiplyScalar(fx.aura);
+        this.auras.setColorAt(aura, _c);
+        aura++;
+      }
+      // Only a planet with an agent on it has a program ring; a queued or done one has none.
+      if (near && rec.task && rec.task.app && fx.kind !== 'sleep' && fx.kind !== 'done') {
         const prog = rec.task.app.split('/')[0].toLowerCase();
+        const working = fx.kind === 'work';
+        const ringCol = _c.copy(this.pal.program[prog] ?? this.pal.fg);
+        if (!working) ringCol.lerp(this.pal.muted, 0.5);
         _e.set(Math.PI / 2 - 0.5, time * 0.35 + rec.phase, 0.3);
         _q.setFromEuler(_e);
         _m.compose(_p, _q, _s.setScalar(p.size * 2.7));
         this.rings.setMatrixAt(ring, _m);
-        this.rings.setColorAt(ring, _c.copy(this.pal.program[prog] ?? this.pal.fg));
+        this.rings.setColorAt(ring, ringCol);
         ring++;
         const shape = PROGRAM_SHAPE[prog] ?? 'sphere';
         const mk = this.marks[shape];
-        const ang = time * 0.9 + rec.phase;
+        // The marker (the agent) circles only while it works; otherwise it is parked.
+        const ang = (working && moving ? time * 0.9 : 0) + rec.phase;
         // The marker rides on the ring: same tilt, same radius.
         _p.set(Math.cos(ang) * p.size * 2.7, 0, Math.sin(ang) * p.size * 2.7).applyQuaternion(_q).add(item.pos);
         _m.compose(_p, _qi.identity(), _s.setScalar(p.size * 0.55));
         mk.setMatrixAt(markCount[shape], _m);
-        mk.setColorAt(markCount[shape], _c.copy(this.pal.program[prog] ?? this.pal.fg));
+        mk.setColorAt(markCount[shape], ringCol);
         markCount[shape]++;
       }
     }
     this.halos.count = halo;
     this.rings.count = ring;
+    this.auras.count = aura;
     for (const [k, m] of Object.entries(this.marks)) m.count = markCount[k];
     this.planets.instanceMatrix.needsUpdate = true;
     this.glowAttr.needsUpdate = true;
     this.dimAttr.needsUpdate = true;
-    for (const m of [this.halos, this.rings, ...Object.values(this.marks)]) {
+    for (const m of [this.halos, this.rings, this.auras, ...Object.values(this.marks)]) {
       m.instanceMatrix.needsUpdate = true;
       if (m.instanceColor) m.instanceColor.needsUpdate = true;
     }
@@ -503,8 +546,21 @@ export class Bodies {
     }
   }
 
-  stats(): { planets: number; moons: number; halos: number; rings: number } {
-    return { planets: this.recs.length, moons: this.moons.count, halos: this.halos.count, rings: this.rings.count };
+  stats(): { planets: number; moons: number; halos: number; rings: number; auras: number } {
+    return { planets: this.recs.length, moons: this.moons.count, halos: this.halos.count, rings: this.rings.count, auras: this.auras.count };
+  }
+
+  /** What a planet's state looks like at `time` (seconds): for the checks. */
+  fxAt(id: string, time: number): (Fx & { glowNow: number; dimNow: number }) | null {
+    const r = this.byId.get(id);
+    if (!r) return null;
+    const f = stateFx(r.p.status, time, r.phase, !this.simple, newFx());
+    return { ...f, glowNow: this.glowAttr.array[r.idx], dimNow: this.dimAttr.array[r.idx] };
+  }
+
+  /** The state kind of every planet, for the checks. */
+  kinds(): Record<string, string> {
+    return Object.fromEntries(this.recs.map((r) => [r.p.id, kindOf(r.p.status)]));
   }
 
   /** Live moons in a state, for the checks. */
