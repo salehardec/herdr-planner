@@ -39,8 +39,10 @@ export async function sendAction(action: string, extra: Record<string, unknown> 
 export function confirmStep(key: string, fire: () => void | Promise<void>): void {
   const a = armed.value;
   if (!a || a.key !== key) {
-    armed.value = { key, at: Date.now() };
-    setTimeout(() => { if (armed.value?.key === key) armed.value = null; }, 3500);
+    const at = Date.now();
+    armed.value = { key, at };
+    // only this arming expires: an older timer of the same key must not disarm a newer press
+    setTimeout(() => { if (armed.value?.key === key && armed.value.at === at) armed.value = null; }, 3500);
     return;
   }
   if (Date.now() - a.at < 600) { toast(t('toast.pressAgain')); return; }

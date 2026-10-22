@@ -301,6 +301,14 @@ const META = {
 const WORKER_BY_APP = { claude: 'claude/claude-sonnet-5-5', omp: 'omp/deepseek/deepseek-v4-flash', pi: 'pi/default', codex: 'codex/gpt-5-codex' };
 const MODEL_BY_APP = { claude: 'claude-sonnet-5-5', omp: 'deepseek-v4-flash', pi: null, codex: 'gpt-5-codex' };
 const CLOSING = {
+  'sigma/2': 'Итог SIG-2: лицензия зависимости совместима, оставляем. Решение: зависимость берём только из реестра, не из форка.\n',
+  'delta/1': 'Итог DEL-1: переписали кэш delta. Проверки линта падают на шаге форматирования — это известно и не относится к задаче.\n',
+  'alpha/4': [
+    'Итог ALP-4: тёмная тема для страницы отчётов готова.',
+    '- Цвета берутся из палитры Omarchy, контраст не ниже AA.',
+    '- Решили не хранить тему в базе: хватает localStorage и системной настройки.',
+    '- Грабли: переключатель темы мигал при загрузке, пока класс не ставился до первой отрисовки.',
+  ].join('\n') + '\n',
   'alpha/15': [
     'Summary of ALP-15: the export button now shows progress.',
     '- Added a progress bar to the export dialog (ui/export.rs).',
@@ -386,6 +394,15 @@ for (const [repo, f] of Object.entries(folders)) {
   if (repo === 'alpha' || repo === 'beta') continue;
   fs.mkdirSync(f, { recursive: true });
   write(path.join(f, 'NOTES.txt'), `${repo}: папка без git (фикстура).\n`);
+}
+
+// docs: a git folder with no origin (its universe memory is added and committed from the page).
+{
+  const docsDir = folders.docs;
+  git(docsDir, ['init', '-q']);
+  git(docsDir, ['config', 'user.name', 'fixture']);
+  git(docsDir, ['config', 'user.email', 'fixture@example.invalid']);
+  commit(docsDir, 'NOTES.txt', 'docs: папка (фикстура).\n', 'Начало docs', D1);
 }
 
 // ---------------------------------------------------------------- the rows' records
@@ -573,6 +590,24 @@ for (let i = 1; i <= 10; i++) {
 // The last assistant turn is the one with the big usage (i = 9 above).
 write(path.join(dir, 'claude', 'projects', chatFolder, 'fixture.jsonl'), transcript.join('\n') + '\n');
 write(path.join(dir, 'board', 'coordinator', 'default', 'state.json'), JSON.stringify({ run: { kind: 'claude' }, session: 'fixture' }));
+
+// Memory (Markdown files; the planner indexes them). The Galaxy's own: two entries and no MEMORY.md (the planner makes it).
+const memEntry = (id, title, desc, type, body, extra = '') => `---\nname: ${id}\ntitle: ${title}\ndescription: ${desc}\ntype: ${type}\nadded: 2026-10-19\nsource: chat\n${extra}---\n\n${body}\n`;
+const memGalaxy = path.join(dir, 'memory', 'galaxy');
+write(path.join(memGalaxy, 'gitlab-bez-pr.md'), memEntry('gitlab-bez-pr', 'GitLab — без PR', 'В репо на GitLab слияние идёт без pull request', 'rule', 'Доска открывает PR только на GitHub. Для репозиториев GitLab ставим `merge.pr false` и `merge.checks none`.'));
+write(path.join(memGalaxy, 'deshevaya-model.md'), memEntry('deshevaya-model', 'Дешёвая модель', '«Дешёвая модель» — omp/deepseek/deepseek-v4-flash', 'preference', 'Когда человек просит дешёвую модель, ставим задаче `--worker.agent omp/deepseek/deepseek-v4-flash`; ревьюера не меняем.'));
+// The board's instruction files of the Coordinator (the planner adds its block after the board's region).
+// The machine Coordinator and a project Coordinator have their own instruction files; the human's notes sit above the board's marker.
+const boardRules = "<!-- herdr-projects: the Coordinator's standing rules. The board writes what is between this line and the closing one, at every start: your own notes go outside them. -->\n";
+write(path.join(dir, 'board', 'coordinator', 'default', 'machine', 'chat', 'AGENTS.md'), boardRules + "You are the machine Coordinator.\n<!-- /herdr-projects -->\n");
+write(path.join(dir, 'board', 'coordinator', 'default', 'projects', 'alpha', 'rules.md'), 'Правила проектного Координатора alpha.\n');
+write(path.join(chatDir, 'AGENTS.md'), "Мои заметки выше маркера доски.\n\n<!-- herdr-projects: the Coordinator's standing rules. The board writes what is between this line and the closing one, at every start: your own notes go outside them. -->\nYou are the Coordinator of the human's work board in herdr (herdr-projects).\n<!-- /herdr-projects -->\n");
+write(path.join(chatDir, 'CLAUDE.md'), "<!-- herdr-projects: the Coordinator's standing rules. The board writes what is between this line and the closing one, at every start: your own notes go outside them. -->\n@AGENTS.md\n<!-- /herdr-projects -->\n");
+// Claude Code's own memory of that project folder (read only for the planner).
+write(path.join(dir, 'claude', 'projects', chatFolder, 'memory', 'user-answers-short.md'), '---\nname: user-answers-short\ndescription: Человек просит отвечать коротко, с результата\nmetadata:\n  type: feedback\n---\n\nОтвечать коротко и начинать с результата. Подробности — только если спросят.\n');
+write(path.join(dir, 'claude', 'projects', chatFolder, 'memory', 'MEMORY.md'), '- [user-answers-short](user-answers-short.md) — коротко\n');
+// A universe's memory: alpha has one entry that is not in git; docs is a git folder without memory yet.
+write(path.join(alphaDir, 'docs', 'memory', 'merge-squash.md'), memEntry('merge-squash', 'Слияние — squash', 'В alpha задачи сливаются squash, история ветки не нужна', 'decision', 'Решили сливать squash: ветки задач короткие, а лента main остаётся читаемой.'));
 // The Coordinator's own sub-agent: one, under the transcript's folder. Its state follows the
 // Coordinator: `done` while it is idle; `state/coordinator-busy` makes the Coordinator «working».
 claudeSub(chatDir, 'fixture', 'f6cc9b8e2d75f44b', {
@@ -629,7 +664,7 @@ const BOARD = {
     omp: ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'auto'],
   },
   builtin: {
-    'worker.fast': false, 'worker.access': 'full', 'worker.fallback': 'none', 'worker.instructions': 'none',
+    'worker.fast': false, 'worker.access': 'full', 'worker.fallback': 'none', 'worker.instructions': 'none', 'coordinator.instructions': 'none',
     'reviewer.fast': true, 'reviewer.access': 'full', 'reviewer.fallback': 'none',
     'coordinator.fast': false, 'research.only': false, 'workspace.from': 'main', 'attempts.by': 1, 'attempts.pick': 'you',
     'review.when': 'repos', 'review.mustFix': 'major', 'review.rounds': 3, 'merge.by': 'you', 'merge.method': 'squash',
@@ -640,6 +675,7 @@ const BOARD = {
       'coordinator.agent': 'claude/claude-opus-5-5', 'coordinator.effort': 'medium', 'plan.agent': 'claude/claude-opus-5-5',
       'reviewer.agent': 'claude/claude-opus-5-5', 'reviewer.effort': 'high', 'worker.agent': 'claude/claude-sonnet-5-5',
       'worker.effort': 'high', 'watcher.agent': 'claude/claude-haiku-5-5', 'board.agents': 6,
+      'coordinator.instructions': 'Мои правила, поверх общих:\n1. Настройки меняй только с моего явного согласия.\n2. Если непонятно, к какой задаче это относится, — спроси.',
     },
     alpha: { 'worker.effort': 'max' },
     vmA: {
@@ -1142,6 +1178,17 @@ function sshMain(C, DATA) {
   rec.session_ok = sessionOk;
   log('ssh.jsonl', rec);
   process.stdout.write('Welcome to vm-a (Ubuntu 24.04 LTS). Last login: Mon Oct 19 22:10:04 2026\n');
+  if (sessionOk && inner.slice(PREFIX.length).startsWith('HP_MEMORY=1;')) {
+    // The planner's memory scripts (plain sh): they run in vm-a's own home, where /srv/projects is a folder too.
+    const { spawnSync } = require('node:child_process');
+    const home = path.join(C.D, 'state', 'vm-a-home');
+    const script = inner.slice(PREFIX.length).split('/srv/projects/').join(home + '/srv/projects/');
+    log('memory.jsonl', { what: script.includes('base64') ? 'write' : script.includes('coordinator') ? 'coordinator' : 'read', home });
+    const r = spawnSync('/bin/sh', ['-c', script], { env: { HOME: home, PATH: process.env.PATH, LANG: 'C' }, encoding: 'utf8' });
+    if (r.stdout) process.stdout.write(r.stdout);
+    if (r.stderr) process.stderr.write(r.stderr);
+    process.exit(r.status === null ? 255 : r.status);
+  }
   if (!sessionOk) {
     console.error('herdr-projects: no board in the default session on vm-a');
     process.exit(1);
@@ -1245,6 +1292,13 @@ function claudeMain(C, DATA) {
     const at = argv.indexOf('--tools');
     const mi = argv.indexOf('--model');
     log('claude.jsonl', { argv, toolsEmpty: at >= 0 && argv[at + 1] === '', model: mi >= 0 ? argv[mi + 1] : null, chars: chars.length });
+    const si = argv.indexOf('--system-prompt');
+    if (si >= 0 && String(argv[si + 1]).includes('долговременную память')) {
+      const tag = (/Задача: (\S+)/.exec(text) || [])[1] || 'TASK';
+      log('claude.jsonl', { suggest: tag });
+      process.stdout.write('- decision: ' + tag + ' — тема не хранится в базе: хватает localStorage и системной настройки.\n- pitfall: класс темы ставить до первой отрисовки, иначе страница мигает.\n');
+      return;
+    }
     process.stdout.write('ПЕРЕВОД: ' + chars.slice(0, 60).join('') + (chars.length > 60 ? '…' : '') + '\n');
   });
 }
@@ -1616,6 +1670,11 @@ for (const [id, text] of Object.entries(CLOSING)) {
 }
 // The stand-ins' world (the rows, the waits, the meta) lives under state/.
 fs.writeFileSync(path.join(dir, 'state', 'board.json'), JSON.stringify(w, null, 1));
+// vm-a's home (the ssh stand-in runs the memory scripts there): a Galaxy entry, a universe entry, a Coordinator folder.
+const vmHome = path.join(dir, 'state', 'vm-a-home');
+write(path.join(vmHome, '.herdr-projects', 'memory', 'galaxy', 'vm-a-ports.md'), memEntry('vm-a-ports', 'Порты vm-a', 'На vm-a сервисы слушают 8000–8100', 'reference', 'Не занимать порты 8000–8100: там живут сервисы vm-a.'));
+write(path.join(vmHome, '.herdr-projects', 'data', 'coordinator', 'default', 'chat', 'AGENTS.md'), "<!-- herdr-projects: the Coordinator's standing rules. -->\nYou are the Coordinator of vm-a.\n<!-- /herdr-projects -->\n");
+write(path.join(vmHome, 'srv', 'projects', 'alpha', 'docs', 'memory', 'vm-alpha-note.md'), memEntry('vm-alpha-note', 'Заметка alpha на vm-a', 'alpha на vm-a собирается через make', 'convention', 'На vm-a alpha собирают командой make, а не cargo.'));
 write(path.join(dir, 'theme', 'colors.toml'), `mode = "dark"
 accent = "#dfa360"
 selection = "#513b24"

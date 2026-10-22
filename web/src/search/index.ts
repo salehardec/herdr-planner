@@ -13,7 +13,7 @@ export interface Doc {
   status: string;
 }
 
-export const GROUPS: SearchHit['kind'][] = ['galaxy', 'quasar', 'universe', 'planet', 'moon', 'todo', 'chat'];
+export const GROUPS: SearchHit['kind'][] = ['galaxy', 'quasar', 'universe', 'planet', 'moon', 'todo', 'memory', 'closing', 'chat'];
 const PER_GROUP = 5;
 const TOTAL = 28;
 

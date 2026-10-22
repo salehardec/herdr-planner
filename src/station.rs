@@ -36,7 +36,7 @@ pub const PROGRAMS: &[&str] = &[
     "devin",
     "gemini",
 ];
-const BOARD_WAIT: Duration = Duration::from_secs(30);
+pub(crate) const BOARD_WAIT: Duration = Duration::from_secs(30);
 const DOCTOR_WAIT: Duration = Duration::from_secs(60);
 const MODELS_WAIT: Duration = Duration::from_secs(100);
 const SSH_WAIT: Duration = Duration::from_secs(25);
@@ -84,7 +84,7 @@ impl Fail {
     }
 
     /// A far galaxy that did not answer: the reason the planner gives for it (`why_not`), as a 502.
-    fn unreachable(why: Why) -> Self {
+    pub(crate) fn unreachable(why: Why) -> Self {
         let message = std::iter::once(why.line.clone())
             .chain(why.detail.first().cloned())
             .collect::<Vec<_>>()
@@ -104,6 +104,10 @@ impl Fail {
         self
     }
 
+    pub fn message(&self) -> String {
+        self.message.clone()
+    }
+
     pub fn into_response(self) -> Response {
         let mut body = json!({ "error": self.message });
         if let Some(why) = self.why {
@@ -115,19 +119,19 @@ impl Fail {
 
 /// What a board command printed and how it ended. A home board's failure has its words in both fields.
 #[derive(Debug, Default)]
-struct Out {
+pub(crate) struct Out {
     code: Option<i32>,
     stdout: String,
     stderr: String,
 }
 
 impl Out {
-    fn ok(&self) -> bool {
+    pub(crate) fn ok(&self) -> bool {
         self.code == Some(0)
     }
 
     /// The board's own words for a failure (its error text, else what it printed).
-    fn words(&self) -> String {
+    pub(crate) fn words(&self) -> String {
         let text = if self.stderr.trim().is_empty() {
             self.stdout.trim()
         } else {
@@ -144,7 +148,7 @@ impl Out {
 
 /// Where a station's board runs.
 #[derive(Debug, Clone)]
-enum Place {
+pub(crate) enum Place {
     Home,
     Far(MachineRef),
 }
@@ -212,7 +216,7 @@ pub fn parse_settings(stdout: &str) -> Result<Vec<Setting>, String> {
     Ok(list.iter().filter_map(setting_of).collect())
 }
 
-fn find<'a>(settings: &'a [Setting], name: &str) -> Option<&'a Setting> {
+pub(crate) fn find<'a>(settings: &'a [Setting], name: &str) -> Option<&'a Setting> {
     settings.iter().find(|s| s.name == name)
 }
 
@@ -444,7 +448,7 @@ fn write_light(cfg: &AppConfig, label: &str, agent: &str) -> Result<(), String> 
 
 /* ───────── running the board ───────── */
 
-async fn galaxy_of(app: &Shared, label: &str) -> Option<Galaxy> {
+pub(crate) async fn galaxy_of(app: &Shared, label: &str) -> Option<Galaxy> {
     app.galaxies
         .lock()
         .await
@@ -453,7 +457,7 @@ async fn galaxy_of(app: &Shared, label: &str) -> Option<Galaxy> {
         .cloned()
 }
 
-async fn place_of(galaxy: &str) -> Result<Place, Fail> {
+pub(crate) async fn place_of(galaxy: &str) -> Result<Place, Fail> {
     if galaxy.is_empty() {
         return Ok(Place::Home);
     }
@@ -468,7 +472,7 @@ async fn place_of(galaxy: &str) -> Result<Place, Fail> {
 
 /// `herdr-projects ARGS` where the place is. A far machine that does not answer is a 502 with its reason; a board
 /// that answers with an error comes back as `Out` with that error's code.
-async fn board_run(
+pub(crate) async fn board_run(
     cfg: &AppConfig,
     place: &Place,
     args: &[String],
@@ -515,7 +519,7 @@ fn read_failed(out: &Out) -> Fail {
 }
 
 /// The board's settings at a level: the galaxy's (`repo` empty) or one repository's (with the inherited ones).
-async fn read_settings(cfg: &AppConfig, place: &Place, repo: &str) -> Result<Vec<Setting>, Fail> {
+pub(crate) async fn read_settings(cfg: &AppConfig, place: &Place, repo: &str) -> Result<Vec<Setting>, Fail> {
     let mut args = vec!["show".to_string()];
     if !repo.is_empty() {
         args.push("--repo".into());
