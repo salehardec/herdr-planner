@@ -5,6 +5,7 @@ import { Navigator } from './Navigator';
 import { Focus } from './Focus';
 import { AgentSummary } from './AgentSummary';
 import { AgentScreen } from './AgentScreen';
+import { ContainerAct, ContainerLogs } from './ContainerTools';
 import { Chat } from './Chat';
 import { Todo } from './Todo';
 import { Wait } from './Wait';
@@ -51,6 +52,8 @@ export function App(): JSX.Element {
       <Focus />
       <AgentSummary />
       <AgentScreen />
+      <ContainerLogs />
+      <ContainerAct />
       <Todo />
       <Chat />
       <Kanban />

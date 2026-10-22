@@ -3726,6 +3726,115 @@ section('runners auto', async () => {
   await shot('shipyard-auto.png');
 }, { retry: false });
 
+// One container of a task: the logs window and stop / restart / delete with «было → стало».
+section('runners ctl', async () => {
+  const id = (c) => c.repeat(64);
+  const btn = (name, kind) => `([...document.querySelectorAll("[data-focus=runner] tbody tr")].find((r) => r.querySelector("code")?.innerText === ${JSON.stringify(name)})?.querySelector('[data-ctl="${kind}"]'))`;
+  const locked = (name, kind) => evalJs(`${btn(name, kind)}?.disabled`);
+  const stateOf = (name) => `plannerSnap().runners[0].containers.find((c) => c.name === ${JSON.stringify(name)})?.state`;
+  const logCalls = () => calls('ssh.jsonl').filter((c) => c.runner && /^docker logs /.test(c.inner)).length;
+  yardReset();
+  await post('/api/runner/ask', { id: 'vm-r' });
+  check('the shipyard focus opens', await openYard());
+  // Who gets which button.
+  check('a container of a task in work: logs yes; stop, restart, delete are locked on the yard’s own screen, with the reason',
+    (await locked('pg-ALP-3', 'logs')) === false && (await locked('pg-ALP-3', 'stop')) === true && (await locked('pg-ALP-3', 'restart')) === true && (await locked('pg-ALP-3', 'delete')) === true
+    && (await evalJs(`${btn('pg-ALP-3', 'stop')}?.title`)).includes('Фокуса этой задачи'));
+  check('a forgotten stopped one: logs, restart and delete; stop is locked (already stopped)',
+    (await locked('web-ALP-15', 'logs')) === false && (await locked('web-ALP-15', 'restart')) === false && (await locked('web-ALP-15', 'delete')) === false && (await locked('web-ALP-15', 'stop')) === true);
+  check('an unsure one is read but not touched', (await locked('x-ALP-99', 'logs')) === false && (await locked('x-ALP-99', 'stop')) === true && (await locked('x-ALP-99', 'restart')) === true && (await locked('x-ALP-99', 'delete')) === true);
+  await evalJs('document.querySelector("#rf-tasks")?.scrollIntoView({ block: "center" }); true');
+  await shot('shipyard-ctl.png');
+  check('a foreign container has no buttons at all', await evalJs(`!document.querySelector('[data-focus=runner] .ctl-btns[data-id="${id('d')}"]') && !document.querySelector('[data-focus=runner] .ctl-btns[data-id="${id('e')}"]')`));
+
+  // The server says no on its own: a foreign one, a task in work from the wrong screen, a running one to delete, a bad id.
+  const before = calls('ssh.jsonl').length;
+  const logs = (cid, runner = 'vm-r') => post('/api/runner/container/logs', { runner, id: cid });
+  const prev = (cid, act, task = '') => post('/api/runner/container/preview', { runner: 'vm-r', id: cid, act, task });
+  check('the logs of a foreign container are refused (409)', (await logs(id('d')))[0] === 409 && (await logs(id('e')))[0] === 409);
+  check('a made-up id is refused (400), an unknown yard (404)', (await logs('a;rm -rf x'))[0] === 400 && (await logs(id('a'), 'nowhere'))[0] === 404);
+  check('a foreign container cannot be previewed for any action (409)', (await prev(id('d'), 'stop'))[0] === 409 && (await prev(id('d'), 'delete'))[0] === 409 && (await prev(id('d'), 'restart', 'alpha/3'))[0] === 409);
+  check('a task in work answers only to its own Focus (409 from the yard’s screen and from another task)', (await prev(id('a'), 'stop'))[0] === 409 && (await prev(id('a'), 'stop', 'alpha/4'))[0] === 409 && (await prev(id('a'), 'restart', 'alpha/4'))[0] === 409);
+  check('an unsure container is not touched (409)', (await prev(id('c'), 'restart', 'alpha/3'))[0] === 409);
+  check('a running container is not deleted, a stopped one not stopped (409)', (await prev(id('a'), 'delete', 'alpha/3'))[0] === 409 && (await prev(id('b'), 'stop'))[0] === 409);
+  check('an unknown action is refused (400)', (await prev(id('b'), 'kill'))[0] === 400);
+  const [okSt, okPrev] = await prev(id('a'), 'stop', 'alpha/3');
+  check('the right task gets «было → стало» with a token', okSt === 200 && okPrev.was.state === 'running' && okPrev.now.state === 'exited' && okPrev.token.length === 64, JSON.stringify(okPrev));
+  check('without «confirm» nothing is done (400); a made-up token is refused (409)', (await post('/api/runner/container/act', { runner: 'vm-r', token: okPrev.token }))[0] === 400 && (await post('/api/runner/container/act', { runner: 'vm-r', token: 'f'.repeat(64), confirm: true }))[0] === 409);
+  check('the refusals sent nothing to the yard', yardCommands(before).length === 0, JSON.stringify(yardCommands(before)));
+
+  // The logs window.
+  const ctl = (cid, kind) => `[data-focus=runner] .ctl-btns[data-id="${cid}"] [data-ctl="${kind}"]`;
+  await click(ctl(id('a'), 'logs'));
+  check('«Логи» opens a window with the tail', await waitFor('!!document.querySelector("#ctl-logs") && (document.querySelector("#ctl-term")?.innerText || "").includes("pg-ALP-3 line")', 20000), await text('#ctl-logs'));
+  check('the command is docker logs --tail with the full id', calls('ssh.jsonl').some((c) => c.runner && c.inner === 'docker logs --tail 300 ' + id('a') + ' 2>&1'), JSON.stringify(calls('ssh.jsonl').slice(-2)));
+  check('colour codes are not shown', !(await text('#ctl-term')).includes('[31m') && (await text('#ctl-term')).includes('red'));
+  const n0 = await evalJs('document.querySelectorAll("#ctl-term .ll").length');
+  check('the window refreshes itself: new lines come without a press', await waitFor(`document.querySelectorAll("#ctl-term .ll").length > ${n0}`, 20000), String(n0));
+  // The search: only the lines with the words, the words marked.
+  await evalJs('document.querySelector("#ctl-search").focus(); true');
+  await send('Input.insertText', { text: 'error' });
+  check('the search keeps the lines with the words, any case, and marks them', await waitFor('(() => { const l = [...document.querySelectorAll("#ctl-term .ll")]; return l.length > 0 && l.every((x) => /error/i.test(x.innerText)) && !!document.querySelector("#ctl-term mark"); })()', 8000) && (await text('#ctl-count')).includes('Найдено строк'), await text('#ctl-count'));
+  await evalJs('(() => { const i = document.querySelector("#ctl-search"); i.value = "no-such-word"; i.dispatchEvent(new Event("input", { bubbles: true })); return true; })()');
+  check('a word that is not there says so', await waitFor('(document.querySelector("#ctl-term")?.innerText || "").includes("Ничего не найдено")', 5000), await text('#ctl-term'));
+  await evalJs('(() => { const i = document.querySelector("#ctl-search"); i.value = ""; i.dispatchEvent(new Event("input", { bubbles: true })); return true; })()');
+  // Auto-refresh off: no more reads; «Обновить» reads once.
+  await click('#ctl-live');
+  check('with the refresh off the window says so', await hasText('#ctl-paused', 'Автообновление выключено', 5000), await text('#ctl-paused'));
+  await sleep(300);
+  const off = logCalls();
+  await sleep(3500); // a negative: longer than the refresh period (2.5 s)
+  check('and asks the yard no more', logCalls() === off, `${off} → ${logCalls()}`);
+  await click('#ctl-refresh');
+  check('«Обновить» reads once', await waitLog(() => logCalls() === off + 1, 15000), `${off} → ${logCalls()}`);
+  await shot('shipyard-logs.png');
+  await press('Escape');
+  check('Esc closes the window', await waitFor('!document.querySelector("#ctl-logs")', 5000));
+  await click(ctl(id('a'), 'logs'));
+  await waitFor('!!document.querySelector("#ctl-term .ll")', 20000);
+  await click('[data-act="ctl-close"]');
+  await waitFor('!document.querySelector("#ctl-logs")', 5000);
+  await sleep(300);
+  const closed = logCalls();
+  await sleep(3500);
+  check('the polling stops with the window', logCalls() === closed, `${closed} → ${logCalls()}`);
+
+  // Restart, stop and delete of a forgotten container: was → now, two presses, the exact id.
+  const start = yardCalls();
+  await click(ctl(id('b'), 'restart'));
+  check('«Перезапустить» shows was → now', await waitFor('!!document.querySelector("#ctl-was")', 12000) && (await text('#ctl-was')).includes('остановлен') && (await text('#ctl-was')).includes('работает'), await text('#ctl-act'));
+  await click('#ctl-cancel');
+  check('«Отмена» sends nothing', await waitFor('!document.querySelector("#ctl-act")', 5000) && yardCommands(start).length === 0, JSON.stringify(yardCommands(start)));
+  await click(ctl(id('b'), 'restart'));
+  await waitFor('!!document.querySelector("#ctl-go")', 12000);
+  await twoPresses('#ctl-go');
+  check('the restart is docker restart of that id', await waitLog(() => yardCommands(start).includes('docker restart ' + id('b')), 30000), JSON.stringify(yardCommands(start)));
+  check('and the yard shows it running; delete is now locked', await waitFor(`${stateOf('web-ALP-15')} === "running"`, 30000) && (await locked('web-ALP-15', 'delete')) === true && (await locked('web-ALP-15', 'stop')) === false, String(await evalJs(stateOf('web-ALP-15'))));
+  await click(ctl(id('b'), 'stop'));
+  await waitFor('!!document.querySelector("#ctl-go")', 12000);
+  await twoPresses('#ctl-go');
+  check('the stop is docker stop of that id', await waitLog(() => yardCommands(start).includes('docker stop ' + id('b')), 30000), JSON.stringify(yardCommands(start)));
+  check('and the yard shows it stopped', await waitFor(`${stateOf('web-ALP-15')} === "exited"`, 30000));
+  await click(ctl(id('b'), 'delete'));
+  check('«Удалить» says it cannot be brought back', await waitFor('!!document.querySelector("#ctl-go")', 12000) && (await text('#ctl-act')).includes('вернуть его нельзя') && (await text('#ctl-was')).includes('удалён'), await text('#ctl-act'));
+  await twoPresses('#ctl-go');
+  check('the delete is docker rm -v of that id, no -f', await waitLog(() => yardCommands(start).includes('docker rm -v ' + id('b')), 30000) && yardCommands(start).every((c) => !c.includes(' -f')), JSON.stringify(yardCommands(start)));
+  check('the container leaves the yard; the others stay', await waitFor('plannerSnap().runners[0].containers.every((c) => c.name !== "web-ALP-15") && plannerSnap().runners[0].containers.some((c) => c.name === "pg-ALP-3") && plannerSnap().runners[0].containers.some((c) => c.name === "neighbor-db-1")', 30000));
+  check('the journal keeps lines about the three', await waitFor('["остановлен", "перезапущен", "удалён"].every((w) => plannerSnap().journal.some((j) => j.s === "runner" && j.text.includes(w) && j.text.includes("web-ALP-15")))', 8000), JSON.stringify((await stateApi())?.journal?.slice(0, 3)));
+  check('only these three commands went to the yard (no foreign id)', yardCommands(start).filter((c) => !c.startsWith('docker logs')).length === 3, JSON.stringify(yardCommands(start)));
+
+  // The task's own Focus: its container answers there.
+  await go('alpha/3');
+  check('the planet shows the buttons of its container', await waitFor('!!document.querySelector("#rf-task [data-ctl=stop]")', 8000));
+  check('stop and restart are open, delete is locked while it runs', (await evalJs('document.querySelector("#rf-task [data-ctl=stop]").disabled')) === false && (await evalJs('document.querySelector("#rf-task [data-ctl=restart]").disabled')) === false && (await evalJs('document.querySelector("#rf-task [data-ctl=delete]").disabled')) === true);
+  const start2 = yardCalls();
+  await click('#rf-task [data-ctl=stop]');
+  check('the card names the container and the task', await waitFor('!!document.querySelector("#ctl-go")', 12000) && (await text('#ctl-act')).includes('pg-ALP-3') && (await text('#ctl-act')).includes('ALP-3'), await text('#ctl-act'));
+  await twoPresses('#ctl-go');
+  check('docker stop of its id', await waitLog(() => yardCommands(start2).includes('docker stop ' + id('a')), 30000), JSON.stringify(yardCommands(start2)));
+  check('and the yard shows it stopped', await waitFor(`${stateOf('pg-ALP-3')} === "exited"`, 30000));
+}, { retry: false });
+
 for (const [name, fn, opts] of sections) {
   if (only.length && !only.some((o) => name.includes(o))) continue;
   let first = null;
