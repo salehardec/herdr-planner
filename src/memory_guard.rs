@@ -823,6 +823,16 @@ fn ssh_config_text(home: &std::path::Path) -> String {
     text
 }
 
+/// This machine's own name as `host:` terms: looked for from three letters, whatever the word (`pi4`, `work`).
+fn own_machine_terms(names: Vec<String>) -> Vec<String> {
+    names
+        .into_iter()
+        .map(|h| h.trim().to_string())
+        .filter(|h| h.chars().count() >= 3 && !is_ip_like(h))
+        .map(|h| format!("{HOST_TERM}{h}"))
+        .collect()
+}
+
 /// The terms of this person that must not appear in a project's memory: login and git identity, and (as `host:` terms)
 /// the names of machines they know: this one's, the `~/.ssh/config` aliases, the `/etc/hosts` names.
 pub fn own_terms() -> Vec<String> {
@@ -850,8 +860,14 @@ pub fn own_terms() -> Vec<String> {
                 .filter(|t| t.chars().count() >= 3 && !GENERIC_LOGINS.contains(&t.to_lowercase().as_str()) && seen.insert(t.to_lowercase()))
                 .collect();
             let mut hosts: Vec<String> = Vec::new();
-            hosts.extend(std::env::var("HOSTNAME").ok());
-            hosts.extend(std::fs::read_to_string("/etc/hostname").ok().map(|h| h.trim().to_string()));
+            let mut own_name: Vec<String> = Vec::new();
+            own_name.extend(std::env::var("HOSTNAME").ok());
+            own_name.extend(std::fs::read_to_string("/etc/hostname").ok().map(|h| h.trim().to_string()));
+            for term in own_machine_terms(own_name) {
+                if seen.insert(term.to_lowercase()) {
+                    out.push(term);
+                }
+            }
             hosts.extend(etc_hosts_names(&std::fs::read_to_string("/etc/hosts").unwrap_or_default()));
             hosts.extend(ssh_config_hosts(&ssh_config_text(&crate::config::home())));
             out.extend(host_terms(hosts, 4).into_iter().filter(|t| seen.insert(t.to_lowercase())));
@@ -1001,6 +1017,14 @@ mod tests {
         // runner names are short by choice: three letters are enough there
         let r = host_terms(["vm-r".to_string(), "ab".to_string(), "10.2.3.4".to_string()], 3);
         assert_eq!(r, ["host:vm-r"]);
+    }
+
+    #[test]
+    fn this_machines_own_name_is_found_from_three_letters() {
+        let terms = own_machine_terms(vec!["pi4".into(), "work".into(), "ab".into(), "10.0.0.5".into()]);
+        assert_eq!(terms, ["host:pi4", "host:work"]);
+        let f = scan("Бэкапы складываем на pi4 каждую ночь, а work — рабочая.", "text", &terms);
+        assert_eq!(f.iter().map(|f| f.text.as_str()).collect::<Vec<_>>(), ["pi4", "work"]);
     }
 
     #[test]
