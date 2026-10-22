@@ -6,7 +6,7 @@ import { chat, snap } from './store';
 import type { TurnData } from './types';
 import { t } from './i18n';
 import { makeShelf, type SavedFile } from './attach';
-import { settleRead } from './chat-unread';
+import { chatRead, settleRead } from './chat-unread';
 
 /** The files waiting in the message line. */
 const shelf = makeShelf();
@@ -47,6 +47,24 @@ export async function loadLatest(): Promise<void> {
   } catch { /* the compact tail stays */ } finally {
     update({ loadingLatest: false });
   }
+  await coverRead();
+}
+
+/**
+ * The turns that were read keep the words they were read as, and an answer may have changed since: they have to be loaded to be
+ * checked, though a page that has just started holds only the last few. Loads older turns down to the oldest of them.
+ */
+async function coverRead(): Promise<void> {
+  const rs = chatRead.value;
+  const keys = rs ? Object.keys(rs.seen).map(Number) : [];
+  if (!keys.length) return;
+  const lowest = Math.min(...keys);
+  let got = false;
+  for (let i = 0; i < 20 && chat.value.turns.length && chat.value.turns[0].n > lowest && hasOlder(); i++) {
+    if (!(await loadOlder())) break;
+    got = true;
+  }
+  if (got) settleRead();
 }
 
 /** Older turns, five at a time. Returns true when something was added. */

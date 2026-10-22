@@ -67,6 +67,15 @@ describe('settled', () => {
     expect(unreadOf(next, turns, 7)).toEqual([5, 6]);
     expect(withRead(next, [read(6, '')], 8, [...turns, turn(7)]).base).toBe(4);
   });
+  it('does not fold a read turn that is not loaded (a reloaded page holds the last few): it is checked once loaded', () => {
+    const rs = { base: 4, seen: { 5: sigOf('Сейчас посмотрю доску.') } };
+    const tail = [turn(6, '', 'board'), turn(7, '', 'board'), turn(8, '', 'board')];
+    const reloaded = settled(rs, tail, 9);
+    expect(reloaded.base).toBe(4);
+    expect(reloaded.seen[5]).toBe(sigOf('Сейчас посмотрю доску.'));
+    const loaded = settled(reloaded, [turn(5, 'beta/2 готова.'), ...tail], 9);
+    expect(unreadOf(loaded, [turn(5, 'beta/2 готова.'), ...tail], 9)).toEqual([5, 6, 7, 8]);
+  });
   it('folds the turn that is no longer the last', () => {
     expect(settled({ base: 8, seen: { 9: sigOf('answer 9') } }, [turn(9), turn(10)], 11)).toEqual({ base: 9, seen: {} });
   });

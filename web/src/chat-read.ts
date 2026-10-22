@@ -31,7 +31,8 @@ export function unreadOf(rs: ReadState | null, turns: TurnData[], total: number)
 
 /**
  * Read turns that are not the last one fold into `base`: the last may still be working, its words may change. A turn folds only
- * if its words are still the ones that were read (a turn that is not loaded is an old one: it has been settled for long).
+ * if its words are still the ones that were read; a turn that is not loaded (a reloaded page holds the last few turns) cannot be
+ * checked, so it stays where it is until the page has loaded it (see `coverRead` in chat.ts).
  */
 function fold(rs: ReadState, total: number, turns: TurnData[]): ReadState {
   const have = new Map(turns.map((x) => [x.n, x]));
@@ -39,7 +40,7 @@ function fold(rs: ReadState, total: number, turns: TurnData[]): ReadState {
   let base = rs.base;
   while (base + 1 < total - 1 && (base + 1) in seen) {
     const x = have.get(base + 1);
-    if (x && sigOf(x.a) !== seen[base + 1]) break;
+    if (!x || sigOf(x.a) !== seen[base + 1]) break;
     base++; delete seen[base];
   }
   return { base, seen };

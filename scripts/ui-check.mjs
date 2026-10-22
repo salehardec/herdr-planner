@@ -4896,6 +4896,24 @@ section('chat unread', async () => {
   check('after a reload the wide chat is open again and goes to the first unread', await waitFor(`(() => { const e = document.querySelector('#clog .turn[data-n="${first}"]'); const l = document.querySelector('#clog'); if (!e || !document.querySelector('#chat:not(.off)')) return false; const r = e.getBoundingClientRect(); const o = l.getBoundingClientRect(); return r.top >= o.top - 2 && r.top < o.top + 80; })()`, 20000), await evalJs(`JSON.stringify({ turns: [...document.querySelectorAll('#clog .turn')].map((e) => e.dataset.n), top: document.querySelector('#clog').scrollTop, header: document.querySelector('#cunread')?.innerText })`));
   await send('Page.removeScriptToEvaluateOnNewDocument', { identifier: away });
   await evalJs('delete document.hasFocus; localStorage.removeItem("herdr-planner.chatWide"); true');
+
+  // The changed answer survives a reload that holds only the last turns: three notices come after it, the page starts anew.
+  await evalJs(`localStorage.setItem(${JSON.stringify(READ)}, JSON.stringify({ base: ${next - 2}, seen: {} })); true`);
+  await fresh();
+  await toggle();
+  const kept = ask('Что с beta/2?') - 1;
+  interim(kept + 1, 'Смотрю.');
+  check('the interim line is read', await waitFor(dots(kept) + ' === 1', 10000) && await waitFor(dots(kept) + ' === 0', 10000), JSON.stringify(await stored()));
+  await focus(false);
+  toolDone(kept + 1); final(kept + 1, 'beta/2 готова, жду решения.');
+  check('the answer is lit', await waitFor(dots(kept) + ' === 1', 10000));
+  for (let i = 0; i < 3; i++) ask(`[Уведомление доски] beta/${i + 3} готова`);
+  check('and the three notices with it: 4', await hasText('#bchat-n', '4', 10000), await text('#bchat'));
+  await toggle();
+  const away2 = (await send('Page.addScriptToEvaluateOnNewDocument', { source: 'document.hasFocus = () => false;' })).result.identifier;
+  await navigate(base + '/?noauto&nocoach&bloom=0');
+  check('after a reload that holds the last turns only, the answer is still counted: 4', await hasText('#bchat-n', '4', 15000), await text('#bchat') + JSON.stringify(await stored()));
+  await send('Page.removeScriptToEvaluateOnNewDocument', { identifier: away2 });
 }, { retry: false });
 
 for (const [name, fn, opts] of sections) {
