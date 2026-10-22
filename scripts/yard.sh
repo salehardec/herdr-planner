@@ -261,6 +261,34 @@ run_logged() {
   return "${rc:-1}"
 }
 
+# The same in the background: the page run holds the lock until its folder is fetched, and the host must copy while it
+# still holds it (set STREAM_PID; the exit code lands in <log>.rc, tee's own status says nothing).
+start_logged() {
+  log=$1
+  shift
+  rcfile="$log.rc"
+  rm -f "$rcfile"
+  { "$@"; printf '%s' "$?" >"$rcfile"; } 2>&1 | tee "$log" &
+  STREAM_PID=$!
+}
+
+# Waits (one docker exec) for the page script's ready marker. The page script keeps the lock until this host leaves the
+# fetched marker, so no run waiting behind it can sweep the folder before the copy. A free lock after the startup grace
+# means the run ended without pages (a failure before them).
+page_wait_fetch() { # run id
+  run=$1
+  dir="/work/out.$run"
+  if ! $D exec "$NAME" sh -c "i=0; while :; do [ -e '$dir.ready' ] && exit 0; i=\$((i+1)); if [ \$i -gt 20 ] && flock -n /work/.lock -c true 2>/dev/null; then exit 1; fi; sleep 0.25; done"; then
+    return 1
+  fi
+  rm -rf "$LOG_DIR/out"
+  if $D cp "$NAME:$dir" "$LOG_DIR/out" >/dev/null; then
+    say "снимки и тексты частей: $LOG_DIR/out"
+  fi
+  $D exec "$NAME" touch "$dir.fetched" >/dev/null 2>&1 || true
+  return 0
+}
+
 # slot: 1 for a full page run (pages, check), 0 for everything else; progress: 1 when the command reports «k/N parts».
 # The progress file lives in the container under the run's own name and is passed to the whole exec — the slot loop inside
 # must see it too, or a run waiting for a slot says nothing.
@@ -277,15 +305,32 @@ run_here() {
     PG=$!
   fi
   set +e
-  if [ "$slot" = 1 ]; then
-    run_logged "$log" "$D" exec -i -w /work/src -e "HERDR_PROJECTS_PROGRESS=$prog" \
-      -e "YARD_SLOTS=$SLOTS" -e YARD_SLOT_USE=1 "$NAME" \
-      flock /work/.lock sh -c "$INNER" yard "$@"
+  if [ "$progress" = 1 ]; then
+    # The result folder is copied while the run still holds the lock; the run's own exit code comes from its .rc file.
+    if [ "$slot" = 1 ]; then
+      start_logged "$log" "$D" exec -i -w /work/src -e "HERDR_PROJECTS_PROGRESS=$prog" \
+        -e "YARD_SLOTS=$SLOTS" -e YARD_SLOT_USE=1 "$NAME" \
+        flock /work/.lock sh -c "$INNER" yard "$@"
+    else
+      start_logged "$log" "$D" exec -i -w /work/src -e "HERDR_PROJECTS_PROGRESS=$prog" -e YARD_SLOT_USE=0 "$NAME" \
+        flock /work/.lock sh -c "$INNER" yard "$@"
+    fi
+    execpid=$STREAM_PID
+    page_wait_fetch "$RUN_ID"
+    wait "$execpid"
+    rc=$(cat "$log.rc" 2>/dev/null || true)
+    rm -f "$log.rc"
   else
-    run_logged "$log" "$D" exec -i -w /work/src -e "HERDR_PROJECTS_PROGRESS=$prog" -e YARD_SLOT_USE=0 "$NAME" \
-      flock /work/.lock sh -c "$INNER" yard "$@"
+    if [ "$slot" = 1 ]; then
+      run_logged "$log" "$D" exec -i -w /work/src -e "HERDR_PROJECTS_PROGRESS=$prog" \
+        -e "YARD_SLOTS=$SLOTS" -e YARD_SLOT_USE=1 "$NAME" \
+        flock /work/.lock sh -c "$INNER" yard "$@"
+    else
+      run_logged "$log" "$D" exec -i -w /work/src -e "HERDR_PROJECTS_PROGRESS=$prog" -e YARD_SLOT_USE=0 "$NAME" \
+        flock /work/.lock sh -c "$INNER" yard "$@"
+    fi
+    rc=$?
   fi
-  rc=$?
   set -e
   if [ -n "$PG" ]; then
     kill "$PG" 2>/dev/null || true
@@ -350,16 +395,23 @@ mkdir -p /work/out
 $build
 if [ "\$rc" -eq 0 ]; then sh scripts/run-checks.sh /work/out/shots; rc=\$?; fi
 mv /work/out "/work/out.$2" 2>/dev/null || true
+# The host copies this folder while our lock is still held: it waits for .ready and leaves .fetched. A run that starts
+# later waits for the lock, so it cannot sweep the folder from under the copy.
+if [ -d "/work/out.$2" ]; then
+  : > "/work/out.$2.ready"
+  n=0
+  while [ ! -e "/work/out.$2.fetched" ] && [ "\$n" -lt 300 ]; do sleep 0.2; n=\$((n+1)); done
+  rm -rf "/work/out.$2" "/work/out.$2.ready" "/work/out.$2.fetched"
+fi
 exit "\$rc"
 PAGE_END
 }
 
-page_command() { # slot, logname, progress, then the argv
+page_command() { # slot, logname, progress, then the argv (the fetch happens while the run still holds the lock)
   set +e
   run_here "$@"
   rc=$?
   set -e
-  fetch_out "$RUN_ID" || true
   return "$rc"
 }
 

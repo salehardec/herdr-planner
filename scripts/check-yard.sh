@@ -183,7 +183,10 @@ expect "и старые папки прогонов убираются там ж
 after "очистка /work/out идёт только под замком" "flock /work/.lock" "rm -rf /work/out" "$ST/docker.log"
 refuse "нет отдельной очистки /work/out вне замка" "sh -c rm -rf /work/out && mkdir" "$ST/docker.log"
 expect "результат прогона уезжает в свою папку" "mv /work/out \"/work/out\." "$ST/docker.log"
+expect "прогон держит замок, пока папку не заберут: ждёт .fetched" "while \[ ! -e \"/work/out\..*\.fetched\"" "$ST/docker.log"
 expect "снимки забираются из своей папки, а не из общей" "cp yard-PLN-7:/work/out\." "$ST/docker.log"
+after "ждём готовности папки раньше копирования" ".ready" "cp yard-PLN-7:/work/out." "$ST/docker.log"
+after "копия — раньше, чем отпускаем прогон" "cp yard-PLN-7:/work/out." "touch /work/out." "$ST/docker.log"
 
 fresh
 HERDR_PROJECTS_PROGRESS="$T/progress2"
