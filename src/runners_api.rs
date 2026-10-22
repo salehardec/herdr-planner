@@ -1,10 +1,11 @@
 //! The shipyards' HTTP calls: the list, one probe (with the agents' own way in), adding and removing a yard, the
-//! agents' block, «было → стало» cleaning, `docker system df` and the terminal.
+//! agents' block, «было → стало» cleaning, the disk count and its cleaning, the auto-clean switch and the terminal.
 
 use crate::app::{self, Shared};
 use crate::config::{now_ms, AppConfig};
 use crate::ssh::{self, MachineRef};
 use crate::runners::{self, Class, CleanPlan, Runner, RunnerState, RunnersFile};
+use crate::{runners_auto, runners_disk};
 use crate::server::{client_is_local, same_origin};
 use crate::station;
 use axum::extract::{ConnectInfo, State};
@@ -272,6 +273,7 @@ pub async fn runner_probe(State(app): State<Shared>, headers: HeaderMap, Json(bo
         note: String::new(),
         added_at_ms: 0,
         capacity: None,
+        auto: Default::default(),
     };
     let local = local_checks(&app.cfg, &target).await;
     let state = runners::probe(&app.cfg, &r).await;
@@ -396,6 +398,7 @@ pub async fn runner_add(State(app): State<Shared>, headers: HeaderMap, Json(body
         note: body.note,
         added_at_ms: now_ms(),
         capacity: None,
+        auto: Default::default(),
     };
     if file.runners.is_empty() || body.default {
         file.default = label.clone();
@@ -715,11 +718,11 @@ pub struct CleanBody {
     confirm: Option<bool>,
 }
 
-fn safe_id(s: &str) -> bool {
+pub fn safe_id(s: &str) -> bool {
     s.len() == 64 && s.chars().all(|c| c.is_ascii_hexdigit())
 }
 
-fn safe_volume(s: &str) -> bool {
+pub fn safe_volume(s: &str) -> bool {
     !s.is_empty()
         && s.len() <= 128
         && s.chars().next().is_some_and(|c| c.is_ascii_alphanumeric())
@@ -892,22 +895,38 @@ pub async fn runner_clean(State(app): State<Shared>, headers: HeaderMap, Json(bo
     .into_response()
 }
 
-/* ───────── place, and the terminal ───────── */
+/* ───────── the disk: counting and cleaning ───────── */
 
 #[derive(Deserialize)]
-pub struct DfBody {
+pub struct DiskBody {
     id: String,
 }
 
-/// `POST /api/runner/df`: `docker system df`, cached 30 minutes (it is the heavy one: 12 s on a cold disk).
-pub async fn runner_df(State(app): State<Shared>, headers: HeaderMap, Json(body): Json<DfBody>) -> Response {
+/// Counts a card from a fresh read of the yard's docker and keeps it under a token for the cleaning call.
+async fn counted(app: &Shared, r: &Runner) -> Result<runners_disk::Report, String> {
+    let disk = state_now(app, &r.id)
+        .await
+        .map(|s| (s.host.disk_size, s.host.disk_avail))
+        .unwrap_or((0, 0));
+    let index = {
+        let snap = app.snapshot.read().await;
+        index_of(app, &snap)
+    };
+    let mut report = runners_disk::measure(&app.cfg, r, &index, disk).await?;
+    let mut bytes = [0u8; 32];
+    rand::thread_rng().fill_bytes(&mut bytes);
+    report.token = bytes.iter().map(|b| format!("{b:02x}")).collect();
+    report.expires_ms = now_ms() + runners_disk::PLAN_TTL_MS;
+    let mut plans = app.runner_disk_plans.lock().await;
+    plans.retain(|_, p| (p.at.elapsed().as_millis() as u64) < runners_disk::PLAN_TTL_MS);
+    plans.insert(report.token.clone(), runners_disk::Plan { report: report.clone(), at: std::time::Instant::now() });
+    Ok(report)
+}
+
+/// `POST /api/runner/disk`: «Посчитать место». Read-only on the yard; nothing is removed.
+pub async fn disk_measure(State(app): State<Shared>, headers: HeaderMap, Json(body): Json<DiskBody>) -> Response {
     if !same_origin(&headers) {
         return fail(403, "cross-origin request refused");
-    }
-    if let Some((at, v)) = app.runner_df.lock().await.get(&body.id).cloned() {
-        if now_ms().saturating_sub(at) < 30 * 60 * 1000 {
-            return Json(v).into_response();
-        }
     }
     let file = match file_of(&app) {
         Ok(f) => f,
@@ -916,14 +935,274 @@ pub async fn runner_df(State(app): State<Shared>, headers: HeaderMap, Json(body)
     let Some(r) = file.get(&body.id).cloned() else {
         return fail(404, "такой верфи нет в списке");
     };
-    match runners::disk_use(&app.cfg, &r).await {
-        Ok(v) => {
-            app.runner_df.lock().await.insert(body.id, (now_ms(), v.clone()));
-            Json(v).into_response()
-        }
+    match counted(&app, &r).await {
+        Ok(report) => Json(report).into_response(),
         Err(e) => fail(502, e),
     }
 }
+
+#[derive(Deserialize)]
+pub struct DiskCleanBody {
+    runner: String,
+    token: String,
+    #[serde(default)]
+    images: bool,
+    #[serde(default)]
+    cache: bool,
+    #[serde(default)]
+    stopped: Vec<String>,
+    #[serde(default)]
+    builders: Vec<String>,
+    #[serde(default)]
+    volumes: Vec<String>,
+    confirm: Option<bool>,
+}
+
+/// `POST /api/runner/disk/clean`: runs the ticked kinds of a counted card, and only those. Every tick must be an item
+/// of the card the human saw, and of a count made again just now.
+pub async fn disk_clean(State(app): State<Shared>, headers: HeaderMap, Json(body): Json<DiskCleanBody>) -> Response {
+    if !same_origin(&headers) {
+        return fail(403, "cross-origin request refused");
+    }
+    if body.confirm != Some(true) {
+        return fail(400, "уборка требует подтверждения");
+    }
+    let plan = {
+        let mut plans = app.runner_disk_plans.lock().await;
+        let Some(p) = plans.remove(&body.token) else {
+            return fail(409, "подсчёт не найден или истёк: посчитайте место заново");
+        };
+        p
+    };
+    if plan.at.elapsed().as_millis() as u64 >= runners_disk::PLAN_TTL_MS {
+        return fail(409, "подсчёт истёк: посчитайте место заново");
+    }
+    if plan.report.runner != body.runner {
+        return fail(409, "подсчёт принадлежит другой верфи");
+    }
+    let sel = runners_disk::Selection {
+        images: body.images,
+        cache: body.cache,
+        stopped: body.stopped,
+        builders: body.builders,
+        volumes: body.volumes,
+    };
+    if sel.is_empty() {
+        return fail(400, "ничего не выбрано");
+    }
+    if let Err(e) = runners_disk::commands(&plan.report, &sel) {
+        return fail(409, e);
+    }
+    let file = match file_of(&app) {
+        Ok(f) => f,
+        Err(r) => return r,
+    };
+    let Some(r) = file.get(&body.runner).cloned() else {
+        return fail(404, "такой верфи нет в списке");
+    };
+    let state = match state_now(&app, &body.runner).await {
+        Some(s) => s,
+        None => return fail(404, "такой верфи нет в списке"),
+    };
+    // The count again, right before the first command: a builder started or a container restarted since the card was
+    // shown is no longer on the list.
+    let index = {
+        let snap = app.snapshot.read().await;
+        index_of(&app, &snap)
+    };
+    let disk = (state.host.disk_size, state.host.disk_avail);
+    let fresh = match runners_disk::measure(&app.cfg, &r, &index, disk).await {
+        Ok(f) => f,
+        Err(e) => return fail(502, e),
+    };
+    let cmds = match runners_disk::commands(&fresh, &sel) {
+        Ok(c) => c,
+        Err(e) => return fail(409, e),
+    };
+    let steps = runners_disk::execute(&app.cfg, &r, &cmds).await;
+    // Read the yard again for the page, then count anew for «стало».
+    let fresh_state = runners::probe(&app.cfg, &r).await;
+    let kept = runners::keep_last(Some(&state), fresh_state);
+    if let Ok(json) = serde_json::to_string(&kept) {
+        app.db.runner_put(&kept.id, &json, kept.ok, kept.why.as_ref().map(|w| w.line.as_str()).unwrap_or(""));
+    }
+    {
+        let mut list = app.runners.lock().await;
+        list.retain(|s| s.id != kept.id);
+        list.push(kept.clone());
+        list.sort_by(|a, b| a.id.cmp(&b.id));
+    }
+    let done = |kind: &str| -> usize {
+        steps.iter().zip(&cmds).filter(|(s, c)| s.ok && c.kind == kind).map(|(_, c)| c.count).sum()
+    };
+    let ran = |kind: &str| steps.iter().zip(&cmds).any(|(s, c)| s.ok && c.kind == kind);
+    let pick = |part: &runners_disk::Part, keys: &[String]| -> u64 {
+        part.items.iter().filter(|i| keys.contains(&i.key)).map(|i| i.bytes).sum()
+    };
+    let mut bytes = pick(&plan.report.stopped, &sel.stopped)
+        + pick(&plan.report.builders, &sel.builders)
+        + pick(&plan.report.volumes, &sel.volumes);
+    if ran("images") {
+        bytes += plan.report.images.bytes;
+    }
+    if ran("cache") {
+        bytes += plan.report.cache.bytes;
+    }
+    let mut parts: Vec<String> = Vec::new();
+    for (kind, word) in [("stopped", "контейнеров"), ("builders", "сборщиков и их данных"), ("volumes", "томов")] {
+        if done(kind) > 0 {
+            parts.push(format!("{word} {}", done(kind)));
+        }
+    }
+    if ran("images") {
+        parts.push("образы без контейнеров".into());
+    }
+    if ran("cache") {
+        parts.push("кэш сборки".into());
+    }
+    let failed: Vec<&runners_disk::Step> = steps.iter().filter(|s| !s.ok).collect();
+    let mut note = format!(
+        "уборка диска на верфи {}: {} (≈ {:.1} ГБ)",
+        r.id,
+        if parts.is_empty() { "ничего не убрано".to_string() } else { parts.join(", ") },
+        bytes as f64 / 1e9
+    );
+    if let Some(f) = failed.first() {
+        note.push_str(&format!("; не вышло: {}", f.error.lines().next().unwrap_or("")));
+    }
+    app::journal_note(&app, &format!("runner/{}", r.id), "runner", &note).await;
+    app::rebuild_runners(&app).await;
+    app::publish(&app).await;
+    app::index_snapshot(&app).await;
+    let after = counted(&app, &r).await.ok();
+    Json(json!({
+        "ok": failed.is_empty(),
+        "steps": steps,
+        "bytes": bytes,
+        "after": after,
+    }))
+    .into_response()
+}
+
+#[derive(Deserialize)]
+pub struct AutoBody {
+    id: String,
+    #[serde(default)]
+    enabled: Option<bool>,
+    #[serde(default)]
+    hours: Option<u64>,
+    confirm: Option<bool>,
+}
+
+#[derive(Deserialize)]
+pub struct AutoPreviewBody {
+    id: String,
+    #[serde(default)]
+    hours: Option<u64>,
+}
+
+/// `POST /api/runner/auto/preview`: what the auto-clean would remove right now with these hours (the saved ones when
+/// none are given). Nothing is removed; the page shows it before switching on or shortening the time.
+pub async fn runner_auto_preview(State(app): State<Shared>, headers: HeaderMap, Json(body): Json<AutoPreviewBody>) -> Response {
+    if !same_origin(&headers) {
+        return fail(403, "cross-origin request refused");
+    }
+    let file = match file_of(&app) {
+        Ok(f) => f,
+        Err(r) => return r,
+    };
+    let Some(r) = file.get(&body.id) else {
+        return fail(404, "такой верфи нет в списке");
+    };
+    let hours = body.hours.unwrap_or(r.auto.hours);
+    if hours == 0 || hours > runners_auto::MAX_HOURS {
+        return fail(422, format!("время автоуборки: от 1 до {} часов", runners_auto::MAX_HOURS));
+    }
+    let Some(state) = state_now(&app, &body.id).await else {
+        return fail(404, "такой верфи нет в списке");
+    };
+    let index = {
+        let snap = app.snapshot.read().await;
+        index_of(&app, &snap)
+    };
+    let plan = runners_auto::plan_of(&state, &index, hours, now_ms());
+    let cap = |v: Vec<String>| -> Vec<String> { v.into_iter().take(30).collect() };
+    Json(json!({
+        "ok": state.ok,
+        "hours": hours,
+        "containers": cap(plan.containers.iter().map(|(_, name)| name.clone()).collect()),
+        "networks": cap(plan.networks.clone()),
+        "volumes": cap(plan.volumes.clone()),
+        "counts": {"containers": plan.containers.len(), "networks": plan.networks.len(), "volumes": plan.volumes.len()},
+    }))
+    .into_response()
+}
+
+/// `POST /api/runner/auto`: the switch and the time of the auto-clean. Switching on is the consent to remove what the
+/// manual card would offer, without asking each time.
+pub async fn runner_auto(State(app): State<Shared>, headers: HeaderMap, Json(body): Json<AutoBody>) -> Response {
+    if !same_origin(&headers) {
+        return fail(403, "cross-origin request refused");
+    }
+    if body.confirm != Some(true) {
+        return fail(400, "изменение требует подтверждения");
+    }
+    if body.enabled.is_none() && body.hours.is_none() {
+        return fail(400, "нечего менять");
+    }
+    if body.hours.is_some_and(|h| h == 0 || h > runners_auto::MAX_HOURS) {
+        return fail(422, format!("время автоуборки: от 1 до {} часов", runners_auto::MAX_HOURS));
+    }
+    let mut file = match file_of(&app) {
+        Ok(f) => f,
+        Err(r) => return r,
+    };
+    let Some(entry) = file.runners.iter_mut().find(|r| r.id == body.id) else {
+        return fail(404, "такой верфи нет в списке");
+    };
+    if let Some(on) = body.enabled {
+        entry.auto.enabled = on;
+    }
+    if let Some(h) = body.hours {
+        entry.auto.hours = h;
+    }
+    let auto = entry.auto.clone();
+    file.updated_at_ms = now_ms();
+    if let Err(e) = runners::save(&app.cfg.runners_file(), &file) {
+        return fail(422, e);
+    }
+    app::journal_note(
+        &app,
+        &format!("runner/{}", body.id),
+        "runner",
+        &format!(
+            "автоуборка на верфи {}: {}, через {} ч",
+            body.id,
+            if auto.enabled { "включена" } else { "выключена" },
+            auto.hours
+        ),
+    )
+    .await;
+    {
+        let mut tried = app.runner_auto_try.lock().await;
+        tried.remove(&body.id);
+    }
+    app::rebuild_runners(&app).await;
+    app::publish(&app).await;
+    if auto.enabled {
+        // Do not wait for the next poll.
+        let a = app.clone();
+        let r = file.get(&body.id).cloned();
+        tokio::spawn(async move {
+            if let Some(r) = r {
+                runners_auto::run_one(&a, &r).await;
+            }
+        });
+    }
+    Json(json!({"ok": true, "auto": auto})).into_response()
+}
+
+/* ───────── the terminal ───────── */
 
 #[derive(Deserialize)]
 pub struct RunnerBody {

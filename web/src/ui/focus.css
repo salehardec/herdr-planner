@@ -94,3 +94,19 @@
 .rf-check{display:flex!important;align-items:center;gap:0.375rem;color:var(--pl-dim)!important}
 .rf-task{margin-top:0.5rem}
 .lb.runner{color:var(--pl-accent-ink)}
+.rf-disk .dk-kind{margin:0.5rem 0;padding-bottom:0.375rem;border-bottom:1px solid var(--pl-line)}
+.rf-disk .dk-kind label{display:flex;align-items:baseline;gap:0.375rem;font-size:0.75rem;cursor:pointer}
+.rf-disk .dk-sum{color:var(--pl-faint)}
+.rf-disk .dk-items{margin:0.25rem 0 0.125rem 1.25rem;width:calc(100% - 1.25rem)}
+.rf-disk .dk-items td:last-child{text-align:right;white-space:nowrap}
+.rf-disk .dk-vols .hint.warn{margin:0.25rem 0}
+.rf-disk details{margin-top:0.25rem}
+.rf-disk summary{cursor:pointer;color:var(--pl-dim);font-size:0.75rem}
+.dk-steps{list-style:none;margin:0.25rem 0 0.5rem;padding:0;font-size:0.7188rem}
+.dk-steps li{padding:0.125rem 0}.dk-steps .bad{color:var(--pl-danger)}.dk-steps .w-ok{color:var(--c-green)}
+.rf-auto{margin:0.5rem 0;padding:0.5rem 0.625rem;border:1px solid var(--pl-line);border-radius:0.375rem;background:var(--pl-tile)}
+.rf-auto h3{margin:0 0 0.25rem;display:flex;align-items:center;gap:0.5rem}
+.rf-auto-time{display:flex;align-items:center;flex-wrap:wrap;gap:0.375rem;margin:0.375rem 0;font-size:0.75rem;color:var(--pl-dim)}
+.rf-auto-time .field{width:4.5rem}
+.rf-auto-count{font-size:0.75rem;color:var(--pl-accent-ink);margin:0.375rem 0 0}
+.rf-auto-preview{margin:0.375rem 0;font-size:0.75rem}.rf-auto-preview ul{margin:0.25rem 0 0.25rem 1rem;padding:0}.rf-auto-preview li{margin:0.0625rem 0}

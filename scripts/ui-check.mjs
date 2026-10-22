@@ -3908,6 +3908,116 @@ for (const [w, h, scales] of [[1280, 800, [100, 125]], [1920, 1080, [100, 150]],
   section(`layout ${w} chat`, () => chatCenter(w, h, scales), { retry: true });
 }
 
+// ── the shipyard's disk cleaning and auto-clean (PLN-40) ────────────────────
+// The stand-in yard (state/runner.json): `ids`, `networks`, `volumes`, `builders` are what has been removed since;
+// `extra` is what a check adds to the yard. Writing it anew brings the yard back to the fixture.
+const yardFile = () => join(fixture, 'state', 'runner.json');
+const yardReset = (extra = {}) => writeFileSync(yardFile(), JSON.stringify({ ids: [], networks: [], volumes: [], builders: [], extra }));
+const yardCommands = (since) => calls('ssh.jsonl').slice(since).filter((c) => c.runner && /^docker /.test(c.inner)).map((c) => c.inner);
+const yardCalls = () => calls('ssh.jsonl').length;
+const openYard = async () => {
+  await resetUi();
+  await evalJs('planner.goHome()');
+  await waitFor('world.debug().flight === "idle"', 8000);
+  await click('#nav [data-nav="run|vm-r"]');
+  return waitFor('!!document.querySelector("[data-focus=runner]") && !!document.querySelector("#rf-auto")', 15000);
+};
+const tickOf = (sel) => evalJs(`document.querySelector(${JSON.stringify(sel)})?.checked`);
+const clickBox = (sel) => evalJs(`(() => { const i = document.querySelector(${JSON.stringify(sel)}); if (!i) return false; i.click(); return true; })()`);
+
+section('runners disk', async () => {
+  yardReset();
+  await post('/api/runner/ask', { id: 'vm-r' });
+  check('the shipyard focus opens', await openYard());
+  await click('#rf-disk-open');
+  check('«Посчитать место» builds the card: images, cache, stopped, builders, volumes', await waitFor('!!document.querySelector("#rf-disk [data-part=volumes]") && !!document.querySelector("#rf-disk [data-part=builders] tr")', 30000), await text('#rf-disk'));
+  const part = (n) => text(`#rf-disk [data-part=${n}]`);
+  check('images without containers: 2 of 4, docker’s own size', (await part('images')).includes('2 из 4 образов') && (await part('images')).includes('2.0 ГБ'), await part('images'));
+  check('build cache is counted', (await part('cache')).includes('2.4 ГБ'), await part('cache'));
+  check('stopped: the forgotten one is ticked, the unsure one is not', (await tickOf('#rf-disk tr[data-key="' + 'b'.repeat(64) + '"] input')) === true && (await tickOf('#rf-disk tr[data-key="' + 'c'.repeat(64) + '"] input')) === false && (await part('stopped')).includes('web-ALP-15') && (await part('stopped')).includes('x-ALP-99') && !(await part('stopped')).includes('neighbor-db-1'), await part('stopped'));
+  check('builders: all under the yard’s buildx_* mask, so none is ticked beforehand; the running one is locked', (await tickOf('#rf-disk tr[data-key="b:old"] input')) === false && (await tickOf('#rf-disk tr[data-key="s:buildx_buildkit_gone0_state"] input')) === false && (await tickOf('#rf-disk tr[data-key="b:x"] input')) === false && (await evalJs('document.querySelector("#rf-disk tr[data-key=\\"b:x\\"] input").disabled')) === true && (await part('builders')).includes('запущен — не трогаю'), await part('builders'));
+  check('volumes: unticked, a warning above them, the neighbour’s used ones are not offered', (await evalJs('document.querySelector("#dk-vol-warn")?.innerText || ""')).includes('Осторожно') && (await tickOf('#rf-disk tr[data-key="v:chroma_data"] input')) === false && (await evalJs('!document.querySelector("#rf-disk tr[data-key=\\"v:neighbor_data\\"]") && !document.querySelector("#rf-disk tr[data-key=\\"v:work-3_pgdata\\"]")')), await part('volumes'));
+  check('the card says how much disk is free now and after', (await text('#dk-was')).includes('Свободно на диске: 300 ГБ →'), await text('#dk-was'));
+  const was0 = await text('#dk-was');
+  await clickBox('#rf-disk input[data-kind=cache]');
+  check('unticking the cache changes «стало» at once', await waitFor(`document.querySelector("#dk-was")?.innerText !== ${JSON.stringify(was0)}`, 5000), await text('#dk-was'));
+  await clickBox('#rf-disk tr[data-key="b:old"] input');
+  // The server never takes a tick that is not in the card: a running builder, a container of the neighbour, a bogus name.
+  const [, m1] = await post('/api/runner/disk', { id: 'vm-r' });
+  const refuse = async (body) => { const [, m] = await post('/api/runner/disk', { id: 'vm-r' }); const [st] = await post('/api/runner/disk/clean', { runner: 'vm-r', token: m.token, confirm: true, ...body }); return st; };
+  const before = yardCalls();
+  check('a running builder is refused (409)', (await refuse({ builders: ['b:x'] })) === 409);
+  check('a foreign container is refused (409)', (await refuse({ stopped: ['d'.repeat(64)] })) === 409);
+  check('a made-up volume name is refused (409)', (await refuse({ volumes: ['v:a;rm -rf x'] })) === 409);
+  check('without «confirm» nothing is done (400)', (await post('/api/runner/disk/clean', { runner: 'vm-r', token: m1.token, builders: ['b:old'] }))[0] === 400);
+  check('nothing was sent to the yard by the refusals', yardCommands(before).length === 0, JSON.stringify(yardCommands(before)));
+  // The real thing: images, the forgotten container and the stopped builder; not the cache, the orphan, the volumes.
+  const start = yardCalls();
+  await twoPresses('#dk-go');
+  check('only the ticked kinds are run, in order: the container (no -f), the builder, the images', await waitLog(() => yardCommands(start).length >= 3, 40000) && JSON.stringify(yardCommands(start)) === JSON.stringify(['docker rm -v ' + 'b'.repeat(64), 'docker buildx rm old', 'docker image prune -a -f']), JSON.stringify(yardCommands(start)));
+  check('the card shows the steps, then counts again: no images left, the old builder gone, the orphan still there', await waitFor('document.querySelectorAll("#dk-steps li").length === 3 && !document.querySelector("#rf-disk tr[data-key=\\"b:old\\"]") && !!document.querySelector("#rf-disk tr[data-key=\\"s:buildx_buildkit_gone0_state\\"]") && document.querySelector("#rf-disk [data-part=images]").innerText.includes("ничего лишнего")', 40000), await text('#rf-disk'));
+  check('the journal keeps a line about the disk cleaning', await waitFor('plannerSnap().journal.some((j) => j.s === "runner" && j.text.includes("уборка диска"))', 8000), JSON.stringify((await stateApi())?.journal?.slice(0, 2)));
+  check('the forgotten container left the yard, the unsure and the foreign ones stay', await waitFor('plannerSnap().runners[0].containers.every((c) => c.name !== "web-ALP-15") && plannerSnap().runners[0].containers.some((c) => c.name === "x-ALP-99") && plannerSnap().runners[0].containers.some((c) => c.name === "buildx_buildkit_x0")', 20000));
+  // A volume, ticked by hand: `docker volume rm` of that name and nothing else.
+  await waitFor('!!document.querySelector("#rf-disk tr[data-key=\\"v:chroma_data\\"]") || !!document.querySelector("#rf-disk details")', 5000);
+  await evalJs('(() => { const d = document.querySelector("#rf-disk details"); if (d) d.open = true; return true; })()');
+  await clickBox('#rf-disk input[data-kind=cache]');
+  await clickBox('#rf-disk tr[data-key="v:chroma_data"] input');
+  const start2 = yardCalls();
+  await twoPresses('#dk-go');
+  check('a ticked volume goes by its exact name, alone', await waitLog(() => yardCommands(start2).length >= 1, 40000) && JSON.stringify(yardCommands(start2)) === JSON.stringify(['docker volume rm chroma_data']), JSON.stringify(yardCommands(start2)));
+  await evalJs('document.querySelector("#rf-disk")?.scrollIntoView({ block: "start" }); true');
+  await shot('shipyard-disk.png');
+}, { retry: false });
+
+section('runners auto', async () => {
+  const id = (c) => c.repeat(64);
+  const utc9d = new Date(Date.now() - 9 * 24 * 3600 * 1000).toISOString().replace('T', ' ').slice(0, 19) + ' +0000 UTC';
+  const labelled = (t) => 'herdr.task=' + t;
+  yardReset({
+    containers: [
+      { id: id('7'), name: 'job-ALP-13', image: 'alpine:3', state: 'exited', status: 'Exited (0) 8 days ago', created: utc9d, labels: labelled('ALP-13'), ports: '', networks: 'job-13_default', mounts: '', size: '1MB', cpu: '0.00%', mem: '0B / 0B', pids: '0' },
+    ],
+    networks: [
+      { id: id('8'), name: 'job-13_default', driver: 'bridge', labels: labelled('ALP-13') },
+      { id: id('9'), name: 'job-3_net', driver: 'bridge', labels: labelled('ALP-3') },
+      { id: id('5'), name: 'plain_net', driver: 'bridge' },
+    ],
+    volumes: [
+      { name: 'job-13-data', driver: 'local', size: '1MB', labels: labelled('ALP-13'), links: 0 },
+      { name: 'vol-3', driver: 'local', size: '1MB', labels: labelled('ALP-3'), links: 1 },
+      { name: 'stray-vol', driver: 'local', size: '1MB', labels: '', links: 0 },
+    ],
+  });
+  await post('/api/runner/ask', { id: 'vm-r' });
+  check('the shipyard focus has the auto-clean block, off, six hours, nothing removed yet', await openYard() && (await evalJs('document.querySelector("#rf-auto").dataset.auto')) === 'off' && (await evalJs('document.querySelector("#rf-auto-hours").value')) === '6' && (await text('#rf-auto-count')).includes('контейнеров 0 · сетей 0 · томов 0') && (await text('#rf-auto-count')).includes('пока ничего'), await text('#rf-auto'));
+  const start = yardCalls();
+  await click('#rf-auto-toggle');
+  check('the first press lists what would go at once (the task finished with no exitedAt, only its pane gone) and sends nothing', await waitFor('(document.querySelector("#rf-auto-preview")?.innerText || "").includes("job-ALP-13") && document.querySelector("#rf-auto-preview").innerText.includes("job-13_default") && document.querySelector("#rf-auto-preview").innerText.includes("job-13-data") && !document.querySelector("#rf-auto-preview").innerText.includes("web-ALP-15")', 8000) && yardCommands(start).length === 0, await text('#rf-auto-preview'));
+  await secondPress('#rf-auto-toggle');
+  check('switching on is saved in the list file (six hours by default)', await waitLog(() => { try { const r = JSON.parse(readFileSync(join(fixture, 'settings', 'runners.json'), 'utf8')).runners[0]; return r.auto?.enabled === true && r.auto?.hours === 6; } catch { return false; } }, 10000), readFileSync(join(fixture, 'settings', 'runners.json'), 'utf8').slice(0, 400));
+  const want = ['docker rm -f -v ' + id('7'), 'docker network rm job-13_default', 'docker volume rm job-13-data'];
+  check('what the finished task ALP-13 left goes by itself: its container, its labelled network and volume, and only those', await waitLog(() => yardCommands(start).length >= 3, 40000) && JSON.stringify(yardCommands(start)) === JSON.stringify(want), JSON.stringify(yardCommands(start)));
+  check('the counter and the switch show it', await waitFor('document.querySelector("#rf-auto").dataset.auto === "on" && document.querySelector("#rf-auto-count")?.innerText.includes("контейнеров 1 · сетей 1 · томов 1")', 15000), await text('#rf-auto'));
+  check('the journal keeps a line about the automatic cleaning', await waitFor('plannerSnap().journal.some((j) => j.s === "runner" && j.text.includes("убрано автоматически") && j.text.includes("ALP-13"))', 8000), JSON.stringify((await stateApi())?.journal?.slice(0, 2)));
+  check('a task finished less than six hours ago (ALP-15) and the live ones stay', await evalJs('plannerSnap().runners[0].containers.some((c) => c.name === "web-ALP-15") && plannerSnap().runners[0].containers.some((c) => c.name === "pg-ALP-3") && plannerSnap().runners[0].containers.some((c) => c.name === "x-ALP-99") && plannerSnap().runners[0].volumes.some((v) => v.name === "vol-3") && plannerSnap().runners[0].volumes.some((v) => v.name === "stray-vol") && plannerSnap().runners[0].networks.some((n) => n.name === "job-3_net" || n.name === "plain_net")'));
+  // The time is the human’s: one hour brings ALP-15 (finished four hours ago) in.
+  await evalJs('(() => { const i = document.querySelector("#rf-auto-hours"); i.value = "1"; i.dispatchEvent(new Event("input", { bubbles: true })); return true; })()');
+  await waitFor('!document.querySelector("#rf-auto-save").disabled', 5000);
+  const start2 = yardCalls();
+  await click('#rf-auto-save');
+  check('shortening the time lists the container of ALP-15 first and removes nothing yet', await waitFor('(document.querySelector("#rf-auto-preview")?.innerText || "").includes("web-ALP-15")', 8000) && yardCommands(start2).length === 0, await text('#rf-auto-preview'));
+  await secondPress('#rf-auto-save');
+  check('with one hour the container of ALP-15 goes too, with its exact id', await waitLog(() => yardCommands(start2).includes('docker rm -f -v ' + id('b')), 40000), JSON.stringify(yardCommands(start2)));
+  check('the counter grows to two containers', await waitFor('document.querySelector("#rf-auto-count")?.innerText.includes("контейнеров 2")', 15000), await text('#rf-auto-count'));
+  check('and nothing foreign or live was named in any command', yardCommands(start).every((c) => !c.includes(id('a')) && !c.includes(id('c')) && !c.includes(id('d')) && !c.includes(id('e')) && !c.includes('job-3_net') && !c.includes('vol-3') && !c.includes('stray-vol') && !c.includes('plain_net')), JSON.stringify(yardCommands(start)));
+  // Off: one press, no questions.
+  await click('#rf-auto-toggle');
+  check('switching off is saved', await waitLog(() => { try { return JSON.parse(readFileSync(join(fixture, 'settings', 'runners.json'), 'utf8')).runners[0].auto.enabled === false; } catch { return false; } }, 10000) && await waitFor('document.querySelector("#rf-auto").dataset.auto === "off"', 8000));
+  await evalJs('document.querySelector("#rf-auto")?.scrollIntoView({ block: "center" }); true');
+  await shot('shipyard-auto.png');
+}, { retry: false });
+
 for (const [name, fn, opts] of sections) {
   if (only.length && !only.some((o) => name.includes(o))) continue;
   let first = null;

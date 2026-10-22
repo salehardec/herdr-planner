@@ -147,16 +147,24 @@ The planner works with its own board only. The stand-ins still answer as a board
 ## The shipyard vm-r (`me@192.0.2.29`)
 
 `192.0.2.0/24` is a documentation address: no real host. The ssh stand-in answers for it with one fixed probe
-(`herdr-planner-runner 1`), `ssh -G`, `true`, `docker version`, `docker system df`, and the exact-id removals the
-planner may ask for.
+(`herdr-planner-runner 1`), the disk count (`herdr-planner-disk 1`: `docker system df`, `docker system df -v`,
+`docker buildx ls`), `ssh -G`, `true`, `docker version`, and the removals the planner may ask for: `docker rm -f -v` and
+`docker rm -v` by id, `docker network rm`, `docker volume rm`, `docker buildx rm` (a running builder is refused),
+`docker image prune -a -f`, `docker builder prune -a -f`.
 
 - `settings/runners.json` (next to `board/`, where the planner reads it): one yard `vm-r`, target `me@192.0.2.29`,
   ports on `192.0.2.29`, tags `docker28 gpu x86_64`, masks `buildx_*` and `neighbor` (the compose project next door).
-- `state/runner.json`: ids, networks and volume names already removed; the probe leaves them out.
+- `state/runner.json`: ids, networks and volume names already removed, builders removed, whether the images and the cache
+  were pruned; the probe leaves them out. Its `extra` (`containers`, `networks`, `volumes`, in the shape of
+  `DATA.runnerR`) is what a check adds to the yard: the `runners auto` section writes it (a container, a network and a
+  volume labelled `herdr.task=ALP-13`, and live ones that must stay). Writing the file anew brings the yard back.
 - Six containers: `pg-ALP-3` (a live task, compose project `work-3`), `pg-AL9-4` (the same task alpha/4 under the
   repository's older key `AL9`, from `repo-keys.json` `had`), `web-ALP-15` (task ALP-15 is done → forgotten),
   `x-ALP-99` (tag with no such task → unsure), `neighbor-db-1` (compose project `neighbor`) and
   `buildx_buildkit_x0` (protected by mask). Two networks and two volumes belong to the first and the neighbour project.
+- The disk card's yard: four images (two without containers, «2.0GB» reclaimable), a build cache of 2.4 GB, two buildx
+  builders (`old`, stopped, state volume 3.1 GB; `x`, running), an orphan builder state `buildx_buildkit_gone0_state`
+  (8 GB) and one unused volume of somebody else (`chroma_data`, compose project `chroma`).
 - `log/ssh.jsonl` gets a line with `runner: "vm-r"` for every such call. No copy of the list goes to another machine.
 - The wizard's local check: `ssh -G me@192.0.2.29` prints its `hostname`, `bin/docker` exists, and the stand-in ssh
   answers `true` and `docker version` with `28.3.0`.
