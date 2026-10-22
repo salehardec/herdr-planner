@@ -24,6 +24,7 @@ mod menu_api;
 mod load;
 mod models;
 mod runners;
+mod runners_alert;
 mod runners_api;
 mod runners_auto;
 mod runners_ctl;

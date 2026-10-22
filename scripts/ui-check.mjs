@@ -4537,9 +4537,10 @@ for (const [w, h, scales] of [[1280, 800, [100, 125]], [1920, 1080, [100, 150]],
 
 // ── the shipyard's disk cleaning and auto-clean (PLN-40) ────────────────────
 // The stand-in yard (state/runner.json): `ids`, `networks`, `volumes`, `builders` are what has been removed since;
-// `extra` is what a check adds to the yard. Writing it anew brings the yard back to the fixture.
+// `extra` is what a check adds to the yard; `disk` overrides what the probe says about its disk. Writing it anew
+// brings the yard back to the fixture.
 const yardFile = () => join(fixture, 'state', 'runner.json');
-const yardReset = (extra = {}) => writeFileSync(yardFile(), JSON.stringify({ ids: [], networks: [], volumes: [], builders: [], extra }));
+const yardReset = (extra = {}, over = {}) => writeFileSync(yardFile(), JSON.stringify({ ids: [], networks: [], volumes: [], builders: [], extra, ...over }));
 const yardCommands = (since) => calls('ssh.jsonl').slice(since).filter((c) => c.runner && /^docker /.test(c.inner)).map((c) => c.inner);
 const yardCalls = () => calls('ssh.jsonl').length;
 const openYard = async () => {
@@ -4643,6 +4644,104 @@ section('runners auto', async () => {
   check('switching off is saved', await waitLog(() => { try { return JSON.parse(readFileSync(join(fixture, 'settings', 'runners.json'), 'utf8')).runners[0].auto.enabled === false; } catch { return false; } }, 10000) && await waitFor('document.querySelector("#rf-auto").dataset.auto === "off"', 8000));
   await evalJs('document.querySelector("#rf-auto")?.scrollIntoView({ block: "center" }); true');
   await shot('shipyard-auto.png');
+}, { retry: false });
+
+// ── the shipyard's alarms (PLN-42) ──────────────────────────────────────────
+// Little disk, a yard that has gone silent, a task's container that fell, a forgotten container: a row in «Ждёт тебя»,
+// a block in the yard's focus, and one word to the Coordinator — once per state, not at every poll.
+section('runners alerts', async () => {
+  const id = (c) => c.repeat(64);
+  const told = () => calls('coordinator.jsonl').filter((c) => String(c.text || '').includes('Верфь')).length;
+  const kinds = (runner = 'vm-r') => evalJs(`(plannerSnap().runners.find((r) => r.id === ${JSON.stringify(runner)})?.alerts ?? []).map((a) => a.kind)`);
+  const ask = async (runner = 'vm-r') => { await post('/api/runner/ask', { id: runner }); };
+  // The forgotten container of ALP-15 is out of the way unless a check wants it: the alarms below come one at a time.
+  const gone = { ids: [id('b')] };
+  yardReset({}, gone);
+  await ask();
+  check('a yard with nothing wrong has no alarms', (await kinds()).length === 0, JSON.stringify(await kinds()));
+  // ── little disk
+  const t0 = told();
+  const attn0 = await evalJs('plannerSnap().summary.attention');
+  yardReset({}, { ...gone, disk: { size: 100_000_000_000, avail: 8_000_000_000 } });
+  await ask();
+  check('a disk under the threshold is an alarm of the yard', await waitFor('plannerSnap().runners.find((r) => r.id === "vm-r")?.alerts.map((a) => a.kind).join() === "disk"', 8000), JSON.stringify(await kinds()));
+  check('«Ждёт тебя» counts the alarm with the tasks’ own requests', await waitFor(`plannerSnap().summary.attention === ${attn0 + 1}`, 8000), String(await evalJs('plannerSnap().summary.attention')));
+  check('the yard focus names it: 8 % free, in words', await openYard() && await waitFor('!!document.querySelector("#rf-alerts")', 8000) && (await text('#rf-alerts')).includes('8 %') && (await text('#rf-alerts')).includes('Свободно'), await text('#rf-alerts'));
+  await click('#wait-btn');
+  check('«Ждёт тебя» has the alarm as a row of the yard', await waitFor('!!document.querySelector("#drawer-wait [data-alert=disk]")', 5000) && (await text('#drawer-wait [data-alert=disk]')).includes('8 %'), await text('#drawer-wait'));
+  await click('#drawer-wait [data-alert=disk]');
+  check('the alarm leads to the yard’s focus', await waitFor('plannerDebug().selected?.kind === "runner" && plannerDebug().selected?.id === "vm-r"', 15000), JSON.stringify(await pd()));
+  check('the Coordinator heard about it once', await waitLog(() => told() === t0 + 1, 10000), JSON.stringify(calls('coordinator.jsonl').slice(-2)));
+  check('the message names the yard, the share and the space', String(calls('coordinator.jsonl').slice(-1)[0]?.text ?? '').includes('Верфь vm-r: мало места на диске — свободно 8 %'), lastCall('coordinator.jsonl'));
+  // ── the same state is not told again, however often the yard is read
+  const t1 = told();
+  for (let i = 0; i < 3; i++) await ask();
+  await quiet();
+  check('the same alarm is not repeated to the Coordinator', told() === t1, `${told()} vs ${t1}`);
+  check('and it stands in the focus all the while', (await kinds())[0] === 'disk', JSON.stringify(await kinds()));
+  // ── the alarm goes away with the state, and comes back as news
+  yardReset({}, gone);
+  await ask();
+  check('free space again: the alarm is gone from the yard', await waitFor('(plannerSnap().runners.find((r) => r.id === "vm-r")?.alerts ?? []).length === 0', 8000), JSON.stringify(await kinds()));
+  await openYard();
+  check('the focus has no alarm block any more', !(await exists('#rf-alerts')));
+  await click('#wait-btn');
+  check('«Ждёт тебя» has no row for it either', await waitFor('!!document.querySelector("#drawer-wait")', 4000) && !(await exists('#drawer-wait [data-alert=disk]')), await text('#drawer-wait'));
+  await click('#wait-btn');
+  check('a recovered state is not announced either', told() === t1, `${told()} vs ${t1}`);
+  yardReset({}, { ...gone, disk: { size: 100_000_000_000, avail: 8_000_000_000 } });
+  await ask();
+  check('the same trouble after a recovery is news again', await waitLog(() => told() === t1 + 1, 10000), `${told()} vs ${t1 + 1}`);
+  yardReset({}, gone);
+  await ask();
+  // ── a yard that does not answer at all
+  const dead = await post('/api/runner/add', { target: 'me@dead.invalid', label: 'yard-gone', confirm: true, ports_host: 'dead.invalid', tags: [], protected: [], note: '' });
+  check('a yard that never answers is added', dead[0] === 200 && dead[1]?.ok, JSON.stringify(dead));
+  check('its silence is not an alarm before the human’s minutes', await waitFor('!!plannerSnap().runners.find((r) => r.id === "yard-gone" && !r.ok)', 15000) && (await kinds('yard-gone')).length === 0, JSON.stringify(await kinds('yard-gone')));
+  const t2 = told();
+  const set = await post('/api/runner/set', { id: 'yard-gone', confirm: true, offline_min: 0 });
+  check('the threshold is the human’s: zero minutes and the silence is an alarm at once', set[0] === 200 && await waitFor('(plannerSnap().runners.find((r) => r.id === "yard-gone")?.alerts ?? []).some((a) => a.kind === "offline")', 8000), JSON.stringify(await kinds('yard-gone')));
+  await click('#nav [data-nav="run|yard-gone"]');
+  check('the silent yard’s focus names it', await waitFor('!!document.querySelector("#rf-alerts")', 12000) && (await text('#rf-alerts')).includes('Не отвечает'), await text('#rf-alerts'));
+  check('one word to the Coordinator about the silence', await waitLog(() => told() === t2 + 1, 10000), JSON.stringify(lastCall('coordinator.jsonl')));
+  await ask('yard-gone');
+  await ask('yard-gone');
+  await quiet();
+  check('reading the silent yard again tells nothing new', told() === t2 + 1, `${told()} vs ${t2 + 1}`);
+  const rm = await post('/api/runner/remove', { id: 'yard-gone', confirm: true, force: true });
+  check('the yard is taken away with its alarm', rm[0] === 200 && await waitFor('plannerSnap().runners.every((r) => r.id !== "yard-gone")', 10000), JSON.stringify(rm));
+  // ── a task's container that fell
+  const t3 = told();
+  yardReset({ containers: [{
+    id: id('e'), name: 'pg-ALP-9-crash', image: 'postgres:16', state: 'restarting', status: 'Restarting (1) 2 seconds ago',
+    created: new Date(Date.now() - 3_600_000).toISOString().replace('T', ' ').slice(0, 19) + ' +0000 UTC',
+    labels: 'herdr.task=ALP-9', ports: '', networks: 'work-9_default', mounts: '', size: '1MB', cpu: '0.50%', mem: '10MiB / 1GiB', pids: '3',
+  }] }, gone);
+  await ask();
+  check('a container of a live task that keeps restarting is an alarm', await waitFor('(plannerSnap().runners.find((r) => r.id === "vm-r")?.alerts ?? []).some((a) => a.kind === "crash")', 8000), JSON.stringify(await kinds()));
+  await openYard();
+  check('the focus names the container and its task', await waitFor('!!document.querySelector("#rf-alerts")', 8000) && (await text('#rf-alerts')).includes('pg-ALP-9-crash') && (await text('#rf-alerts')).includes('ALP-9') && (await text('#rf-alerts')).includes('Restarting'), await text('#rf-alerts'));
+  check('and the Coordinator hears about the fallen container once', await waitLog(() => told() === t3 + 1, 10000), JSON.stringify(lastCall('coordinator.jsonl')));
+  yardReset({}, gone);
+  await ask();
+  check('the container is running again: no alarm', await waitFor('!(plannerSnap().runners.find((r) => r.id === "vm-r")?.alerts ?? []).some((a) => a.kind === "crash")', 8000), JSON.stringify(await kinds()));
+  // ── the forgotten container is an alarm too
+  yardReset();
+  await ask();
+  check('a forgotten container is an alarm', await waitFor('(plannerSnap().runners.find((r) => r.id === "vm-r")?.alerts ?? []).some((a) => a.kind === "forgotten")', 8000), JSON.stringify(await kinds()));
+  await openYard();
+  check('the focus shows it with its task', await waitFor('!!document.querySelector("#rf-alerts")', 8000) && (await text('#rf-alerts')).includes('web-ALP-15') && (await text('#rf-alerts')).includes('ALP-15'), await text('#rf-alerts'));
+  // ── the thresholds are set by the human, in the yard's own card
+  await evalJs('[...document.querySelectorAll("#focus button")].find((b) => b.innerText.includes("Метки и защита"))?.click(); true');
+  await waitFor('!!document.querySelector("#rf-edit")', 5000);
+  check('the card shows the thresholds in force', (await evalJs('document.querySelector("#rf-disk-pct").value')) === '10' && (await evalJs('document.querySelector("#rf-offline-min").value')) === '10');
+  await evalJs('(() => { const d = document.querySelector("#rf-disk-pct"); d.value = "15"; d.dispatchEvent(new Event("input", { bubbles: true })); const m = document.querySelector("#rf-offline-min"); m.value = "3"; m.dispatchEvent(new Event("input", { bubbles: true })); return true; })()');
+  await twoPresses('#rf-set');
+  check('saving keeps them in the list file', await waitLog(() => { try { const r = JSON.parse(readFileSync(join(fixture, 'settings', 'runners.json'), 'utf8')).runners.find((x) => x.id === 'vm-r'); return r?.alerts?.disk_free_pct === 15 && r?.alerts?.offline_min === 3; } catch { return false; } }, 10000), readFileSync(join(fixture, 'settings', 'runners.json'), 'utf8').slice(0, 300));
+  await post('/api/runner/set', { id: 'vm-r', confirm: true, disk_free_pct: 10, offline_min: 10 });
+  await openYard();
+  await evalJs('document.querySelector("#rf-alerts")?.scrollIntoView({ block: "center" }); true');
+  await shot('shipyard-alerts.png');
 }, { retry: false });
 
 // One container of a task: the logs window and stop / restart / delete with «было → стало».

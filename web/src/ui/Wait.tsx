@@ -21,14 +21,15 @@ export function Wait(): JSX.Element {
       <div class="wlist" tabIndex={0}>
         {list.length === 0 && <div class="none">{t('wait.none')}</div>}
         {list.map((r, i) => {
-          const done = answered.value.has(r.id);
+          const alarm = r.type === 'runner-alert';
+          const done = !alarm && answered.value.has(r.id);
           return (
             <button
-              key={r.key} type="button" data-request={r.key} data-sel={r.id === 'coordinator' ? '' : r.id}
-              class={`q s-${r.task?.status ?? 'waiting'} ${i === cur ? 'cur' : ''} ${done ? 'resolved' : ''}`}
+              key={r.key} type="button" data-request={r.key} data-alert={r.alert?.kind} data-sel={r.id === 'coordinator' ? '' : r.id}
+              class={`q s-${alarm ? 'failed' : r.task?.status ?? 'waiting'} ${i === cur ? 'cur' : ''} ${done ? 'resolved' : ''}`}
               aria-selected={i === cur} onClick={() => void openRequest(i)}
             >
-              <Gl n={r.task?.status ?? 'waiting'} /><b>{r.tag}</b><span class="tx">{r.text || r.title}</span><span class="pj">{r.repo}</span>
+              <Gl n={alarm ? 'yard' : r.task?.status ?? 'waiting'} /><b>{r.tag}</b><span class="tx">{r.text || r.title}</span><span class="pj">{r.repo}</span>
             </button>
           );
         })}

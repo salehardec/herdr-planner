@@ -498,6 +498,17 @@ export const en: Record<string, string | string[]> = {
   'runner.stationPreview': 'Show the text: was → now', 'runner.stationWas': 'Was', 'runner.stationNow': 'Will be', 'runner.stationEmpty': '(instructions are not set)',
   'runner.dropOld': 'Also drop the old DOCKER_HOST lines (your own rules next to them stay)',
   'runner.forgotToast': 'A container was left on shipyard {id}: {name} ({tag})',
+  /* shipyard alarms */
+  'runner.alerts': 'Alarms',
+  'runner.alertKind.offline': 'The shipyard is silent', 'runner.alertKind.disk': 'Little disk space',
+  'runner.alertKind.crash': 'A task container fell', 'runner.alertKind.forgotten': 'A forgotten container',
+  'runner.alert.offline': 'No answer for {n} min',
+  'runner.alert.disk': '{pct} % free ({free} of {total} GB)',
+  'runner.alert.crash': 'Container {name} of task {tag} is not running — {status}',
+  'runner.alert.crashNoTag': 'Container {name} is not running — {status}',
+  'runner.alert.forgotten': 'Forgotten container {name} of task {tag}',
+  'runner.alert.forgottenNoTag': 'Forgotten container {name}',
+  'runner.diskPct': 'At least this much disk free, %', 'runner.offlineMin': 'Quiet longer than, min',
   /* disk cleaning and auto-clean of a shipyard */
   'disk.title': 'Disk cleaning: was → now', 'disk.counting': 'Counting the space on the shipyard… it can take up to two minutes.',
   'disk.unitGb': 'GB', 'disk.unitMb': 'MB', 'disk.unitKb': 'KB', 'disk.nothing': 'nothing to remove',

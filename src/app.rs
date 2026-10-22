@@ -208,6 +208,8 @@ pub struct App {
     pub runner_ctl_plans: Mutex<HashMap<String, crate::runners_ctl::Plan>>,
     /// The last auto-clean plan tried on each shipyard (signature, when), so a plan that fails is not repeated at once.
     pub runner_auto_try: Mutex<HashMap<String, (String, u64)>>,
+    /// One writer of the alarms' book: two refreshes must not tell the Coordinator the same thing twice.
+    pub runner_alerts_lock: Mutex<()>,
     /// Whether the docker block is in this machine's instructions (as last synced).
     pub runner_block: Mutex<crate::runners::BlockState>,
     /// How loaded this machine is (CPU, memory, video cards); kept fresh while a page is open.
@@ -349,6 +351,7 @@ impl App {
             runner_disk_plans: Mutex::new(HashMap::new()),
             runner_ctl_plans: Mutex::new(HashMap::new()),
             runner_auto_try: Mutex::new(HashMap::new()),
+            runner_alerts_lock: Mutex::new(()),
             runner_block: Mutex::new(runner_block),
             load: RwLock::new(crate::load::Load::default()),
             load_poke: Notify::new(),
@@ -659,14 +662,20 @@ pub async fn rebuild_runners(app: &Shared) {
         crate::runners::fill_shared(st, &index);
         if let Some(r) = file.get(&st.id) {
             st.auto = r.auto.clone();
+            st.alert_rules = r.alerts.clone();
         }
         st.auto_stats = crate::runners_auto::stats_of(app, &st.id);
     }
+    // The alarms are derived here, from the classes just set, for both the poll and a board read (PLN-42).
+    crate::runners_alert::apply(app, &mut states, now_ms()).await;
     note_forgotten(app, &states).await;
     let block = app.runner_block.lock().await.clone();
     let mut snap = app.snapshot.write().await;
     snap.runners = states;
     snap.runner_block = block;
+    // «Ждёт тебя» counts the alarms of the yards too: the page's own list is built from the same snapshot.
+    let alarms: u32 = snap.runners.iter().map(|r| r.alerts.len() as u32).sum();
+    snap.summary.attention = snap.summary.waiting + snap.summary.failed + snap.summary.ready + snap.summary.plan + alarms;
 }
 
 /// Serialises the snapshot for the page's event stream, when somebody listens.

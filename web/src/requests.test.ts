@@ -27,6 +27,22 @@ describe('requests to the human', () => {
     expect(requestType(task({ kind: 'auth' }))).toBe('auth');
     expect(requestType(task({}))).toBe('question');
   });
+  it('lists the shipyards’ alarms after the board’s own requests', () => {
+    const runners = [{
+      id: 'vm-r',
+      alerts: [{ key: 'vm-r:disk', runner: 'vm-r', kind: 'disk', since_ms: 1, free_pct: 8, free_bytes: 40 * 1024 ** 3, total_bytes: 500 * 1024 ** 3 }],
+    }] as never;
+    const list = collectRequests({
+      tasks: [task({ id: 'a/1', n: 1, status: 'ready' }), task({ id: 'a/2', n: 2, status: 'plan' })],
+      coordinator: null,
+      runners,
+    });
+    expect(list.map((r) => r.type)).toEqual(['approval', 'plan', 'runner-alert']);
+    expect(list[2].id).toBe('vm-r');
+    expect(list[2].tag).toBe('vm-r');
+    expect(list[2].text).toContain('8 %');
+    expect(list[2].text).toContain('40.0');
+  });
   it('lists the urgent first and puts the Coordinator\'s dialog before them', () => {
     const list = collectRequests({
       tasks: [task({ id: 'a/2', n: 2, status: 'ready' }), task({ id: 'a/1', n: 1, status: 'failed', state: 'error' }), task({ id: 'a/3', n: 3, status: 'working', state: 'working' })],

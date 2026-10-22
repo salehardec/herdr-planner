@@ -12,6 +12,8 @@ export function Log(): JSX.Element {
   const items = (snap.value?.journal ?? []).slice(0, 60);
   const tagOf = (id: string): { tag: string; ok: boolean; runner?: string } => {
     if (id.startsWith('runner/')) return { tag: t('runner.taskTitle'), ok: true, runner: id.slice('runner/'.length) };
+    // The shipyards' alarms: a line of their own, about the yards as a group.
+    if (id === 'runner') return { tag: t('nav.runners'), ok: false };
     const tk = currentView.value.tasks.find((x) => x.id === id) ?? snap.value?.archived.find((x) => x.id === id);
     return { tag: tk?.tag ?? id, ok: !!tk };
   };
