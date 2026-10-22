@@ -301,7 +301,7 @@ pub fn report_of(
                     locked: String::new(),
                 });
             }
-            Class::Active | Class::Foreign => rep.stopped.kept += 1,
+            Class::Active | Class::Foreign | Class::Shared => rep.stopped.kept += 1,
         }
     }
 
@@ -363,7 +363,9 @@ pub fn report_of(
         // kept too: the planner cannot tell whose it is).
         let in_work = runners::volume_matches(&v.name, &tags, &projects)
             || v.labels.get("com.docker.compose.project").is_some_and(|p| projects.contains(p))
-            || v.labels.get("herdr.task").is_some_and(|l| index.finished_label(l).is_none());
+            || v.labels.get("herdr.task").is_some_and(|l| index.finished_label(l).is_none())
+            // A build cache of the board's repositories (scripts/yard.sh): its own label, never offered here.
+            || v.labels.contains_key("herdr.shared");
         if runners::name_protected(&v.name, &v.labels, protected) || in_work || !safe_volume(&v.name) {
             rep.volumes.kept += 1;
         } else {
@@ -686,6 +688,17 @@ mod tests {
         let raw = parse_raw(&out()).unwrap();
         let r = report_of(&raw, "vm-r", &["supabase".into()], &index(), (1000, 400), 42);
         r.builders.items.iter().find(|i| i.key == key).unwrap().on
+    }
+
+    #[test]
+    fn a_shared_build_cache_volume_is_never_offered() {
+        let mut raw = parse_raw(&out()).unwrap();
+        let mut labels = BTreeMap::new();
+        labels.insert("herdr.shared".to_string(), "alpha".to_string());
+        raw.volumes.push(VolRow { name: "hp-yard-cache".into(), links: 0, bytes: 1_200_000_000, labels });
+        let r = report_of(&raw, "vm-r", &["supabase".into()], &index(), (1000, 400), 42);
+        assert!(r.volumes.items.iter().all(|i| i.name != "hp-yard-cache"), "the cache volume is never in the card");
+        assert_eq!(r.volumes.kept, 3, "it is only counted, with the mask's and the live task's volumes");
     }
 
     #[test]

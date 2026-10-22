@@ -229,6 +229,13 @@ export function UniverseFocus(props: { entity: Entity }): JSX.Element {
 
 const GB = 1024 * 1024 * 1024;
 
+/** An image's size as docker prints it; a volume's is unknown until the disk count is asked for. */
+function sharedSize(bytes: number | null | undefined): string {
+  if (bytes == null) return '—';
+  // Docker prints image sizes in decimal units; the page shows the same number it shows.
+  return bytes >= 1e9 ? `${(bytes / 1e9).toFixed(1)} GB` : `${Math.round(bytes / 1e6)} MB`;
+}
+
 function yardGauge(label: string, pct: number, text: string): JSX.Element {
   return (
     <div class="rf-g">
@@ -360,6 +367,22 @@ export function RunnerFocus(props: { entity: Entity }): JSX.Element {
                 <td>{c.cpu_pct == null ? '—' : `${c.cpu_pct.toFixed(1)} %`}</td>
                 <td>{c.mem_bytes == null ? '—' : `${(c.mem_bytes / (1024 * 1024)).toFixed(0)} MB`}{c.gpu_mem_mib ? ` · GPU ${c.gpu_mem_mib} MB` : ''}</td>
                 <td><span class="hint">{c.ports || '—'}</span></td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+      <h3>{t('runner.shared')} <span class="cnt">{r.shared.length}</span></h3>
+      <p class="hint">{t('runner.sharedHint')}</p>
+      {r.shared.length === 0 ? <div class="hint">{t('runner.sharedNone')}</div> : (
+        <table class="rft" id="rf-shared">
+          <thead><tr><th>{t('runner.sharedColRepo')}</th><th>{t('runner.sharedColItem')}</th><th>{t('runner.sharedSize')}</th></tr></thead>
+          <tbody>
+            {r.shared.map((s) => (
+              <tr key={`${s.kind}:${s.name}`} data-shared={s.kind}>
+                <td>{s.repo}</td>
+                <td><span class="hint">{t(`runner.sharedKind.${s.kind}`)}</span> <code>{s.name}</code></td>
+                <td>{sharedSize(s.size_bytes)}</td>
               </tr>
             ))}
           </tbody>

@@ -3889,6 +3889,17 @@ section('runners', async () => {
   const unsure = await evalJs('document.querySelectorAll("#rf-forgotten tbody tr[data-class=unsure]").length');
   check('two containers of live tasks, one forgotten, one unsure, two foreign', active === 2 && forgotten === 2 && unsure === 1 && (await hasText('#rf-foreign', 'Чужие: 2')), `${active}/${forgotten}/${unsure} ${await text('#rf-foreign')}`);
   check('a key with a digit finds its task: pg-AL9-4 is alpha/4', await hasText('#rf-tasks', 'pg-ALP-3') && await hasText('#rf-tasks', 'pg-AL9-4') && await hasText('#rf-tasks', 'ALP-4') && await hasText('#rf-forgotten', 'ALP-15'), await text('#rf-tasks'));
+  // The build caches of the board's repositories (herdr.shared=alpha, scripts/yard.sh): apart from the tasks, never foreign.
+  check('the build cache is a table of its own: the image with its size, the volume, the cache container',
+    await waitFor('!!document.querySelector("#rf-shared")', 8000)
+      && (await evalJs('document.querySelectorAll("#rf-shared tbody tr").length')) === 3
+      && (await evalJs('[...document.querySelectorAll("#rf-shared tbody tr")].every((r) => r.dataset.shared)'))
+      && await hasText('#rf-shared', 'herdr-planner-yard:0123456789ab') && await hasText('#rf-shared', 'hp-yard-cache')
+      && await hasText('#rf-shared', 'yard-cache-1') && await hasText('#rf-shared', '2.5 GB') && await hasText('#rf-shared', 'alpha'),
+    await text('#rf-shared'));
+  check('the cache container is neither a task container nor a foreign one',
+    await evalJs('!document.querySelector("#rf-tasks tbody").innerText.includes("yard-cache-1") && !document.querySelector("#rf-forgotten tbody").innerText.includes("yard-cache-1") && !document.querySelector("#rf-foreign").innerText.includes("yard-cache-1")'),
+    await text('#focus'));
   check('the unsure one is grey and has no default tick', await hasText('#rf-forgotten', 'неясно'), await text('#rf-forgotten'));
   // The planet's own line: the yard and its containers.
   await go('alpha/3');
@@ -4300,7 +4311,7 @@ section('runners disk', async () => {
   check('build cache is counted', (await part('cache')).includes('2.4 ГБ'), await part('cache'));
   check('stopped: the forgotten one is ticked, the unsure one is not', (await tickOf('#rf-disk tr[data-key="' + 'b'.repeat(64) + '"] input')) === true && (await tickOf('#rf-disk tr[data-key="' + 'c'.repeat(64) + '"] input')) === false && (await part('stopped')).includes('web-ALP-15') && (await part('stopped')).includes('x-ALP-99') && !(await part('stopped')).includes('neighbor-db-1'), await part('stopped'));
   check('builders: all under the yard’s buildx_* mask, so none is ticked beforehand; the running one is locked', (await tickOf('#rf-disk tr[data-key="b:old"] input')) === false && (await tickOf('#rf-disk tr[data-key="s:buildx_buildkit_gone0_state"] input')) === false && (await tickOf('#rf-disk tr[data-key="b:x"] input')) === false && (await evalJs('document.querySelector("#rf-disk tr[data-key=\\"b:x\\"] input").disabled')) === true && (await part('builders')).includes('запущен — не трогаю'), await part('builders'));
-  check('volumes: unticked, a warning above them, the neighbour’s used ones are not offered', (await evalJs('document.querySelector("#dk-vol-warn")?.innerText || ""')).includes('Осторожно') && (await tickOf('#rf-disk tr[data-key="v:chroma_data"] input')) === false && (await evalJs('!document.querySelector("#rf-disk tr[data-key=\\"v:neighbor_data\\"]") && !document.querySelector("#rf-disk tr[data-key=\\"v:work-3_pgdata\\"]")')), await part('volumes'));
+  check('volumes: unticked, a warning above them, the neighbour’s used ones and the shared cache are not offered', (await evalJs('document.querySelector("#dk-vol-warn")?.innerText || ""')).includes('Осторожно') && (await tickOf('#rf-disk tr[data-key="v:chroma_data"] input')) === false && (await evalJs('!document.querySelector("#rf-disk tr[data-key=\\"v:neighbor_data\\"]") && !document.querySelector("#rf-disk tr[data-key=\\"v:work-3_pgdata\\"]") && !document.querySelector("#rf-disk tr[data-key=\\"v:hp-yard-cache\\"]")')), await part('volumes'));
   check('the card says how much disk is free now and after', (await text('#dk-was')).includes('Свободно на диске: 300 ГБ →'), await text('#dk-was'));
   const was0 = await text('#dk-was');
   await clickBox('#rf-disk input[data-kind=cache]');

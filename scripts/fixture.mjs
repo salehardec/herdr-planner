@@ -758,6 +758,9 @@ const DATA = {
       { id: 'c'.repeat(64), name: 'x-ALP-99', image: 'alpine:3', state: 'exited', status: 'Exited (0) 5 days ago', created: utc(NOW - 5 * 24 * 60 * 60 * 1000), labels: 'herdr.task=ALP-99', ports: '', networks: 'bridge', mounts: '', size: '4MB', cpu: '0.00%', mem: '0B / 0B', pids: '0' },
       { id: 'd'.repeat(64), name: 'neighbor-db-1', image: 'postgres:15', state: 'running', status: 'Up 3 days', created: utc(NOW - 3 * 24 * 60 * 60 * 1000), labels: 'com.docker.compose.project=neighbor', ports: '5432/tcp', networks: 'neighbor_default', mounts: 'neighbor_data:/var/lib/postgresql/data', size: '1.2GB', cpu: '1.20%', mem: '210MiB / 512MiB', pids: '9' },
       { id: 'e'.repeat(64), name: 'buildx_buildkit_x0', image: 'moby/buildkit:latest', state: 'running', status: 'Up 2 months', created: utc(NOW - 60 * 24 * 60 * 60 * 1000), labels: '', ports: '', networks: 'host', mounts: '', size: '0B', cpu: '0.10%', mem: '34MiB / 0B', pids: '4' },
+      // The board's build cache (scripts/yard.sh): a container of no task, an image and a volume, all with
+      // herdr.shared=alpha. The planner shows them apart from the tasks and from other people's containers.
+      { id: '6'.repeat(64), name: 'yard-cache-1', image: 'herdr-planner-yard:0123456789ab', state: 'running', status: 'Up 1 hour', created: utc(NOW - 60 * 60 * 1000), labels: 'herdr.shared=alpha', ports: '', networks: 'bridge', mounts: 'hp-yard-cache:/cache', size: '0B', cpu: '0.00%', mem: '12MiB / 12GiB', pids: '1' },
     ],
     networks: [
       { id: 'f'.repeat(64), name: 'work-3_default', driver: 'bridge' },
@@ -773,6 +776,8 @@ const DATA = {
       { name: 'buildx_buildkit_old0_state', driver: 'local', size: '3.1GB', labels: '', links: 0 },
       { name: 'buildx_buildkit_gone0_state', driver: 'local', size: '8GB', labels: '', links: 0 },
       { name: 'buildx_buildkit_x0_state', driver: 'local', size: '1GB', labels: '', links: 1 },
+      // The build cache volume of the board itself: herdr.shared=alpha, never offered anywhere for removal.
+      { name: 'hp-yard-cache', driver: 'local', size: '1.2GB', labels: 'herdr.shared=alpha', links: 1 },
     ],
     // The disk card: `docker system df` totals, the images with their container counts, the buildx builders.
     images: [
@@ -780,6 +785,10 @@ const DATA = {
       { repo: 'nginx', tag: '1.27', containers: 1, size: '190MB' },
       { repo: 'old/app', tag: '1', containers: 0, size: '1.2GB' },
       { repo: 'old/tool', tag: '2', containers: 0, size: '800MB' },
+    ],
+    // The images of the board's build caches: `docker image ls --filter label=herdr.shared`, then the labels.
+    sharedImages: [
+      { id: '9'.repeat(64), tags: ['herdr-planner-yard:0123456789ab'], size: 2500000000, labels: 'herdr.shared=alpha' },
     ],
     imagesReclaimable: '2.0GB (60%)',
     cacheReclaimable: '2.4GB',
@@ -1208,6 +1217,16 @@ function sshMain(C, DATA) {
   log('ssh.jsonl', { argv: args, target, inner: inner.slice(0, 400), runner: R.label });
   if (inner === 'true') return;
   if (inner.startsWith('docker version')) { console.log('28.3.0'); return; }
+  if (inner.startsWith('docker image ls -q --filter label=herdr.shared')) {
+    (R.sharedImages || []).forEach((i) => console.log(i.id)); return;
+  }
+  if (inner.startsWith('docker image inspect --format')) {
+    (R.sharedImages || []).filter((i) => inner.includes(i.id)).forEach((i) => console.log(JSON.stringify({
+      Id: i.id, RepoTags: i.tags, Size: i.size,
+      Config: { Labels: Object.fromEntries((i.labels || '').split(',').filter(Boolean).map((p) => p.split('='))) },
+    })));
+    return;
+  }
   if (inner.startsWith('docker system df')) {
     console.log(JSON.stringify({ Type: 'Images', TotalCount: '152', Active: '12', Size: '159.7GB', Reclaimable: '153.1GB (96%)' }));
     console.log(JSON.stringify({ Type: 'Containers', TotalCount: '6', Active: '4', Size: '1.2GB', Reclaimable: '12MB (1%)' }));
@@ -1306,6 +1325,11 @@ function sshMain(C, DATA) {
     allNetworks.filter((n) => !goneNet.has(n.id) && !goneNet.has(n.name)).forEach((n) => out.push(JSON.stringify({ ID: n.id, Name: n.name, Driver: n.driver, Labels: n.labels || '' })));
     out.push('== vol');
     allVolumes.filter((v) => !goneVol.has(v.name)).forEach((v) => out.push(JSON.stringify({ Name: v.name, Driver: v.driver, Labels: v.labels || '' })));
+    out.push('== img');
+    (R.sharedImages || []).forEach((i) => out.push(JSON.stringify({
+      Id: i.id, RepoTags: i.tags, Size: i.size,
+      Config: { Labels: Object.fromEntries((i.labels || '').split(',').filter(Boolean).map((p) => p.split('='))) },
+    })));
     process.stdout.write(out.join('\n') + '\n');
     return;
   }

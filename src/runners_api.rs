@@ -37,6 +37,7 @@ fn classify_now(app: &Shared, snap: &app::Snapshot, state: &mut RunnerState) {
     let repos = crate::taskmeta::repos(&app.cfg.data_dir);
     let idx = runners::TaskIndex::build(&snap.tasks, &snap.archived, &repos);
     runners::classify(&mut state.containers, &state.protected, &idx);
+    runners::fill_shared(state, &idx);
 }
 
 async fn state_now(app: &Shared, id: &str) -> Option<RunnerState> {
@@ -131,7 +132,7 @@ pub struct ProbeBody {
 pub fn suggest_protected(containers: &[runners::Container]) -> Vec<String> {
     let mut set: BTreeSet<String> = BTreeSet::new();
     for c in containers {
-        if c.task.is_some() || c.class == Class::Unsure {
+        if c.task.is_some() || c.class == Class::Unsure || c.class == Class::Shared {
             continue;
         }
         if let Some(p) = c.labels.get("com.docker.compose.project").filter(|p| !p.is_empty()) {
@@ -800,8 +801,8 @@ pub async fn runner_clean(State(app): State<Shared>, headers: HeaderMap, Json(bo
         let Some(c) = state.containers.iter().find(|c| c.id == *id) else {
             return fail(409, "контейнер уже исчез с верфи");
         };
-        if c.class == Class::Active || c.class == Class::Foreign {
-            return fail(409, "контейнер задачи в работе или чужой: его не убирают");
+        if c.class == Class::Active || c.class == Class::Foreign || c.class == Class::Shared {
+            return fail(409, "контейнер задачи в работе, чужой или общий кэш: его не убирают");
         }
     }
     let ids: Vec<String> = plan

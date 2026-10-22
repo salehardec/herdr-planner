@@ -237,7 +237,11 @@ fi
 echo '== ps';    docker ps -a --no-trunc --format '{{json .}}'
 echo '== stats'; docker stats --no-stream --format '{{json .}}'
 echo '== net';   docker network ls --format '{{json .}}'
-echo '== vol';   docker volume ls --format '{{json .}}'"##;
+echo '== vol';   docker volume ls --format '{{json .}}'
+# The build caches of the board's repositories (scripts/yard.sh labels them herdr.shared=<repo>): images first by their
+# label, then the few labels that `image ls` cannot print.
+img_ids=$(docker image ls -q --filter label=herdr.shared 2>/dev/null)
+[ -z "$img_ids" ] || docker image inspect --format '{{json .}}' $img_ids 2>/dev/null || true"##;
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct GpuState {
@@ -288,6 +292,9 @@ pub enum Class {
     Unsure,
     /// Not a board task, or under a protected mask: never touched.
     Foreign,
+    /// A build cache of one of the board's repositories (`herdr.shared=<repo>`, scripts/yard.sh): never a task's, never
+    /// forgotten, never touched from the page.
+    Shared,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -347,6 +354,31 @@ pub struct Vol {
     pub labels: BTreeMap<String, String>,
 }
 
+/// An image of the board's build caches (`herdr.shared=<repo>`), as the probe reads it: never shown as a container of a
+/// task and never offered for removal; the page lists it with the cache volume under «Кэш сборок».
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct ImageInfo {
+    pub id: String,
+    /// The tags docker itself prints (`first:last` if there are none).
+    pub names: Vec<String>,
+    pub size: Option<u64>,
+    pub labels: BTreeMap<String, String>,
+}
+
+/// One thing of a board repository's build cache: a container, an image or a volume labelled `herdr.shared=<repo>`.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct SharedItem {
+    /// `container`, `image` or `volume`.
+    pub kind: String,
+    pub name: String,
+    /// The repository of this board the cache belongs to (the label's value).
+    pub repo: String,
+    /// The image's size as docker reports it; a volume's size is only known from `docker system df -v` and is `None`
+    /// here (the page shows «—» until the disk count is asked for).
+    #[serde(default)]
+    pub size_bytes: Option<u64>,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct BlockState {
     pub connected: bool,
@@ -370,6 +402,12 @@ pub struct RunnerState {
     pub containers: Vec<Container>,
     pub networks: Vec<Net>,
     pub volumes: Vec<Vol>,
+    /// The images of the board's build caches, as read; kept for the shared list and not sent to the page.
+    #[serde(default, skip_serializing)]
+    pub images: Vec<ImageInfo>,
+    /// The build caches of the board's repositories: never a task's, never foreign, never forgotten.
+    #[serde(default)]
+    pub shared: Vec<SharedItem>,
     /// The auto-clean switch of the list file and what it has done (filled when the snapshot is built).
     #[serde(default)]
     pub auto: AutoClean,
@@ -396,7 +434,9 @@ impl RunnerState {
     }
 }
 
-pub fn parse_probe(out: &str) -> Result<(HostState, Vec<Container>, Vec<Net>, Vec<Vol>), String> {
+pub fn parse_probe(
+    out: &str,
+) -> Result<(HostState, Vec<Container>, Vec<Net>, Vec<Vol>, Vec<ImageInfo>), String> {
     if !out.lines().any(|l| l.contains("herdr-planner-runner 1")) {
         return Err("машина ответила не тем, что ждёт планировщик: нет отметки опроса".into());
     }
@@ -405,6 +445,7 @@ pub fn parse_probe(out: &str) -> Result<(HostState, Vec<Container>, Vec<Net>, Ve
     let mut stats: Vec<Value> = Vec::new();
     let mut nets: Vec<Net> = Vec::new();
     let mut vols: Vec<Vol> = Vec::new();
+    let mut images: Vec<ImageInfo> = Vec::new();
     let mut section = "";
     let mut gpu_procs: Vec<(String, u64)> = Vec::new();
     let mut mem_kb: HashMap<String, u64> = HashMap::new();
@@ -438,6 +479,29 @@ pub fn parse_probe(out: &str) -> Result<(HostState, Vec<Container>, Vec<Net>, Ve
                     driver: s_of(&v, "Driver"),
                     labels: labels_of(&s_of(&v, "Labels")),
                 }),
+                "img" => {
+                    let labels = v
+                        .get("Config")
+                        .and_then(|c| c.get("Labels"))
+                        .and_then(Value::as_object)
+                        .map(|m| {
+                            m.iter()
+                                .filter_map(|(k, x)| x.as_str().map(|val| (k.clone(), val.to_string())))
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                    let names = v
+                        .get("RepoTags")
+                        .and_then(Value::as_array)
+                        .map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect())
+                        .unwrap_or_default();
+                    images.push(ImageInfo {
+                        id: s_of(&v, "Id"),
+                        names,
+                        size: v.get("Size").and_then(Value::as_u64),
+                        labels,
+                    });
+                }
                 _ => {}
             }
             continue;
@@ -560,7 +624,7 @@ pub fn parse_probe(out: &str) -> Result<(HostState, Vec<Container>, Vec<Net>, Ve
     }
     // The age is shown as «живёт N»: the docker time is compared with the machine's own clock.
     let _ = now_s;
-    Ok((host, containers, nets, vols))
+    Ok((host, containers, nets, vols, images))
 }
 
 fn s_of(v: &Value, key: &str) -> String {
@@ -755,6 +819,16 @@ impl TaskIndex {
         self.keys.contains(&key.to_uppercase())
     }
 
+    /// The name of a repository of this board, as a `herdr.shared` label writes it (the value may come from another
+    /// machine, so the comparison does not mind case).
+    pub fn repo_of(&self, value: &str) -> Option<String> {
+        let v = value.trim();
+        if v.is_empty() {
+            return None;
+        }
+        self.repo_keys.keys().find(|r| r.eq_ignore_ascii_case(v)).cloned()
+    }
+
     /// The `herdr.task` label of a network or a volume: when its one task is done or archived and its agent has left,
     /// the moment it left (ms). `None` for a label that names no such task.
     pub fn finished_label(&self, label: &str) -> Option<u64> {
@@ -872,6 +946,13 @@ fn classify_one(
     protected: &[String],
     index: &TaskIndex,
 ) -> (Class, Option<TaskRef>) {
+    // The build caches of this board's repositories (scripts/yard.sh): a label of their own, never a task's container.
+    // A task's label still wins — a container that says which task it serves is classified by that.
+    if !c.labels.contains_key("herdr.task")
+        && c.labels.get("herdr.shared").and_then(|v| index.repo_of(v)).is_some()
+    {
+        return (Class::Shared, None);
+    }
     if is_protected(c, protected) {
         return (Class::Foreign, None);
     }
@@ -918,6 +999,56 @@ fn classify_one(
             finished_ms: cand.exited_ms,
         }),
     )
+}
+
+/// The build caches of the board's repositories: the images and volumes the yard labels `herdr.shared=<repo>` (and any
+/// container that carries the same label), in a stable order. A cache whose label names no repository of this board is
+/// left out rather than shown as somebody else's.
+pub fn shared_of(
+    containers: &[Container],
+    volumes: &[Vol],
+    images: &[ImageInfo],
+    index: &TaskIndex,
+) -> Vec<SharedItem> {
+    let mut out: Vec<SharedItem> = Vec::new();
+    for c in containers.iter().filter(|c| c.class == Class::Shared) {
+        if let Some(repo) = c.labels.get("herdr.shared").and_then(|v| index.repo_of(v)) {
+            out.push(SharedItem { kind: "container".into(), name: c.name.clone(), repo, size_bytes: None });
+        }
+    }
+    for i in images {
+        if let Some(repo) = i.labels.get("herdr.shared").and_then(|v| index.repo_of(v)) {
+            out.push(SharedItem {
+                kind: "image".into(),
+                name: i.names.first().cloned().unwrap_or_else(|| i.id.chars().take(12).collect()),
+                repo,
+                size_bytes: i.size,
+            });
+        }
+    }
+    for v in volumes {
+        if let Some(repo) = v.labels.get("herdr.shared").and_then(|v| index.repo_of(v)) {
+            out.push(SharedItem { kind: "volume".into(), name: v.name.clone(), repo, size_bytes: None });
+        }
+    }
+    // Images, then volumes, then containers; a stable name order inside a kind.
+    let rank = |k: &str| match k {
+        "image" => 0,
+        "volume" => 1,
+        _ => 2,
+    };
+    out.sort_by(|a, b| {
+        a.repo
+            .cmp(&b.repo)
+            .then(rank(&a.kind).cmp(&rank(&b.kind)))
+            .then(a.name.cmp(&b.name))
+    });
+    out
+}
+
+/// Fills `shared` of a state from its own read of the yard and this board's repositories.
+pub fn fill_shared(state: &mut RunnerState, index: &TaskIndex) {
+    state.shared = shared_of(&state.containers, &state.volumes, &state.images, index);
 }
 
 /* ───────── polling ───────── */
@@ -977,12 +1108,13 @@ pub async fn probe(cfg: &AppConfig, r: &Runner) -> RunnerState {
         return state;
     }
     match parse_probe(&end.stdout) {
-        Ok((host, containers, networks, volumes)) => {
+        Ok((host, containers, networks, volumes, images)) => {
             state.ok = true;
             state.host = host;
             state.containers = containers;
             state.networks = networks;
             state.volumes = volumes;
+            state.images = images;
             state.fetched_at_ms = now_ms();
         }
         Err(e) => {
@@ -1171,7 +1303,7 @@ pub fn plan_of(state: &RunnerState, ids: Option<&[String]>) -> CleanPlan {
                 picked.push((c, Vec::new(), Vec::new()));
                 continue;
             }
-            Class::Active | Class::Foreign => continue,
+            Class::Active | Class::Foreign | Class::Shared => continue,
         }
         let mut tags: BTreeSet<String> = BTreeSet::new();
         let mut projects: BTreeSet<String> = BTreeSet::new();
@@ -1187,14 +1319,21 @@ pub fn plan_of(state: &RunnerState, ids: Option<&[String]>) -> CleanPlan {
             .filter(|n| network_matches(&n.name, &tags, &projects))
             .map(|n| n.id.clone())
             .collect();
+        let shared = |name: &str| {
+            state
+                .volumes
+                .iter()
+                .any(|v| v.name == name && v.labels.contains_key("herdr.shared"))
+        };
         let mut vols: Vec<String> = state
             .volumes
             .iter()
-            .filter(|v| volume_matches(&v.name, &tags, &projects))
+            .filter(|v| !v.labels.contains_key("herdr.shared") && volume_matches(&v.name, &tags, &projects))
             .map(|v| v.name.clone())
             .collect();
+        // A shared build cache (scripts/yard.sh) is never a task's to take, even when the container mounts it.
         for m in mounts_of(c) {
-            if !vols.contains(&m) {
+            if !vols.contains(&m) && !shared(&m) {
                 vols.push(m);
             }
         }
@@ -1229,10 +1368,13 @@ pub fn plan_of(state: &RunnerState, ids: Option<&[String]>) -> CleanPlan {
             ..PlanItem::default()
         })
         .collect();
+    // The card is about what can be cleaned: the board's shared build caches are not counted in «было → стало».
+    let shared_containers = state.containers.iter().filter(|c| c.class == Class::Shared).count();
+    let shared_volumes = state.volumes.iter().filter(|v| v.labels.contains_key("herdr.shared")).count();
     let was = Counts {
-        containers: state.containers.len(),
+        containers: state.containers.len().saturating_sub(shared_containers),
         networks: state.networks.len(),
-        volumes: state.volumes.len(),
+        volumes: state.volumes.len().saturating_sub(shared_volumes),
         bytes,
     };
     let now_counts = Counts {
@@ -1563,6 +1705,75 @@ mod tests {
     }
 
     #[test]
+    fn a_build_cache_of_a_board_repository_is_shared_not_foreign() {
+        let active = vec![task("alpha/3", "ALP-3", Status::Working, false)];
+        let idx = TaskIndex::build(&active, &[], &[repo("alpha", "ALP")]);
+        let mut list = vec![
+            // The yard's cache volume's sibling container, and a task container that also carries the cache label.
+            cont("yard-ALP-3", &[("herdr.shared", "alpha")]),
+            cont("pg-ALP-3", &[("herdr.task", "ALP-3"), ("herdr.shared", "alpha")]),
+            // A label naming no repository of this board: still nobody to touch.
+            cont("someone-else", &[("herdr.shared", "neighbor")]),
+            // Case does not matter (the label comes from another machine).
+            cont("yard-ALP-4", &[("herdr.shared", "Alpha")]),
+        ];
+        classify(&mut list, &[], &idx);
+        assert_eq!(list[0].class, Class::Shared);
+        assert_eq!(list[1].class, Class::Active, "a task's label wins over a cache's");
+        assert_eq!(list[2].class, Class::Foreign);
+        assert_eq!(list[3].class, Class::Shared);
+    }
+
+    #[test]
+    fn the_shared_list_names_repository_image_and_volume_with_their_sizes() {
+        let idx = TaskIndex::build(&[], &[], &[repo("alpha", "ALP"), repo("beta", "BET")]);
+        let mut list = vec![cont("yard-ALP-3", &[("herdr.shared", "alpha")])];
+        classify(&mut list, &[], &idx);
+        let mut labels = BTreeMap::new();
+        labels.insert("herdr.shared".to_string(), "alpha".to_string());
+        let vols = vec![
+            Vol { name: "hp-yard-cache".into(), driver: "local".into(), labels: labels.clone() },
+            Vol { name: "work-3_data".into(), driver: "local".into(), labels: BTreeMap::new() },
+        ];
+        let images = vec![
+            ImageInfo {
+                id: "b".repeat(64),
+                names: vec!["herdr-planner-yard:0123456789ab".into()],
+                size: Some(2_500_000_000),
+                labels,
+            },
+            ImageInfo { id: "c".repeat(64), ..ImageInfo::default() },
+        ];
+        let shared = shared_of(&list, &vols, &images, &idx);
+        let kinds: Vec<(&str, &str)> = shared.iter().map(|s| (s.kind.as_str(), s.name.as_str())).collect();
+        assert_eq!(kinds, vec![("image", "herdr-planner-yard:0123456789ab"), ("volume", "hp-yard-cache"), ("container", "yard-ALP-3")]);
+        assert_eq!(shared[0].repo, "alpha");
+        assert_eq!(shared[0].size_bytes, Some(2_500_000_000));
+        assert_eq!(shared[1].size_bytes, None, "a volume's size is only known from docker system df -v");
+    }
+
+    #[test]
+    fn a_shared_cache_volume_is_never_taken_with_a_forgotten_container() {
+        let archived = vec![task("alpha/1", "ALP-1", Status::Done, true)];
+        let idx = TaskIndex::build(&[], &archived, &[repo("alpha", "ALP")]);
+        let mut c = cont("yard-ALP-1", &[("herdr.task", "ALP-1")]);
+        c.id = "d".repeat(64);
+        c.mounts = "hp-yard-cache:/cache".into();
+        let mut cache = BTreeMap::new();
+        cache.insert("herdr.shared".to_string(), "alpha".to_string());
+        let mut state = RunnerState::default();
+        state.containers = vec![c];
+        state.volumes = vec![
+            Vol { name: "hp-yard-cache".into(), driver: "local".into(), labels: cache },
+            Vol { name: "work-ALP-1_data".into(), driver: "local".into(), labels: BTreeMap::new() },
+        ];
+        classify(&mut state.containers, &[], &idx);
+        let plan = plan_of(&state, None);
+        let names: Vec<&str> = plan.volumes.iter().map(|v| v.name.as_str()).collect();
+        assert_eq!(names, vec!["work-ALP-1_data"], "the shared cache stays; the task's own volume goes");
+    }
+
+    #[test]
     fn an_older_key_of_the_repository_finds_the_same_task() {
         let active = vec![task("alpha/4", "ALP-4", Status::Working, false)];
         let repos = vec![crate::taskmeta::RepoInfo {
@@ -1695,10 +1906,12 @@ mod tests {
              == net\n\
              {{\"ID\":\"net1\",\"Name\":\"work-3_default\",\"Driver\":\"bridge\",\"Labels\":\"\"}}\n\
              == vol\n\
-             {{\"Name\":\"work-3_pgdata\",\"Driver\":\"local\",\"Labels\":\"\"}}\n",
-            "a".repeat(64)
+             {{\"Name\":\"work-3_pgdata\",\"Driver\":\"local\",\"Labels\":\"\"}}\n\
+             == img\n\
+             {{\"Id\":\"{}\",\"RepoTags\":[\"herdr-planner-yard:0123456789ab\"],\"Size\":2500000000,\"Config\":{{\"Labels\":{{\"herdr.shared\":\"alpha\"}}}}}}\n",
+            "a".repeat(64), "b".repeat(64)
         );
-        let (host, containers, nets, vols) = parse_probe(&out).unwrap();
+        let (host, containers, nets, vols, images) = parse_probe(&out).unwrap();
         assert_eq!(host.cpus, 16);
         assert_eq!(host.mem_total, 32768000 * 1024);
         assert_eq!(host.disk_avail, 228000000000);
@@ -1713,6 +1926,10 @@ mod tests {
         assert_eq!(c.created_ms, 1792659600000);
         assert_eq!(nets[0].name, "work-3_default");
         assert_eq!(vols[0].name, "work-3_pgdata");
+        assert_eq!(images.len(), 1);
+        assert_eq!(images[0].names, vec!["herdr-planner-yard:0123456789ab"]);
+        assert_eq!(images[0].size, Some(2_500_000_000));
+        assert_eq!(images[0].labels.get("herdr.shared").map(String::as_str), Some("alpha"));
     }
 
     #[test]
