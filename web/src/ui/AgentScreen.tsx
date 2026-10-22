@@ -12,6 +12,8 @@ import { Badge, Gl } from './Gl';
 import { TellBox } from './AgentActions';
 import { KeyButtons } from './Keys';
 import { ansiSpans, type AnsiSpan } from './ansi';
+import { MenuSlot } from './MenuCard';
+import type { MenuData } from '../types';
 import './agentscreen.css';
 
 /** The window refreshes the screen this often while it is open (about once a second or two). */
@@ -35,6 +37,7 @@ interface ScreenAnswer {
   text?: string;
   ansi?: string;
   error?: string;
+  menu?: MenuData | null;
 }
 
 interface Loaded {
@@ -130,6 +133,7 @@ export function AgentScreen(): JSX.Element | null {
           </span>
         </header>
         <div class="agent-screen-body">
+          <MenuSlot target={ref.task} role={ref.role} menu={r?.menu && !r.error ? r.menu : null} place="window" onAnswered={() => { refresh(); setTimeout(refresh, 900); }} />
           <div class="term-wrap">
             {r?.error ? (
               <div class="hint bad" id="screen-error">{r.error}</div>

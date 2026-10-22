@@ -1,0 +1,40 @@
+
+ ▐▛███▛█   Claude Code v2.1.307
+▝▜██████▀  Haiku 5.5 · Claude Max
+ ▝▝   ▝▝   /tmp/hp-1000/c31753/PLN-29/cc
+
+
+❯ Call the AskUserQuestion tool right now with two questions: (1) header Lib, question Which library?,
+  options date-fns (Modular) and dayjs (Small), single select; (2) header Features, question Which features?,
+  multiSelect true, options A (first), B (second), C (third). Do nothing else.
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────
+←  ☐ Lib  ☐ Features  ✔ Submit  →
+
+Which library?
+
+❯ 1. date-fns
+     Modular
+  2. dayjs
+     Small
+  3. Type something.
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  4. Chat about this
+
+Enter to select · Tab/Arrow keys to navigate · Esc to cancel
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

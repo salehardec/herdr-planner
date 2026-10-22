@@ -1059,6 +1059,25 @@ function herdrMain(C, DATA) {
   if (cmd === 'agent' && sub === 'send-keys') {
     if (!namesOf(world()).includes(rest[0])) { console.error('no such agent: ' + rest[0]); process.exit(1); }
     log('keys.jsonl', { target: rest[0], keys: rest.slice(1) });
+    // A program draws its next screen after a choice: `state/after-enter.txt` becomes the screen when Enter is sent.
+    if (rest.slice(1).includes('enter') && fs.existsSync(join('state', 'after-enter.txt'))) {
+      fs.writeFileSync(join('state', 'dialog.txt'), fs.readFileSync(join('state', 'after-enter.txt'), 'utf8'));
+      fs.unlinkSync(join('state', 'after-enter.txt'));
+    }
+    console.log('sent');
+    return;
+  }
+  if (cmd === 'agent' && sub === 'get') {
+    log('herdr.jsonl', { argv: process.argv.slice(2) });
+    const name = rest[0];
+    if (!namesOf(world()).includes(name)) { console.error('no such agent: ' + name); process.exit(1); }
+    console.log(JSON.stringify({ id: 'cli:agent:get', result: { agent: { name, pane_id: 'w1:p-' + name }, type: 'agent_info' } }));
+    return;
+  }
+  // Literal text into a pane (the own answer of a selection menu): the pane is named `w1:p-<agent>`.
+  if (cmd === 'pane' && sub === 'send-text') {
+    log('herdr.jsonl', { argv: process.argv.slice(2) });
+    log('text.jsonl', { pane: rest[0], text: rest.slice(1).join(' ') });
     console.log('sent');
     return;
   }
