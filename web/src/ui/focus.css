@@ -114,6 +114,22 @@
 .rf-disk .dk-vols .hint.warn{margin:0.25rem 0}
 .rf-disk details{margin-top:0.25rem}
 .rf-disk summary{cursor:pointer;color:var(--pl-dim);font-size:0.75rem}
+.rf-hist{margin:0.5rem 0 0.75rem}
+.rf-hist-hd{display:flex;align-items:baseline;justify-content:space-between;gap:0.5rem}
+.rf-hist-hd h3{margin:0}
+.rf-hist .seg{display:flex;gap:0.125rem}
+.rf-hist .seg .btn{padding:0.0625rem 0.375rem;font-size:0.6875rem}
+.rf-sparks{display:grid;gap:0.25rem;margin:0.375rem 0}
+.rf-spark{display:grid;grid-template-columns:4em minmax(0,1fr) auto;gap:0.375rem;align-items:center}
+.rf-spark > .kv{color:var(--pl-faint);font-size:0.7188rem}
+.rf-spark > .num{font-size:0.7188rem;color:var(--pl-dim);text-align:right;white-space:nowrap}
+.spark{display:block;width:100%;height:1.75rem;overflow:visible}
+.spark .grid{stroke:var(--pl-line);stroke-width:1}
+.spark .line{fill:none;stroke:currentColor;stroke-width:1.4;stroke-linejoin:round;stroke-linecap:round}
+.spark.cpu{color:var(--c-green)}
+.spark.mem{color:var(--c-cyan)}
+.spark.disk{color:var(--c-yellow)}
+.rf-use-since{font-size:0.7188rem;color:var(--pl-faint)}
 .dk-steps{list-style:none;margin:0.25rem 0 0.5rem;padding:0;font-size:0.7188rem}
 .dk-steps li{padding:0.125rem 0}.dk-steps .bad{color:var(--pl-danger)}.dk-steps .w-ok{color:var(--c-green)}
 .rf-auto{margin:0.5rem 0;padding:0.5rem 0.625rem;border:1px solid var(--pl-line);border-radius:0.375rem;background:var(--pl-tile)}

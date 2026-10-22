@@ -4139,6 +4139,47 @@ section('runners', async () => {
   const unsure = await evalJs('document.querySelectorAll("#rf-forgotten tbody tr[data-class=unsure]").length');
   check('two containers of live tasks, one forgotten, one unsure, two foreign', active === 2 && forgotten === 2 && unsure === 1 && (await hasText('#rf-foreign', 'Чужие: 2')), `${active}/${forgotten}/${unsure} ${await text('#rf-foreign')}`);
   check('a key with a digit finds its task: pg-AL9-4 is alpha/4', await hasText('#rf-tasks', 'pg-ALP-3') && await hasText('#rf-tasks', 'pg-AL9-4') && await hasText('#rf-tasks', 'ALP-4') && await hasText('#rf-forgotten', 'ALP-15'), await text('#rf-tasks'));
+  // The load over the hours and the day (PLN-46): thin samples in the planner's database, three sparklines in the Focus.
+  const histApi = () => evalJs('fetch("/api/runners/history").then((r) => r.json())');
+  const history = await histApi();
+  check('the yard’s load is kept: CPU, memory and disk of the last reads, a minute and ten minutes wide',
+    history?.ok === true && (history.runners['vm-r']?.points.length ?? 0) >= 1
+      && history.runners['vm-r'].points.every((p) => p.cpu != null && p.mem != null && p.disk != null)
+      && history.fine_step === 60 && history.coarse_step === 600,
+    JSON.stringify(history?.runners?.['vm-r']?.points?.slice(-2)));
+  check('the Focus draws a sparkline for CPU, memory and disk',
+    await waitFor('document.querySelectorAll("#rf-hist svg.spark").length === 3', 8000)
+      && (await evalJs('[...document.querySelectorAll("#rf-hist svg.spark")].every((s) => Number(s.dataset.points) >= 1)'))
+      && (await evalJs('document.querySelector("#rf-hist").dataset.window')) === 'hours',
+    await text('#rf-hist'));
+  check('the numbers beside the lines fit their column: «сейчас N % · пик M %» is cut off otherwise',
+    await evalJs('[...document.querySelectorAll("#rf-hist .num")].length === 3 && [...document.querySelectorAll("#rf-hist .num")].every((n) => n.scrollWidth <= n.clientWidth + 1)'),
+    await evalJs('[...document.querySelectorAll("#rf-hist .num")].map((n) => n.scrollWidth + "/" + n.clientWidth).join(" ")'));
+  await click('#rf-hist [data-hist-window=day]');
+  check('the window switches to the day', await waitFor('document.querySelector("#rf-hist").dataset.window === "day"', 4000)
+    && (await evalJs('Number(document.querySelector("#rf-hist svg.spark").dataset.points)')) >= 1,
+    await evalJs('document.querySelector("#rf-hist").dataset.window'));
+  await click('#rf-hist [data-hist-window=hours]');
+  // What the containers of a task ate (PLN-46): a busy container for a while gives CPU time, and the peak memory is the
+  // sum of the task's running containers at one read.
+  yardReset({ containers: [{
+    id: '7'.repeat(64), name: 'worker-ALP-3', image: 'alpine:3', state: 'running', status: 'Up 1 minute',
+    created: new Date(Date.now() - 60_000).toISOString().replace('T', ' ').slice(0, 19) + ' +0000 UTC',
+    labels: 'herdr.task=ALP-3', ports: '', networks: 'work-3_default', mounts: '', size: '1MB', cpu: '90.00%', mem: '300MiB / 2GiB', pids: '2',
+    nano: 2000000000, memLimit: 2147483648,
+  }] });
+  await post('/api/runner/ask', { id: 'vm-r' });
+  await sleep(1200);
+  await post('/api/runner/ask', { id: 'vm-r' });
+  const used = (await histApi()).runners['vm-r'].tasks.find((t) => t.tag === 'ALP-3');
+  check('a task’s containers are counted by their herdr.task label: CPU time and the peak memory at one read',
+    !!used && used.task === 'alpha/3' && used.cpu_sec > 0.5 && used.mem_peak >= 300 * 1024 * 1024, JSON.stringify(used));
+  check('the yard lists its tasks by what they ate',
+    await waitFor('!!document.querySelector("#rf-usage tr[data-usage=ALP-3]")', 8000)
+      && !(await evalJs('document.querySelector("#rf-usage tr[data-usage=ALP-3] td:nth-child(2)").textContent')).includes('—')
+      && await hasText('#rf-usage', 'Пик памяти'),
+    await text('#rf-usage'));
+  yardReset();
   // The limits of a task's container on the yard (PLN-43): a share of the machine, filled from its first read.
   check('the yard states the limits of a task container: a quarter of the cores and an eighth of the memory',
     await waitFor('!!document.querySelector("#rf-limits") && plannerSnap().runners[0].limits?.cpus === 2 && plannerSnap().runners[0].limits?.mem_mb === 2048', 15000)
@@ -4188,6 +4229,10 @@ section('runners', async () => {
   // The planet's own line: the yard and its containers.
   await go('alpha/3');
   check('the planet names the shipyard and its containers', await waitFor('!!document.querySelector("#rf-task")', 8000) && await hasText('#rf-task', 'vm-r') && await hasText('#rf-task', 'pg-ALP-3'), await text('#rf-task'));
+  check('the planet shows what its containers ate on the yards: CPU time and the peak memory',
+    await waitFor('!!document.querySelector("#rf-task-usage")', 8000) && await hasText('#rf-task-usage', 'ЦП')
+      && await hasText('#rf-task-usage', 'пик памяти') && await hasText('#rf-task-usage', 'vm-r'),
+    await text('#rf-task-usage'));
   check('the planet’s container also gives the way into its port and its Shell', (await evalJs('document.querySelector("#rf-task [data-service=postgres] code")?.textContent')) === 'psql -h 192.0.2.29 -p 15432 -U postgres' && await evalJs('!!document.querySelector("#rf-task [data-ctl=shell]:not([disabled])")'), await text('#rf-task'));
   // The search finds the yard, Enter opens it.
   await press('KeyK', 'k', 2);

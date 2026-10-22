@@ -18,6 +18,7 @@ import { TaskActionButtons, TellBox } from './AgentActions';
 import { CleanCard } from './CleanCard';
 import { ContainerButtons, ContainerPorts } from './ContainerTools';
 import { PickYard } from './PickYard';
+import { cpuTime, hist, loadHistory, memSize, taskUsage, totalUsage } from './usage-api';
 import { dayTimeOf } from '../util/dates';
 import { duration } from '../util/format';
 import type { Entity, Subagent, Task } from '../types';
@@ -65,8 +66,12 @@ function TaskFocus(props: { task: Task }): JSX.Element {
   const pick = snap.value?.runner_picks?.[task.id];
   const [clean, setClean] = useState(false);
   const [pickOpen, setPickOpen] = useState(false);
+  const stamp = runners.value.map((r) => r.fetched_at_ms).join(',');
+  const useRows = taskUsage(hist.value, { id: task.id, tag: task.tag });
+  const used = totalUsage(useRows);
 
   useEffect(() => { void fetchDetails(task.id); void loadClosing(task); }, [task.id, task.status, task.msg]);
+  useEffect(() => { void loadHistory(); }, [stamp]);
 
   return (
     <div class="fbody" data-focus="task">
@@ -135,6 +140,20 @@ function TaskFocus(props: { task: Task }): JSX.Element {
             <ContainerButtons runner={r.id} c={c} scope={task.id} />
           </div>
         ))}
+        {used && (
+          <div class="rf-use" id="rf-task-usage">
+            <div class="row">
+              <span class="k">{t('runner.taskUse', { cpu: cpuTime(used.cpu_sec), mem: memSize(used.mem_peak) })}</span>
+              {used.first_ms > 0 && <span class="rf-use-since">{t('runner.taskUseSince', { when: dayTimeOf(used.first_ms) })}</span>}
+            </div>
+            {useRows.map((u) => (
+              <div class="row" key={u.runner} data-task-use={u.runner}>
+                <button class="k" type="button" onClick={() => void navigateTo({ kind: 'runner', id: u.runner })}>{u.runner}</button>
+                <span class="hint">{cpuTime(u.cpu_sec)} · {memSize(u.mem_peak)}</span>
+              </div>
+            ))}
+          </div>
+        )}
         {yard.length > 0 && task.status === 'done' && (
           <div class="hint warn">
             {t('runner.leftOnYard')}{' '}
