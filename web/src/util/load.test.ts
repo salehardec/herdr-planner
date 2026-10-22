@@ -22,11 +22,14 @@ describe('load levels', () => {
     expect(worstMeter(m).key).toBe('mem');
   });
   it('takes the form that fits the room the crumbs leave', () => {
-    expect([32, 24, 14, 8, 3].map(tierFor)).toEqual(['host', 'full', 'stack', 'sum', 'none']);
+    expect([32, 24, 14, 8, 4, 3].map(tierFor)).toEqual(['host', 'full', 'stack', 'sum', 'dot', 'none']);
   });
-  it('knows an old reading', () => {
-    expect(staleLoad(0, 3000, 5000)).toBe(true);
-    expect(staleLoad(1000, 3000, 9000)).toBe(false);
-    expect(staleLoad(1000, 3000, 12000)).toBe(true);
+  it('knows an old reading by the machine\'s own clock and by how long the stream was quiet', () => {
+    expect(staleLoad(0, 5000, 0, 3000)).toBe(true);
+    expect(staleLoad(1000, 4000, 100, 3000)).toBe(false);
+    // the machine sent it 30 s after it was read: old, whatever the browser's clock says
+    expect(staleLoad(1000, 31000, 100, 3000)).toBe(true);
+    // fresh by the machine, but nothing has come for 20 s
+    expect(staleLoad(1000, 2000, 20000, 3000)).toBe(true);
   });
 });

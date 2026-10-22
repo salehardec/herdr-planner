@@ -12,7 +12,7 @@
   --load-ok:color-mix(in srgb,var(--c-green) 90%,var(--c-fg) 10%);
   --load-high:var(--c-yellow);
   --load-crit:var(--c-red);
-  --load-high-ink:color-mix(in srgb,var(--c-yellow) 55%,var(--c-fg));
+  --load-high-ink:color-mix(in srgb,var(--c-yellow) 30%,var(--c-fg));
 }
 
 /* the left of the top bar: the crumbs and the bars share it. The crumbs come first: the bars take the form that fits in
@@ -49,7 +49,7 @@
 .ld-sum[data-level="off"] .ld-dot{background:none;border-style:dashed}
 
 /* a little room (stack): the three meters, each with its bar under the number */
-.loadbar[data-tier="none"]{display:none}
+.loadbar[data-tier="none"],.loadbar[data-state="na"]{display:none}
 .loadbar:is([data-tier="stack"],[data-tier="full"],[data-tier="host"]) .ld{gap:0.5rem;padding:0 0.5rem}
 .loadbar:is([data-tier="stack"],[data-tier="full"],[data-tier="host"]) .ld-sum{display:none}
 .loadbar:is([data-tier="stack"],[data-tier="full"],[data-tier="host"]) .ld-m{display:inline-grid;grid-template-columns:auto auto;grid-template-areas:"k v" "b b";align-items:center;column-gap:0.3125rem;row-gap:0.125rem}
@@ -84,4 +84,4 @@
 /* a phone-sized window has two rows (crumbs and buttons, then the search): the bars stand right of the search, in their narrowest form */
 :root.bp900 .topl{display:contents}
 :root.bp900 .top .loadbar{grid-area:load;justify-self:end}
-:root.bp900 .ld-sum .ld-k{display:none}
+.loadbar[data-tier="dot"] .ld-sum .ld-k{display:none}

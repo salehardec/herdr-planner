@@ -1,7 +1,7 @@
 import type { JSX } from 'preact';
 import { signal } from '@preact/signals';
 import { useEffect, useRef } from 'preact/hooks';
-import { live, loadInfo, snap } from '../store';
+import { live, loadInfo, loadRecv, snap } from '../store';
 import { t, tn, locale } from '../i18n';
 import { goHome } from '../nav';
 import { rootPx } from '../scale';
@@ -14,12 +14,13 @@ const shown = signal(false);
 /** What time it is for the bars: they go grey when a reading is too old. */
 const now = signal(Date.now());
 
-type State = 'wait' | 'off' | 'on';
+type State = 'wait' | 'off' | 'on' | 'na';
 
 function state(): State {
   const l = loadInfo.value;
   if (!l || l.at === 0) return live.value ? 'wait' : 'off';
-  if (!live.value || !l.ok || staleLoad(l.at, l.every_ms, now.value)) return 'off';
+  if (l.unsupported) return 'na';
+  if (!live.value || !l.ok || staleLoad(l.at, l.sent, now.value - loadRecv.value, l.every_ms)) return 'off';
   return 'on';
 }
 
@@ -126,6 +127,7 @@ function Row(props: { k: string; m: Meter | null; detail: string; sub?: string }
 export function LoadPop(): JSX.Element | null {
   const l = loadInfo.value;
   const st = state();
+  if (st === 'na') return null;
   const host = hostName();
   const loc = locale();
   const on = l && st === 'on';

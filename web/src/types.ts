@@ -138,6 +138,10 @@ export interface LoadInfo {
   ok: boolean;
   error: string;
   every_ms: number;
+  /** The server's clock when it sent the reading: how old `at` is is judged by it, not by the browser's clock. */
+  sent: number;
+  /** This system cannot be read (no /proc): no bars at all. */
+  unsupported?: boolean;
   cpu: { percent: number; cores: number };
   mem: { used: number; total: number; percent: number };
   gpus: LoadGpu[];

@@ -18,8 +18,13 @@ export const pct = (v: number): number => Math.max(0, Math.min(100, Math.round(N
 export const gb = (bytes: number, locale: string): string =>
   (Math.max(0, bytes) / 1073741824).toLocaleString(locale, { minimumFractionDigits: 1, maximumFractionDigits: 1 });
 
-/** The reading is too old to be the machine's present state: nothing came for several intervals. */
-export const staleLoad = (at: number, everyMs: number, now: number): boolean => at <= 0 || now - at > Math.max(3 * (everyMs || 3000), 10000);
+/** The reading is too old to be the machine's present state. Its age is the machine's own (`sent` − `at`, one clock), and
+ *  a stream that went quiet is told by the time the last reading reached the browser (`recvAgo`, the browser's one clock):
+ *  the two clocks are never compared with each other. */
+export const staleLoad = (at: number, sent: number, recvAgo: number, everyMs: number): boolean => {
+  const limit = Math.max(3 * (everyMs || 3000), 10000);
+  return at <= 0 || (sent > 0 && sent - at > limit) || recvAgo > limit;
+};
 
 export interface Meter { key: 'cpu' | 'mem' | 'gpu'; percent: number; level: LoadLevel }
 
@@ -34,6 +39,7 @@ export function meters(l: { cpu: { percent: number }; mem: { percent: number }; 
 /** The meter that is worst (the first of equals): what the narrowest form of the bar shows. */
 export const worstMeter = (ms: Meter[]): Meter => ms.reduce((a, b) => (RANK[b.level] > RANK[a.level] || (b.level === a.level && b.percent > a.percent) ? b : a));
 
-/** The form of the bars for the room (in rem) left beside the crumbs: with the machine's name, three bars, three small bars under their numbers, the worst one only, or nothing. */
-export const tierFor = (rem: number): 'host' | 'full' | 'stack' | 'sum' | 'none' =>
-  rem >= 31 ? 'host' : rem >= 22 ? 'full' : rem >= 12.5 ? 'stack' : rem >= 6.5 ? 'sum' : 'none';
+/** The form of the bars for the room (in rem) left beside the crumbs: with the machine's name, three bars, three small bars under their
+ *  numbers, the worst one only (named, or just the number when the room is very small), or nothing. */
+export const tierFor = (rem: number): 'host' | 'full' | 'stack' | 'sum' | 'dot' | 'none' =>
+  rem >= 31 ? 'host' : rem >= 22 ? 'full' : rem >= 12.5 ? 'stack' : rem >= 5.6 ? 'sum' : rem >= 3.8 ? 'dot' : 'none';

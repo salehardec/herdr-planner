@@ -33,6 +33,12 @@ pub struct Load {
     /// The interval between readings, so the page can tell a stale one.
     #[serde(default)]
     pub every_ms: u64,
+    /// This machine's clock when the reading was sent: the page judges how old `at` is by it, not by its own clock.
+    #[serde(default)]
+    pub sent: u64,
+    /// The system has no way to read its load here (no `/proc`): the page shows no bars, not grey ones.
+    #[serde(default)]
+    pub unsupported: bool,
     #[serde(default)]
     pub cpu: Cpu,
     #[serde(default)]
@@ -229,6 +235,9 @@ async fn sample(prev: &mut Option<(Ticks, u64)>, every: u64) -> Load {
         return Load { every_ms: every, at: if o.at == 0 { now_ms() } else { o.at }, ..o };
     }
     let now = now_ms();
+    if !cfg!(target_os = "linux") {
+        return Load { at: now, ok: false, unsupported: true, error: "no /proc on this system".into(), every_ms: every, ..Default::default() };
+    }
     let (ticks, cores, mem) = match read_now().await {
         Ok(v) => v,
         Err(e) => {
@@ -269,7 +278,22 @@ pub async fn run(app: Shared) {
     }
 }
 
-async fn publish(app: &Shared, load: Load) {
+/// The reading to hand out when a page asks (not through the event stream): the last one, or, when nobody listens
+/// and so nobody keeps it fresh, a new one.
+pub async fn current(app: &Shared) -> Load {
+    let every = every_ms();
+    let held = app.load.read().await.clone();
+    if app.bus.subscribers() == 0 && now_ms().saturating_sub(held.at) > every * 2 {
+        let fresh = sample(&mut None, every).await;
+        publish(app, fresh).await;
+    }
+    let mut l = app.load.read().await.clone();
+    l.sent = now_ms();
+    l
+}
+
+async fn publish(app: &Shared, mut load: Load) {
+    load.sent = now_ms();
     if let Ok(json) = serde_json::to_string(&load) {
         *app.load.write().await = load;
         app.bus.send("load", json);

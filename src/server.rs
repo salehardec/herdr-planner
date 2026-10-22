@@ -364,7 +364,7 @@ async fn api_limits(
 
 /// The machine's load as the bars show it (the page asks when its event stream is down).
 async fn api_load(State(app): State<Shared>) -> Json<crate::load::Load> {
-    Json(app.load.read().await.clone())
+    Json(crate::load::current(&app).await)
 }
 
 async fn api_summary(State(app): State<Shared>) -> Json<serde_json::Value> {

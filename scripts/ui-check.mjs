@@ -1625,6 +1625,17 @@ section('load', async () => {
   setLoad(reading(30, 30));
   check('the bars come back with the next good reading', await waitFor('document.querySelector("#loadbar")?.dataset.state === "on" && document.querySelector("#loadbar .ld-m[data-k=cpu] .ld-v")?.textContent === "30%"', 8000));
 
+  // a browser whose clock is ahead (or behind) the machine's: the age of a reading is the machine's own, so the bars stay on
+  await evalJs('window.__realNow = Date.now; Date.now = () => window.__realNow() + 20000; true');
+  await evalJs('new Promise((done) => setTimeout(() => done(true), 4600))');   // the page checks its readings every 2 s: let it do so twice
+  check('a browser clock 20 s ahead does not grey the bars: fresh readings keep arriving', (await evalJs('document.querySelector("#loadbar").dataset.state')) === 'on' && (await evalJs('document.querySelector("#load-chip").getAttribute("aria-label")')).includes('CPU 30'), await evalJs('document.querySelector("#load-chip").getAttribute("aria-label")'));
+  await evalJs('Date.now = window.__realNow; true');
+  // a system that cannot be read at all (no /proc): no bars, not grey ones that say «нет связи»
+  setLoad({ ok: false, unsupported: true, error: 'no /proc on this system' });
+  check('a system without a way to read the load shows no bars at all', await waitFor('getComputedStyle(document.querySelector("#loadbar")).display === "none" && !document.querySelector("#load-pop")', 8000));
+  setLoad(reading(30, 30));
+  check('and they are back when it can be read', await waitFor('getComputedStyle(document.querySelector("#loadbar")).display !== "none" && document.querySelector("#loadbar").dataset.state === "on"', 8000));
+
   // English
   await evalJs('setLang("en"); true');
   setLoad({ ok: false, error: 'x' });
@@ -1674,11 +1685,11 @@ section('load', async () => {
     await waitFor('document.querySelector("#loadbar")?.dataset.state === "on"', 8000);
     await beat();
     const at = `${w}×${h}${scale === 'auto' ? '' : ` at ${scale} %`}`;
-    const m = await evalJs(`(() => { const r = (s) => { const e = document.querySelector(s); const b = e && e.getBoundingClientRect(); return b && { l: b.left, t: b.top, r: b.right, b: b.bottom, w: b.width }; };
+    const m = await evalJs(`(() => { const r = (s) => { const e = document.querySelector(s); const b = e && e.getBoundingClientRect(); return b && { l: b.left, t: b.top, r: b.right, b: b.bottom, w: b.width, h: b.height }; };
       const lb = document.querySelector('#loadbar'); return { tier: lb.dataset.tier, shown: getComputedStyle(lb).display !== 'none', chip: r('#load-chip'), crumbs: r('#crumbs'), q: r('#q'), right: r('#right'), sw: document.documentElement.scrollWidth, root: parseFloat(getComputedStyle(document.documentElement).fontSize),
         clipped: [...document.querySelectorAll('#load-chip .ld-m, #load-chip .ld-sum')].filter((e) => getComputedStyle(e).display !== 'none').some((e) => e.getBoundingClientRect().right > document.querySelector('#load-chip').getBoundingClientRect().right + 1) }; })()`);
     if (m.shown) {
-      check(`${at}: the bars (${m.tier}) stand clear of the crumbs, the search and the buttons, inside the window`, m.chip.l >= m.crumbs.r - 1 - 2 && m.chip.r <= w + 1 && (apart(m.chip, m.q) || m.tier === 'sum') && apart(m.chip, m.right) && !m.clipped && m.chip.h !== 0, JSON.stringify(m));
+      check(`${at}: the bars (${m.tier}) stand clear of the crumbs, the search and the buttons, inside the window`, m.chip.l >= m.crumbs.r - 1 - 2 && m.chip.r <= w + 1 && apart(m.chip, m.q) && apart(m.chip, m.right) && !m.clipped && m.chip.h > 10, JSON.stringify(m));
     } else check(`${at}: too narrow for the bars: they step aside and the crumbs stay whole`, m.tier === 'none' && m.crumbs.w > 40, JSON.stringify(m));
     check(`${at}: the crumbs are whole (not cut for the bars) unless the window is a phone's`, await waitFor(`[...document.querySelectorAll('#crumbs button')].every((b) => b.scrollWidth <= b.clientWidth + 1) || document.documentElement.classList.contains('bp900')`, 4000), JSON.stringify(m));
     check(`${at}: the page does not scroll sideways`, m.sw <= w + 1, String(m.sw));
@@ -2048,7 +2059,7 @@ section('theme and language', async () => {
       bad.add(where + ': ' + t.slice(0, 60));
     };
     for (const e of document.querySelectorAll('#top button, #kbar button, #chat button, #chat label, #todo button, #todo label, #nav header, #nav button, #focus button, #focus h3, #focus .lbl, .menupop button, .menupop label, .hint, .none, .lbl')) {
-      if (e.closest('#sres, .ti, .lb, .titem .txt, #clog, #crumbs') || e.matches('[data-lang]')) continue;
+      if (e.closest('#sres, .ti, .lb, .titem .txt, #clog, #crumbs, #loadbar') || e.matches('[data-lang]')) continue;
       look(e.innerText, e.id || e.className || e.tagName);
     }
     for (const e of document.querySelectorAll('#top [title], #kbar [title], #chat [title], #todo [title], #nav [title], #focus [title], [placeholder], [aria-label]')) {

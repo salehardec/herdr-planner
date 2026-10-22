@@ -23,7 +23,7 @@ pub async fn events(State(app): State<Shared>) -> Response {
     // Subscribe first: nothing published between the two steps is lost.
     let mut rx = app.bus.subscribe();
     let first = serde_json::to_string(&*app.snapshot.read().await).unwrap_or_default();
-    let load = serde_json::to_string(&*app.load.read().await).unwrap_or_default();
+    let load = serde_json::to_string(&crate::load::current(&app).await).unwrap_or_default();
     app.load_poke.notify_one();
     let app2 = app.clone();
     let stream = async_stream::stream! {
