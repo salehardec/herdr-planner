@@ -63,10 +63,8 @@
 /* plenty (host): the machine's name too */
 .loadbar[data-tier="host"] .ld-host{display:inline}
 
-/* the tooltip */
-.top>.ld-pop{pointer-events:none}
-.ld-pop{display:none;left:0.875rem;top:2.9rem;width:min(24rem,calc(100vw - 1.75rem));padding:0.625rem 0.75rem;z-index:56;gap:0.4375rem;font-size:0.7188rem;color:var(--pl-dim)}
-.ld-pop.open{display:grid}
+/* the card under the bars (hovercard.css places and sizes it) */
+.ld-pop{display:grid;gap:0.4375rem;font-size:0.7188rem;color:var(--pl-dim)}
 .ld-ph{display:flex;align-items:baseline;gap:0.5rem;color:var(--pl-title);min-width:0}
 .ld-ph b{font-size:0.8125rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .ld-ph span{color:var(--pl-faint);font-size:0.6875rem;white-space:nowrap}
@@ -79,7 +77,9 @@
 .ld-rd{grid-area:d;color:var(--pl-dim);overflow-wrap:anywhere}
 .ld-rs{grid-area:s;color:var(--pl-faint);font-size:0.6562rem;overflow-wrap:anywhere}
 .ld-none,.ld-note{color:var(--pl-faint);font-size:0.6875rem}
-.ld-ft{display:flex;flex-wrap:wrap;justify-content:space-between;gap:0.125rem 0.75rem;padding-top:0.3125rem;border-top:1px solid var(--pl-line);color:var(--pl-faint);font-size:0.6562rem}
+.ld-ft{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:0.125rem 0.75rem;padding-top:0.375rem;border-top:1px solid var(--pl-line);color:var(--pl-faint);font-size:0.6562rem}
+.ld-go{border:0;background:none;padding:0.125rem 0.25rem;margin:-0.125rem -0.25rem;border-radius:0.25rem;font:inherit;font-size:0.7188rem;font-weight:600;color:var(--pl-accent-ink);cursor:pointer}
+.ld-go:hover{background:var(--pl-hover);text-decoration:underline}
 
 /* a phone-sized window has two rows (menu, crumbs and buttons, then the search): the bars stand right of the search, in their narrowest form (top.css) */
 .loadbar[data-tier="dot"] .ld-sum .ld-k{display:none}
