@@ -23,6 +23,7 @@ import { PendingFiles, SavedFiles } from './Attached';
 import { AutoTextarea, fitText } from './AutoText';
 import { KeyButtons } from './Keys';
 import { MenuSlot } from './MenuCard';
+import { Completion, useComplete } from './Complete';
 import { chatBack, chatWide, setChatWide } from '../chat-wide';
 import { dragTodo } from '../todo-drag';
 import type { MenuData, TurnData } from '../types';
@@ -130,6 +131,8 @@ export function Chat(): JSX.Element {
   const lastReply = (showTurns ? c.turns[c.turns.length - 1].a : '') || reply;
   const options = dialog || busy ? [] : parseOptions(lastReply);
   const scr = screens.value.coordinator;
+  // The commands of the program that reads these words: the Coordinator's own.
+  const comp = useComplete({ program: coord?.program ?? '', dir: '' });
   // The Coordinator's selection menu, read from its screen: shown as a card with buttons while the screen has it.
   const menu: MenuData | null = dialog && !scr?.error ? (scr?.menu ?? null) : null;
 
@@ -180,6 +183,7 @@ export function Chat(): JSX.Element {
   const submit = async (): Promise<void> => {
     const ta = taRef.current;
     if (!ta) return;
+    comp.close();
     stuck.value = true;
     const text = ta.value;
     const ok = await send(text);
@@ -351,9 +355,18 @@ export function Chat(): JSX.Element {
       )}
       <PendingFiles files={pendingFiles.value} onRemove={removeFile} id="attach" />
       <form class="compose" id="ask" autocomplete="off" onSubmit={(e) => { e.preventDefault(); void submit(); }}>
+        <Completion
+          view={comp.view.value} id="ask-complete" onHover={comp.hover}
+          onPick={(i) => { const ta = taRef.current; if (ta) comp.pick(i, ta); }}
+        />
         <AutoTextarea
           id="ask-in" elRef={taRef} placeholder={t('chat.placeholder')} aria-label={t('chat.aria')}
-          onSend={() => void submit()} onKeyDown={onKey} onPaste={onPaste} onFocus={() => { panels.chat.value = true; }}
+          aria-controls="ask-complete" aria-expanded={!!comp.view.value}
+          onSend={() => void submit()}
+          onInput={() => { const ta = taRef.current; if (ta) comp.update(ta); }}
+          onClick={() => { const ta = taRef.current; if (ta) comp.update(ta); }}
+          onKeyDown={(e) => { const ta = taRef.current; if (ta && comp.key(e, ta)) return; onKey(e); }}
+          onPaste={onPaste} onFocus={() => { panels.chat.value = true; }}
         />
         <label class="attachbtn" title={t('chat.attachTitle')}>
           <Gl n="attach" />

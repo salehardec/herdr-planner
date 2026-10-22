@@ -792,6 +792,176 @@ section('chat', async () => {
   await press('Escape');
 });
 
+// ── the hints of `/` and `@`: the program's commands, and what to name in a message ──
+
+section('hints', async () => {
+  await resetUi();
+  await evalJs('planner.goOverview(); true');
+  await waitFor('world.debug().flight === "idle" && plannerDebug().selected === null', 15000);
+  const line = (value) => evalJs(`(() => {
+    const el = document.querySelector('#ask-in'); el.focus();
+    el.value = ${JSON.stringify(value)}; el.setSelectionRange(el.value.length, el.value.length);
+    el.dispatchEvent(new Event('input', { bubbles: true })); return true;
+  })()`);
+  const rows = () => evalJs('[...document.querySelectorAll("#ask-complete .cmpl-row")].map((e) => ({ label: e.querySelector(".cmpl-name").innerText, hint: e.querySelector(".cmpl-hint")?.innerText || "", cur: e.classList.contains("cmpl-cur") }))');
+  const headings = () => evalJs('[...document.querySelectorAll("#ask-complete .cmpl-group")].map((e) => e.innerText.trim())');
+  await press('Slash', '/');
+  check('/ opens the chat and focuses the line', await waitFor('document.querySelector("#chat").classList.contains("off") === false && document.activeElement.id === "ask-in"', 5000));
+  await line('/');
+  check('a slash at the start shows the program\'s own commands', await waitFor('!!document.querySelector("#ask-complete")', 10000) && (await headings()).map((h) => h.toLowerCase()).includes('команды программы'), JSON.stringify(await headings()));
+  const all = await rows();
+  check('Claude Code\'s built-in commands are there, with words about them', all.some((r) => r.label === '/compact' && r.hint.length > 0), JSON.stringify(all.slice(0, 4)));
+  check('the skill and the commands of this machine are there too', ['/fixture-skill', '/fixture-cmd', '/here-cmd'].every((l) => all.some((r) => r.label === l)), JSON.stringify(all.map((r) => r.label)));
+  check('a skill that is a link is offered too, as most of ~/.claude/skills are', all.some((r) => r.label === '/ui-ux-pro-max' && r.hint.length > 0), JSON.stringify(all.filter((r) => r.hint.includes('ссылк'))));
+  check('the commands come first, the skill and the folder commands after them', all.findIndex((r) => r.label === '/here-cmd') > all.findIndex((r) => r.label === '/compact'));
+  const named = await evalJs(`(() => {
+    const rows = [...document.querySelectorAll('#ask-complete .cmpl-row')].slice(0, 6);
+    const seen = rows.map((r) => {
+      const n = r.querySelector('.cmpl-name');
+      const nb = n.getBoundingClientRect();
+      const rb = r.getBoundingClientRect();
+      return { name: n.innerText, pos: getComputedStyle(n).position, inRow: nb.top >= rb.top - 1 && nb.bottom <= rb.bottom + 1 && nb.left >= rb.left - 1 && nb.right <= rb.right + 1, left: Math.round(nb.left), top: Math.round(nb.top) };
+    });
+    return { count: rows.length, seen, places: new Set(seen.map((s) => s.left + ',' + s.top)).size, hints: [...document.querySelectorAll('#ask-complete .cmpl-hint')].slice(0, 6).map((e) => getComputedStyle(e).position) };
+  })()`);
+  check('every row shows its name inside its own row (no page-wide rule lifts it out)', named.count >= 4 && named.seen.every((s) => s.inRow && s.pos !== 'absolute') && named.places === named.count && named.seen.every((s) => ['/'].includes(s.name.slice(0, 1))), JSON.stringify(named));
+  check('the name comes before its words in the row, not piled over the heading', await evalJs(`(() => {
+    const rows = [...document.querySelectorAll('#ask-complete .cmpl-row')].slice(0, 6);
+    return rows.every((r) => {
+      const n = r.querySelector('.cmpl-name').getBoundingClientRect();
+      const h = r.querySelector('.cmpl-hint');
+      return !h || n.right <= h.getBoundingClientRect().left + 1;
+    });
+  })()`));
+  const widths = await evalJs('[...document.querySelectorAll("#ask-complete .cmpl-name")].map((n) => ({ t: n.innerText, cw: n.clientWidth, sw: n.scrollWidth }))');
+  const cut = widths.filter((w) => w.sw > w.cw + 1);
+  check('no name is cut with an ellipsis: every command reads as a whole', cut.length === 0 && widths.length > 10 && widths.every((w) => w.cw > 8) && (await rows()).every((r) => r.label.startsWith('/')), JSON.stringify({ cut, sample: widths.slice(0, 6) }));
+  const [listBox, taBox] = [await rectOf('#ask-complete'), await rectOf('#ask-in')];
+  check('the list sits right above the line, inside the chat', listBox.b <= taBox.t + 4 && taBox.t - listBox.b < 24 && listBox.t > 0 && listBox.w > 100, JSON.stringify({ listBox, taBox }));
+  const shown = await evalJs(`(() => {
+    const l = document.querySelector('#ask-complete').getBoundingClientRect();
+    const c = document.querySelector('#chat').getBoundingClientRect();
+    const at = document.elementFromPoint((l.left + l.right) / 2, (l.top + l.bottom) / 2);
+    return { inChat: l.left >= c.left - 1 && l.right <= c.right + 1, onTop: !!at?.closest('.cmpl'), bg: getComputedStyle(document.querySelector('#ask-complete')).backgroundColor };
+  })()`);
+  check('the list is inside the chat and on top of it', shown.inChat && shown.onTop && !/, 0\)$/.test(shown.bg), JSON.stringify(shown));
+  await shot('hints-commands.png');
+  await line('/fix');
+  check('the list narrows as the words are typed', await waitFor('[...document.querySelectorAll("#ask-complete .cmpl-row")].length === 2', 4000) && (await rows()).every((r) => r.label.includes('fixture')), JSON.stringify(await rows()));
+  await press('Tab');
+  check('Tab inserts the chosen command, with a space for its words', await waitFor('document.querySelector("#ask-in").value === "/fixture-skill "', 3000), await evalJs('document.querySelector("#ask-in").value'));
+  check('and the list closes after the insertion', await waitFor('!document.querySelector("#ask-complete")', 3000));
+  await line('/comp');
+  await waitFor('!!document.querySelector("#ask-complete")', 4000);
+  const sentBefore = calls('coordinator.jsonl').length;
+  await press('Enter');
+  check('Enter picks a row instead of sending the message', await waitFor('document.querySelector("#ask-in").value === "/compact "', 3000) && calls('coordinator.jsonl').length === sentBefore, JSON.stringify({ value: await evalJs('document.querySelector("#ask-in").value'), sent: calls('coordinator.jsonl').length - sentBefore, last: lastCall('coordinator.jsonl') }));
+  await line('/co');
+  await waitFor('!!document.querySelector("#ask-complete")', 4000);
+  await press('Escape');
+  check('Esc closes the list and keeps the words and the chat', await waitFor('!document.querySelector("#ask-complete")', 3000) && (await evalJs('document.querySelector("#ask-in").value')) === '/co' && await evalJs('!document.querySelector("#chat").classList.contains("off")'), JSON.stringify({ value: await evalJs('document.querySelector("#ask-in").value'), off: await evalJs('document.querySelector("#chat").classList.contains("off")') }));
+  // @: the tasks, the universes, the files — with the id, the folder and the full path.
+  await line('@ALP-2');
+  check('@ searches the tasks of the board', await waitFor('[...document.querySelectorAll("#ask-complete .cmpl-group")].some((e) => e.innerText.trim().toLowerCase() === "задачи")', 4000) && (await rows()).some((r) => r.label === 'ALP-2'), JSON.stringify(await rows()));
+  const cutTask = await evalJs('[...document.querySelectorAll("#ask-complete .cmpl-name")].filter((n) => n.scrollWidth > n.clientWidth + 1).map((n) => n.innerText)');
+  check('a task id is named as a whole', cutTask.length === 0, JSON.stringify(cutTask));
+  await press('Enter');
+  check('a task goes in as its id', await waitFor('document.querySelector("#ask-in").value === "ALP-2"', 3000), await evalJs('document.querySelector("#ask-in").value'));
+  await line('@READM');
+  check('@ finds the files of the repositories', await waitFor('[...document.querySelectorAll("#ask-complete .cmpl-row")].some((e) => e.querySelector(".cmpl-name").innerText === "README.md")', 8000), await evalJs('document.querySelector("#ask-complete")?.innerText'));
+  await press('Enter');
+  const filePath = await evalJs('document.querySelector("#ask-in").value');
+  check('a file goes in as its full path on this machine', typeof filePath === 'string' && filePath.startsWith(fixture) && filePath.endsWith('/README.md') && existsSync(filePath), filePath);
+  const alphaRoot = (await stateApi()).projects.find((p) => p.name === 'alpha')?.root;
+  await line('@alph');
+  check('@ finds the universes', await waitFor('[...document.querySelectorAll("#ask-complete .cmpl-row")].some((e) => e.querySelector(".cmpl-name").innerText === "alpha")', 8000), await evalJs('document.querySelector("#ask-complete")?.innerText'));
+  check('the names of the @ list sit in their rows too', await evalJs(`(() => {
+    const rows = [...document.querySelectorAll('#ask-complete .cmpl-row')];
+    return rows.length >= 1 && rows.every((r) => {
+      const n = r.querySelector('.cmpl-name');
+      const nb = n.getBoundingClientRect();
+      const rb = r.getBoundingClientRect();
+      return nb.top >= rb.top - 1 && nb.bottom <= rb.bottom + 1 && nb.left >= rb.left - 1 && getComputedStyle(n).position !== 'absolute';
+    });
+  })()`), await evalJs('document.querySelector("#ask-complete")?.innerText'));
+  const atWidths = await evalJs('[...document.querySelectorAll("#ask-complete .cmpl-name")].map((n) => ({ t: n.innerText, cw: n.clientWidth, sw: n.scrollWidth }))');
+  const cutAt = atWidths.filter((w) => w.sw > w.cw + 1);
+  check('a universe is named as a whole, not «al…»', cutAt.length === 0 && atWidths.some((w) => w.t === 'alpha' && w.cw > 8) && (await rows()).some((r) => r.label === 'alpha'), JSON.stringify({ cutAt, shown: atWidths }));
+  await shot('hints-mentions.png');
+  await press('Enter');
+  check('a universe goes in as the folder of its repository', (await evalJs('document.querySelector("#ask-in").value')) === alphaRoot, JSON.stringify({ got: await evalJs('document.querySelector("#ask-in").value'), alphaRoot }));
+  await evalJs('(() => { const el = document.querySelector("#ask-in"); el.value = ""; el.dispatchEvent(new Event("input", { bubbles: true })); return true; })()');
+  await press('Escape');
+  check('Esc folds the chat back', await waitFor('document.querySelector("#chat").classList.contains("off")', 4000));
+  // The same list in «Написать агенту» of a task: the program of THAT task.
+  await go('alpha/2');
+  check('the reply field of a task takes the same hints', await waitFor('!!document.querySelector("#tell")', 10000));
+  await evalJs('(() => { const el = document.querySelector("#tell"); el.focus(); el.value = "/"; el.setSelectionRange(1, 1); el.dispatchEvent(new Event("input", { bubbles: true })); return true; })()');
+  check('a slash there shows the commands of the task agent\'s program', await waitFor('!!document.querySelector("#tell-complete")', 10000) && (await evalJs('[...document.querySelectorAll("#tell-complete .cmpl-group")].map((e) => e.innerText.trim().toLowerCase())')).includes('команды программы'), await evalJs('document.querySelector("#tell-complete")?.innerText'));
+  await shot('hints-tell.png');
+  const cutTell = await evalJs('[...document.querySelectorAll("#tell-complete .cmpl-name")].filter((n) => n.scrollWidth > n.clientWidth + 1).map((n) => n.innerText)');
+  check('no command name is cut there either', cutTell.length === 0, JSON.stringify(cutTell));
+  check('the list of the reply field is whole: not clipped by the panel', await evalJs(`(() => {
+    const l = document.querySelector('#tell-complete').getBoundingClientRect();
+    const f = document.querySelector('#focus').getBoundingClientRect();
+    const at = document.elementFromPoint((l.left + l.right) / 2, l.top + 6);
+    return l.top >= f.top - 1 && l.bottom <= f.bottom + 1 && !!at?.closest('#tell-complete');
+  })()`));
+  const tellsBefore = calls().filter((c) => c.argv[0] === 'tell').length;
+  await press('Enter');
+  check('Enter picks a command there too, instead of telling the agent', await waitFor('document.querySelector("#tell").value === "/add-dir "', 3000) && calls().filter((c) => c.argv[0] === 'tell').length === tellsBefore, JSON.stringify({ value: await evalJs('document.querySelector("#tell").value'), tells: calls().filter((c) => c.argv[0] === 'tell').length - tellsBefore, last: lastCall() }));
+  await evalJs('(() => { const el = document.querySelector("#tell"); el.value = "@ALP-2"; el.setSelectionRange(6, 6); el.dispatchEvent(new Event("input", { bubbles: true })); return true; })()');
+  check('@ in the reply field names a task by its id as well', await waitFor('[...document.querySelectorAll("#tell-complete .cmpl-row")].some((e) => e.querySelector(".cmpl-name").innerText === "ALP-2")', 5000), await evalJs('document.querySelector("#tell-complete")?.innerText'));
+  await press('Enter');
+  check('and inserts it', (await evalJs('document.querySelector("#tell").value')) === 'ALP-2', await evalJs('document.querySelector("#tell").value'));
+  await evalJs('(() => { const el = document.querySelector("#tell"); el.value = ""; el.dispatchEvent(new Event("input", { bubbles: true })); return true; })()');
+  // A skill with a name longer than the list is wide: it wraps inside its column, its words stay beside it.
+  const longName = '/superpowers-executing-plans-with-subagent-driven-development-review';
+  await evalJs(`(() => { const el = document.querySelector("#tell"); el.focus(); el.value = "/super"; el.setSelectionRange(6, 6); el.dispatchEvent(new Event("input", { bubbles: true })); return true; })()`);
+  check('a name longer than the list wraps inside it, and its words stay', await waitFor(`[...document.querySelectorAll("#tell-complete .cmpl-name")].some((n) => n.innerText === ${JSON.stringify(longName)})`, 10000) && await evalJs(`(() => {
+    const list = document.querySelector('#tell-complete');
+    const row = [...list.querySelectorAll('.cmpl-row')].find((r) => r.querySelector('.cmpl-name').innerText === ${JSON.stringify(longName)});
+    if (!row) return false;
+    const n = row.querySelector('.cmpl-name');
+    const h = row.querySelector('.cmpl-hint');
+    const nb = n.getBoundingClientRect();
+    const rb = row.getBoundingClientRect();
+    return list.scrollWidth <= list.clientWidth + 1 && nb.right <= rb.right + 1 && n.scrollWidth <= n.clientWidth + 1 && n.scrollHeight <= n.clientHeight + 1 && h.getBoundingClientRect().width > 10;
+  })()`), JSON.stringify(await evalJs(`(() => {
+    const list = document.querySelector('#tell-complete');
+    const row = [...list.querySelectorAll('.cmpl-row')].find((r) => r.querySelector('.cmpl-name').innerText.length > 40);
+    if (!row) return { rows: list.innerText.slice(0, 200) };
+    const n = row.querySelector('.cmpl-name'); const nb = n.getBoundingClientRect();
+    return { listScroll: [list.scrollWidth, list.clientWidth], name: [nb.left, nb.right, nb.top, nb.bottom], scroll: [n.scrollWidth, n.clientWidth, n.scrollHeight, n.clientHeight], hint: row.querySelector('.cmpl-hint').getBoundingClientRect().width };
+  })()`)));
+  await evalJs('(() => { const el = document.querySelector("#tell"); el.value = ""; el.dispatchEvent(new Event("input", { bubbles: true })); return true; })()');
+  // The list of a task whose agent is omp: its own commands, and a skill only as omp calls it (`/skill:name`).
+  await go('alpha/6');
+  check('an omp task opens its own reply field', await waitFor('!!document.querySelector("#tell") && plannerSnap().tasks.find((t) => t.id === "alpha/6")?.app === "omp"', 10000));
+  await evalJs('(() => { const el = document.querySelector("#tell"); el.focus(); el.value = "/"; el.setSelectionRange(1, 1); el.dispatchEvent(new Event("input", { bubbles: true })); return true; })()');
+  const ompRows = await (async () => {
+    const want = ['/compact', '/model', '/new', '/resume', '/settings'];
+    const ok = await waitFor(`[...document.querySelectorAll("#tell-complete .cmpl-row .cmpl-name")].filter((n) => ${JSON.stringify(want)}.includes(n.innerText)).length === 5`, 10000);
+    return { ok, labels: await evalJs('[...document.querySelectorAll("#tell-complete .cmpl-name")].map((n) => n.innerText)') };
+  })();
+  check('omp gets its own commands (compact, model, new, resume, settings)', ompRows.ok, JSON.stringify(ompRows.labels.slice(0, 34)));
+  const ompApi = await evalJs(`fetch('/api/hints/slash?program=omp&dir=').then((r) => r.json())`);
+  check('omp skill commands are named skill:<name>, not bare names', Array.isArray(ompApi?.commands) && ompApi.commands.filter((c) => c.kind !== 'builtin').every((c) => c.name.startsWith('skill:')), JSON.stringify((ompApi?.commands || []).filter((c) => c.kind !== 'builtin').slice(0, 5)));
+  // The row a person picks inserts a command omp knows: `/skill:<name> ` with the space for its words.
+  const ompSkill = (ompApi?.commands || []).find((c) => c.kind === 'skill');
+  if (ompSkill) {
+    const cmd = `/${ompSkill.name}`;
+    await evalJs(`(() => { const el = document.querySelector("#tell"); el.focus(); el.value = ${JSON.stringify(cmd)}; el.setSelectionRange(el.value.length, el.value.length); el.dispatchEvent(new Event("input", { bubbles: true })); return true; })()`);
+    const offered = await waitFor(`[...document.querySelectorAll("#tell-complete .cmpl-row .cmpl-name")].some((n) => n.innerText === ${JSON.stringify(cmd)})`, 8000);
+    await press('Enter');
+    check('Enter inserts the whole skill command, as the program calls it', offered && (await evalJs('document.querySelector("#tell").value')) === `${cmd} `, JSON.stringify({ cmd, value: await evalJs('document.querySelector("#tell").value') }));
+  }
+  const piApi = await evalJs(`fetch('/api/hints/slash?program=pi&dir=').then((r) => r.json())`);
+  check('pi does the same, and has its own commands', Array.isArray(piApi?.commands) && piApi.commands.filter((c) => c.kind !== 'builtin').every((c) => c.name.startsWith('skill:')) && ['settings', 'model', 'thinking', 'new', 'resume', 'compact'].every((n) => piApi.commands.some((c) => c.name === n && c.kind === 'builtin')), JSON.stringify((piApi?.commands || []).slice(0, 6)));
+  await evalJs('(() => { const el = document.querySelector("#tell"); el.value = ""; el.dispatchEvent(new Event("input", { bubbles: true })); return true; })()');
+  await resetUi();
+}, { retry: true });
+
 // ── the todo list: a drawer from the top (quake), next to the chat at the bottom ──
 
 const rectOf = (sel) => evalJs(`(() => { const e = document.querySelector(${JSON.stringify(sel)}); if (!e) return null; const r = e.getBoundingClientRect(); return { l: r.left, t: r.top, r: r.right, b: r.bottom, w: r.width, h: r.height }; })()`);
