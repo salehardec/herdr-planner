@@ -174,7 +174,7 @@ pub async fn closing_api(State(app): State<Shared>, Query(q): Query<ClosingQuery
     }
     let (repo, n) = (board::repo_of(&q.id).to_string(), board::number_of(&q.id));
     let dir = app.cfg.data_dir.clone();
-    let r = tokio::task::spawn_blocking(move || taskmeta::read_closing(&dir, &repo, n, 16 * 1024)).await;
+    let r = tokio::task::spawn_blocking(move || taskmeta::read_closing(&dir, &repo, n, taskmeta::CLOSING_MAX_BYTES)).await;
     match r {
         Ok(Some(c)) => Json(json!({"ok": true, "text": c.text, "truncated": c.truncated})).into_response(),
         Ok(None) => Json(json!({"ok": true, "text": "", "truncated": false})).into_response(),

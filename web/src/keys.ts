@@ -111,6 +111,9 @@ export function installKeys(): void {
   document.addEventListener('keydown', (e) => {
     const target = e.target;
     const code = e.code;
+    // A dialog or the result window owns the keys: Esc still closes it, but «/», letters and digits must not
+    // act behind it (the chat would open with its input hidden under the scrim).
+    if (dialogOpen() && e.key !== 'Escape') return;
     // Search: from anywhere, the same key in every layout.
     if ((e.ctrlKey || e.metaKey) && code === 'KeyK') { e.preventDefault(); focusSearch(); return; }
     // The size of the interface (the browser's own page zoom is left alone: its menu and the wheel still work).

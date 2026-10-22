@@ -309,6 +309,12 @@ const CLOSING = {
     '- Решили не хранить тему в базе: хватает localStorage и системной настройки.',
     '- Грабли: переключатель темы мигал при загрузке, пока класс не ставился до первой отрисовки.',
   ].join('\n') + '\n',
+  'alpha/5': [
+    'Итог ALP-5: кэш агрегатов переписан.',
+    '- Сброс кэша при смене набора данных добавлен.',
+    '- Тест `cache_reset` пока падает: нужен пустой отчёт.',
+    '- Ревью просило добавить тест на пустой отчёт — не успел.',
+  ].join('\n') + '\n',
   'alpha/15': [
     'Summary of ALP-15: the export button now shows progress.',
     '- Added a progress bar to the export dialog (ui/export.rs).',
@@ -324,7 +330,24 @@ const CLOSING = {
     '- Конфиг по умолчанию теперь без него; старые файлы читаются как раньше.',
     '- Тесты зелёные, работа влита в main.',
   ].join('\n') + '\n',
-  'beta/1': 'Done: CI config added, the smoke test passes on main. Nothing left open.\n',
+  // More than the old 16 KiB endpoint cap, with a table and nested lists: the window must show all of it.
+  'beta/1': [
+    'Done: CI config added, the smoke test passes on main. Nothing left open.',
+    '',
+    '| метод | путь | назначение |',
+    '|:---|:---:|---:|',
+    '| POST | /api/export | создать выгрузку |',
+    '| GET | /api/export/7 | прочитать выгрузку |',
+    '',
+    '- Верхний пункт',
+    '  - Вложенный пункт',
+    '    - Ещё глубже',
+    '- Второй пункт',
+    '',
+    ...Array.from({ length: 220 }, (_, i) => `- Строка длинного итога ${i + 1}: ${'подробность '.repeat(6)}`),
+    '',
+    'КОНЕЦ-ИТОГА',
+  ].join('\n') + '\n',
 };
 
 // The Coordinator: a Claude transcript of ten turns, the last one unanswered.

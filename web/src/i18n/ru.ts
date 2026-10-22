@@ -67,6 +67,7 @@ export const ru: Record<string, string | string[]> = {
   'focus.remoteFiles': 'Открыть файлы можно только на машине с доской. Путь: {path}', 'focus.none': 'ещё нет',
   'focus.tellPlaceholder': 'Написать агенту {tag}…', 'focus.tell': 'Написать агенту', 'focus.send': 'Отправить',
   'focus.closing': 'Итог агента', 'focus.closingNone': 'Агент не оставил итога.', 'focus.closingLoading': 'Итог появится, когда агент закончит.', 'focus.closingCut': 'Итог длиннее: показано начало.',
+  'focus.expand': 'Развернуть', 'focus.collapse': 'Свернуть', 'focus.descriptionNone': 'Описание не заполнено.',
   'focus.subagents': 'Субагенты', 'focus.description': 'Описание', 'focus.links': 'Связи · эта начнётся после', 'focus.noLinks': 'Ни от кого не зависит. Потяни линию от этой планеты к другой (Shift или режим «Связь»), чтобы сказать «начнётся после».',
   'focus.link': 'Связь', 'focus.linkText': '{a} начнётся после {b}', 'focus.linkRemote': 'Это чужая машина: снять там.', 'focus.unlink': 'Снять связь',
   'focus.review': 'Ревью', 'focus.reviewTally': 'Ревью: {v}', 'focus.reviewFailed': 'Ревью не прошло — можно вернуть замечания агенту или влить «всё равно».',

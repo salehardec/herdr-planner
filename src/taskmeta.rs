@@ -129,6 +129,10 @@ fn parse_task(v: &Value) -> TaskMeta {
     }
 }
 
+/// The ceiling for one closing note: high enough to show a real note whole (the longest on the board is
+/// about 16 KiB), low enough that a runaway file cannot be read without bound.
+pub const CLOSING_MAX_BYTES: usize = 1024 * 1024;
+
 /// `<data>/tasks/<repo>/<n>/closing.md`, at most `max_bytes` bytes (cut at a
 /// character boundary; `…` is appended when cut). `None` when the file is missing.
 pub fn read_closing(data_dir: &Path, repo: &str, n: u64, max_bytes: usize) -> Option<Closing> {
@@ -313,6 +317,18 @@ mod tests {
         let whole = read_closing(dir.path(), "r", 3, 100_000).unwrap();
         assert!(!whole.truncated);
         assert_eq!(whole.text, text);
+    }
+
+    #[test]
+    fn a_note_over_the_old_limit_is_read_whole() {
+        // The old endpoint cap was 16 KiB: an ordinary long note must not be cut by it.
+        let text = format!("{}\nКОНЕЦ-ИТОГА\n", "- строка итога\n".repeat(2000));
+        assert!(text.len() > 16 * 1024);
+        let dir = data_with(&[("tasks/r/7/closing.md", &text)]);
+        let whole = read_closing(dir.path(), "r", 7, CLOSING_MAX_BYTES).unwrap();
+        assert!(!whole.truncated);
+        assert_eq!(whole.text, text);
+        assert!(whole.text.contains("КОНЕЦ-ИТОГА"));
     }
 
     #[test]
