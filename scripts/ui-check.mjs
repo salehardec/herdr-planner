@@ -596,6 +596,18 @@ section('search', async () => {
 
 section('chat', async () => {
   await resetUi();
+  // The shipyard's own alarm (PLN-42) is a real message to the Coordinator: at the first poll it arrives and becomes
+  // the stand-in's last words. Wait for it (it is sent once — that state does not change), then put the fixture's
+  // opening words back and let the page read them, so this section starts from the conversation the fixture describes.
+  await waitLog(() => calls('coordinator.jsonl').some((c) => String(c.text || '').startsWith('Верфь')), 30000);
+  const coordFile = join(fixture, 'state', 'coordinator.json');
+  const coordState = JSON.parse(readFileSync(coordFile, 'utf8'));
+  coordState.reply = 'Жду задач. Доска спокойна.\n\nЧто делаем?\n1) Показать план на день\n2) Разобрать «Ждёт тебя»';
+  writeFileSync(coordFile, JSON.stringify(coordState));
+  // A change of a task record makes the server read the Coordinator's line again now, not at the next minute.
+  const coordPoke = join(fixture, 'board', 'tasks', 'alpha', '11', 'task.json');
+  writeFileSync(coordPoke, readFileSync(coordPoke, 'utf8'));
+  await waitFor('(plannerSnap().coordinator.reply || "").includes("Разобрать")', 15000);
   await evalJs('planner.goOverview(); true');
   await waitFor('world.debug().flight === "idle" && plannerDebug().selected === null', 15000);
   await press('Slash', '/');
@@ -4738,6 +4750,13 @@ section('runners alerts', async () => {
   await evalJs('(() => { const d = document.querySelector("#rf-disk-pct"); d.value = "15"; d.dispatchEvent(new Event("input", { bubbles: true })); const m = document.querySelector("#rf-offline-min"); m.value = "3"; m.dispatchEvent(new Event("input", { bubbles: true })); return true; })()');
   await twoPresses('#rf-set');
   check('saving keeps them in the list file', await waitLog(() => { try { const r = JSON.parse(readFileSync(join(fixture, 'settings', 'runners.json'), 'utf8')).runners.find((x) => x.id === 'vm-r'); return r?.alerts?.disk_free_pct === 15 && r?.alerts?.offline_min === 3; } catch { return false; } }, 10000), readFileSync(join(fixture, 'settings', 'runners.json'), 'utf8').slice(0, 300));
+  // An emptied field is «leave it as it is», not «zero»: Number('') is 0, and that would turn the disk alarm off.
+  await waitFor('!document.querySelector("#rf-edit")', 8000);
+  await evalJs('[...document.querySelectorAll("#focus button")].find((b) => b.innerText.includes("Метки и защита"))?.click(); true');
+  await waitFor('!!document.querySelector("#rf-disk-pct") && !!document.querySelector("#rf-offline-min")', 8000);
+  await evalJs('(() => { for (const id of ["#rf-disk-pct", "#rf-offline-min"]) { const i = document.querySelector(id); i.value = ""; i.dispatchEvent(new Event("input", { bubbles: true })); } return true; })()');
+  await twoPresses('#rf-set');
+  check('an emptied threshold field keeps the old value, not 0', await waitLog(() => { try { const r = JSON.parse(readFileSync(join(fixture, 'settings', 'runners.json'), 'utf8')).runners.find((x) => x.id === 'vm-r'); return r?.alerts?.disk_free_pct === 15 && r?.alerts?.offline_min === 3; } catch { return false; } }, 8000), readFileSync(join(fixture, 'settings', 'runners.json'), 'utf8').slice(0, 300));
   await post('/api/runner/set', { id: 'vm-r', confirm: true, disk_free_pct: 10, offline_min: 10 });
   await openYard();
   await evalJs('document.querySelector("#rf-alerts")?.scrollIntoView({ block: "center" }); true');

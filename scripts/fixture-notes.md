@@ -177,7 +177,9 @@ The planner works with its own board only. The stand-ins still answer as a board
 - `log/ssh.jsonl` gets a line with `runner: "vm-r"` for every such call. No copy of the list goes to another machine.
 - The yard's alarms (`src/runners_alert.rs`) are sent to the Coordinator as `coordinator tell`: `log/coordinator.jsonl`
   gets a line whose text starts with «Верфь …». They come one per state (little disk, silence, a fallen container, a
-  forgotten one) and are not repeated while the state lasts — the same names the page's own messages would use.
+  forgotten one) and are not repeated while the state lasts — the same names the page's own messages would use. The
+  `chat` section waits for the first such line, then writes the stand-in's opening words back (the alarm is a real
+  message and changes them), so its option buttons are those of the fixture's conversation.
 - The wizard's local check: `ssh -G me@192.0.2.29` prints its `hostname`, `bin/docker` exists, and the stand-in ssh
   answers `true` and `docker version` with `28.3.0`.
 

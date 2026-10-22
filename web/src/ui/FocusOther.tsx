@@ -299,7 +299,8 @@ export function RunnerFocus(props: { entity: Entity }): JSX.Element {
           tags: tags.split(',').map((x) => x.trim()).filter(Boolean),
           protected: masks.split(',').map((x) => x.trim()).filter(Boolean),
           ports_host: ports.trim(), note, default: makeDefault || undefined,
-          disk_free_pct: Number(alertDiskPct), offline_min: Number(alertOfflineMin),
+          disk_free_pct: alertDiskPct.trim() === '' ? undefined : Number(alertDiskPct),
+          offline_min: alertOfflineMin.trim() === '' ? undefined : Number(alertOfflineMin),
         });
         toast(t('runner.saved'));
         setEditOpen(false);

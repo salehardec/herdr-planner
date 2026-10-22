@@ -8,7 +8,7 @@
 use crate::app::{self, Shared};
 use crate::runners::{Class, Container, RunnerState};
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::time::Duration;
 
 /// The defaults: a yard with less than a tenth of its disk free, or one that has not answered for ten minutes.
@@ -235,11 +235,32 @@ fn since_of(v: u64, now: u64) -> u64 {
     }
 }
 
+/// Whether the last read says what the yard really has: ssh answered, docker answered (`docker version` printed a
+/// version) and the disk was measured. Only then does an alarm missing from the read mean the state has passed; a
+/// probe that came back with an empty docker or without its disk must not pass for «the alarms are gone».
+fn read_is_complete(st: &RunnerState) -> bool {
+    st.ok && !st.host.docker_version.is_empty() && st.host.disk_size > 0
+}
+
 /// Fits fresh alarms into the book: the same state keeps the moment it was first seen, and an alarm whose key was
-/// not told yet is new. The returned book carries exactly the keys now shown — an alarm that went away is forgotten,
-/// so its next appearance is news again.
-pub fn reconcile(book: &Book, fresh: Vec<Alert>, now: u64) -> (Vec<Alert>, Vec<Alert>, Book) {
-    let sent: BTreeSet<&str> = book.sent.iter().map(String::as_str).collect();
+/// not told yet is new.
+///
+/// `certain` says the read behind `fresh` is complete — the yard answered, and an alarm that is missing from it has
+/// really passed. Then the book keeps exactly the keys shown, so a later appearance is news again. Without that (the
+/// yard is silent, or its silence is still shorter than the threshold) the list says nothing about what it does not
+/// show: the keys already told stay in the book, and an alarm that never went away is not told twice.
+pub fn reconcile(
+    book: &Book,
+    fresh: Vec<Alert>,
+    now: u64,
+    certain: bool,
+) -> (Vec<Alert>, Vec<Alert>, Book) {
+    let told: BTreeSet<&str> = book.sent.iter().map(String::as_str).collect();
+    let mut sent: BTreeSet<String> = if certain {
+        BTreeSet::new()
+    } else {
+        book.sent.iter().cloned().collect()
+    };
     let mut alerts: Vec<Alert> = Vec::with_capacity(fresh.len());
     let mut new: Vec<Alert> = Vec::new();
     for mut a in fresh {
@@ -247,13 +268,14 @@ pub fn reconcile(book: &Book, fresh: Vec<Alert>, now: u64) -> (Vec<Alert>, Vec<A
             Some(old) => since_of(old.since_ms, now).min(since_of(a.since_ms, now)),
             None => since_of(a.since_ms, now),
         };
-        if !sent.contains(a.key.as_str()) {
+        if !told.contains(a.key.as_str()) {
             new.push(a.clone());
         }
+        sent.insert(a.key.clone());
         alerts.push(a);
     }
     let next = Book {
-        sent: alerts.iter().map(|a| a.key.clone()).collect(),
+        sent: sent.into_iter().collect(),
         alerts: alerts.clone(),
     };
     (alerts, new, next)
@@ -329,7 +351,7 @@ pub async fn apply(app: &Shared, states: &mut [RunnerState], now: u64) {
             .meta_get(&meta_key(&st.id))
             .and_then(|t| serde_json::from_str(&t).ok())
             .unwrap_or_default();
-        let (alerts, new, next) = reconcile(&book, current, now);
+        let (alerts, new, next) = reconcile(&book, current, now, read_is_complete(st));
         st.alerts = alerts;
         if let Ok(json) = serde_json::to_string(&next) {
             app.db.meta_set(&meta_key(&st.id), &json);
@@ -341,7 +363,12 @@ pub async fn apply(app: &Shared, states: &mut [RunnerState], now: u64) {
     }
     let text = message(&new_all);
     app::journal_note(app, "runner", "runner_alert", &text.replace('\n', "; ")).await;
+    let mut by_runner: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for a in &new_all {
+        by_runner.entry(a.runner.clone()).or_default().push(a.key.clone());
+    }
     // The Coordinator is told in the background: a slow board command must not hold the page's snapshot.
+    let app2 = Shared::clone(app);
     let cfg = app.cfg.clone();
     tokio::spawn(async move {
         if let Err(e) = app::run_board(
@@ -352,6 +379,19 @@ pub async fn apply(app: &Shared, states: &mut [RunnerState], now: u64) {
         .await
         {
             eprintln!("herdr-planner: тревоги верфей не ушли Координатору: {e}");
+            // It did not hear them: the keys go back to «not told», and the next read tells them again.
+            let _guard = app2.runner_alerts_lock.lock().await;
+            for (id, keys) in by_runner {
+                let mut book: Book = app2
+                    .db
+                    .meta_get(&meta_key(&id))
+                    .and_then(|t| serde_json::from_str(&t).ok())
+                    .unwrap_or_default();
+                book.sent.retain(|k| !keys.contains(k));
+                if let Ok(json) = serde_json::to_string(&book) {
+                    app2.db.meta_set(&meta_key(&id), &json);
+                }
+            }
         }
     });
 }
@@ -505,24 +545,85 @@ mod tests {
         st.host.disk_avail = 5;
         let fresh = alerts_of(&st, 1_000);
         assert_eq!(fresh.len(), 1);
-        let (alerts, new, book) = reconcile(&Book::default(), fresh, 1_000);
+        let (alerts, new, book) = reconcile(&Book::default(), fresh, 1_000, true);
         assert_eq!(alerts[0].since_ms, 1_000);
         assert_eq!(new.len(), 1, "the first sight is news");
         assert_eq!(book.sent, vec!["vm-r:disk".to_string()]);
         // the same state later: still shown, not news, the first sight kept
         let again = alerts_of(&st, 90_000);
-        let (alerts2, new2, book2) = reconcile(&book, again, 90_000);
+        let (alerts2, new2, book2) = reconcile(&book, again, 90_000, true);
         assert_eq!(alerts2[0].since_ms, 1_000);
         assert!(new2.is_empty());
         assert_eq!(book2.sent, book.sent);
         // the alarm goes away: it is forgotten, and so is the mark
-        let (none, new3, book3) = reconcile(&book2, Vec::new(), 100_000);
+        let (none, new3, book3) = reconcile(&book2, Vec::new(), 100_000, true);
         assert!(none.is_empty() && new3.is_empty());
         assert!(book3.sent.is_empty() && book3.alerts.is_empty());
         // and comes back: news again
-        let (_, new4, _) = reconcile(&book3, alerts_of(&st, 200_000), 200_000);
+        let (_, new4, _) = reconcile(&book3, alerts_of(&st, 200_000), 200_000, true);
         assert_eq!(new4.len(), 1);
         assert_eq!(new4[0].since_ms, 200_000);
+    }
+
+    #[test]
+    fn an_alarm_that_cannot_be_seen_is_not_told_again() {
+        // The disk was told. The yard then goes silent for less than the threshold (or is restored from the cache):
+        // the read says nothing about the disk, but the disk has not recovered either.
+        let mut st = state();
+        st.host.disk_size = 100;
+        st.host.disk_avail = 5;
+        let (_, new, book) = reconcile(&Book::default(), alerts_of(&st, 1_000), 1_000, true);
+        assert_eq!(new.len(), 1);
+        let mut silent = st.clone();
+        silent.ok = false;
+        silent.down_since_ms = 1_000_000;
+        let unknown = alerts_of(&silent, 1_030_000);
+        assert!(unknown.is_empty(), "a silence shorter than the threshold is no alarm");
+        let (shown, new2, book2) = reconcile(&book, unknown, 1_030_000, false);
+        assert!(shown.is_empty() && new2.is_empty());
+        assert_eq!(book2.sent, vec!["vm-r:disk".to_string()], "the key stays told");
+        // the yard answers again with the same disk: nothing new
+        let (shown2, new3, book3) = reconcile(&book2, alerts_of(&st, 1_060_000), 1_060_000, true);
+        assert_eq!(shown2.len(), 1);
+        assert!(new3.is_empty(), "the same disk must not be told twice");
+        assert_eq!(book3.sent, book2.sent);
+        // only a complete read that finds no disk means the trouble has passed
+        let (_, _, book4) = reconcile(&book3, Vec::new(), 1_090_000, true);
+        assert!(book4.sent.is_empty());
+        let (_, new5, _) = reconcile(&book4, alerts_of(&st, 1_120_000), 1_120_000, true);
+        assert_eq!(new5.len(), 1, "back again after a recovery: news");
+    }
+
+    #[test]
+    fn a_read_without_docker_or_disk_is_not_complete() {
+        let mut st = state();
+        assert!(!read_is_complete(&st), "no docker version: the daemon may be down");
+        st.host.docker_version = "28.3.0".into();
+        assert!(read_is_complete(&st));
+        st.ok = false;
+        assert!(!read_is_complete(&st), "no answer: nothing is known");
+        st.ok = true;
+        st.host.disk_size = 0;
+        assert!(!read_is_complete(&st), "the disk was not measured");
+    }
+
+    #[test]
+    fn a_planner_restart_does_not_tell_again() {
+        // The cache says «not live» (ok=false) while the book says the alarm was told: the book must survive that.
+        let mut st = state();
+        st.host.disk_size = 100;
+        st.host.disk_avail = 5;
+        let (_, new, book) = reconcile(&Book::default(), alerts_of(&st, 1_000), 1_000, true);
+        assert_eq!(new.len(), 1);
+        let mut cached = st.clone();
+        cached.ok = false;
+        cached.down_since_ms = 0; // what a healthy yard leaves in the cache
+        let (shown, new2, book2) = reconcile(&book, alerts_of(&cached, 5_000), 5_000, false);
+        assert!(shown.is_empty() && new2.is_empty());
+        assert_eq!(book2.sent, book.sent);
+        // the first probe after the restart: the same disk, still not news
+        let (_, new3, _) = reconcile(&book2, alerts_of(&st, 8_000), 8_000, true);
+        assert!(new3.is_empty());
     }
 
     #[test]
