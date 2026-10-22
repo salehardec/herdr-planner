@@ -275,7 +275,7 @@ function Galaxies(): JSX.Element {
           const showing = pending.value?.key === key;
           return (
             <li key={g.label} data-galaxy={g.label}>
-              <div class="gl">
+              <div class="gline">
                 <Gl n="galaxy" />
                 <b>{g.label}</b>
                 <span class={`badge s-${g.ok ? 'working' : 'failed'}`}>{g.ok ? t('galaxy.online') : t('galaxy.off')}</span>

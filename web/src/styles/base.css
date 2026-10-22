@@ -36,7 +36,8 @@
   --pl-panel-solid:color-mix(in srgb,var(--pl-bg) 97%,transparent);
   --pl-r:0.4375rem;
   /* the free middle of the screen between the navigator (left) and the focus card (right): the drawer of todos and the chat live there */
-  --nav-w:21.25rem; --focus-w:24.375rem;
+  /* the navigator: wide enough for the names of the tasks (the status is only a glyph and a short word); the operator's own width (--nav-user, set by nav-width.ts) wins */
+  --nav-w:min(var(--nav-user,26rem),55vw); --focus-w:24.375rem;
   --mid-l-nav:calc(var(--nav-w) + 1.5rem); --mid-r-focus:calc(var(--focus-w) + 1.5rem);
   --mid-l:var(--mid-l-nav); --mid-r:var(--mid-r-focus);
 }
@@ -48,7 +49,8 @@
   --pl-on-accent:color-mix(in srgb,var(--c-bg) 25%,#fff);
   --pl-panel:color-mix(in srgb,var(--pl-bg) 90%,transparent);
 }
-:root.bp1100 .win{--nav-w:18.125rem;--focus-w:20.625rem}
+:root.bp1400 .win{--nav-w:min(var(--nav-user,22rem),55vw)}
+:root.bp1100 .win{--nav-w:min(var(--nav-user,21rem),55vw);--focus-w:20.625rem}
 /* a closed navigator or focus card gives its column back */
 .win.nav-off{--mid-l:0.75rem}
 .win.focus-off{--mid-r:0.75rem}

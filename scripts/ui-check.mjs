@@ -287,6 +287,30 @@ section('navigator', async () => {
   await press('ArrowDown');
   check('the arrow keys move along the tree', await waitFor('document.activeElement.dataset.nav !== undefined', 3000));
   await shot('navigator.png');
+  // the width: the edge is dragged, the width is remembered, a double click brings the default back
+  await evalJs('try { localStorage.removeItem("herdr-planner.navW"); } catch {} true');
+  const navW = () => evalJs('document.querySelector("#nav").getBoundingClientRect().width');
+  const w0 = await navW();
+  const grip = await rectOf('#nav .nav-grip');
+  check('the navigator has an edge to drag, on its right', !!grip && Math.abs(grip.r - (await rectOf('#nav')).r) < 2, JSON.stringify(grip));
+  check('the edge does not cover the tree\'s scrollbar: the tree\'s right edge is not the edge handle', await evalJs(`(() => { const t = document.querySelector('#nav .tree').getBoundingClientRect(); const e = document.elementFromPoint(t.right - 3, (t.top + t.bottom) / 2); return !!e && !e.classList.contains('nav-grip') && !!e.closest('.tree'); })()`));
+  const gx = (grip.l + grip.r) / 2; const gy = (grip.t + grip.b) / 2;
+  await send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: gx, y: gy });
+  await send('Input.dispatchMouseEvent', { type: 'mousePressed', x: gx, y: gy, button: 'left', buttons: 1, clickCount: 1 });
+  for (const dx of [20, 60, 100, 140]) await send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: gx + dx, y: gy, button: 'left', buttons: 1 });
+  await send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: gx + 140, y: gy, button: 'left', buttons: 0, clickCount: 1 });
+  check('dragging the edge widens the panel', await waitFor(`document.querySelector("#nav").getBoundingClientRect().width > ${w0 + 100}`, 3000), `${w0} → ${await navW()}`);
+  check('the width is remembered in the browser (in rem)', /^\d+(\.\d+)?$/.test(await evalJs('localStorage.getItem("herdr-planner.navW") || ""')), await evalJs('localStorage.getItem("herdr-planner.navW")'));
+  const w1 = await navW();
+  await navigate(base + '/?noauto&nocoach&bloom=0');
+  check('after a reload the panel has the same width', Math.abs((await navW()) - w1) < 2, `${w1} → ${await navW()}`);
+  await evalJs('document.querySelector("#nav .nav-grip").focus(); true');
+  await press('ArrowLeft');
+  check('the arrow keys on the edge change the width too', await waitFor(`document.querySelector("#nav").getBoundingClientRect().width < ${w1 - 8}`, 3000), `${w1} → ${await navW()}`);
+  await evalJs('document.querySelector("#nav .nav-grip").dispatchEvent(new MouseEvent("dblclick", { bubbles: true })); true');
+  check('a double click on the edge brings the default width back', await waitFor(`Math.abs(document.querySelector("#nav").getBoundingClientRect().width - ${w0}) < 2`, 3000) && !(await evalJs('localStorage.getItem("herdr-planner.navW")')), `${w0} → ${await navW()}`);
+  await evalJs('try { localStorage.removeItem("herdr-planner.navW"); } catch {} true');
+  await send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: 700, y: 400 });
 }, { retry: true });
 
 section('autopilot', async () => {
@@ -1940,6 +1964,255 @@ section('simple mode and no WebGL', async () => {
   } finally {
     await send('Page.removeScriptToEvaluateOnNewDocument', { identifier: noGl });
   }
+}, { retry: true });
+
+// ── layout at every scale ─────────────────────────────────────────────────
+// The panels must keep their order at any size of the window and any scale (the browser's pixel ratio and the interface's own
+// size): no content wider than its box, nothing past the panel's edge, no setting name broken into letters, the whole text of
+// the chat in view, and a navigator that shows the names of the tasks. The page does the measuring (window.__audit); a finding
+// names the element and the numbers, so a failure says what broke and where.
+const AUDIT = `window.__audit = (sel) => {
+  const root = document.querySelector(sel);
+  if (!root) return ['missing'];
+  const rr = root.getBoundingClientRect();
+  const bad = [];
+  const name = (el) => el.tagName.toLowerCase() + (el.id ? '#' + el.id : '') + (typeof el.className === 'string' && el.className.trim() ? '.' + el.className.trim().split(/\\s+/).slice(0, 2).join('.') : '');
+  const clips = (el) => getComputedStyle(el).overflowX !== 'visible';
+  for (const el of [root, ...root.querySelectorAll('*')]) {
+    const cs = getComputedStyle(el);
+    if (cs.display === 'none' || cs.visibility === 'hidden' || cs.display === 'contents') continue;
+    if (el.closest('svg') && el.tagName.toLowerCase() !== 'svg') continue;
+    if (el.classList.contains('sr') || el.closest('.sr, [aria-hidden="true"]:not(#' + (root.id || 'x') + ')')) continue;
+    const r = el.getBoundingClientRect();
+    if (!r.width && !r.height) continue;
+    const scrolls = el.tagName === 'PRE' && cs.overflowX !== 'visible';
+    if (cs.display !== 'inline' && el.clientWidth > 0 && el.scrollWidth > el.clientWidth + 1 && cs.textOverflow !== 'ellipsis' && !scrolls) {
+      bad.push(name(el) + ' content ' + el.scrollWidth + ' > box ' + el.clientWidth);
+    }
+    let hidden = false;
+    for (let p = el.parentElement; p && !hidden; p = p.parentElement) { if (clips(p)) hidden = true; if (p === root) break; }
+    if (el !== root && !hidden && (r.right > rr.right + 1.5 || r.left < rr.left - 1.5)) bad.push(name(el) + ' sticks out of the panel by ' + Math.round(Math.max(r.right - rr.right, rr.left - r.left)));
+  }
+  return bad.slice(0, 8);
+};
+window.__nameParts = (sel) => [...document.querySelectorAll(sel)].map((nm) => {
+  // every text part of a name (the words between the dots) must stay on one line, and the name is as wide as its widest part
+  let widest = 0; let broken = 0;
+  const w = document.createTreeWalker(nm, NodeFilter.SHOW_TEXT);
+  for (let n = w.nextNode(); n; n = w.nextNode()) {
+    const rg = document.createRange(); rg.selectNodeContents(n);
+    const rects = [...rg.getClientRects()].filter((r) => r.width > 0);
+    if (new Set(rects.map((r) => Math.round(r.top / 4))).size > 1) broken++;
+    widest = Math.max(widest, ...rects.map((r) => r.width));
+  }
+  return { name: nm.textContent, width: nm.getBoundingClientRect().width, widest, broken };
+});`;
+const layoutProblems = (sel) => evalJs(`window.__audit(${JSON.stringify(sel)})`);
+// the shortest a task's name may show in the navigator, in rem (about 20 characters)
+const NAV_TITLE_MIN_REM = 10;
+
+// The settings of the board in the station dialog: the names whole, a row either one row or a column. `stacked`: the dialog is narrow, so
+// the rows must be columns (the container query of station.css); undefined: either is right.
+const boardChecks = async (at, stacked) => {
+  await waitFor('document.querySelectorAll("#st-board [data-setting]").length > 5', 40000);
+  const bad = await layoutProblems('#station');
+  check(`${at}: the station, after its answer came: nothing wider than its box`, bad.length === 0, bad.join('; '));
+  // scrolled inside the dialog only (scrollIntoView would move the page itself, which has overflow:hidden)
+  await evalJs('(() => { const d = document.querySelector("#station"); const b = document.querySelector("#st-board"); if (d && b) d.scrollTop = b.getBoundingClientRect().top - d.getBoundingClientRect().top + d.scrollTop; return true; })()');
+  const parts = await evalJs('window.__nameParts("#st-board .setrow .nm")');
+  const brokenNames = (parts || []).filter((x) => x.broken > 0 || x.width < x.widest - 1);
+  check(`${at}: setting names stay whole: no name is broken inside a word, none is narrower than its widest word (${(parts || []).length} names)`, (parts || []).length > 5 && brokenNames.length === 0, JSON.stringify(brokenNames.slice(0, 3)));
+  const grid = await evalJs(`(() => { const r = document.querySelector('#st-board .setrow'); const nm = r.querySelector('.nm').getBoundingClientRect(); const sv = r.querySelector('.setval').getBoundingClientRect(); return { sameLine: nm.top < sv.bottom && sv.top < nm.bottom, stacked: sv.top >= nm.bottom - 1, nmW: nm.width, svL: sv.left, nmR: nm.right }; })()`);
+  check(`${at}: a setting row is one row or a column, its parts never squeezed side by side`, grid && (grid.stacked || (grid.sameLine && grid.svL >= grid.nmR - 1)), JSON.stringify(grid));
+  if (stacked !== undefined) check(`${at}: the dialog is ${stacked ? 'narrow: the rows are columns' : 'wide: the rows are rows'}`, grid && grid.stacked === stacked, JSON.stringify(grid));
+};
+
+// The pixel ratio changes what the browser draws, not what the page lays out in CSS pixels: the full round is made at 1, and the
+// panels that carry the layout rules (navigator, chat, settings) again at every other ratio.
+const CORE_PANELS = ['the navigator', 'the chat', 'the wide chat with the todos', 'the station'];
+const layoutRun = async (w, h, dsf, scale = 'auto') => {
+  // the whole round at the usual scales; the panels that carry the layout rules at the others (and the drag test at every scale of pixel ratio 1)
+  const full = dsf === 1 && (scale === 'auto' || scale === 150 || scale === 200);
+  await send('Emulation.setDeviceMetricsOverride', { width: w, height: h, screenWidth: w, screenHeight: h, deviceScaleFactor: dsf, mobile: false });
+  await waitFor(`innerWidth === ${w}`, 5000);
+  await resized();
+  // «Масштаб интерфейса» (the setting): the interface sees the window as w / scale, so 150 % on a 2K window lays out like 1707 px
+  await evalJs(`try { localStorage.setItem('herdr-planner.uiScale', ${JSON.stringify(String(scale))}); } catch {} true`);
+  await navigate(base + '/?noauto&nocoach&bloom=0');
+  await waitFor('window.world && world.debug().planets > 0', 20000);
+  await resized();
+  await evalJs(AUDIT);
+  const at = `${w}×${h} @${dsf}${scale === 'auto' ? '' : ` scale ${scale} %`}`;
+  const root = await evalJs('parseFloat(getComputedStyle(document.documentElement).fontSize)');
+  const eff = w / (root / 16);
+  if (scale !== 'auto') check(`${at}: the setting is in force (root ${root} px)`, Math.abs(root - 16 * scale / 100) < 0.1, String(root));
+  const panel = async (name, sel, open, extra, keep = false) => {
+    if (!full && !CORE_PANELS.includes(name)) return;
+    if (!keep) await resetUi();
+    await open();
+    const shown = await waitFor(`!!document.querySelector(${JSON.stringify(sel)})`, 6000);
+    if (!shown) { check(`${at}: ${name} opens`, false, sel); return; }
+    await beat();
+    let bad = [];
+    for (let i = 0; i < 6; i++) { bad = await layoutProblems(sel); if (!bad.length) break; await sleep(200); }
+    check(`${at}: ${name}: nothing wider than its box, nothing past its edge`, bad.length === 0, bad.join('; '));
+    // a drawer slides in: it is judged once it has stopped
+    const [inside, r] = await settled({ p: sel }, (x) => !x.p || (x.p.l >= -1 && x.p.r <= w + 1 && x.p.t >= -1 && x.p.b <= h + 1), 5000);
+    check(`${at}: ${name} is inside the window`, inside, JSON.stringify(r.p));
+    if (extra) await extra();
+  };
+  await evalJs('planner.goOverview(); true');
+  await waitFor('world.debug().flight === "idle"', 15000);
+  // the navigator: wide, and the names of the tasks readable
+  await panel('the navigator', '#nav', async () => { await evalJs('true'); if (await exists('#nav.off')) await press('KeyN', 'n'); }, async () => {
+    const m = await evalJs(`(() => { const nav = document.querySelector('#nav'); const px = parseFloat(getComputedStyle(document.documentElement).fontSize);
+      const labs = [...nav.querySelectorAll('.ti.planet .lab')].filter((e) => e.getBoundingClientRect().width > 0);
+      const titles = labs.map((e) => e.clientWidth / px);
+      const metas = [...nav.querySelectorAll('.ti.planet .meta.st')].map((e) => e.getBoundingClientRect().width / px);
+      return { navRem: nav.getBoundingClientRect().width / px, minTitle: Math.min(...titles), rows: titles.length, maxStatus: Math.max(0, ...metas), tip: nav.querySelector('.ti.planet')?.title || '', pxNav: nav.getBoundingClientRect().width };
+    })()`);
+    check(`${at}: the navigator is wide (${m.navRem?.toFixed(1)} rem, ${Math.round(m.pxNav)} px)`, (eff <= 900 || (m.navRem >= (eff > 1400 ? 26 : eff > 1100 ? 22 : 21) - 0.1 && m.pxNav >= 300)), JSON.stringify(m));
+    check(`${at}: a task's name has room: ${m.minTitle?.toFixed(1)} rem at least (${NAV_TITLE_MIN_REM} wanted), the status takes ${m.maxStatus?.toFixed(1)} rem`, m.rows > 3 && m.minTitle >= NAV_TITLE_MIN_REM && m.maxStatus <= 6, JSON.stringify(m));
+    check(`${at}: the whole name and status are in the row's tooltip`, /ALP-\d+ .+\n.+/.test(m.tip) || m.tip.includes('ALP-'), m.tip);
+  });
+  await go('alpha/6');
+  await panel('the focus card', '#focus:not(.off)', async () => { if (await exists('#focus.off')) await press('KeyF', 'f'); });
+  await panel('the queue «Ждёт тебя»', '#drawer-wait.open', async () => { await click('#wait-btn'); });
+  await panel('the journal', '#drawer-log.open', async () => { await press('KeyJ', 'j'); });
+  await panel('the limits', '.pop.limits', async () => { await click('#hud-limits'); });
+  await panel('the keys help', '#help', async () => { await press('Slash', '?', 8); });
+  await panel('the todos', '#todo.open', async () => { await click('#btodo'); });
+  await panel('the chat', '#chat:not(.off)', async () => { await click('#bchat'); }, async () => {
+    // long messages: the whole text stays in the chat's view, nothing scrolls sideways
+    const m = await evalJs(`(async () => {
+      const log = document.querySelector('#clog'); const t0 = log.querySelector('.turn'); const made = [];
+      const long = '**2. Обновление памяти** - https://example.com/a/very/long/path/that/does/not/break/at/all/and/goes/on/forever/index.html?query=1&other=2 и /home/user/.herdr/worktrees/herdr-planner/work-21/web/src/ui/chat.css PLN-14 1234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890 конец\\n\\nconst veryLongLine = someFunction(argumentNumberOne, argumentNumberTwo, argumentNumberThree, argumentNumberFour);\\n- пункт с достаточно длинным текстом, чтобы он занял несколько строк в колонке сообщений';
+      for (let i = 0; i < 2 && t0; i++) { const c = t0.cloneNode(true); c.dataset.probe = '1'; const a = c.querySelector('.a .txt'); if (a) a.textContent = long; const q = c.querySelector('.q .txt'); if (q) q.textContent = long; log.appendChild(c); made.push(c); }
+      await new Promise((r) => setTimeout(r, 100));
+      const cr = document.querySelector('#chat').getBoundingClientRect(); const lr = log.getBoundingClientRect();
+      const out = { sw: log.scrollWidth, cw: log.clientWidth, chatR: cr.right, chatL: cr.left, outside: [] };
+      for (const el of log.querySelectorAll('.turn .txt, .turn .who, .turn .meta')) { const r = el.getBoundingClientRect(); if (r.width && (r.right > lr.right + 1 || r.left < lr.left - 1)) out.outside.push(el.className + ' ' + Math.round(r.left) + '–' + Math.round(r.right) + ' of ' + Math.round(lr.left) + '–' + Math.round(lr.right)); }
+      made.forEach((c) => c.remove());
+      return out;
+    })()`);
+    check(`${at}: the chat's messages are whole in view and do not scroll sideways`, m && m.sw <= m.cw + 1 && m.outside.length === 0 && m.chatR <= w + 1 && m.chatL >= -1, JSON.stringify(m));
+  });
+  // columns exist from 1000 px of the interface's width; narrower, the chat stays at the bottom (the «narrow» section looks at that)
+  if (eff > 1000) await panel('the wide chat with the todos', '#win.chat-wide.todo-open #chat:not(.off)', async () => {
+    await click('#bchat'); await waitFor('!document.querySelector("#chat").classList.contains("off")', 4000);
+    if (await exists('#cwide')) { if (!(await exists('#win.chat-wide'))) await click('#cwide'); await waitFor('!!document.querySelector("#cwide-todo")', 3000); if (!(await exists('#win.todo-open'))) await click('#cwide-todo'); }
+  }, async () => {
+    const [ok, r] = await settled({ chat: '#chat', todo: '#todo', nav: '#nav', focus: '#focus' }, (x) => x.chat.l >= x.todo.r - 1 && x.todo.l >= x.nav.r - 1 && x.chat.r <= w + 1);
+    check(`${at}: the wide chat stands right of the todos and inside the window`, ok, JSON.stringify(r));
+    // the chat is bounded and stands next to the column on its left (not in the middle of a wide empty space): its messages are
+    // where the eye is, however large the window is
+    const col = await evalJs(`(() => { const c = document.querySelector('#chat').getBoundingClientRect(); const px = parseFloat(getComputedStyle(document.documentElement).fontSize); const t = document.querySelector('#clog .turn .txt, #clog .turn .q'); const tr = t ? t.getBoundingClientRect() : null; return { w: c.width / px, l: c.left, r: c.right, textL: tr ? tr.left : null, px }; })()`);
+    check(`${at}: the wide chat is no wider than 64 rem (${col?.w?.toFixed(1)})`, col && col.w <= 64.1, JSON.stringify(col));
+    const l = await rectOf('#chat'); const nv = await rectOf('#nav'); const td = await rectOf('#todo');
+    const left = td && td.r > nv.r ? td : nv;
+    check(`${at}: and it stands next to the column on its left (${Math.round(l.l - left.r)} px), its text starts ${Math.round((col.textL ?? l.l) - l.l)} px into it`, l.l - left.r <= 2 * col.px && (col.textL === null || col.textL - l.l <= 12 * col.px), JSON.stringify({ l, left: left.r, textL: col.textL }));
+  });
+  // the navigator dragged as far as it goes, and a width kept from a bigger window: the chat still has room (words whole, buttons clear of the focus card)
+  if (dsf === 1 && eff > 1000) {
+    const roomOk = async (what) => {
+      await evalJs(AUDIT);
+      const [ok, r] = await settled({ chat: '#chat', nav: '#nav', focus: '#focus' }, (x) => x.chat && x.nav && x.chat.w >= 28 * root - 1 && x.chat.l >= x.nav.r - 1 && x.chat.r <= w + 1 && (!x.focus || x.focus.l >= w - 1 || x.chat.r <= x.focus.l + 1), 5000);
+      check(`${at}: ${what}: the chat keeps ${Math.round(28 * root)} px at least (${Math.round(r.chat?.w)}) and clear of the focus card`, ok, JSON.stringify(r) + ' ' + await evalJs('document.querySelector("#win").className'));
+      const bad = await layoutProblems('#chat');
+      check(`${at}: ${what}: nothing breaks in the chat`, bad.length === 0, bad.join('; '));
+    };
+    await resetUi();
+    await click('#bchat'); await waitFor('!document.querySelector("#chat").classList.contains("off")', 4000);
+    if (await exists('#cwide') && !(await exists('#win.chat-wide'))) await click('#cwide');
+    await waitFor('!!document.querySelector("#win.chat-wide")', 3000);
+    const grip = await rectOf('#nav .nav-grip');
+    if (grip) {
+      const gx = (grip.l + grip.r) / 2; const gy = (grip.t + grip.b) / 2;
+      await send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: gx, y: gy });
+      await send('Input.dispatchMouseEvent', { type: 'mousePressed', x: gx, y: gy, button: 'left', buttons: 1, clickCount: 1 });
+      for (const x of [gx + 100, w * 0.6, w - 40]) await send('Input.dispatchMouseEvent', { type: 'mouseMoved', x, y: gy, button: 'left', buttons: 1 });
+      await send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: w - 40, y: gy, button: 'left', buttons: 0, clickCount: 1 });
+      await roomOk('the navigator dragged to the far right');
+      const max = await evalJs('Number(document.querySelector("#nav .nav-grip").getAttribute("aria-valuemax"))');
+      check(`${at}: the edge's own upper limit (${max} rem) is below what the window leaves (${(eff / 16).toFixed(0)} rem wide, ${max} + 27 + 30 rem wanted at most)`, max > 0 && max <= Math.max(21, eff / 16 - 27 - 29.9), String(max));
+    }
+    // a width kept from a big screen: the window here is cut to what fits
+    await evalJs('try { localStorage.setItem("herdr-planner.navW", "48"); } catch {} true');
+    await navigate(base + '/?noauto&nocoach&bloom=0');
+    await resized();
+    // (the page remembers an open chat over a reload: it is opened only when it is not)
+    if (await exists('#chat.off')) await click('#bchat');
+    await waitFor('!document.querySelector("#chat").classList.contains("off")', 4000);
+    if (await exists('#cwide') && !(await exists('#win.chat-wide'))) await click('#cwide');
+    await roomOk('a width of 48 rem kept from a bigger window');
+    await evalJs('try { localStorage.removeItem("herdr-planner.navW"); } catch {} true');
+    await navigate(base + '/?noauto&nocoach&bloom=0');
+    await resized();
+  }
+  await evalJs(AUDIT);
+  await panel('the search', '#sres', async () => { await press('KeyK', 'k', 2); await waitFor('document.activeElement.id === "q"', 3000); await send('Input.insertText', { text: 'al' }); });
+  await evalJs('document.querySelector("#q").blur(); true');
+  const station = async (label, sel, extra) => panel(label, sel, async () => { await menuPick(label === 'the station' ? 'Станция' : label === 'the crew wizard' ? 'Экипаж корабля' : 'Бортовой компьютер'); }, extra);
+  await station('the station', '#station', async () => { await boardChecks(at); });
+  await station('the crew wizard', '#station.wizard');
+  await station('the ship\'s computer', '#ship', async () => {
+    // the list of machines comes from the server a moment later: judged once it is there
+    await waitFor('document.querySelectorAll("#ship-galaxies li").length > 0', 15000);
+    const late = await layoutProblems('#ship');
+    check(`${at}: the ship's computer with its list of machines: nothing wider than its box`, late.length === 0, late.join('; '));
+  });
+  await panel('the dialog «Добавить вселенную»', '#addu', async () => { await menuPick('Добавить вселенную'); });
+  await panel('the dialog «Добавить галактику»', '#addg', async () => { await menuPick('Добавить галактику'); });
+  await resetUi();
+  const sw = await evalJs('document.documentElement.scrollWidth');
+  check(`${at}: the page itself never scrolls sideways`, sw <= w + 1, String(sw));
+  await shot(`layout-${w}x${h}-${dsf}.png`);
+};
+
+// The sizes of the window and the scales of the interface to try: the interface sees the window as w / scale, so 125–175 % on the usual
+// windows give the widths of 1000–1100 design pixels (1920 at 175 %, 1600 at 150 %, 1366 at 125 %) where three columns barely fit.
+const LAYOUT_RUNS = [
+  { w: 1280, h: 720, scales: [125, 150, 175, 200], dsf: true },
+  { w: 1366, h: 768, scales: [125] },
+  { w: 1600, h: 900, scales: [150] },
+  { w: 1920, h: 1080, scales: [125, 150, 175, 200], dsf: true },
+  { w: 2560, h: 1440, scales: [125, 150, 175], dsf: true },
+  { w: 2560, h: 1440, scales: [200, 250], name: 'layout big' },
+];
+for (const { w, h, scales, dsf, name } of LAYOUT_RUNS) {
+  section(name || `layout ${w}`, async () => {
+    await resetUi();
+    await evalJs('try { localStorage.removeItem("herdr-planner.navW"); localStorage.removeItem("herdr-planner.chatWide"); localStorage.removeItem("herdr-planner.chatWideTodo"); } catch {} true');
+    await navigate(base + '/?noauto&nocoach&bloom=0');
+    for (const ratio of dsf ? [1, 1.5, 2] : []) await layoutRun(w, h, ratio);
+    for (const scale of scales) await layoutRun(w, h, 1, scale);
+    await send('Emulation.setDeviceMetricsOverride', { width: 1500, height: 950, deviceScaleFactor: 1, mobile: false });
+    await waitFor('innerWidth === 1500', 5000);
+    await evalJs('try { localStorage.removeItem("herdr-planner.uiScale"); } catch {} true');
+    await navigate(base + '/?noauto&nocoach&bloom=0');
+  }, { retry: true });
+}
+
+// The settings dialog on a phone-sized window (the dialog is narrower than the container query's width): the rows are columns, the names whole.
+section('layout narrow', async () => {
+  for (const [w, h, dsf, stacked] of [[430, 900, 2, true], [700, 900, 1, false]]) {
+    await resetUi();
+    await send('Emulation.setDeviceMetricsOverride', { width: w, height: h, screenWidth: w, screenHeight: h, deviceScaleFactor: dsf, mobile: false });
+    await waitFor(`innerWidth === ${w}`, 5000);
+    await navigate(base + '/?noauto&nocoach&bloom=0');
+    await resized();
+    await evalJs(AUDIT);
+    const at = `${w}×${h} @${dsf}`;
+    check(`${at}: the station opens`, await menuPick('Станция') && await waitFor('!!document.querySelector("#station")', 6000));
+    await boardChecks(at, stacked);
+    const r = await rectOf('#station');
+    check(`${at}: the station is inside the window`, r && r.l >= -1 && r.r <= w + 1, JSON.stringify(r));
+    check(`${at}: the page itself never scrolls sideways`, await waitFor(`document.documentElement.scrollWidth <= ${w + 1}`, 4000));
+    await resetUi();
+  }
+  await send('Emulation.setDeviceMetricsOverride', { width: 1500, height: 950, deviceScaleFactor: 1, mobile: false });
+  await waitFor('innerWidth === 1500', 5000);
+  await navigate(base + '/?noauto&nocoach&bloom=0');
 }, { retry: true });
 
 section('narrow', async () => {
