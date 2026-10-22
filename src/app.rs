@@ -204,6 +204,10 @@ pub struct App {
     pub runner_df: Mutex<HashMap<String, (u64, serde_json::Value)>>,
     /// Whether the docker block is in this machine's instructions (as last synced).
     pub runner_block: Mutex<crate::runners::BlockState>,
+    /// How loaded this machine is (CPU, memory, video cards); kept fresh while a page is open.
+    pub load: RwLock<crate::load::Load>,
+    /// A page has just connected: read the load now, not at the next beat.
+    pub load_poke: Notify,
 }
 
 pub type Shared = Arc<App>;
@@ -337,6 +341,8 @@ impl App {
             runner_plans: Mutex::new(HashMap::new()),
             runner_df: Mutex::new(HashMap::new()),
             runner_block: Mutex::new(runner_block),
+            load: RwLock::new(crate::load::Load::default()),
+            load_poke: Notify::new(),
         })
     }
 }

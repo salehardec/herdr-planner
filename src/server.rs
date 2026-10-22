@@ -65,6 +65,7 @@ pub fn router(app: Shared) -> Router {
     let protected = Router::new()
         .route("/api/state", get(api_state))
         .route("/api/summary", get(api_summary))
+        .route("/api/load", get(api_load))
         .route("/api/details", get(api_details))
         .route("/api/coordinator/screen", get(api_coordinator_screen))
         .route("/api/action", post(api_action))
@@ -370,6 +371,11 @@ async fn api_limits(
     }
     let snap = app.snapshot.read().await;
     Json(usage::alert(&snap.limits)).into_response()
+}
+
+/// The machine's load as the bars show it (the page asks when its event stream is down).
+async fn api_load(State(app): State<Shared>) -> Json<crate::load::Load> {
+    Json(crate::load::current(&app).await)
 }
 
 async fn api_summary(State(app): State<Shared>) -> Json<serde_json::Value> {

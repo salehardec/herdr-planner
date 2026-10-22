@@ -57,7 +57,7 @@ start_server() {
   for _attempt in 1 2 3 4 5 6; do
     P=$(free_port "$NEXT_PORT"); NEXT_PORT=$((P + 1))
     # The stand-ins of the other programs: claude (translation), gh/glab, codex sessions.
-    env HERDR_PLANNER_HOST=orion CODEX_HOME="$D/codex" HERDR_PLANNER_SSH="$D/bin/ssh" HERDR_PLANNER_CLAUDE="$D/bin/claude" HERDR_PLANNER_GH="$D/bin/gh" \
+    env HERDR_PLANNER_HOST=orion HERDR_PLANNER_LOAD_FILE="$D/load/load.json" HERDR_PLANNER_LOAD_MS=400 CODEX_HOME="$D/codex" HERDR_PLANNER_SSH="$D/bin/ssh" HERDR_PLANNER_CLAUDE="$D/bin/claude" HERDR_PLANNER_GH="$D/bin/gh" \
       HERDR_PLANNER_GLAB="$D/bin/glab" HERDR_BIN="$D/bin/herdr" HERDR_PLANNER_TERMINAL="$D/bin/xdg-terminal-exec" \
       HERDR_PLANNER_OWN_TERMS=bob-the-builder-host FIXTURE_DIR="$D" HERDR_PROJECTS_BIN="$D/bin/herdr-projects" HERDR_SOCKET_PATH="$D/herdr.sock" \
       OMARCHY_THEME_DIR="$D/theme" CLAUDE_CONFIG_DIR="$D/claude" PATH="$D/bin:$PATH" \
@@ -118,7 +118,7 @@ for only in "boot,live,navigator,autopilot,manual,stack,queue,search" \
             "chat,todo" \
             "lag,universes,remote,scale,runners" \
             "station,crew,ship,theme,simple,narrow" \
-            "focus,requests,links,archive,limits,memory,layout narrow" \
+            "focus,requests,links,archive,load,limits,memory,layout narrow" \
             "layout 1280" "layout 1920,layout 1600" "layout 2560" "layout 1366,layout big"; do
   n=$((n + 1))
   want "ui$n" || continue

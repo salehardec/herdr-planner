@@ -428,4 +428,12 @@ export const ru: Record<string, string | string[]> = {
   'runner.stationPreview': 'Показать текст: было → стало', 'runner.stationWas': 'Было', 'runner.stationNow': 'Станет', 'runner.stationEmpty': '(инструкции не заданы)',
   'runner.dropOld': 'Заодно убрать старые строки про DOCKER_HOST (свои правила рядом останутся)',
   'runner.forgotToast': 'На верфи {id} забыт контейнер {name} ({tag})',
+
+  'load.cpu': 'CPU', 'load.mem': 'MEM', 'load.gpu': 'GPU', 'load.short': 'Загрузка',
+  'load.own': 'эта машина', 'load.noGpu': 'Видеокарт нет', 'load.noData': 'нет данных', 'load.noTime': 'время чтения неизвестно',
+  'load.level.ok': 'норма', 'load.level.high': 'высокая', 'load.level.crit': 'критическая',
+  'load.offline': 'нет связи с {host}', 'load.waiting': 'Загрузка {host} читается…',
+  'load.aria': 'Загрузка {host}: {list}', 'load.memOf': 'занято {used} из {total} ГБ', 'load.vram': 'видеопамять {used} из {total} ГБ',
+  'load.cores': ['{n} ядро', '{n} ядра', '{n} ядер'], 'load.gpuMean': 'В шкале GPU — средняя загрузка карт: {n} %',
+  'load.updated': 'обновлено {at} · раз в {n} с', 'load.click': 'клик — к Галактике',
 };

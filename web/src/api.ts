@@ -1,8 +1,8 @@
 /* Talking to the server: JSON calls, and the event stream that replaces polling. */
-import { chat, details, lastError, live, snap } from './store';
+import { chat, details, lastError, live, setLoad, snap } from './store';
 import { t } from './i18n';
 import { toast } from './toast';
-import type { Snapshot } from './types';
+import type { LoadInfo, Snapshot } from './types';
 
 export class ApiError extends Error {
   status = 0;
@@ -64,6 +64,7 @@ async function pollOnce(): Promise<void> {
   polling = true;
   try {
     accept(await api<Snapshot>('/api/state'));
+    setLoad(await api<LoadInfo>('/api/load'));
   } catch (e) {
     if ((e as Error).message !== 'unauthorized') lastError.value = (e as Error).message;
   } finally {
@@ -81,6 +82,9 @@ export function connect(): void {
     es.addEventListener('state', (e) => {
       try { accept(JSON.parse((e as MessageEvent).data)); } catch { /* a broken frame */ }
       if (fallback) { clearInterval(fallback); fallback = null; }
+    });
+    es.addEventListener('load', (e) => {
+      try { setLoad(JSON.parse((e as MessageEvent).data)); } catch { /* a broken frame */ }
     });
     es.addEventListener('chat', () => chatListeners.forEach((fn) => fn()));
     es.addEventListener('progress', (e) => {

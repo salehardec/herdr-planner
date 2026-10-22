@@ -1,7 +1,7 @@
 /* The page's state: signals. The world and the panels both read from here. */
 import { computed, signal } from '@preact/signals';
 import type {
-  Entity, GalaxyView, Level, Request, Runner, Snapshot, Status, Task, TurnData,
+  LoadInfo, Entity, GalaxyView, Level, Request, Runner, Snapshot, Status, Task, TurnData,
 } from './types';
 import { ATTENTION, STATUS_ORDER } from './types';
 import { collectRequests } from './requests';
@@ -24,6 +24,11 @@ export const SEEN_KEY = 'herdr-planner.seen';
 
 export const snap = signal<Snapshot | null>(null);
 export const live = signal(false);
+/** The machine's load for the bars in the top bar; null until the first `load` event. */
+export const loadInfo = signal<LoadInfo | null>(null);
+/** When (by the browser's clock) the last reading arrived: a stream that went quiet is told by it. */
+export const loadRecv = signal(0);
+export const setLoad = (l: LoadInfo): void => { loadInfo.value = l; loadRecv.value = Date.now(); };
 export const lastError = signal('');
 
 export const selected = signal<Entity | null>(null);

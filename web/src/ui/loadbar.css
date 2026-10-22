@@ -1,0 +1,87 @@
+/* The machine's load in the top bar, between the crumbs and the search: CPU, MEM and (with a card) GPU.
+   The colours are the theme's semantic ones (green, yellow, red), not its accent; the number is always written,
+   and the bars carry marks at 70 % and 90 %, so the level is read without the colour. */
+.win{
+  --load-ok:color-mix(in srgb,var(--c-green) 80%,var(--pl-bg));
+  --load-high:var(--c-yellow);
+  --load-crit:var(--c-red);
+  --load-high-ink:color-mix(in srgb,var(--c-yellow) 70%,var(--c-fg));
+  --load-crit-ink:var(--pl-danger);
+}
+:root[data-mode="light"] .win{
+  --load-ok:color-mix(in srgb,var(--c-green) 90%,var(--c-fg) 10%);
+  --load-high:var(--c-yellow);
+  --load-crit:var(--c-red);
+  --load-high-ink:color-mix(in srgb,var(--c-yellow) 30%,var(--c-fg));
+}
+
+/* the left of the top bar: the crumbs and the bars share it. The crumbs come first: the bars take the form that fits in
+   the room the crumbs leave (LoadBar.tsx measures it and sets data-tier: host, full, stack, sum or none) */
+.topl{min-width:0;display:flex;align-items:center;gap:0.75rem}
+.topl .crumbs{flex:0 1 auto;min-width:0}
+.loadbar{flex:none;min-width:0}
+
+[data-level="ok"]{--ld:var(--load-ok);--ld-ink:var(--pl-title)}
+[data-level="high"]{--ld:var(--load-high);--ld-ink:var(--load-high-ink)}
+[data-level="crit"]{--ld:var(--load-crit);--ld-ink:var(--load-crit-ink)}
+[data-level="off"]{--ld:transparent;--ld-ink:var(--pl-faint)}
+
+.ld{display:inline-flex;align-items:center;gap:0.625rem;height:1.875rem;max-width:100%;padding:0 0.625rem;border:1px solid var(--pl-line);border-radius:0.9375rem;background:var(--pl-panel-solid);color:var(--pl-dim);font:inherit;font-size:0.7188rem;white-space:nowrap;cursor:pointer}
+.ld:hover{border-color:var(--pl-faint)}
+.loadbar[data-level="high"] .ld{border-color:color-mix(in srgb,var(--c-yellow) 45%,var(--pl-line))}
+.loadbar[data-level="crit"] .ld{border-color:color-mix(in srgb,var(--c-red) 55%,var(--pl-line))}
+.loadbar[data-state="off"] .ld,.loadbar[data-state="wait"] .ld{border-style:dashed}
+.ld-host{display:none;color:var(--pl-faint);overflow:hidden;text-overflow:ellipsis;max-width:9rem}
+.ld-k{font-size:0.625rem;font-weight:700;letter-spacing:.06em;color:var(--pl-faint)}
+.ld-v{font-variant-numeric:tabular-nums;font-weight:600;color:var(--ld-ink);text-align:right;min-width:2.5ch}
+[data-level="crit"]>.ld-v,[data-level="crit"] .ld-v{font-weight:800}
+.ld-bar{position:relative;display:block;width:2.75rem;height:0.375rem;border-radius:0.1875rem;background:var(--pl-line);overflow:hidden;flex:none}
+.ld-bar i{display:block;height:100%;width:var(--w,0);background:var(--ld);border-radius:inherit;transition:width .5s var(--m-ease,ease)}
+.ld-bar::after{content:"";position:absolute;inset:0;pointer-events:none;
+  background:linear-gradient(90deg,transparent calc(70% - 0.5px),var(--pl-bg) calc(70% - 0.5px),var(--pl-bg) calc(70% + 0.5px),transparent calc(70% + 0.5px),transparent calc(90% - 0.5px),var(--pl-bg) calc(90% - 0.5px),var(--pl-bg) calc(90% + 0.5px),transparent calc(90% + 0.5px))}
+.ld-bar.wide{width:100%;height:0.4375rem}
+@media (prefers-reduced-motion:reduce){.ld-bar i{transition:none}}
+
+/* the narrowest form: the worst of the meters, one place */
+.ld-m{display:none}
+.ld-sum{display:inline-flex;align-items:center;gap:0.3125rem}
+.ld-dot{width:0.5rem;height:0.5rem;border-radius:50%;background:var(--ld);border:1px solid color-mix(in srgb,var(--pl-faint) 60%,transparent);flex:none}
+.ld-sum[data-level="off"] .ld-dot{background:none;border-style:dashed}
+
+/* a little room (stack): the three meters, each with its bar under the number */
+.loadbar[data-tier="none"],.loadbar[data-state="na"]{display:none}
+.loadbar:is([data-tier="stack"],[data-tier="full"],[data-tier="host"]) .ld{gap:0.5rem;padding:0 0.5rem}
+.loadbar:is([data-tier="stack"],[data-tier="full"],[data-tier="host"]) .ld-sum{display:none}
+.loadbar:is([data-tier="stack"],[data-tier="full"],[data-tier="host"]) .ld-m{display:inline-grid;grid-template-columns:auto auto;grid-template-areas:"k v" "b b";align-items:center;column-gap:0.3125rem;row-gap:0.125rem}
+.loadbar:is([data-tier="stack"],[data-tier="full"],[data-tier="host"]) .ld-m .ld-k{grid-area:k;line-height:1}
+.loadbar:is([data-tier="stack"],[data-tier="full"],[data-tier="host"]) .ld-m .ld-v{grid-area:v;line-height:1}
+.loadbar:is([data-tier="stack"],[data-tier="full"],[data-tier="host"]) .ld-m .ld-bar{grid-area:b;width:100%;height:0.25rem}
+/* enough room (full): the bar stands between the name and the number */
+.loadbar:is([data-tier="full"],[data-tier="host"]) .ld{gap:0.75rem;padding:0 0.75rem}
+.loadbar:is([data-tier="full"],[data-tier="host"]) .ld-m{display:inline-flex;gap:0.3125rem}
+.loadbar:is([data-tier="full"],[data-tier="host"]) .ld-m .ld-bar{width:2.75rem;height:0.375rem}
+/* plenty (host): the machine's name too */
+.loadbar[data-tier="host"] .ld-host{display:inline}
+
+/* the tooltip */
+.top>.ld-pop{pointer-events:none}
+.ld-pop{display:none;left:0.875rem;top:2.9rem;width:min(24rem,calc(100vw - 1.75rem));padding:0.625rem 0.75rem;z-index:56;gap:0.4375rem;font-size:0.7188rem;color:var(--pl-dim)}
+.ld-pop.open{display:grid}
+.ld-ph{display:flex;align-items:baseline;gap:0.5rem;color:var(--pl-title);min-width:0}
+.ld-ph b{font-size:0.8125rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ld-ph span{color:var(--pl-faint);font-size:0.6875rem;white-space:nowrap}
+.ld-off{color:var(--pl-title);font-weight:600;display:grid;gap:0.125rem}
+.ld-err{color:var(--pl-faint);font-weight:400;font-size:0.6562rem;overflow-wrap:anywhere}
+.ld-r{display:grid;grid-template-columns:2.25rem minmax(0,1fr) 3.25rem;grid-template-areas:"k b v" ". d d" ". s s";align-items:center;column-gap:0.5rem;row-gap:1px}
+.ld-rk{grid-area:k;font-size:0.625rem;font-weight:700;letter-spacing:.06em;color:var(--pl-faint)}
+.ld-r .ld-bar{grid-area:b}
+.ld-r .ld-v{grid-area:v;white-space:nowrap}
+.ld-rd{grid-area:d;color:var(--pl-dim);overflow-wrap:anywhere}
+.ld-rs{grid-area:s;color:var(--pl-faint);font-size:0.6562rem;overflow-wrap:anywhere}
+.ld-none,.ld-note{color:var(--pl-faint);font-size:0.6875rem}
+.ld-ft{display:flex;flex-wrap:wrap;justify-content:space-between;gap:0.125rem 0.75rem;padding-top:0.3125rem;border-top:1px solid var(--pl-line);color:var(--pl-faint);font-size:0.6562rem}
+
+/* a phone-sized window has two rows (crumbs and buttons, then the search): the bars stand right of the search, in their narrowest form */
+:root.bp900 .topl{display:contents}
+:root.bp900 .top .loadbar{grid-area:load;justify-self:end}
+.loadbar[data-tier="dot"] .ld-sum .ld-k{display:none}
