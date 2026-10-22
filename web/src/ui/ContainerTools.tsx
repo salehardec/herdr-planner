@@ -63,7 +63,6 @@ export function ContainerPorts(props: { c: RunnerContainer; host: string }): JSX
   const c = props.c;
   const list = c.published ?? [];
   if (list.length === 0) return <span class="hint">{c.ports || '—'}</span>;
-  const host = props.host;
   return (
     <span class="cports">
       {list.map((p, i) => {
@@ -71,16 +70,25 @@ export function ContainerPorts(props: { c: RunnerContainer; host: string }): JSX
         const map = p.host_port == null
           ? t('runner.portRange')
           : t('runner.portMap', { host: String(p.host_port), container: String(p.container_port ?? '?'), proto: p.proto });
-        if (p.service && p.host_port != null && !p.loopback && host) {
-          const cmd = t(`runner.connect.${p.service}`, { host, port: String(p.host_port) });
+        // A port bound to one interface answers at that address; an any-address (`0.0.0.0`, `::`) at the yard's address.
+        const target = p.host_ip === '' || p.host_ip === '0.0.0.0' || p.host_ip === '::' ? props.host : p.host_ip;
+        if (p.service && p.host_port != null && !p.loopback && target) {
+          const cmd = t(`runner.connect.${p.service}`, { host: target, port: String(p.host_port) });
           return (
             <span key={key} class="cport srv" data-service={p.service} data-port={p.host_port} title={t('runner.portConnect', { service: p.service })}>
-              <span class="hint">{p.service}</span> <code>{cmd}</code>
+              <span class="hint">{p.service}</span>{' '}
+              <code>
+                {cmd.split(' ').flatMap((w, j, all) => [
+                  <span key={`w${j}`} class="w">{w}</span>,
+                  j < all.length - 1 ? ' ' : null,
+                ])}
+              </code>
             </span>
           );
         }
-        if (p.http && p.host_port != null && !p.loopback && host) {
-          const url = `${p.https ? 'https' : 'http'}://${host}:${p.host_port}`;
+        if (p.http && p.host_port != null && !p.loopback && target) {
+          // An IPv6 literal goes in brackets in a URL.
+          const url = `${p.https ? 'https' : 'http'}://${target.includes(':') ? `[${target}]` : target}:${p.host_port}`;
           return (
             <a key={key} class="cport" data-port={p.host_port} data-http={p.https ? 'https' : 'http'}
               href={url} target="_blank" rel="noreferrer" title={map}>{url}</a>

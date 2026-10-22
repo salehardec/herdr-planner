@@ -41,7 +41,10 @@
 /* The published ports of a container (PLN-44): a link to a web port, a client command for a known service,
    the mapping as text for anything else. */
 .cports{display:flex;flex-direction:column;gap:0.125rem;min-width:0}
-.cports .cport{font-size:0.6875rem;line-height:1.35;word-break:break-all}
+.cports .cport{font-size:0.6875rem;line-height:1.35;overflow-wrap:anywhere}
 .cports .cport.srv{display:flex;gap:0.25rem;align-items:baseline;flex-wrap:wrap}
-.cports code{font-size:0.6875rem;word-break:break-all}
+/* A command is copied by eye: each word is unbreakable, so it wraps only between words (`-p 15` / `432` would read
+   as one port, `p` / `ostgres` as another word). */
+.cports code{font-size:0.6875rem}
+.cports code .w{white-space:nowrap}
 .cports a{color:var(--pl-accent-ink)}

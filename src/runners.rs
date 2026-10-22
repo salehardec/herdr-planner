@@ -853,6 +853,9 @@ const WEB_PORTS: &[u16] = &[
     80, 443, 3000, 3001, 4000, 4173, 5000, 5173, 7860, 8000, 8001, 8080, 8081, 8443, 8501, 8888, 9000, 9090, 9200, 11434,
 ];
 
+/// Web ports that speak TLS: the link must be `https` (Kong's 8443 is its https listener, not a plain one).
+const TLS_PORTS: &[u16] = &[443, 8443];
+
 fn port_at(s: &str) -> Option<u16> {
     s.trim().parse::<u16>().ok().filter(|p| *p > 0)
 }
@@ -912,7 +915,9 @@ pub fn published_ports(ports: &str, image: &str) -> Vec<PublishedPort> {
         let loopback = host_ip == "localhost"
             || host_ip == "::1"
             || host_ip.strip_prefix("127.").is_some();
-        let public = host_ip.is_empty() || host_ip == "0.0.0.0" || host_ip == "::";
+        // Any binding but the yard's own loopback is reachable from this machine: the any-address, or one interface
+        // (`10.31.21.29:18080->80/tcp` — the page links that very address).
+        let public = !loopback;
         // A database image may publish a web port too (redis-stack's 8001 is its browser UI): that one stays a link.
         let service = match container_port {
             Some(p) if WEB_PORTS.contains(&p) => None,
@@ -929,7 +934,7 @@ pub fn published_ports(ports: &str, image: &str) -> Vec<PublishedPort> {
             proto: if proto.is_empty() { "tcp".into() } else { proto },
             service,
             http,
-            https: container_port == Some(443),
+            https: container_port.is_some_and(|p| TLS_PORTS.contains(&p)),
             loopback,
         };
         let same = |p: &PublishedPort| {
@@ -2901,6 +2906,15 @@ mod tests {
         assert!(p[0].http && !p[0].https && p[0].service.is_none());
         let p = published_ports("0.0.0.0:18443->443/tcp", "acme/app:1");
         assert!(p[0].http && p[0].https);
+        // 8443 is a TLS port too (Kong's https listener): a plain http link would not answer.
+        let p = published_ports("0.0.0.0:18443->8443/tcp", "kong:3");
+        assert!(p[0].http && p[0].https);
+        // A port bound to one interface of the yard is reachable at that very address, not only at an any-address.
+        let p = published_ports("10.31.21.29:18080->80/tcp", "acme/app:1");
+        assert!(p[0].http && !p[0].loopback);
+        assert_eq!(p[0].host_ip, "10.31.21.29");
+        let p = published_ports("[fd00::1]:18080->80/tcp", "acme/app:1");
+        assert!(p[0].http);
         // A web server on a port that says nothing still serves HTTP; udp never is.
         let p = published_ports("0.0.0.0:9999->9999/tcp", "nginx:1.27");
         assert!(p[0].http);

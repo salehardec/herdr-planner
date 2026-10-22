@@ -4204,11 +4204,12 @@ section('runners', async () => {
     await waitFor('!!document.querySelector("#rf-tasks tr [data-service=postgres] code")', 8000)
       && (await evalJs('document.querySelector("#rf-tasks tr [data-service=postgres] code").textContent')) === 'psql -h 192.0.2.29 -p 15432 -U postgres',
     await text('#rf-tasks'));
+  check('the psql line wraps between its words, never inside one', await evalJs('(() => { const code = document.querySelector("#rf-tasks [data-service=postgres] code"); if (!code) return false; const words = [...code.querySelectorAll(".w")]; return code.textContent === "psql -h 192.0.2.29 -p 15432 -U postgres" && words.length === 7 && words.every((w) => w.getClientRects().length === 1); })()'), await text('#rf-tasks'));
   yardReset({ containers: [
     {
       id: '8'.repeat(64), name: 'web-ALP-6', image: 'nginx:1.27', state: 'running', status: 'Up 1 hour',
       created: new Date(Date.now() - 3_600_000).toISOString().replace('T', ' ').slice(0, 19) + ' +0000 UTC',
-      labels: 'herdr.task=ALP-6', ports: '0.0.0.0:18080->80/tcp', networks: 'work-6_default', mounts: '', size: '8MB', cpu: '0.10%', mem: '10MiB / 2GiB', pids: '3',
+      labels: 'herdr.task=ALP-6', ports: '0.0.0.0:18080->80/tcp, 0.0.0.0:18443->8443/tcp, 10.31.21.29:18081->80/tcp', networks: 'work-6_default', mounts: '', size: '8MB', cpu: '0.10%', mem: '10MiB / 2GiB', pids: '3',
       nano: 2000000000, memLimit: 2147483648,
     },
     {
@@ -4225,6 +4226,10 @@ section('runners', async () => {
       && (await evalJs('document.querySelector("#rf-tasks a[data-http=http]").textContent')) === 'http://192.0.2.29:18080'
       && (await evalJs('document.querySelector("#rf-tasks [data-service=redis] code").textContent')) === 'redis-cli -h 192.0.2.29 -p 16379',
     await text('#rf-tasks'));
+  check('a TLS port 8443 is an https link, a port bound to one address links that address',
+    (await evalJs('document.querySelector("#rf-tasks a[data-port=\\"18443\\"]")?.getAttribute("href")')) === 'https://192.0.2.29:18443'
+      && (await evalJs('document.querySelector("#rf-tasks a[data-port=\\"18081\\"]")?.getAttribute("href")')) === 'http://10.31.21.29:18081',
+    await evalJs('[...document.querySelectorAll("#rf-tasks a")].map((a) => a.getAttribute("href")).join(" | ")'));
   // «Shell»: a terminal of this machine that ssh's to the yard and runs docker exec -it by the full id there.
   const shellBtn = `(() => { const tr = [...document.querySelectorAll("#rf-tasks tbody tr")].find((r) => r.innerText.includes("pg-ALP-3")); const b = tr?.querySelector("[data-ctl=shell]"); if (!b) return false; b.click(); return true; })()`;
   await evalJs(shellBtn);
