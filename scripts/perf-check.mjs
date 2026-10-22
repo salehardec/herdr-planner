@@ -113,6 +113,23 @@ await waitFor('world.debug().auras + world.debug().halos > 0', 30000);
 const fxBound = await evalJs('(() => { const x = world.debug(); return { auras: x.auras, halos: x.halos, planets: x.planets }; })()');
 check('inside a nebula the ripples of the working planets are drawn, at most 64, and the rings at most two per planet', fxBound.auras <= 64 && fxBound.halos <= 2 * fxBound.planets && fxBound.auras + fxBound.halos > 0, JSON.stringify(fxBound));
 check('inside a nebula: the labels stay few and apart', inside.level === 'nebula' && inside.labels <= 24 && lo2.overlaps === 0 && upd2.ms < upd2.limit, JSON.stringify({ ...inside, ...lo2, upd: upd2 }));
+// the biggest universe of the world, flown to: all of it (every planet and every label) is in the free part of the screen
+const biggest = await evalJs(`(() => { const n = {}; for (const t of plannerSnap().tasks) n[t.repo] = (n[t.repo] || 0) + 1; return Object.entries(n).sort((a, b) => b[1] - a[1])[0][0]; })()`);
+await evalJs('planner.goOverview(); true');
+await flightIdle();
+await evalJs(`planner.navigateTo({kind:'universe',id:${JSON.stringify(biggest)}}); true`);
+await flightIdle();
+await waitFor(`world.debug().level === "nebula" && world.debug().universe === ${JSON.stringify(biggest)}`, 30000);
+await frames(5);
+const framed = await evalJs(`(() => {
+  const d = world.debug(); const f = d.free; const e = 1.5;
+  const ids = d.planetsOf(${JSON.stringify(biggest)});
+  const out = ids.filter((id) => { const p = d.project(id); return !p || !p.ok || p.x < f.l - e || p.x > f.r + e || p.y < f.t - e || p.y > f.b + e; });
+  const lb = [...document.querySelectorAll('#labels > div.planet')].filter((x) => x.style.display !== 'none').map((x) => x.getBoundingClientRect());
+  const cut = lb.filter((r) => r.left < f.l - e || r.right > f.r + e || r.top < f.t - e || r.bottom > f.b + e).length;
+  return { planets: ids.length, out: out.length, labels: lb.length, cut, free: f };
+})()`);
+check('the biggest universe is flown to whole: every planet and label in the free area', framed.planets > 10 && framed.out === 0 && framed.labels > 0 && framed.cut === 0, JSON.stringify({ biggest, ...framed }));
 // the selected planet's card and the one under the pointer must not sit on other labels either
 await evalJs(`planner.navigateTo({kind:'planet',id:'s05/1'}); true`);
 await flightIdle();

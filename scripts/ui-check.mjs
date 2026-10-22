@@ -2084,6 +2084,113 @@ section('universes', async () => {
 });
 
 
+// Flying to a universe: the whole nebula with its planets and their labels in the free part of the screen (the panels
+// leave it), the ship at the bottom in the middle, and the same view every time.
+section('universe framing', async () => {
+  await resetUi();
+  const toUniverse = async (name) => {
+    await evalJs(`planner.navigateTo({kind:'universe',id:${JSON.stringify(name)}}); true`);
+    await waitFor(`world.debug().flight === "idle" && world.level === "nebula" && world.universe === ${JSON.stringify(name)}`, 20000);
+    await calmCamera();
+    await frames(3);
+  };
+  // Where the planets, their labels and the ship are on the screen, against the free area.
+  const look = (name) => evalJs(`(() => {
+    const d = world.debug();
+    const f = d.free;
+    const planets = d.planetsOf(${JSON.stringify(name)}).map((id) => ({ id, ...d.project(id) }));
+    const labels = [...document.querySelectorAll('#labels > div.planet')].filter((e) => e.style.display !== 'none').map((e) => { const r = e.getBoundingClientRect(); return { t: e.innerText.slice(0, 12), l: r.left, r: r.right, top: r.top, b: r.bottom }; });
+    const ship = d.shipAt();
+    const c = d.camera;
+    const mid = world.screenOf({ kind: 'universe', id: ${JSON.stringify(name)} });
+    return { f, planets, labels, ship, mid, cam: [c.x, c.y, c.z], w: innerWidth, h: innerHeight };
+  })()`);
+  const outside = (v) => {
+    const e = 1.5;
+    return {
+      planets: v.planets.filter((p) => !p.ok || p.x < v.f.l - e || p.x > v.f.r + e || p.y < v.f.t - e || p.y > v.f.b + e).map((p) => p.id),
+      labels: v.labels.filter((l) => l.l < v.f.l - e || l.r > v.f.r + e || l.top < v.f.t - e || l.b > v.f.b + e).map((l) => l.t),
+    };
+  };
+  const spread = (v) => {
+    const xs = v.planets.map((p) => p.x), ys = v.planets.map((p) => p.y);
+    return { w: Math.max(...xs) - Math.min(...xs), h: Math.max(...ys) - Math.min(...ys), cx: (Math.max(...xs) + Math.min(...xs)) / 2, cy: (Math.max(...ys) + Math.min(...ys)) / 2 };
+  };
+  const seen = {};
+  for (const [name, what] of [['gamma', 'a small universe'], ['alpha', 'a big universe']]) {
+    await evalJs('planner.goOverview(); true');
+    await waitFor('world.debug().flight === "idle" && plannerDebug().selected === null', 20000);
+    await toUniverse(name);
+    const v = await look(name);
+    seen[name] = v;
+    const out = outside(v);
+    check(`${what}: every planet is in the free area, the navigator and the focus card leave`, v.planets.length > 0 && out.planets.length === 0, JSON.stringify({ free: v.f, out: out.planets }));
+    check(`${what}: no label is cut by the edge or lies under a panel`, v.labels.length > 0 && out.labels.length === 0, JSON.stringify({ free: v.f, out: out.labels }));
+    const sp = spread(v);
+    const fw = v.f.r - v.f.l, fh = v.f.b - v.f.t;
+    check(`${what}: it is in the middle of the free area`, Math.abs(v.mid.x - (v.f.l + v.f.r) / 2) < fw * 0.03 + 4 && Math.abs(v.mid.y - (v.f.t + v.f.b) / 2) < fh * 0.1, JSON.stringify({ mid: v.mid, free: v.f }));
+    check(`${what}: the ship is at the bottom, in the middle of the frame`, v.ship?.ok && Math.abs(v.ship.x - v.w / 2) < v.w * 0.05 && v.ship.y > v.h * 0.65, JSON.stringify(v.ship));
+    if (name === 'alpha') await shot('universe-framing.png');
+    // the same flight again ends in the same place
+    await evalJs('planner.goOverview(); true');
+    await waitFor('world.debug().flight === "idle" && plannerDebug().selected === null', 20000);
+    await toUniverse(name);
+    const again = await look(name);
+    check(`${what}: a second flight there ends in the same view`, Math.hypot(again.cam[0] - v.cam[0], again.cam[1] - v.cam[1], again.cam[2] - v.cam[2]) < 1.5, JSON.stringify({ first: v.cam, again: again.cam }));
+  }
+  const small = spread(seen.gamma), big = spread(seen.alpha);
+  check('a small and a big universe get a similar scale on the screen', big.w > 0.35 * (seen.alpha.f.r - seen.alpha.f.l) && small.w < big.w * 1.6 + 1 && small.w < 0.85 * (seen.gamma.f.r - seen.gamma.f.l), JSON.stringify({ small, big }));
+  // an open chat takes the bottom of the screen: the picture goes up, above it
+  await evalJs('planner.goOverview(); true');
+  await waitFor('world.debug().flight === "idle" && plannerDebug().selected === null', 20000);
+  await click('#bchat');
+  await waitFor('document.querySelector("#chat")?.getAttribute("aria-hidden") === "false"', 4000);
+  await toUniverse('alpha');
+  const withChat = await look('alpha');
+  const outChat = outside(withChat);
+  check('with the chat open the nebula is above it, nothing under the chat', withChat.f.b < seen.alpha.f.b - 40 && outChat.planets.length === 0 && outChat.labels.length === 0, JSON.stringify({ free: withChat.f, was: seen.alpha.f, out: outChat }));
+  await click('#bchat');
+  await resetUi();
+  // without the navigator and the focus card the free area is the whole window, and a click on the navigator's row flies there too
+  await evalJs('planner.goOverview(); true');
+  await waitFor('world.debug().flight === "idle" && plannerDebug().selected === null', 20000);
+  await evalJs(`document.querySelector('#nav [data-nav="uni|alpha"]')?.click(); true`);
+  await waitFor('world.debug().flight === "idle" && world.universe === "alpha"', 20000);
+  await calmCamera();
+  const viaNav = await look('alpha');
+  check('the navigator\'s row flies to the same view', Math.hypot(viaNav.cam[0] - seen.alpha.cam[0], viaNav.cam[1] - seen.alpha.cam[1], viaNav.cam[2] - seen.alpha.cam[2]) < 1.5, JSON.stringify({ nav: viaNav.cam, was: seen.alpha.cam }));
+  // no panels at all: the nebula in the middle of the whole window, the way it is meant to look
+  // (a flight there opens the focus card, so the panels are closed once the ship is in, and the camera is sent again)
+  await evalJs('planner.goOverview(); true');
+  await waitFor('world.debug().flight === "idle" && plannerDebug().selected === null', 20000);
+  await toUniverse('alpha');
+  await press('KeyN', 'n');
+  await press('KeyF', 'f');
+  await waitFor('plannerDebug().panels.nav === false && plannerDebug().panels.focus === false', 4000);
+  await evalJs(`world.flyTo({kind:'entity',entity:{kind:'universe',id:'alpha'}}); true`);
+  await waitFor('world.debug().flight === "idle"', 20000);
+  await calmCamera();
+  await frames(3);
+  const bare = await look('alpha');
+  const outBare = outside(bare);
+  const spBare = spread(bare);
+  check('without panels: the whole nebula is in the window and in the middle of it', outBare.planets.length === 0 && outBare.labels.length === 0 && bare.f.l === 0 && bare.f.r === bare.w && Math.abs(bare.mid.x - bare.w / 2) < bare.w * 0.03, JSON.stringify({ free: bare.f, mid: bare.mid, out: outBare }));
+  check('and it is not a speck: it takes a good part of the width', spBare.w > bare.w * 0.3, JSON.stringify(spBare));
+  await shot('universe-framing-bare.png');
+  await press('KeyN', 'n');
+  await press('KeyF', 'f');
+  await waitFor('plannerDebug().panels.nav === true && plannerDebug().panels.focus === true', 4000);
+  // no animation (reduced motion, calm mode): the same view at once
+  await evalJs('planner.goOverview(); true');
+  await waitFor('world.debug().flight === "idle" && plannerDebug().selected === null', 20000);
+  await evalJs(`world.flyTo({kind:'entity',entity:{kind:'universe',id:'alpha'}},{instant:true}); true`);
+  await pageTurn();
+  const instant = (await debug()).camera;
+  check('an instant move (no motion wanted) ends in the same view', Math.hypot(instant.x - seen.alpha.cam[0], instant.y - seen.alpha.cam[1], instant.z - seen.alpha.cam[2]) < 1.5, JSON.stringify({ instant, was: seen.alpha.cam }));
+  await evalJs(`world.flyTo({kind:'overview'},{instant:true}); true`);
+  await pageTurn();
+}, { retry: true });
+
 section('remote client', async () => {
   await resetUi();
   // Yazi is local; a non-loopback page is remote and only shows the path.
