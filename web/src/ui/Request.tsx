@@ -1,9 +1,10 @@
 import type { JSX } from 'preact';
-import { armed, details, screens, tellDraft } from '../store';
-import { fetchScreen, pickAttempt, runTaskAction, sendKey, boardOk } from '../actions';
+import { armed, details, tellDraft } from '../store';
+import { pickAttempt, runTaskAction, boardOk } from '../actions';
 import { requestType, requestTitle } from '../requests';
 import type { Task } from '../types';
 import { t } from '../i18n';
+import { addDialogs } from '../dialogs';
 import { Gl } from './Gl';
 import { Translatable } from './Translatable';
 import { PERMISSION_ALLOW, PERMISSION_DENY } from '../requests';
@@ -16,43 +17,6 @@ interface Attempt {
   stat: string;
   diff?: string;
   report?: string;
-}
-
-function Screen(props: { target: string; label: string; role?: string }): JSX.Element {
-  const s = screens.value[props.target];
-  const role = props.role ?? '';
-  if (!s) {
-    return (
-      <div class="row">
-        <button class="btn" type="button" data-act="screen" data-target={props.target} onClick={() => void fetchScreen(props.target, role)}>
-          <Gl n="screen" />{props.label}
-        </button>
-        <span class="hint">{t('req.screenHint')}</span>
-      </div>
-    );
-  }
-  if (s.busy && !s.text) return <div class="hint">{t('req.reading')}</div>;
-  if (s.error) {
-    return (
-      <div class="screen">
-        <div class="hint">{s.error}</div>
-        <div class="row"><button class="btn" type="button" onClick={() => void fetchScreen(props.target, role)}><Gl n="refresh" />{t('req.again')}</button></div>
-      </div>
-    );
-  }
-  return (
-    <div class="screen">
-      <pre>{s.text}</pre>
-      <div class="keys">
-        {['up', 'down', 'left', 'right', 'enter', 'esc', '1', '2', '3', 'y', 'n'].map((k) => (
-          <button class="btn sm" type="button" key={k} data-act="keys" data-target={props.target} data-keys={k} onClick={() => void sendKey(props.target, k, role)}>
-            {k === 'enter' ? '↵ Enter' : k === 'esc' ? 'Esc' : k}
-          </button>
-        ))}
-      </div>
-      <div class="row"><button class="btn sm" type="button" onClick={() => void fetchScreen(props.target, role)}><Gl n="refresh" />{t('req.refreshScreen')}</button></div>
-    </div>
-  );
 }
 
 function ArmBtn(props: { id: string; cmd: string; label: string; armLabel: string; cls: string; task: Task }): JSX.Element {
@@ -154,7 +118,15 @@ export function RequestActions(props: { task: Task; input?: string }): JSX.Eleme
           )) : <div class="hint">{t('req.attemptsLoading')}</div>}
         </div>
       )}
-      {type === 'reviewneeds' && <Screen target={task.id} label={t('req.showReviewer')} role="reviewer" />}
+      {type === 'reviewneeds' && (
+        <div class="row">
+          <button
+            class="btn" type="button" data-act="screen" data-target={task.id} data-role="reviewer"
+            onClick={() => { addDialogs.screen.value = { task: task.id, role: 'reviewer' }; }}
+          ><Gl n="screen" />{t('req.showReviewer')}</button>
+          <span class="hint">{t('req.screenHint')}</span>
+        </div>
+      )}
       {(type === 'question') && (
         <div class="row"><button class="btn" type="button" data-act="answer" data-id={task.id} onClick={toInput}>{t('req.answer')}</button></div>
       )}
@@ -186,5 +158,3 @@ export function RequestBlock(props: { task: Task; input?: string }): JSX.Element
     </div>
   );
 }
-
-export { Screen };

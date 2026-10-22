@@ -321,6 +321,93 @@ section('navigator', async () => {
   await send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: 700, y: 400 });
 }, { retry: true });
 
+section('buttons', async () => {
+  await resetUi();
+  // Every visible button of the interface: its label starts with a capital letter. A value (the
+  // machine's host in the crumbs, a program's name in a picker) is not a label, so those are left
+  // out; a label that starts with an arrow or a digit has no first letter to capitalise.
+  const smallLabels = () => evalJs(`(() => {
+    const skip = '#crumbs, [data-prog], .prog';
+    const bad = [];
+    for (const b of document.querySelectorAll('button')) {
+      const r = b.getBoundingClientRect();
+      if (r.width < 2 || r.height < 2) continue;
+      if (b.closest('[aria-hidden="true"]') || b.closest(skip)) continue;
+      const label = (b.innerText || '').replace(/\\s+/g, ' ').trim();
+      const first = label.match(/\\p{L}/u)?.[0];
+      if (first && first !== first.toUpperCase()) bad.push(label.slice(0, 40));
+    }
+    return bad;
+  })()`);
+  const labelsSay = async (where) => {
+    const bad = await smallLabels();
+    check(`every visible button label starts with a capital (${where})`, Array.isArray(bad) && bad.length === 0, JSON.stringify(bad));
+  };
+  await labelsSay('the Galaxy');
+  await click('#btodo');
+  check('the todos are open for the check', await waitFor('document.querySelector("#todo")?.getAttribute("aria-hidden") === "false"', 4000));
+  await labelsSay('the todos');
+  await click('#btodo');
+  await click('#bchat');
+  check('the chat is open for the check', await waitFor('document.querySelector("#chat")?.getAttribute("aria-hidden") === "false"', 4000));
+  await labelsSay('the chat');
+  await click('#bchat');
+  await evalJs('document.querySelector("#menu-btn").click(); true');
+  check('the menu is open for the check', await waitFor('!!document.querySelector(".menupop")', 3000));
+  await labelsSay('the menu');
+  await evalJs('document.querySelector("#menu-btn").click(); true');
+  // The Station: its own buttons (the scope, the crew, the settings of the board).
+  await evalJs('document.querySelector("#menu-btn").click(); true');
+  await waitFor('!!document.querySelector(".menupop")', 3000);
+  await evalJs(`(() => { const b = [...document.querySelectorAll('.menupop button')].find((x) => x.innerText.trim().startsWith('Станция')); if (b) b.click(); return !!b; })()`);
+  check('the Station is open for the check', await waitFor('!!document.querySelector("#station")', 8000));
+  await labelsSay('the Station');
+  await press('Escape');
+  await waitFor('!document.querySelector("#station")', 4000);
+  await go('alpha/4');
+  await labelsSay('the Focus of a task');
+  await go('alpha/15');
+  await click('#closing [data-act="summary-open"]');
+  check('the result window is open for the check', await waitFor('!!document.querySelector("#summary")', 5000));
+  await labelsSay('the result window');
+  await press('Escape');
+  await waitFor('!document.querySelector("#summary")', 4000);
+  await go('alpha/6');
+  await click('#focus [data-act="screen"]');
+  check('the agent screen is open for the check', await waitFor('!!document.querySelector("#agent-screen")', 6000));
+  await labelsSay('the agent screen');
+  await press('Escape');
+  await waitFor('!document.querySelector("#agent-screen")', 4000);
+  // The same in English.
+  await evalJs('window.setLang("en"); true');
+  check('the interface is in English', await waitFor('document.documentElement.lang === "en" && [...document.querySelectorAll("button")].some((b) => b.innerText.includes("Chat"))', 4000));
+  await labelsSay('the Galaxy (English)');
+  await click('#btodo');
+  await waitFor('document.querySelector("#todo")?.getAttribute("aria-hidden") === "false"', 4000);
+  await labelsSay('the todos (English)');
+  await click('#btodo');
+  await click('#bchat');
+  await waitFor('document.querySelector("#chat")?.getAttribute("aria-hidden") === "false"', 4000);
+  await labelsSay('the chat (English)');
+  await click('#bchat');
+  await go('alpha/4');
+  await labelsSay('the Focus of a task (English)');
+  await go('alpha/15');
+  await click('#closing [data-act="summary-open"]');
+  await waitFor('!!document.querySelector("#summary")', 5000);
+  await labelsSay('the result window (English)');
+  await press('Escape');
+  await waitFor('!document.querySelector("#summary")', 4000);
+  await go('alpha/6');
+  await click('#focus [data-act="screen"]');
+  await waitFor('!!document.querySelector("#agent-screen")', 6000);
+  check('the agent screen has its English title', (await text('#agent-screen header')).includes('Agent screen'), (await text('#agent-screen header')).slice(0, 80));
+  await labelsSay('the agent screen (English)');
+  await press('Escape');
+  // The checks above went through the whole Galaxy: a fresh page is where the next section starts from.
+  await resetPage();
+}, { retry: true });
+
 section('autopilot', async () => {
   await resetUi();
   const cam0 = (await debug()).camera;
@@ -871,9 +958,9 @@ section('todo', async () => {
   const cyrTooLongTodo = await post('/api/action', { action: 'todo-add', text: 'ж'.repeat(70000) });
   check('a Cyrillic todo over the byte limit is refused clearly, not a 502', cyrTooLongTodo[0] === 400 && String(cyrTooLongTodo[1]?.error).includes('130000'), JSON.stringify(cyrTooLongTodo));
   const clamp = await evalJs(`(() => { const e = document.querySelector('#todo-list .titem[data-todo="${longId}"] .txt'); return { h: e.clientHeight, full: e.scrollHeight, more: document.querySelector('#todo-list .titem[data-todo="${longId}"] .more')?.innerText || '' }; })()`);
-  check('a long todo is three lines with «ещё», not one clipped line', clamp.h < clamp.full && clamp.h > 30 && clamp.more === 'ещё', JSON.stringify(clamp));
+  check('a long todo is three lines with «Ещё», not one clipped line', clamp.h < clamp.full && clamp.h > 30 && clamp.more === 'Ещё', JSON.stringify(clamp));
   await click(`#todo-list .titem[data-todo="${longId}"] .more`);
-  check('«ещё» opens the whole todo', await waitFor(`(() => { const e = document.querySelector('#todo-list .titem[data-todo="${longId}"] .txt'); return e.classList.contains('open') && e.clientHeight >= e.scrollHeight - 1; })()`, 3000) && (await evalJs(`document.querySelector('#todo-list .titem[data-todo="${longId}"] .more')?.innerText`)) === 'свернуть');
+  check('«Ещё» opens the whole todo', await waitFor(`(() => { const e = document.querySelector('#todo-list .titem[data-todo="${longId}"] .txt'); return e.classList.contains('open') && e.clientHeight >= e.scrollHeight - 1; })()`, 3000) && (await evalJs(`document.querySelector('#todo-list .titem[data-todo="${longId}"] .more')?.innerText`)) === 'Свернуть');
   for (const txt of ['Дело в две строки\nвторая строка', longText, bigText]) {
     const id = await todoIdByText(txt);
     if (id) await click(`[data-act="todo-del"][data-todo-id="${id}"]`);
@@ -1423,6 +1510,82 @@ section('focus', async () => {
   await resetUi();
 });
 
+section('agent screen', async () => {
+  await resetUi();
+  const reads = () => evalJs('window.__net.log.filter((u) => u.includes("/api/coordinator/screen")).length');
+  const at = () => evalJs('Number(document.querySelector("#screen-updated")?.dataset.at || 0)');
+  const term = () => text('#screen-term');
+  await go('alpha/6');
+  await click('#focus [data-act="screen"]');
+  check('«Экран агента» opens a window over the page', await waitFor('!!document.querySelector("#agent-screen")', 6000));
+  const box = await evalJs(`(() => {
+    const s = document.querySelector("#agent-screen .agent-screen"); const sc = document.querySelector("#agent-screen");
+    if (!s || !sc) return null;
+    const r = s.getBoundingClientRect();
+    return { w: r.width, h: r.height, l: r.left, t: r.top, r: r.right, b: r.bottom, vw: innerWidth, vh: innerHeight, bg: getComputedStyle(sc).backgroundColor };
+  })()`);
+  check('the window is centred with margins and dims the background', box && box.w < box.vw - 100 && box.h < box.vh - 60 && Math.abs(box.l - (box.vw - box.r)) < 3 && Math.abs(box.t - (box.vh - box.b)) < 3 && box.bg !== 'rgba(0, 0, 0, 0)', JSON.stringify(box));
+  const font = await evalJs(`(() => {
+    const el = document.querySelector("#screen-term"); if (!el) return null;
+    const s = getComputedStyle(el);
+    return { family: s.fontFamily, size: parseFloat(s.fontSize), white: s.whiteSpace, overflow: getComputedStyle(el.closest(".term-wrap")).overflowY };
+  })()`);
+  check('the terminal is monospaced, large and scrolls', /mono/i.test(font?.family || '') && font.size >= 14 && font.white === 'pre' && ['auto', 'scroll'].includes(font.overflow), JSON.stringify(font));
+  check('herdr is asked for the screen with its colours', await waitLog(() => calls('herdr.jsonl').some((c) => c.argv[0] === 'agent' && c.argv[1] === 'read' && c.argv[2] === 'sw-alpha-6' && c.argv.includes('ansi')), 8000), JSON.stringify(calls('herdr.jsonl').slice(-1)));
+  check('the colours of the screen are drawn', await waitFor('!!document.querySelector("#screen-term span[style*=\\"color\\"]")', 6000), String(await evalJs('document.querySelectorAll("#screen-term span").length')));
+  check('the screen shows what the agent shows', await hasText('#screen-term', 'May I continue?'), (await term()).slice(0, 80));
+  check('the time of the last refresh is shown', await waitFor('/\\d\\d:\\d\\d:\\d\\d/.test(document.querySelector("#screen-updated")?.innerText || "")', 6000), await text('#screen-updated'));
+  await shot('agent-screen.png');
+  const at0 = await at();
+  writeFileSync(join(fixture, 'state', 'dialog.txt'), '❯ Готово: миграция записана\n  1. Yes\n  2. No');
+  check('the window reads the screen again by itself', await waitFor('(document.querySelector("#screen-term")?.innerText || "").includes("миграция записана")', 10000), (await term()).slice(0, 80));
+  const at1 = await at();
+  check('the time of the last refresh moves with it', at1 > at0, `${at0} → ${at1}`);
+  // Words from the window: the same multiline line and `tell` as the Focus, and the window stays.
+  check('the window has the multiline line to the agent', (await evalJs('document.querySelector("#screen-tell")?.tagName === "TEXTAREA"')) && (await text('#screen-tell-hint')).includes('Shift+Enter'), await text('#screen-tell-hint'));
+  await evalJs('(() => { const i = document.querySelector("#screen-tell"); if (!i) return false; i.value = "Продолжай"; i.dispatchEvent(new Event("input", { bubbles: true })); i.focus(); return true; })()');
+  await press('Enter');
+  check('Enter in the window sends the words to the agent', await waitLog(() => calls().some((c) => c.argv[0] === 'tell' && c.argv[1] === 'alpha/6' && c.argv[3] === 'Продолжай'), 10000), JSON.stringify(lastCall()));
+  check('the window stays open and reads the screen again after sending', await waitFor(`!!document.querySelector("#agent-screen") && Number(document.querySelector("#screen-updated")?.dataset.at || 0) > ${at1}`, 8000));
+  // A stopped agent is read once, not again: there is no screen to watch.
+  await press('Escape');
+  check('one Esc closes the window', await waitFor('!document.querySelector("#agent-screen")', 4000));
+  await go('alpha/15');
+  await click('#focus [data-act="screen"]');
+  check('a stopped agent is marked as stopped', await waitFor('document.querySelector("#agent-screen .agent-screen")?.dataset.paused === "stopped"', 6000) && await hasText('#agent-screen', 'не обновляется'), await text('#screen-paused'));
+  await waitFor(`Number(document.querySelector("#screen-updated")?.dataset.at || 0) > 0`, 6000);
+  const stoppedReads = await reads();
+  await evalJs('new Promise((r) => setTimeout(r, 3600))');
+  await quiet();
+  check('the screen of a stopped agent is not read again', (await reads()) === stoppedReads, `${stoppedReads} → ${await reads()}`);
+  await press('Escape');
+  await waitFor('!document.querySelector("#agent-screen")', 4000);
+  // «Свернуть» and a click on the background close it as well.
+  await go('alpha/6');
+  await click('#focus [data-act="screen"]');
+  await waitFor('!!document.querySelector("#agent-screen")', 6000);
+  await click('#agent-screen [data-act="screen-close"]');
+  check('«Свернуть» closes the window', await waitFor('!document.querySelector("#agent-screen")', 4000));
+  await click('#focus [data-act="screen"]');
+  await waitFor('!!document.querySelector("#agent-screen")', 6000);
+  const behind = await evalJs('(() => { const e = document.elementFromPoint(12, 12); return e === document.querySelector("#agent-screen") ? "agent-screen" : (e?.id || e?.className || ""); })()');
+  await send('Input.dispatchMouseEvent', { type: 'mousePressed', x: 12, y: 12, button: 'left', clickCount: 1 });
+  await send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: 12, y: 12, button: 'left', clickCount: 1 });
+  check('a click on the background closes the window', behind === 'agent-screen' && await waitFor('!document.querySelector("#agent-screen")', 4000), String(behind));
+  // The polling stops with the window: nothing is asked after it is closed.
+  await click('#focus [data-act="screen"]');
+  await waitFor('!!document.querySelector("#agent-screen") && Number(document.querySelector("#screen-updated")?.dataset.at || 0) > 0', 8000);
+  await press('Escape');
+  await waitFor('!document.querySelector("#agent-screen")', 4000);
+  await quiet();
+  const closedReads = await reads();
+  await evalJs('new Promise((r) => setTimeout(r, 3600))');
+  await quiet();
+  check('the window stops reading the screen once closed', (await reads()) === closedReads, `${closedReads} → ${await reads()}`);
+  try { unlinkSync(join(fixture, 'state', 'dialog.txt')); } catch { /* already gone */ }
+  await resetUi();
+});
+
 section('requests', async () => {
   await resetUi();
   // A confirmation belongs to one task and one command.
@@ -1483,15 +1646,18 @@ section('requests', async () => {
   await go('sigma/2');
   check('a reviewneeds request offers the reviewer screen', await waitFor('!!document.querySelector(\'#focus [data-act="screen"][data-target="sigma/2"]\')', 6000));
   await click('#focus [data-act="screen"][data-target="sigma/2"]');
+  check('the reviewer’s screen opens in the window over the page', await waitFor('!!document.querySelector("#agent-screen")', 6000));
   check('the reviewer screen is read from the -r agent', await waitLog(() => calls('herdr.jsonl').some((c) => c.argv[0] === 'agent' && c.argv[1] === 'read' && c.argv[2] === 'sw-sigma-2-r'), 8000), JSON.stringify(calls('herdr.jsonl').slice(-2)));
   // the key buttons come with the screen: wait for them, and press again if the first press found nothing yet
-  await waitFor('!!document.querySelector(\'#focus [data-act="keys"][data-keys="enter"]\')', 15000);
+  await waitFor('!!document.querySelector(\'#agent-screen [data-act="keys"][data-keys="enter"]\')', 15000);
   let keyed = false;
   for (let i = 0; i < 3 && !keyed; i++) {
-    await click('#focus [data-act="keys"][data-keys="enter"]');
+    await click('#agent-screen [data-act="keys"][data-keys="enter"]');
     keyed = await waitLog(() => calls('keys.jsonl').some((c) => c.target === 'sw-sigma-2-r' && c.keys.includes('enter')), 8000);
   }
   check('reviewer send-keys names the -r agent', keyed, JSON.stringify(calls('keys.jsonl').slice(-2)));
+  await press('Escape');
+  check('one Esc closes the reviewer’s window', await waitFor('!document.querySelector("#agent-screen")', 4000));
   // yazi is local
   await go('alpha/6');
   await click('#focus [data-act="files"]');
@@ -2632,9 +2798,9 @@ section('memory suggestions', async () => {
   await resetUi();
   await quasarOf();
   await waitFor('!!document.querySelector("#mem-suggest-toggle")', 8000);
-  check('the panel says the proposals are on', (await text('#mem-suggest-toggle')) === 'вкл', await text('#mem-suggest-toggle'));
+  check('the panel says the proposals are on', (await text('#mem-suggest-toggle')) === 'Вкл', await text('#mem-suggest-toggle'));
   await click('#mem-suggest-toggle');
-  check('and the switch turns them off', await waitFor('(document.querySelector("#mem-suggest-toggle")?.innerText || "") === "выкл"', 6000) && (await api('/api/memory'))?.[1]?.settings?.suggest === false);
+  check('and the switch turns them off', await waitFor('(document.querySelector("#mem-suggest-toggle")?.innerText || "") === "Выкл"', 6000) && (await api('/api/memory'))?.[1]?.settings?.suggest === false);
   const a1 = asked();
   await post('/api/action', { action: 'approve', id: 'sigma/2', confirm: true });
   await waitFor('fetch("/api/state").then((r) => r.json()).then((s) => s.tasks.some((t) => t.id === "sigma/2" && t.status === "done"))', 12000);

@@ -14,6 +14,8 @@ export const addDialogs = {
   tell: signal<{ id: string; task: string } | null>(null),
   /** The agent's result or the description in a window over the page, with the task's actions. */
   summary: signal<{ task: string; part: 'closing' | 'description' } | null>(null),
+  /** An agent's terminal screen in a window over the page; `reviewer` reads the `<agent>-r` pane. */
+  screen: signal<{ task: string; role?: 'reviewer' } | null>(null),
 };
 
 /** The todo item being corrected in a window before it leaves: its words and its files. */
@@ -39,9 +41,10 @@ export function openNewTask(id: string, repo: string): void {
 
 export const dialogOpen = (): boolean =>
   addDialogs.universe.value || addDialogs.firstRun.value || !!addDialogs.popover.value || !!addDialogs.tell.value
-  || !!addDialogs.summary.value || !!stationDlg.value || shipDlg.value || !!rememberDlg.value;
+  || !!addDialogs.summary.value || !!addDialogs.screen.value || !!stationDlg.value || shipDlg.value || !!rememberDlg.value;
 
 export function closeDialogs(): void {
+  if (addDialogs.screen.value) { addDialogs.screen.value = null; return; }
   if (addDialogs.summary.value) { addDialogs.summary.value = null; return; }
   if (rememberDlg.value) { rememberDlg.value = null; return; }
   if (addDialogs.popover.value) { addDialogs.popover.value = null; return; }
