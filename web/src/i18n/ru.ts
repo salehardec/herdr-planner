@@ -19,7 +19,7 @@ export const ru: Record<string, string | string[]> = {
   'search.aria': 'Космический поиск', 'search.placeholder': 'Космический поиск: задача, проект, дело, чат…',
   'search.none': 'Ничего не найдено', 'search.galaxies': 'Галактики', 'search.quasar': 'Квазар', 'search.universes': 'Вселенные',
   'search.planets': 'Планеты', 'search.moons': 'Спутники', 'search.todo': 'Дела', 'search.chat': 'Чат', 'search.todoPath': 'дела', 'search.chatPath': 'Чат Координатора',
-  'wait.button': 'Ждёт тебя · {n}', 'wait.title': 'Ждёт тебя', 'wait.none': 'Никто не ждёт. Хорошо.', 'wait.back': 'Esc или действие вернёт сюда, к следующему запросу.',
+  'wait.button': 'Ждёт тебя · {n}', 'wait.short': 'Ждёт · {n}', 'wait.title': 'Ждёт тебя', 'wait.none': 'Никто не ждёт. Хорошо.', 'wait.back': 'Esc или действие вернёт сюда, к следующему запросу.',
   'mode.aria': 'Режим полёта', 'mode.auto': 'Автопилот', 'mode.manual': 'Ручной',
   // меню
   'menu.title': 'Меню', 'menu.refresh': 'Обновить', 'menu.home': 'Домой', 'menu.log': 'Журнал доски', 'menu.archive': 'Архив', 'menu.todo': 'Дела',
@@ -311,8 +311,6 @@ export const ru: Record<string, string | string[]> = {
   'ship.saved': 'Сохранено',
   'ship.apply': 'Применить',
   'ship.confirm': 'Подтвердить',
-  'chip.own': '{host} · своя станция',
-  'chip.openHome': 'Станция этой машины',
   'menu.station': 'Станция',
   'menu.crewWizard': 'Экипаж корабля…',
   'menu.ship': 'Бортовой компьютер',
