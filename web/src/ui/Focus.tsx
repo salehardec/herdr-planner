@@ -17,6 +17,7 @@ import { RequestBlock } from './Request';
 import { TaskActionButtons, TellBox } from './AgentActions';
 import { CleanCard } from './CleanCard';
 import { ContainerButtons, ContainerPorts } from './ContainerTools';
+import { PickYard } from './PickYard';
 import { dayTimeOf } from '../util/dates';
 import { duration } from '../util/format';
 import type { Entity, Subagent, Task } from '../types';
@@ -61,7 +62,9 @@ function TaskFocus(props: { task: Task }): JSX.Element {
   const agentLabel = [task.app, task.model || task.worker_agent.split('/').slice(1).join('/')].filter(Boolean).join(' · ');
   const linkCard = linkSel.value && linkSel.value.to === task.id ? linkSel.value : null;
   const yard = runners.value.flatMap((r) => r.containers.filter((c) => c.task?.id === task.id).map((c) => ({ r, c })));
+  const pick = snap.value?.runner_picks?.[task.id];
   const [clean, setClean] = useState(false);
+  const [pickOpen, setPickOpen] = useState(false);
 
   useEffect(() => { void fetchDetails(task.id); void loadClosing(task); }, [task.id, task.status, task.msg]);
 
@@ -103,27 +106,43 @@ function TaskFocus(props: { task: Task }): JSX.Element {
         )}
       </div>
       {!local && <div class="remote">{t('focus.remoteFiles', { path: worktree || d?.reports_dir || t('focus.none') })}</div>}
-      {yard.length > 0 && (
-        <section class="rf-task" id="rf-task">
-          <h3>{t('runner.taskTitle')}</h3>
-          {yard.map(({ r, c }) => (
-            <div class="row" key={c.id}>
-              <button class="k" type="button" onClick={() => void navigateTo({ kind: 'runner', id: r.id })}>{r.id}</button>
-              <span class="hint">{c.name} · {c.created_ms ? duration(Date.now() - c.created_ms, t) : '—'}</span>
-              <ContainerPorts c={c} host={r.ports_host} />
-              {c.no_limits && <span class="chip hot" data-nolimit="1" title={t('runner.noLimitHint')}>{t('runner.noLimitMark')}</span>}
-              <ContainerButtons runner={r.id} c={c} scope={task.id} />
-            </div>
-          ))}
-          {task.status === 'done' && (
-            <div class="hint warn">
-              {t('runner.leftOnYard')}{' '}
-              {!clean && <button class="btn sm danger" type="button" id="rf-task-clean" onClick={() => setClean(true)}>{t('runner.cleanOpen')}</button>}
-            </div>
+      <section class="rf-task" id="rf-task">
+        <h3>{t('runner.taskTitle')}</h3>
+        <div class="row" id="rf-pick-row" data-pick={pick?.reason ?? ''}>
+          {pick?.runner
+            ? <button class="k" type="button" id="rf-pick-runner" onClick={() => void navigateTo({ kind: 'runner', id: pick.runner })}>{pick.runner}</button>
+            : <span class="hint" id="rf-pick-none">{pick?.need.length ? t('runner.pick.noneTags', { tags: pick.need.join(', ') }) : t('runner.pick.none')}</span>}
+          {pick?.runner && (
+            <span class="hint">
+              {t(`runner.pick.reason.${pick.reason}`)}
+              {pick.need.length > 0 ? ` · ${pick.need.join(', ')}` : ''}
+            </span>
           )}
-          {clean && yard[0] && <CleanCard runner={yard[0].r.id} ids={yard.map((x) => x.c.id)} onClose={() => setClean(false)} onDone={() => setClean(false)} />}
-        </section>
-      )}
+          {pick?.shifted && <span class="chip hot" data-shift={pick.shifted}>{t(`runner.pick.shifted.${pick.shifted}`)}</span>}
+          <button class="btn sm" type="button" id="rf-pick-open" onClick={() => setPickOpen(!pickOpen)}>{t('runner.pick.change')}</button>
+        </div>
+        {pick && pick.chain.length > 1 && (
+          <div class="hint" id="rf-pick-chain">{t('runner.pick.chain', { chain: pick.chain.join(' → ') })}</div>
+        )}
+        {pickOpen && <PickYard task={task} onClose={() => setPickOpen(false)} />}
+        {yard.length === 0 && <div class="hint" id="rf-no-containers">{t('runner.noContainers')}</div>}
+        {yard.map(({ r, c }) => (
+          <div class="row" key={c.id}>
+            <button class="k" type="button" onClick={() => void navigateTo({ kind: 'runner', id: r.id })}>{r.id}</button>
+            <span class="hint">{c.name} · {c.created_ms ? duration(Date.now() - c.created_ms, t) : '—'}</span>
+            <ContainerPorts c={c} host={r.ports_host} />
+            {c.no_limits && <span class="chip hot" data-nolimit="1" title={t('runner.noLimitHint')}>{t('runner.noLimitMark')}</span>}
+            <ContainerButtons runner={r.id} c={c} scope={task.id} />
+          </div>
+        ))}
+        {yard.length > 0 && task.status === 'done' && (
+          <div class="hint warn">
+            {t('runner.leftOnYard')}{' '}
+            {!clean && <button class="btn sm danger" type="button" id="rf-task-clean" onClick={() => setClean(true)}>{t('runner.cleanOpen')}</button>}
+          </div>
+        )}
+        {clean && yard[0] && <CleanCard runner={yard[0].r.id} ids={yard.map((x) => x.c.id)} onClose={() => setClean(false)} onDone={() => setClean(false)} />}
+      </section>
       <TellBox task={task} />
 
       {(task.status === 'done' || cl?.text) && (

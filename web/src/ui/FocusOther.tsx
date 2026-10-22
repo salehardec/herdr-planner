@@ -267,6 +267,7 @@ export function RunnerFocus(props: { entity: Entity }): JSX.Element {
   const [limCpus, setLimCpus] = useState('0');
   const [limMem, setLimMem] = useState('0');
   const [limPer, setLimPer] = useState('0');
+  const [busyPct, setBusyPct] = useState('');
   const [makeDefault, setMakeDefault] = useState(false);
   const [err, setErr] = useState('');
   const local = ['127.0.0.1', '::1', '[::1]', 'localhost'].includes(location.hostname);
@@ -294,6 +295,7 @@ export function RunnerFocus(props: { entity: Entity }): JSX.Element {
     // The form takes GiB; the file keeps MiB.
     setLimMem(String(Math.round((limits.mem_mb / 1024) * 100) / 100));
     setLimPer(String(limits.per_task));
+    setBusyPct(r.busy_pct == null ? '' : String(r.busy_pct));
     setMakeDefault(false);
     setErr('');
     setEditOpen(true);
@@ -303,9 +305,11 @@ export function RunnerFocus(props: { entity: Entity }): JSX.Element {
     const cpus = limCpus.trim() === '' ? limits.cpus : Number(limCpus);
     const memGb = limMem.trim() === '' ? limits.mem_mb / 1024 : Number(limMem);
     const per = limPer.trim() === '' ? limits.per_task : Number(limPer);
+    const busy = busyPct.trim();
     if (!Number.isInteger(cpus) || cpus < 0 || cpus > 1024
       || !Number.isFinite(memGb) || memGb < 0 || memGb > 1024
-      || !Number.isInteger(per) || per < 0 || per > 1024) {
+      || !Number.isInteger(per) || per < 0 || per > 1024
+      || (busy !== '' && (!Number.isInteger(Number(busy)) || Number(busy) < 0 || Number(busy) > 100))) {
       setErr(t('runner.limitsBad'));
       return;
     }
@@ -320,6 +324,8 @@ export function RunnerFocus(props: { entity: Entity }): JSX.Element {
           disk_free_pct: alertDiskPct.trim() === '' ? undefined : Number(alertDiskPct),
           offline_min: alertOfflineMin.trim() === '' ? undefined : Number(alertOfflineMin),
           limits: { cpus, mem_mb: Math.round(memGb * 1024), per_task: per },
+          busy_pct: busy === '' ? undefined : Number(busy),
+          busy_reset: busy === '',
         });
         toast(t('runner.saved'));
         setEditOpen(false);
@@ -386,6 +392,9 @@ export function RunnerFocus(props: { entity: Entity }): JSX.Element {
             : t('runner.noLimit'),
           per: limits.per_task > 0 ? tn('runner.perTask', limits.per_task, { n: limits.per_task }) : t('runner.noLimit'),
         })}
+      </p>
+      <p class="hint" id="rf-busy-line">
+        {t('runner.busyLine', { pct: r.busy_pct ?? snap.value?.runner_rules?.busy_pct ?? 85 })}
       </p>
       {r.alerts.length > 0 && (
         <section class="rf-alerts" id="rf-alerts">
@@ -511,6 +520,8 @@ export function RunnerFocus(props: { entity: Entity }): JSX.Element {
           <label>{t('runner.limitsMem')}<input class="field" id="rf-lim-mem" inputMode="decimal" value={limMem} onInput={(e) => setLimMem((e.target as HTMLInputElement).value)} /></label>
           <label>{t('runner.limitsPer')}<input class="field" id="rf-lim-per" inputMode="numeric" value={limPer} onInput={(e) => setLimPer((e.target as HTMLInputElement).value)} /></label>
           <p class="hint" id="rf-lim-hint">{t('runner.limitsHint')}</p>
+          <label>{t('runner.busyPct')}<input class="field" id="rf-busy" inputMode="numeric" value={busyPct} placeholder={t('runner.busyPlaceholder', { pct: snap.value?.runner_rules?.busy_pct ?? 85 })} onInput={(e) => setBusyPct((e.target as HTMLInputElement).value)} /></label>
+          <p class="hint" id="rf-busy-hint">{t('runner.busyHint')}</p>
           <label>{t('runner.diskPct')}<input class="field" id="rf-disk-pct" inputMode="numeric" value={alertDiskPct} onInput={(e) => setAlertDiskPct((e.target as HTMLInputElement).value)} /></label>
           <label>{t('runner.offlineMin')}<input class="field" id="rf-offline-min" inputMode="numeric" value={alertOfflineMin} onInput={(e) => setAlertOfflineMin((e.target as HTMLInputElement).value)} /></label>
           <label class="rf-check"><input type="checkbox" checked={makeDefault} onChange={(e) => setMakeDefault((e.target as HTMLInputElement).checked)} />{t('runner.makeDefault')}</label>

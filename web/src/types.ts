@@ -331,6 +331,33 @@ export interface RunnerAlertRules { disk_free_pct: number; offline_min: number }
 /** What a task's container may take on a shipyard (PLN-43); zero asks for no limit of that kind. */
 export interface RunnerLimits { cpus: number; mem_mb: number; per_task: number }
 
+/** A task's or a repository's rule for its yard (PLN-45): a yard by label, tags it needs, or both. */
+export interface RunnerTaskRule { runner?: string; tags?: string[] }
+
+/** The rules of the list file, as the page reads and edits them. */
+export interface RunnerRules {
+  default: string;
+  busy_pct: number;
+  assign: Record<string, string>;
+  need: Record<string, string[]>;
+  tasks: Record<string, RunnerTaskRule>;
+}
+
+/** The yard chosen for a task or a repository, with what stands behind it. */
+export interface RunnerPick {
+  runner: string;
+  target: string;
+  ports_host: string;
+  /** `task`, `repo` or `default`. */
+  reason: 'task' | 'repo' | 'default';
+  need: string[];
+  preferred: string;
+  chain: string[];
+  /** `busy` or `offline` when the first allowed yard was passed over. */
+  shifted: '' | 'busy' | 'offline';
+  why: string;
+}
+
 /** A live task that keeps more containers than the shipyard allows. */
 export interface RunnerOver { task: string; tag: string; containers: number; max: number }
 
@@ -358,6 +385,8 @@ export interface Runner {
   alert_rules: RunnerAlertRules;
   /** The limits of a task's containers, as the list file has them now. */
   limits: RunnerLimits;
+  /** This yard's own busy threshold in percent, `null` — the list's (PLN-45). */
+  busy_pct: number | null;
   /** Live tasks that keep more containers than the yard allows. */
   over: RunnerOver[];
   /** When the yard stopped answering (ms); 0 while it answers. */
@@ -383,6 +412,12 @@ export interface Snapshot {
   coordinator: CoordinatorState;
   /** Shipyards: machines the tasks' containers run on. */
   runners: Runner[];
+  /** The yard chosen for every task, by task id. */
+  runner_picks: Record<string, RunnerPick>;
+  /** The yard chosen for every repository. */
+  runner_repo_picks: Record<string, RunnerPick>;
+  /** The rules behind those picks (PLN-45). */
+  runner_rules: RunnerRules;
   /** Whether the docker block is in this machine's agent instructions. */
   runner_block: RunnerBlock;
   theme: Theme;

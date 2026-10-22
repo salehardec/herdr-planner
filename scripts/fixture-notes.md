@@ -163,7 +163,10 @@ The planner works with its own board only. The stand-ins still answer as a board
 - `settings/runners.json` (next to `board/`, where the planner reads it): one yard `vm-r`, target `me@192.0.2.29`,
   ports on `192.0.2.29`, tags `docker28 gpu x86_64`, masks `buildx_*` and `neighbor` (the compose project next door).
   The file has no `limits`: the first read writes the machine's share (8 cores, 16 GiB → `--cpus 2 --memory 2g`), and the
-  `runners` section then sets its own numbers.
+  `runners` section then sets its own numbers. The same section adds a second yard `vm-r2` (same stand-in) through the
+  wizard, writes a rule for the repository `alpha` (`/api/runner/pick`, `assign.alpha = vm-r2`) and a rule for
+  `alpha/3`, and checks the pick in the snapshot, the block in the repository's and the task's own instructions
+  (`state/board-settings.json`, key `@task:alpha/3` for the task), then clears both and removes the second yard.
 - `state/runner.json`: ids, networks and volume names already removed, builders removed, whether the images and the cache
   were pruned; the probe leaves them out. Its `extra` (`containers`, `networks`, `volumes`, in the shape of
   `DATA.runnerR`) is what a check adds to the yard: the `runners auto` section writes it (a container, a network and a

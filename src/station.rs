@@ -430,6 +430,16 @@ pub(crate) async fn read_settings(cfg: &AppConfig, repo: &str) -> Result<Vec<Set
     parse_settings(&out.stdout).map_err(|e| Fail::new(502, e))
 }
 
+/// The settings of one task: `herdr-projects show <id> --json` (its own values and the inherited ones).
+pub(crate) async fn read_task_settings(cfg: &AppConfig, id: &str) -> Result<Vec<Setting>, Fail> {
+    let args = vec!["show".to_string(), id.to_string(), "--json".into()];
+    let out = board_run(cfg, &args, BOARD_WAIT).await;
+    if !out.ok() {
+        return Err(read_failed(&out));
+    }
+    parse_settings(&out.stdout).map_err(|e| Fail::new(502, e))
+}
+
 /// `herdr-projects doctor`'s text. The board exits non-zero when a check fails, and its lines still matter.
 async fn read_doctor(cfg: &AppConfig) -> Result<String, Fail> {
     let out = board_run(cfg, &["doctor".to_string()], DOCTOR_WAIT).await;

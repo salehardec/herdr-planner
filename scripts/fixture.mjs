@@ -159,23 +159,29 @@ function common(DATA, mods) {
     const load = () => readJson(file, {});
     const kindOf = (name) => (/^(coordinator|board|watcher)\./.test(name) ? 'board' : 'work');
     const effective = (store, repo, name) => ((repo && store[repo] && store[repo][name] !== undefined) ? store[repo][name] : (store[''] || {})[name]);
-    const show = (repo) => {
+    // A level is the home board (''), one repository, or one task (`@task:repo/n`); instructions add up, so the
+    // inherited levels are listed after the own ones.
+    const levelOf = (repo, task) => (task ? '@task:' + task : (repo || ''));
+    const show = (repo, task) => {
       const store = load();
       const home = store[''] || {};
-      const own = repo ? (store[repo] || {}) : home;
+      const own = store[levelOf(repo, task)] || {};
       const list = [];
-      if (repo && cfg.keys[repo]) list.push({ name: 'repo.key', kind: 'board', value: cfg.keys[repo], from: 'repo', place: 'repo', own: true, note: '' });
-      for (const [name, value] of Object.entries(own)) list.push({ name, kind: kindOf(name), value, from: repo ? 'repo' : 'you', place: repo ? 'repo' : 'you', own: true, note: '' });
-      if (repo) {
-        for (const [name, value] of Object.entries(home)) {
-          if (own[name] !== undefined) continue;
-          list.push({ name, kind: kindOf(name), value, from: 'you', place: 'you', own: false, note: '' });
+      const where = task ? 'this task' : repo ? 'repo' : 'you';
+      const place = task ? 'task' : repo ? 'repo' : 'you';
+      if (repo && !task && cfg.keys[repo]) list.push({ name: 'repo.key', kind: 'board', value: cfg.keys[repo], from: 'repo', place: 'repo', own: true, note: '' });
+      for (const [name, value] of Object.entries(own)) list.push({ name, kind: kindOf(name), value, from: where, place, own: true, note: '' });
+      for (const level of task ? [repo, ''] : repo ? [''] : []) {
+        for (const [name, value] of Object.entries(store[level] || {})) {
+          if (list.some((x) => x.name === name)) continue;
+          list.push({ name, kind: kindOf(name), value, from: level ? 'repo' : 'you', place: level ? 'repo' : 'you', own: false, note: '' });
         }
       }
       for (const [name, value] of Object.entries(cfg.builtin)) {
         if (list.some((x) => x.name === name)) continue;
         list.push({ name, kind: kindOf(name), value, from: 'built in', place: 'builtin', own: false, note: name === 'reviewer.fast' ? 'does nothing: claude has no fast mode' : '' });
       }
+      if (task) return { settings: list };
       return repo ? { repo: { name: repo, key: cfg.keys[repo] || '', folder: '' }, settings: list } : { settings: list };
     };
     const refuse = (store, name, value, repo) => {
@@ -194,19 +200,19 @@ function common(DATA, mods) {
       }
       return null;
     };
-    const set = (name, value, repo) => {
+    const set = (name, value, repo, task) => {
       const store = load();
       const problem = refuse(store, name, value, repo);
       if (problem) return { error: problem };
-      const level = repo || '';
+      const level = levelOf(repo, task);
       store[level] = store[level] || {};
       store[level][name] = value;
       fs.writeFileSync(file, JSON.stringify(store, null, 1));
       return { ok: true };
     };
-    const unset = (name, repo) => {
+    const unset = (name, repo, task) => {
       const store = load();
-      const level = repo || '';
+      const level = levelOf(repo, task);
       if (store[level]) delete store[level][name];
       fs.writeFileSync(file, JSON.stringify(store, null, 1));
       return { ok: true };
@@ -903,17 +909,19 @@ function herdrProjectsMain(C, DATA) {
     process.exit(DATA.board.doctorExit.home);
   }
 
-  if (cmd === 'show' && argv.includes('--json') && !argv.includes('--task')) {
+  if (cmd === 'show' && argv.includes('--json')) {
     const repo = flag('--repo') || '';
+    const task = rest.find((x) => /^[^/]+\/\d+$/.test(x)) || '';
     const w = world();
     if (repo && !w.keys[repo]) fail('No repo ' + repo);
     const ops = C.boardSettings(join('state', 'board-settings.json'), { models: DATA.models, efforts: DATA.board.efforts, builtin: DATA.board.builtin, keys: w.keys });
-    console.log(JSON.stringify(ops.show(repo), null, 1));
+    console.log(JSON.stringify(ops.show(repo, task), null, 1));
     return;
   }
 
   if (cmd === 'set' || cmd === 'unset') {
     const repo = flag('--repo') || '';
+    const task = flag('--task') || '';
     const w = world();
     if (repo && !w.keys[repo]) fail('No repo ' + repo);
     const name = rest[0];
@@ -930,9 +938,9 @@ function herdrProjectsMain(C, DATA) {
       return;
     }
     const ops = C.boardSettings(join('state', 'board-settings.json'), { models: DATA.models, efforts: DATA.board.efforts, builtin: DATA.board.builtin, keys: w.keys });
-    const res = cmd === 'set' ? ops.set(name, value, repo) : ops.unset(name, repo);
+    const res = cmd === 'set' ? ops.set(name, value, repo, task) : ops.unset(name, repo, task);
     if (res.error) fail(res.error);
-    console.log((repo || 'home') + ': ' + name + (cmd === 'set' ? ' = ' + value : ' unset'));
+    console.log((task || repo || 'home') + ': ' + name + (cmd === 'set' ? ' = ' + value : ' unset'));
     return;
   }
 

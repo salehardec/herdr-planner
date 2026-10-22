@@ -4278,6 +4278,39 @@ section('runners', async () => {
     (() => { try { const t = readFileSync(join(fixture, 'state', 'board-settings.json'), 'utf8'); return t.includes('--cpus 3 --memory 3g') && t.includes('docker run -d --name pg-PLN-26') && t.includes('deploy:') && t.includes('не больше одного контейнера на задачу'); } catch { return false; } })(),
     (() => { try { return readFileSync(join(fixture, 'state', 'board-settings.json'), 'utf8').match(/Лимиты[^\n]*/)?.[0] || ''; } catch { return ''; } })());
   check('no copy of the block goes to another machine', (() => { try { return !readFileSync(join(fixture, 'state', 'vm-a-settings.json'), 'utf8').includes('herdr-planner:runners'); } catch { return true; } })());
+  // Which yard a task gets (PLN-45): the Focus names it; a repository rule is written, its block names the yard, and
+  // clearing the rule brings the default back.
+  await go('alpha/3');
+  check('the task focus names the yard it gets', await waitFor('!!document.querySelector("#rf-pick-row")', 12000)
+    && (await text('#rf-pick-row')).includes('vm-r') && (await text('#rf-pick-row')).includes('по умолчанию'),
+  await text('#rf-pick-row'));
+  await click('#rf-pick-open');
+  check('the yard card opens', await waitFor('!!document.querySelector("#rf-pick #rp-runner")', 5000), await text('#rf-pick'));
+  await click('#rp-scope-repo');
+  await evalJs('(() => { const s = document.querySelector("#rp-runner"); s.value = "vm-r2"; s.dispatchEvent(new Event("change", { bubbles: true })); return s.value; })()');
+  check('the yard is chosen in the card', (await evalJs('document.querySelector("#rp-runner").value')) === 'vm-r2');
+  await click('#rp-save');
+  check('saving the rule asks twice', await hasText('#rp-save', 'Точно'));
+  await secondPress('#rp-save');
+  check('the rule is in the list file', await waitLog(() => { try { return JSON.parse(readFileSync(join(fixture, 'settings', 'runners.json'), 'utf8')).assign.alpha === 'vm-r2'; } catch { return false; } }, 10000), readFileSync(join(fixture, 'settings', 'runners.json'), 'utf8').slice(0, 300));
+  check('the task now gets vm-r2 by the repository rule', await waitFor('plannerSnap().runner_picks["alpha/3"]?.runner === "vm-r2" && plannerSnap().runner_picks["alpha/3"]?.reason === "repo"', 15000), JSON.stringify((await stateApi())?.runner_picks?.['alpha/3']));
+  check('the focus names the yard and its reason', await waitFor('!!document.querySelector("#rf-pick-row")', 8000)
+    && (await text('#rf-pick-row')).includes('vm-r2') && (await text('#rf-pick-row')).includes('правило репозитория'),
+  await text('#rf-pick-row'));
+  check('the repository gets its own block, naming that yard', await waitLog(() => { try { const t = readFileSync(join(fixture, 'state', 'board-settings.json'), 'utf8'); return t.includes('Верфь для задач репозитория alpha') && t.includes('vm-r2'); } catch { return false; } }, 15000), 'board-settings');
+  // The task's own rule replaces the repository's, block included.
+  await click('#rf-pick-open');
+  await click('#rp-scope-task');
+  await evalJs('(() => { const s = document.querySelector("#rp-runner"); s.value = "vm-r"; s.dispatchEvent(new Event("change", { bubbles: true })); return s.value; })()');
+  await click('#rp-save');
+  await secondPress('#rp-save');
+  check('the task rule wins over the repository one', await waitFor('plannerSnap().runner_picks["alpha/3"]?.runner === "vm-r" && plannerSnap().runner_picks["alpha/3"]?.reason === "task"', 15000), JSON.stringify((await stateApi())?.runner_picks?.['alpha/3']));
+  check('the task gets its own block too', await waitLog(() => { try { const t = JSON.parse(readFileSync(join(fixture, 'state', 'board-settings.json'), 'utf8')); return (t['@task:alpha/3']?.['worker.instructions'] ?? '').includes('Верфь задачи alpha/3'); } catch { return false; } }, 15000), 'board-settings');
+  // Clear both rules, so the yard can be removed below without a dangling rule.
+  check('the task rule is cleared', (await post('/api/runner/pick', { scope: 'task', id: 'alpha/3', runner: '', tags: [], confirm: true }))[0] === 200);
+  check('the repository rule is cleared', (await post('/api/runner/pick', { scope: 'repo', id: 'alpha', runner: '', tags: [], confirm: true }))[0] === 200);
+  check('and the default yard is back', await waitFor('plannerSnap().runner_picks["alpha/3"]?.runner === "vm-r" && plannerSnap().runner_picks["alpha/3"]?.reason === "default"', 15000), JSON.stringify((await stateApi())?.runner_picks?.['alpha/3']));
+  check('the rule blocks are taken out of the instructions', await waitLog(() => { try { const t = readFileSync(join(fixture, 'state', 'board-settings.json'), 'utf8'); return !t.includes('Верфь для задач репозитория alpha') && !t.includes('Верфь задачи alpha/3'); } catch { return false; } }, 15000), 'board-settings');
   // The Station card shows the block and its «было → стало» text.
   await resetUi();
   await menuPick('Станция');

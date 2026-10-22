@@ -129,6 +129,10 @@ pub struct Runner {
     /// The defaults of a task's containers (PLN-43): absent until the machine is first read, then its share.
     #[serde(default)]
     pub limits: Option<Limits>,
+    /// Load (load1 over the core count) at which this yard counts as busy, in percent; absent — the list's threshold,
+    /// 0 — never busy (PLN-45).
+    #[serde(default)]
+    pub busy_pct: Option<u64>,
 }
 
 impl Runner {
@@ -142,6 +146,21 @@ impl Runner {
     }
 }
 
+/// What one task asks of a yard (PLN-45): a yard by its label, tags it must carry, or both. An empty rule is no rule.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TaskRule {
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub runner: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tags: Vec<String>,
+}
+
+impl TaskRule {
+    pub fn any(&self) -> bool {
+        !self.runner.is_empty() || !self.tags.is_empty()
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RunnersFile {
     #[serde(default = "file_version")]
@@ -152,8 +171,22 @@ pub struct RunnersFile {
     pub default: String,
     #[serde(default)]
     pub runners: Vec<Runner>,
+    /// A repository's own yard, by label.
     #[serde(default)]
     pub assign: BTreeMap<String, String>,
+    /// Tags a repository's tasks need of a yard (`gpu`, `x86_64`, …).
+    #[serde(default)]
+    pub need: BTreeMap<String, Vec<String>>,
+    /// Rules of single tasks, by id (`herdr-planner/45`): they win over the repository's rule.
+    #[serde(default)]
+    pub tasks: BTreeMap<String, TaskRule>,
+    /// Load (load1 over the core count) at which a yard counts as busy, in percent; 0 — never busy.
+    #[serde(default = "busy_default")]
+    pub busy_pct: u64,
+}
+
+pub fn busy_default() -> u64 {
+    85
 }
 
 fn file_version() -> u32 {
@@ -168,6 +201,9 @@ impl Default for RunnersFile {
             default: String::new(),
             runners: Vec::new(),
             assign: BTreeMap::new(),
+            need: BTreeMap::new(),
+            tasks: BTreeMap::new(),
+            busy_pct: busy_default(),
         }
     }
 }
@@ -192,6 +228,25 @@ impl RunnersFile {
         }
         set.into_iter().collect()
     }
+}
+
+/// A yard's tag: letters, digits, `_`, `.`, `-`, up to 32 characters.
+pub fn valid_tag(s: &str) -> bool {
+    !s.is_empty()
+        && s.len() <= 32
+        && s.chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '-'))
+}
+
+/// A task rule's key: `repo/n`, as the board writes an id.
+pub fn valid_task_key(s: &str) -> bool {
+    let Some((repo, n)) = s.split_once('/') else {
+        return false;
+    };
+    crate::taskmeta::valid_repo(repo)
+        && !n.is_empty()
+        && n.chars().all(|c| c.is_ascii_digit())
+        && n.parse::<u64>().is_ok_and(|v| v > 0)
 }
 
 /// A mask is a name with `*` (any run of characters): letters, digits, `_`, `.`, `-` and `*`.
@@ -243,12 +298,39 @@ pub fn validate(file: &RunnersFile) -> Result<(), String> {
             }
         }
         for t in &r.tags {
-            if t.len() > 32
-                || !t
-                    .chars()
-                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '-'))
-            {
+            if !valid_tag(t) {
                 return Err(format!("runners.json: метка {:?} у верфи {}", t, r.id));
+            }
+        }
+        if let Some(p) = r.busy_pct {
+            if p > 100 {
+                return Err(format!("runners.json: порог занятости у верфи {} — от 0 до 100 %", r.id));
+            }
+        }
+    }
+    if file.busy_pct > 100 {
+        return Err("runners.json: порог занятости — от 0 до 100 %".into());
+    }
+    for (repo, tags) in &file.need {
+        if !crate::taskmeta::valid_repo(repo) {
+            return Err(format!("runners.json: репозиторий в правилах меток: {repo:?}"));
+        }
+        for t in tags {
+            if !valid_tag(t) {
+                return Err(format!("runners.json: метка {:?} у репозитория {repo}", t));
+            }
+        }
+    }
+    for (id, rule) in &file.tasks {
+        if !valid_task_key(id) {
+            return Err(format!("runners.json: ключ правила задачи {id:?}: нужно repo/n"));
+        }
+        if !rule.runner.is_empty() && !ids.contains(&rule.runner) {
+            return Err(format!("runners.json: верфь {:?} у задачи {id} не найдена", rule.runner));
+        }
+        for t in &rule.tags {
+            if !valid_tag(t) {
+                return Err(format!("runners.json: метка {:?} у задачи {id}", t));
             }
         }
     }
@@ -259,7 +341,7 @@ pub fn validate(file: &RunnersFile) -> Result<(), String> {
         ));
     }
     for (repo, id) in &file.assign {
-        if repo.is_empty() || id.is_empty() || !ids.contains(id) {
+        if !crate::taskmeta::valid_repo(repo) || !ids.contains(id) {
             return Err(format!("runners.json: назначение {repo:?} → {id:?} неверно"));
         }
     }
@@ -573,6 +655,9 @@ pub struct RunnerState {
     /// The limits of a task's containers on this yard, as the list file has them now (PLN-43).
     #[serde(default)]
     pub limits: Limits,
+    /// This yard's own busy threshold, as the list file has it (PLN-45); `None` — the list's.
+    #[serde(default)]
+    pub busy_pct: Option<u64>,
     /// Live tasks that keep more containers than the yard allows (PLN-43).
     #[serde(default)]
     pub over: Vec<OverCount>,
@@ -597,9 +682,237 @@ impl RunnerState {
             protected: r.protected.clone(),
             note: r.note.clone(),
             limits: r.effective_limits(None),
+            busy_pct: r.busy_pct,
             ..Self::default()
         }
     }
+}
+
+/* ───────── which yard a task gets (PLN-45) ───────── */
+
+/// How a task's (or a repository's) yard was chosen, and what stands behind it. The page says it in words, the agents'
+/// block gives the chain; `reason` and `shifted` are codes, not sentences.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Pick {
+    /// The chosen yard's label; empty when no yard matches the rule.
+    pub runner: String,
+    pub target: String,
+    pub ports_host: String,
+    /// `task`, `repo` or `default`.
+    pub reason: String,
+    /// The tags the rule needs.
+    pub need: Vec<String>,
+    /// The yard the rule names first, when it names one.
+    pub preferred: String,
+    /// Every yard the rule allows, in the order they are tried.
+    pub chain: Vec<String>,
+    /// Why the first allowed yard was passed over: `busy` or `offline`; empty when it was taken.
+    pub shifted: String,
+    /// No yard can take it, in words.
+    pub why: String,
+}
+
+/// The rules of the list file as the page reads them (the file lives on this machine; the page gets no path to it).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct Rules {
+    pub default: String,
+    pub busy_pct: u64,
+    pub assign: BTreeMap<String, String>,
+    pub need: BTreeMap<String, Vec<String>>,
+    pub tasks: BTreeMap<String, TaskRule>,
+}
+
+impl Rules {
+    pub fn of(file: &RunnersFile) -> Self {
+        Self {
+            default: file.default_runner().map(|r| r.id.clone()).unwrap_or_default(),
+            busy_pct: file.busy_pct,
+            assign: file.assign.clone(),
+            need: file.need.clone(),
+            tasks: file.tasks.clone(),
+        }
+    }
+}
+
+fn has_tags(r: &Runner, need: &[String]) -> bool {
+    need.iter()
+        .all(|n| r.tags.iter().any(|t| t.eq_ignore_ascii_case(n)))
+}
+
+/// The threshold of one yard: its own, else the list's; 0 — never busy.
+pub fn busy_pct_of(file: &RunnersFile, r: &Runner) -> u64 {
+    r.busy_pct.unwrap_or(file.busy_pct)
+}
+
+fn busy(state: Option<&RunnerState>, pct: u64) -> bool {
+    let Some(s) = state.filter(|s| s.ok && s.fetched_at_ms > 0) else {
+        return false;
+    };
+    pct > 0 && s.host.cpus > 0 && s.host.load1 * 100.0 / s.host.cpus as f64 >= pct as f64
+}
+
+fn offline(state: Option<&RunnerState>) -> bool {
+    state.is_some_and(|s| s.fetched_at_ms > 0 && !s.ok)
+}
+
+impl RunnersFile {
+    /// The task's rule, else its repository's: the yard it names, the tags it needs, and where the words come from.
+    fn rule_of(&self, repo: &str, task: Option<&str>) -> (Option<&TaskRule>, Vec<String>, String, &'static str) {
+        let task_rule = task.and_then(|id| self.tasks.get(id));
+        let task_any = task_rule.is_some_and(TaskRule::any);
+        // A task's rule replaces the repository's: a task pinned to a yard is not silently narrowed by the repo's tags.
+        let (tags, preferred) = if let Some(r) = task_rule.filter(|r| TaskRule::any(r)) {
+            (r.tags.clone(), r.runner.clone())
+        } else {
+            (
+                self.need.get(repo).cloned().unwrap_or_default(),
+                self.assign.get(repo).cloned().unwrap_or_default(),
+            )
+        };
+        let reason = if task_any {
+            "task"
+        } else if self.assign.contains_key(repo) || self.need.contains_key(repo) {
+            "repo"
+        } else {
+            "default"
+        };
+        (task_rule, tags, preferred, reason)
+    }
+
+    /// Picks the yard for one task (`task` is its id; `None` for a whole repository). The first allowed yard that
+    /// answers and is not too loaded; a busy one is passed over for the next, and if every allowed yard is busy the
+    /// least loaded of them is still named — the agent can wait, but a rule never silently moves to a foreign yard.
+    pub fn pick(&self, states: &[RunnerState], repo: &str, task: Option<&str>) -> Pick {
+        let (_, need, preferred, reason) = self.rule_of(repo, task);
+        let state_of = |id: &str| states.iter().find(|s| s.id == id);
+        // The order: the named yard, the default one, then the list.
+        let mut order: Vec<&Runner> = Vec::new();
+        let mut seen: BTreeSet<String> = BTreeSet::new();
+        if let Some(r) = self.get(&preferred) {
+            if seen.insert(r.id.clone()) {
+                order.push(r);
+            }
+        }
+        if let Some(r) = self.default_runner() {
+            if seen.insert(r.id.clone()) {
+                order.push(r);
+            }
+        }
+        for r in &self.runners {
+            if seen.insert(r.id.clone()) {
+                order.push(r);
+            }
+        }
+        let chain: Vec<&Runner> = order.into_iter().filter(|r| has_tags(r, &need)).collect();
+        let mut out = Pick {
+            reason: reason.into(),
+            need,
+            preferred: preferred.clone(),
+            chain: chain.iter().map(|r| r.id.clone()).collect(),
+            ..Pick::default()
+        };
+        if chain.is_empty() {
+            out.why = if out.need.is_empty() {
+                "в списке нет верфей".into()
+            } else {
+                format!("нет верфи с метками {}", out.need.join(", "))
+            };
+            return out;
+        }
+        let mut saw_busy = false;
+        let mut saw_offline = false;
+        let mut least: Option<&Runner> = None;
+        let mut least_load = f64::MAX;
+        let mut chosen: Option<&Runner> = None;
+        for r in &chain {
+            let st = state_of(&r.id);
+            if offline(st) {
+                saw_offline = true;
+                continue;
+            }
+            if busy(st, busy_pct_of(self, r)) {
+                saw_busy = true;
+                if let Some(s) = st {
+                    let load = if s.host.cpus > 0 { s.host.load1 / s.host.cpus as f64 } else { f64::MAX };
+                    if load < least_load {
+                        least_load = load;
+                        least = Some(r);
+                    }
+                }
+                continue;
+            }
+            chosen = Some(r);
+            break;
+        }
+        // Every allowed yard is busy: the least loaded one is named, so the agent need not guess.
+        let shifted_fallback = if chosen.is_none() && least.is_some() {
+            chosen = least;
+            true
+        } else {
+            false
+        };
+        let Some(r) = chosen else {
+            // Nothing answers: name the first allowed yard and say why.
+            let first = chain[0];
+            out.runner = first.id.clone();
+            out.target = ssh::normalize_target(&first.target);
+            out.ports_host = if first.ports_host.is_empty() {
+                host_of_target(&first.target)
+            } else {
+                first.ports_host.clone()
+            };
+            out.shifted = "offline".into();
+            out.why = "ни одна подходящая верфь не отвечает".into();
+            return out;
+        };
+        out.runner = r.id.clone();
+        out.target = ssh::normalize_target(&r.target);
+        out.ports_host = if r.ports_host.is_empty() {
+            host_of_target(&r.target)
+        } else {
+            r.ports_host.clone()
+        };
+        if shifted_fallback || saw_busy {
+            out.shifted = "busy".into();
+            if shifted_fallback {
+                out.why = "все подходящие верфи заняты: названа наименее загруженная".into();
+            }
+        } else if saw_offline {
+            out.shifted = "offline".into();
+            out.why = "первая подходящая верфь не отвечает".into();
+        }
+        out
+    }
+}
+
+/// The picks of every task on the board and of every repository with a rule (PLN-45).
+pub fn picks(
+    file: &RunnersFile,
+    states: &[RunnerState],
+    tasks: &[Task],
+    archived: &[Task],
+    repos: &[crate::taskmeta::RepoInfo],
+) -> (BTreeMap<String, Pick>, BTreeMap<String, Pick>) {
+    let mut by_task: BTreeMap<String, Pick> = BTreeMap::new();
+    for t in tasks.iter().chain(archived.iter()) {
+        by_task.insert(t.id.clone(), file.pick(states, &t.repo, Some(&t.id)));
+    }
+    let mut names: BTreeSet<String> = file.assign.keys().chain(file.need.keys()).cloned().collect();
+    for r in repos {
+        names.insert(r.name.clone());
+    }
+    for t in tasks.iter().chain(archived.iter()) {
+        names.insert(t.repo.clone());
+    }
+    let by_repo = names
+        .into_iter()
+        .filter(|r| !r.is_empty())
+        .map(|repo| {
+            let pick = file.pick(states, &repo, None);
+            (repo, pick)
+        })
+        .collect();
+    (by_task, by_repo)
 }
 
 pub fn parse_probe(
@@ -1886,9 +2199,110 @@ pub fn block_text(file: &RunnersFile) -> String {
             .join(", ");
         s.push_str(&format!("Ещё верфи: {list}.\n"));
     }
+    if file.busy_pct > 0 {
+        s.push_str(&format!(
+            "Верфь считается занятой, когда её нагрузка (load1) не ниже {} % числа ядер; тогда берётся следующая подходящая, а если заняты все — наименее загруженная. Порог задаётся в настройках верфи, 0 — не проверять.\n",
+            file.busy_pct
+        ));
+    }
+    if !file.assign.is_empty() || !file.need.is_empty() || !file.tasks.is_empty() {
+        s.push_str("Верфь задачи задаётся правилом задачи или её репозитория (метки gpu, arch или конкретная верфь): такое правило идёт отдельным блоком ниже, с запасными верфями; без правила верфь — по умолчанию.\n");
+    }
     s.push_str(&format!(
-        "Если верфь не отвечает — не запускай контейнеры здесь, а остановись: herdr-projects report <id> --state blocked --kind permission --msg \"Верфь {} не отвечает\".\n",
+        "Если верфь не отвечает — не запускай контейнеры здесь, а остановись: herdr-projects report <id> --state blocked --kind permission --msg \"Верфь <метка> не отвечает\". Метка — из блока задачи или репозитория, иначе {}.\n",
         def.id
+    ));
+    s.push_str(BLOCK_END);
+    s.push('\n');
+    s
+}
+
+/// The block for one repository or one task: the yard its rule picks, the tags it needs and the yards to try after it.
+/// Empty when the scope has no rule of its own (the global block speaks then).
+pub fn scope_block_text(
+    file: &RunnersFile,
+    states: &[RunnerState],
+    repo: &str,
+    task: Option<&str>,
+) -> String {
+    // A task's own block exists only for its own rule: a task that follows its repository gets the repository's block,
+    // and a cleared task rule must take this block out rather than copy the repository's rule down.
+    if task.is_some_and(|id| !file.tasks.contains_key(id)) {
+        return String::new();
+    }
+    let pick = file.pick(states, repo, task);
+    if pick.reason == "default" {
+        return String::new();
+    }
+    let heading = match task {
+        Some(id) => format!("Верфь задачи {id}"),
+        None => format!("Верфь для задач репозитория {repo}"),
+    };
+    let mut s = String::from(BLOCK_BEGIN);
+    s.push('\n');
+    if pick.chain.is_empty() {
+        s.push_str(&format!(
+            "{heading}: нет подходящей верфи — {}. Не запускай контейнеры здесь, а остановись: herdr-projects report <id> --state blocked --kind permission --msg \"Верфь для задачи не подходит\".\n",
+            if pick.why.is_empty() { "ни одна не подходит под правило".to_string() } else { pick.why.clone() }
+        ));
+        s.push_str(BLOCK_END);
+        s.push('\n');
+        return s;
+    }
+    let tags = if pick.need.is_empty() {
+        String::new()
+    } else {
+        format!("; нужны метки: {}", pick.need.join(", "))
+    };
+    let why = match pick.reason.as_str() {
+        "task" => "правило задачи",
+        "repo" => "правило репозитория",
+        _ => "верфь по умолчанию",
+    };
+    let Some(chosen) = file.get(&pick.runner).or_else(|| file.get(&pick.chain[0])) else {
+        return String::new();
+    };
+    let host_of = |r: &Runner| {
+        if r.ports_host.is_empty() {
+            host_of_target(&r.target)
+        } else {
+            r.ports_host.clone()
+        }
+    };
+    s.push_str(&format!(
+        "{heading}: {} — export DOCKER_HOST=ssh://{} (порты открываются на {}){tags} ({why}).\n",
+        chosen.id,
+        ssh::normalize_target(&chosen.target),
+        host_of(chosen)
+    ));
+    // The yards after the chosen one: the tags rule is the same, so the agent only has to take the next.
+    let rest: Vec<String> = pick
+        .chain
+        .iter()
+        .filter(|id| *id != &chosen.id)
+        .filter_map(|id| file.get(id))
+        .map(|r| format!("{} (ssh://{}, порты {})", r.id, ssh::normalize_target(&r.target), host_of(r)))
+        .collect();
+    if !rest.is_empty() {
+        let threshold = busy_pct_of(file, chosen);
+        let busy_words = if threshold > 0 {
+            format!("занята (load1 не ниже {} % её ядер)", threshold)
+        } else {
+            "занята".to_string()
+        };
+        s.push_str(&format!(
+            "Если она не отвечает или {busy_words} — следующая подходящая: {}.\n",
+            rest.join(", затем ")
+        ));
+    }
+    let check = ssh::hand_check(&chosen.target, &["-o", "BatchMode=yes"], "'cat /proc/loadavg; nproc'");
+    s.push_str(&format!(
+        "Проверить занятость: {check} — раздели load1 на число ядер{}.\n",
+        if busy_pct_of(file, chosen) > 0 { format!(" и сравни с {} %", busy_pct_of(file, chosen)) } else { String::new() }
+    ));
+    s.push_str(&format!(
+        "Если ни одна подходящая верфь не отвечает — не запускай контейнеры здесь, а остановись: herdr-projects report <id> --state blocked --kind permission --msg \"Верфь {} не отвечает\".\n",
+        chosen.id
     ));
     s.push_str(BLOCK_END);
     s.push('\n');
@@ -1959,6 +2373,74 @@ pub fn has_old_docker_paragraph(text: &str) -> bool {
 }
 
 /* ───────── the agents' block ───────── */
+
+/// Puts the block of one repository (`task` is `None`) or one task into its own instructions, keeping the human's text
+/// there. An empty block takes the planner's block out (the setting is unset when nothing else is left). The caller
+/// has the human's consent (the global block is connected); nothing is written here otherwise.
+pub async fn sync_scope_block(app: &Shared, repo: &str, task: Option<&str>, block: &str) -> bool {
+    let settings = match task {
+        Some(id) => crate::station::read_task_settings(&app.cfg, id).await,
+        None => crate::station::read_settings(&app.cfg, repo).await,
+    };
+    let settings = match settings {
+        Ok(s) => s,
+        Err(_) => return false,
+    };
+    let mut changed = false;
+    for name in ["worker.instructions", "reviewer.instructions"] {
+        let Some(setting) = crate::station::find(&settings, name) else {
+            continue;
+        };
+        // Only this place's own words: an inherited value belongs to a broader place and is never copied down.
+        let current = if setting.own { setting.value.clone() } else { String::new() };
+        if block.is_empty() && !has_any_block(&current) {
+            continue;
+        }
+        let value = match connect_value(&current, block, !block.is_empty()) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+        if value.as_deref() == Some(current.as_str()) {
+            continue;
+        }
+        let mut args: Vec<String> = match &value {
+            Some(v) => vec!["set".into(), name.into(), v.clone()],
+            None => vec!["unset".into(), name.into()],
+        };
+        match task {
+            Some(id) => {
+                args.push("--task".into());
+                args.push(id.into());
+            }
+            None => {
+                args.push("--repo".into());
+                args.push(repo.into());
+            }
+        }
+        let out = crate::station::board_run(&app.cfg, &args, crate::station::BOARD_WAIT).await;
+        if out.ok() {
+            changed = true;
+        }
+    }
+    changed
+}
+
+/// Takes the blocks of every repository and task rule out of their instructions (a disconnect). The global block is
+/// already gone by then, so `sync_blocks` cannot tell; the rules are still in the list and name the scopes.
+pub async fn clear_scope_blocks(app: &Shared) {
+    let file = match load(&app.cfg.runners_file()) {
+        Ok(f) => f,
+        Err(_) => return,
+    };
+    let repos: BTreeSet<String> = file.assign.keys().chain(file.need.keys()).cloned().collect();
+    for repo in repos {
+        sync_scope_block(app, &repo, None, "").await;
+    }
+    for id in file.tasks.keys() {
+        let repo = crate::board::repo_of(id).to_string();
+        sync_scope_block(app, &repo, Some(id), "").await;
+    }
+}
 
 /// Rewrites the docker block in this machine's instructions when the list changed. The consent was given when the
 /// block was connected on the Station; before that nothing is touched. The last runner gone — the block goes too.
@@ -2054,6 +2536,29 @@ pub async fn sync_blocks(app: &Shared) {
     *app.runner_block.lock().await = state.clone();
     if let Ok(json) = serde_json::to_string(&state) {
         app.db.meta_set("runner_block", &json);
+    }
+    // The rules of repositories and tasks have blocks of their own: they name the yard and the yards to try after it.
+    // Only while the global block is connected: a human who never let the planner into the instructions gets no
+    // further writes. When the global block goes, these go too.
+    if was.connected {
+        let states = app.runners.lock().await.clone();
+        let repos: BTreeSet<String> = file.assign.keys().chain(file.need.keys()).cloned().collect();
+        for repo in repos {
+            let text = if block.is_empty() {
+                String::new()
+            } else {
+                scope_block_text(&file, &states, &repo, None)
+            };
+            sync_scope_block(app, &repo, None, &text).await;
+        }
+        for id in file.tasks.keys() {
+            let text = if block.is_empty() {
+                String::new()
+            } else {
+                scope_block_text(&file, &states, &crate::board::repo_of(id), Some(id))
+            };
+            sync_scope_block(app, &crate::board::repo_of(id), Some(id), &text).await;
+        }
     }
     crate::app::rebuild_runners(app).await;
     crate::app::publish(app).await;
@@ -2483,6 +2988,7 @@ mod tests {
             auto: AutoClean::default(),
             alerts: Default::default(),
             limits: None,
+            busy_pct: None,
         };
         assert_eq!(r.effective_limits(Some(&host)).cpus, 4, "no word in the file: the machine's share");
         assert_eq!(r.effective_limits(None), Limits::fallback());
@@ -2572,6 +3078,7 @@ mod tests {
                     auto: AutoClean::default(),
                     alerts: Default::default(),
                     limits: None,
+                    busy_pct: None,
                 },
                 Runner {
                     id: "silent".into(),
@@ -2585,6 +3092,7 @@ mod tests {
                     auto: AutoClean::default(),
                     alerts: Default::default(),
                     limits: None,
+                    busy_pct: None,
                 },
             ],
             ..RunnersFile::default()
@@ -2623,8 +3131,12 @@ mod tests {
                 auto: AutoClean::default(),
                 alerts: Default::default(),
                 limits: Some(Limits { cpus: 3, mem_mb: 1536, per_task: 2 }),
+                busy_pct: Some(90),
             }],
             assign: BTreeMap::new(),
+            need: BTreeMap::new(),
+            tasks: BTreeMap::new(),
+            busy_pct: 85,
             version: FILE_VERSION,
         };
         save(&path, &file).unwrap();
@@ -2665,6 +3177,7 @@ mod tests {
                 auto: AutoClean::default(),
                 alerts: Default::default(),
                 limits: None,
+                busy_pct: None,
             }],
             ..RunnersFile::default()
         };
@@ -2697,6 +3210,7 @@ mod tests {
             auto: AutoClean::default(),
             alerts: Default::default(),
             limits,
+            busy_pct: None,
         };
         let file = RunnersFile {
             default: "vm-r".into(),
@@ -2742,6 +3256,7 @@ mod tests {
                 auto: AutoClean::default(),
                 alerts: Default::default(),
                 limits: None,
+                busy_pct: None,
             }],
             ..RunnersFile::default()
         };
@@ -2966,5 +3481,168 @@ mod tests {
         )
         .unwrap();
         assert!(old.published.is_empty());
+    }
+
+    fn yard_file() -> RunnersFile {
+        let yard = |id: &str, target: &str, tags: &[&str]| Runner {
+            id: id.into(),
+            target: target.into(),
+            ports_host: String::new(),
+            tags: tags.iter().map(|t| t.to_string()).collect(),
+            protected: vec![],
+            note: String::new(),
+            added_at_ms: 0,
+            capacity: None,
+            auto: AutoClean::default(),
+            alerts: Default::default(),
+            limits: None,
+            busy_pct: None,
+        };
+        RunnersFile {
+            default: "vm-r".into(),
+            runners: vec![
+                yard("vm-r", "me@192.0.2.29", &["x86_64"]),
+                yard("vm-g", "me@192.0.2.30", &["gpu", "x86_64"]),
+                yard("vm-a", "me@192.0.2.31", &["arm64"]),
+            ],
+            ..RunnersFile::default()
+        }
+    }
+
+    fn yard_state(id: &str, ok: bool, load1: f64, cpus: u64) -> RunnerState {
+        RunnerState {
+            id: id.into(),
+            ok,
+            fetched_at_ms: 1000,
+            host: HostState { cpus, load1, ..HostState::default() },
+            ..RunnerState::default()
+        }
+    }
+
+    #[test]
+    fn a_task_or_a_repo_rule_names_the_yard_and_the_default_speaks_otherwise() {
+        let mut file = yard_file();
+        let states = [yard_state("vm-r", true, 1.0, 8), yard_state("vm-g", true, 1.0, 8), yard_state("vm-a", true, 1.0, 8)];
+        let p = file.pick(&states, "alpha", Some("alpha/3"));
+        assert_eq!((p.runner.as_str(), p.reason.as_str()), ("vm-r", "default"));
+
+        // The repository's tags alone take the yard with those tags.
+        file.need.insert("alpha".into(), vec!["gpu".into()]);
+        let p = file.pick(&states, "alpha", Some("alpha/3"));
+        assert_eq!((p.runner.as_str(), p.reason.as_str()), ("vm-g", "repo"));
+        assert_eq!(p.need, vec!["gpu"]);
+
+        // The task's own rule wins over the repository's.
+        file.tasks.insert("alpha/3".into(), TaskRule { runner: "vm-r".into(), tags: vec![] });
+        let p = file.pick(&states, "alpha", Some("alpha/3"));
+        assert_eq!((p.runner.as_str(), p.reason.as_str()), ("vm-r", "task"));
+
+        // A task's tags are its own rule too; a task with no rule follows the repository again.
+        file.tasks.insert("alpha/4".into(), TaskRule { runner: String::new(), tags: vec!["arm64".into()] });
+        let p = file.pick(&states, "alpha", Some("alpha/4"));
+        assert_eq!((p.runner.as_str(), p.reason.as_str(), p.chain.len()), ("vm-a", "task", 1));
+        let p = file.pick(&states, "alpha", Some("alpha/5"));
+        assert_eq!(p.runner, "vm-g");
+    }
+
+    #[test]
+    fn a_busy_or_silent_yard_gives_way_and_all_busy_names_the_least_loaded() {
+        let mut file = yard_file();
+        file.need.insert("alpha".into(), vec!["gpu".into()]);
+        // vm-r is the default and has no gpu: the rule's chain is vm-g alone, so the default takes no part in it.
+        let p = file.pick(&[yard_state("vm-g", true, 7.5, 8), yard_state("vm-r", true, 0.1, 8)], "alpha", None);
+        assert_eq!(p.runner, "vm-g", "the only yard with the tag is taken even when loaded");
+        // Without tags the default is first; busy gives way to the next allowed yard (the third one is silent).
+        let p = file.pick(
+            &[yard_state("vm-r", true, 7.5, 8), yard_state("vm-g", true, 1.0, 8), yard_state("vm-a", false, 0.0, 8)],
+            "beta",
+            None,
+        );
+        assert_eq!((p.runner.as_str(), p.shifted.as_str()), ("vm-g", "busy"));
+        // Every allowed yard busy: the least loaded is named, and the page says so.
+        let p = file.pick(
+            &[yard_state("vm-r", true, 7.6, 8), yard_state("vm-g", true, 7.0, 8), yard_state("vm-a", false, 0.0, 8)],
+            "beta",
+            None,
+        );
+        assert_eq!((p.runner.as_str(), p.shifted.as_str()), ("vm-g", "busy"));
+        assert!(p.why.contains("наименее загруженная"), "{:?}", p);
+        // A silent first yard is passed over; with no yard answering the first allowed one is named and the reason kept.
+        let p = file.pick(&[yard_state("vm-r", false, 0.0, 8), yard_state("vm-g", true, 1.0, 8)], "beta", None);
+        assert_eq!((p.runner.as_str(), p.shifted.as_str()), ("vm-g", "offline"));
+        let p = file.pick(
+            &[yard_state("vm-r", false, 0.0, 8), yard_state("vm-g", false, 0.0, 8), yard_state("vm-a", false, 0.0, 8)],
+            "beta",
+            None,
+        );
+        assert_eq!((p.runner.as_str(), p.shifted.as_str()), ("vm-r", "offline"));
+        assert!(p.why.contains("не отвечает"));
+        // 0 turns the threshold off: a loaded yard is not skipped.
+        file.busy_pct = 0;
+        let p = file.pick(&[yard_state("vm-r", true, 7.9, 8), yard_state("vm-g", true, 0.1, 8)], "beta", None);
+        assert_eq!((p.runner.as_str(), p.shifted.as_str()), ("vm-r", ""));
+    }
+
+    #[test]
+    fn a_tag_no_yard_carries_is_said_not_guessed() {
+        let mut file = yard_file();
+        file.tasks.insert("alpha/7".into(), TaskRule { runner: String::new(), tags: vec!["tpu".into()] });
+        let states = [yard_state("vm-r", true, 0.1, 8)];
+        let p = file.pick(&states, "alpha", Some("alpha/7"));
+        assert_eq!(p.runner, "");
+        assert!(p.chain.is_empty());
+        assert!(p.why.contains("tpu"), "{:?}", p);
+    }
+
+    #[test]
+    fn the_rules_are_checked_before_they_are_saved() {
+        let mut file = yard_file();
+        file.busy_pct = 101;
+        assert!(validate(&file).is_err());
+        file.busy_pct = 85;
+        file.runners[0].busy_pct = Some(101);
+        assert!(validate(&file).is_err());
+        file.runners[0].busy_pct = None;
+        file.tasks.insert("nonsense".into(), TaskRule { runner: "vm-r".into(), tags: vec![] });
+        assert!(validate(&file).is_err());
+        file.tasks.remove("nonsense");
+        file.tasks.insert("alpha/3".into(), TaskRule { runner: "gone".into(), tags: vec![] });
+        assert!(validate(&file).is_err());
+        file.tasks.insert("alpha/3".into(), TaskRule { runner: String::new(), tags: vec!["bad tag".into()] });
+        assert!(validate(&file).is_err());
+        file.tasks.remove("alpha/3");
+        file.need.insert("alpha".into(), vec!["gpu".into()]);
+        file.assign.insert("alpha".into(), "vm-g".into());
+        assert!(validate(&file).is_ok());
+    }
+
+    #[test]
+    fn the_scope_block_names_the_yard_its_backup_and_the_busy_check() {
+        let mut file = yard_file();
+        file.tasks.insert("alpha/3".into(), TaskRule { runner: "vm-g".into(), tags: vec![] });
+        let states = [yard_state("vm-r", true, 0.1, 8), yard_state("vm-g", true, 0.1, 8)];
+        let block = scope_block_text(&file, &states, "alpha", Some("alpha/3"));
+        assert!(block.contains("Верфь задачи alpha/3: vm-g"), "{block}");
+        assert!(block.contains("export DOCKER_HOST=ssh://me@192.0.2.30"), "{block}");
+        assert!(block.contains("следующая подходящая: vm-r"), "{block}");
+        assert!(block.contains("cat /proc/loadavg; nproc"), "{block}");
+        assert!(block.contains("85 %"), "{block}");
+        // No rule: the global block speaks, nothing is written at the scope.
+        assert!(scope_block_text(&file, &states, "beta", None).is_empty());
+        assert!(scope_block_text(&file, &states, "alpha", Some("alpha/5")).is_empty());
+        // A repository rule has its own block; a task without a rule of its own gets no task block (the repo block
+        // reaches it through the instructions that add up).
+        file.assign.insert("alpha".into(), "vm-r2".into());
+        assert!(!scope_block_text(&file, &states, "alpha", None).is_empty());
+        assert!(scope_block_text(&file, &states, "alpha", Some("alpha/5")).is_empty());
+        // A rule with no yard that carries its tags says that, instead of naming a wrong one.
+        file.tasks.insert("alpha/7".into(), TaskRule { runner: String::new(), tags: vec!["tpu".into()] });
+        let block = scope_block_text(&file, &states, "alpha", Some("alpha/7"));
+        assert!(block.contains("нет подходящей верфи") && block.contains("tpu"), "{block}");
+        // The global block tells the agent that such blocks exist and how busy is counted.
+        file.need.insert("alpha".into(), vec!["gpu".into()]);
+        let global = block_text(&file);
+        assert!(global.contains("Верфь задачи задаётся правилом"), "{global}");
+        assert!(global.contains("85 % числа ядер"), "{global}");
     }
 }
