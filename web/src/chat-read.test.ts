@@ -28,14 +28,14 @@ describe('unreadOf', () => {
 
 describe('withRead', () => {
   it('keeps the last turn apart: its words may still change', () => {
-    expect(withRead({ base: 4, seen: {} }, [read(5)], 6)).toEqual({ base: 4, seen: { 5: sigOf('answer 5') } });
+    expect(withRead({ base: 4, seen: {} }, [read(5)], 6, [turn(5)])).toEqual({ base: 4, seen: { 5: sigOf('answer 5') } });
   });
   it('folds the read turns into the place once they are not the last', () => {
-    expect(withRead({ base: 4, seen: { 5: 1 } }, [read(6)], 8)).toEqual({ base: 6, seen: {} });
-    expect(withRead({ base: 4, seen: {} }, [read(7)], 9)).toEqual({ base: 4, seen: { 7: sigOf('answer 7') } });
+    expect(withRead({ base: 4, seen: { 5: sigOf('answer 5') } }, [read(6)], 8, [turn(5), turn(6)])).toEqual({ base: 6, seen: {} });
+    expect(withRead({ base: 4, seen: {} }, [read(7)], 9, [turn(7)])).toEqual({ base: 4, seen: { 7: sigOf('answer 7') } });
   });
   it('ignores turns below the place', () => {
-    expect(withRead({ base: 4, seen: {} }, [read(2)], 9)).toEqual({ base: 4, seen: {} });
+    expect(withRead({ base: 4, seen: {} }, [read(2)], 9, [])).toEqual({ base: 4, seen: {} });
   });
 });
 
@@ -54,13 +54,21 @@ describe('settled', () => {
     expect(settled(rs, [], 9)).toBe(rs);
   });
   it('counts a finished turn without words as read, so it does not hold the place back, but not a notice of the board', () => {
-    expect(settled({ base: 8, seen: { 10: 1 } }, [turn(9, ''), turn(10), turn(11)], 12)).toEqual({ base: 10, seen: {} });
+    expect(settled({ base: 8, seen: { 10: sigOf('answer 10') } }, [turn(9, ''), turn(10), turn(11)], 12)).toEqual({ base: 10, seen: {} });
     const rs = { base: 8, seen: {} };
     expect(settled(rs, [turn(9, '')], 10)).toBe(rs);
     expect(settled(rs, [turn(9, '', 'board'), turn(10)], 11).base).toBe(8);
   });
+  it('does not fold a turn whose words changed after they were read, when a later turn appears', () => {
+    const rs = { base: 4, seen: { 5: sigOf('Сейчас посмотрю доску.') } };
+    const turns = [turn(5, 'beta/2 готова.'), turn(6, '', 'board')];
+    const next = settled(rs, turns, 7);
+    expect(next.base).toBe(4);
+    expect(unreadOf(next, turns, 7)).toEqual([5, 6]);
+    expect(withRead(next, [read(6, '')], 8, [...turns, turn(7)]).base).toBe(4);
+  });
   it('folds the turn that is no longer the last', () => {
-    expect(settled({ base: 8, seen: { 9: 5 } }, [turn(9), turn(10)], 11)).toEqual({ base: 9, seen: {} });
+    expect(settled({ base: 8, seen: { 9: sigOf('answer 9') } }, [turn(9), turn(10)], 11)).toEqual({ base: 9, seen: {} });
   });
   it('puts the place back at the end of a much shorter conversation', () => {
     expect(settled({ base: 40, seen: { 3: 1, 41: 1 } }, [], 5)).toEqual({ base: 4, seen: { 3: 1 } });

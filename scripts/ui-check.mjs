@@ -4860,8 +4860,11 @@ section('chat unread', async () => {
   toolDone(waiting + 1); final(waiting + 1, 'alpha/4 на ревью, ждёт тебя.');
   check('the answer that came after it is lit, though the interim line was read', await waitFor(dots(waiting) + ' === 1', 10000));
   check('and counted on the button and in the header', await hasText('#bchat-n', '1', 5000) && await hasText('#cunread', '1 новое', 5000), await text('#bchat'));
+  // A notice that comes next must not carry the unseen answer into «read».
+  const afterwards = ask('[Уведомление доски] beta/2 готова') - 1;
+  check('a later turn does not put the unseen answer out', await waitFor(dots(afterwards) + ' === 1', 10000) && (await evalJs(dots(waiting))) === 1 && await hasText('#bchat-n', '2', 5000), await text('#bchat'));
   await focus(true);
-  check('seen in the window in front, it goes out', await waitFor(dots(waiting) + ' === 0 && !document.querySelector("#bchat-n") && !document.querySelector("#cunread")', 10000));
+  check('both go out once seen', await waitFor(dots(waiting) + ' + ' + dots(afterwards) + ' === 0 && !document.querySelector("#bchat-n") && !document.querySelector("#cunread")', 10000));
   // A notice of the board the Coordinator has not answered in words is a message too.
   await focus(false);
   const notice = ask('[Уведомление доски] alpha/5 готова') - 1;

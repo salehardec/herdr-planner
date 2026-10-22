@@ -29,19 +29,27 @@ export function unreadOf(rs: ReadState | null, turns: TurnData[], total: number)
   return out;
 }
 
-/** Read turns that are not the last one fold into `base`: the last may still be working, its words may change. */
-function fold(rs: ReadState, total: number): ReadState {
+/**
+ * Read turns that are not the last one fold into `base`: the last may still be working, its words may change. A turn folds only
+ * if its words are still the ones that were read (a turn that is not loaded is an old one: it has been settled for long).
+ */
+function fold(rs: ReadState, total: number, turns: TurnData[]): ReadState {
+  const have = new Map(turns.map((x) => [x.n, x]));
   const seen = { ...rs.seen };
   let base = rs.base;
-  while (base + 1 < total - 1 && (base + 1) in seen) { base++; delete seen[base]; }
+  while (base + 1 < total - 1 && (base + 1) in seen) {
+    const x = have.get(base + 1);
+    if (x && sigOf(x.a) !== seen[base + 1]) break;
+    base++; delete seen[base];
+  }
   return { base, seen };
 }
 
 /** The state after these turns were read (turn, signature of the words that were in view). */
-export function withRead(rs: ReadState, marks: [number, number][], total: number): ReadState {
+export function withRead(rs: ReadState, marks: [number, number][], total: number, turns: TurnData[]): ReadState {
   const seen = { ...rs.seen };
   for (const [n, sig] of marks) if (n > rs.base) seen[n] = sig;
-  return fold({ base: rs.base, seen }, total);
+  return fold({ base: rs.base, seen }, total, turns);
 }
 
 /**
@@ -63,6 +71,6 @@ export function settled(rs: ReadState | null, turns: TurnData[], total: number):
   }
   // A finished turn without words (and not a notice of the board) will never bring news: it is read, so it does not hold the place back.
   const holes = turns.filter((x) => !isNews(x) && x.n > rs.base && x.n < last && !(x.n in rs.seen)).map((x): [number, number] => [x.n, 0]);
-  const next = fold({ base: rs.base, seen: { ...rs.seen, ...Object.fromEntries(holes) } }, total);
+  const next = fold({ base: rs.base, seen: { ...rs.seen, ...Object.fromEntries(holes) } }, total, turns);
   return holes.length || next.base !== rs.base ? next : rs;
 }

@@ -43,7 +43,7 @@ export function settleRead(): void {
 export function markRead(marks: [number, number][]): void {
   const rs = chatRead.value;
   if (!rs || !marks.length) return;
-  const next = withRead(rs, marks, chat.peek().total);
+  const next = withRead(rs, marks, chat.peek().total, chat.peek().turns);
   chatRead.value = next;
   save(next);
 }
