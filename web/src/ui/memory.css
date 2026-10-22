@@ -79,4 +79,5 @@
 .mm-fk{font-size:10px;text-transform:uppercase;letter-spacing:.04em;color:var(--pl-dim);margin-right:4px}
 /* drafts in the list */
 .mm-draft{flex:none;font-size:10px;letter-spacing:.04em;text-transform:uppercase;border:1px dashed var(--c-yellow);color:var(--c-yellow);border-radius:9px;padding:0 6px;white-space:nowrap}
+.mm-draft.d-sent,.mm-draft.d-sentdel{border-style:solid}
 .mm-row.d-deleted .mm-title,.mm-row.d-deleted .mm-desc{text-decoration:line-through;opacity:.6}

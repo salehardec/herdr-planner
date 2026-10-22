@@ -7,8 +7,11 @@
 //! host name (an internal top-level domain, or `gitlab.`/`jenkins.`/`vpn.`… in front of a domain that is not a
 //! well-known public one). A finding is not a verdict: the human sees what was found and decides.
 //!
-//! The terms that are *this* person's — the login name, the machine's name, git's `user.name`/`user.email` — are looked
-//! for too (`own_terms`); `HERDR_PLANNER_OWN_TERMS` (a comma list, may be empty) replaces them, for the checks.
+//! The terms that are *this* person's — the login name, git's `user.name`/`user.email` — are looked for too
+//! (`own_terms`), and so are the names of machines they know: this machine's own name, the `Host` aliases of
+//! `~/.ssh/config` and the names in `/etc/hosts` (`app-semantics`, `buildbox`): an internal host name has no dots to
+//! give it away. Those come as `host:name` terms and are found as `host`. `HERDR_PLANNER_OWN_TERMS` (a comma list, may
+//! be empty; `host:` works there too) replaces all of them, for the checks.
 
 use serde::Serialize;
 use std::collections::HashSet;
@@ -426,6 +429,9 @@ fn cyr_or_lat_name(w: &str) -> bool {
     cyr_capital(w) || lat_capital(w)
 }
 
+/// A term that names a machine rather than a person: `host:app-semantics`.
+const HOST_TERM: &str = "host:";
+
 fn own_spans(text: &str, own: &[String]) -> Vec<Span> {
     let lower = text.to_lowercase();
     // `to_lowercase` may change byte lengths; positions are only trusted when it did not
@@ -434,7 +440,12 @@ fn own_spans(text: &str, own: &[String]) -> Vec<Span> {
     }
     let mut out = Vec::new();
     for term in own {
-        let t = term.trim().to_lowercase();
+        let term = term.trim();
+        let (kind, term) = match term.strip_prefix(HOST_TERM) {
+            Some(rest) => ("host", rest),
+            None => ("own", term),
+        };
+        let t = term.to_lowercase();
         if t.chars().count() < 3 {
             continue;
         }
@@ -446,7 +457,7 @@ fn own_spans(text: &str, own: &[String]) -> Vec<Span> {
             let after = lower[end..].chars().next();
             let word = |c: Option<char>| c.is_some_and(|c| c.is_alphanumeric());
             if !word(before) && !word(after) {
-                out.push(Span { kind: "own", start: at, end });
+                out.push(Span { kind, start: at, end });
             }
             from = end;
         }
@@ -696,7 +707,134 @@ fn home_relative(path: &str) -> String {
     "<путь>".to_string()
 }
 
-/// The terms of this person that must not appear in a project's memory: login, machine name, git identity.
+/// Names that are not worth a hit as a machine's name: they are in every `/etc/hosts` and `~/.ssh/config`, or are words.
+const GENERIC_HOSTS: &[&str] = &[
+    "localhost", "localhost.localdomain", "broadcasthost", "ip6-localhost", "ip6-loopback", "ip6-localnet", "ip6-mcastprefix",
+    "ip6-allnodes", "ip6-allrouters", "ip6-allhosts", "host", "server", "web", "dev", "prod", "test", "stage", "staging", "home",
+    "work", "main", "local", "default",
+];
+
+fn is_ip_like(name: &str) -> bool {
+    name.contains(':') || name.split('.').all(|p| !p.is_empty() && p.chars().all(|c| c.is_ascii_digit()))
+}
+
+/// Whether a name from a host list is worth looking for: not a pattern, not an address (those are found as they are), not
+/// a public site, not a word every machine has.
+fn host_name_ok(name: &str) -> bool {
+    let n = name.to_lowercase();
+    n.chars().count() >= 4
+        && !n.contains(['*', '?', '!', '/', '@', '%', '$'])
+        && !is_ip_like(&n)
+        && !GENERIC_HOSTS.contains(&n.as_str())
+        && !PUBLIC_DOMAINS.iter().any(|d| n == *d || n.ends_with(&format!(".{d}")))
+}
+
+/// `DokployMain_10.1.2.3` → `DokployMain`: tools that export an ssh config (Tabby, …) write the address into the alias,
+/// and a memory text names the machine without it.
+fn without_address(alias: &str) -> Option<String> {
+    let (head, tail) = alias.rsplit_once(['_', '-'])?;
+    (!head.is_empty() && is_ip_like(tail) && tail.contains('.')).then(|| head.to_string())
+}
+
+/// The names to look for in a text, as `host:` terms: each name whole, and without an address glued to its end. A name
+/// shorter than `min` letters is left out (it would be a word).
+pub fn host_terms(names: impl IntoIterator<Item = String>, min: usize) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for n in names {
+        let n = n.trim().to_string();
+        for name in std::iter::once(n.clone()).chain(without_address(&n)) {
+            let ok = if min >= 4 {
+                host_name_ok(&name)
+            } else {
+                name.chars().count() >= min && !GENERIC_HOSTS.contains(&name.to_lowercase().as_str()) && !is_ip_like(&name) && !name.contains(['*', '?', '!', '/', '@'])
+            };
+            let term = format!("{HOST_TERM}{name}");
+            if ok && !out.iter().any(|t| t.eq_ignore_ascii_case(&term)) {
+                out.push(term);
+            }
+        }
+    }
+    out
+}
+
+/// The `Host` aliases and `HostName`s of an `ssh_config` text.
+pub fn ssh_config_hosts(text: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    for line in text.lines() {
+        let line = line.split('#').next().unwrap_or("").trim();
+        let mut it = line.splitn(2, |c: char| c.is_whitespace() || c == '=');
+        let (Some(key), Some(rest)) = (it.next(), it.next()) else { continue };
+        if key.eq_ignore_ascii_case("host") || key.eq_ignore_ascii_case("hostname") {
+            out.extend(rest.trim_start_matches(['=', ' ', '\t']).split_whitespace().map(|h| h.trim_matches('"').to_string()));
+        }
+    }
+    out.into_iter().filter(|h| host_name_ok(h)).collect()
+}
+
+/// The names in an `/etc/hosts` text (everything after the address, comments left out).
+pub fn etc_hosts_names(text: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    for line in text.lines() {
+        let line = line.split('#').next().unwrap_or("");
+        out.extend(line.split_whitespace().skip(1).map(String::from));
+    }
+    out.into_iter().filter(|h| host_name_ok(h)).collect()
+}
+
+/// `~/.ssh/config` with its `Include`s (a file, or a folder's files with `*`; one level deep, no further).
+fn ssh_config_text(home: &std::path::Path) -> String {
+    let ssh = home.join(".ssh");
+    let mut text = std::fs::read_to_string(ssh.join("config")).unwrap_or_default();
+    let includes: Vec<String> = text
+        .lines()
+        .filter_map(|l| {
+            let l = l.trim();
+            (l.len() > 8 && l[..7].eq_ignore_ascii_case("include") && l[7..].starts_with([' ', '\t', '='])).then(|| l[8..].trim().to_string())
+        })
+        .collect();
+    for inc in includes {
+        for pat in inc.split_whitespace() {
+            let path = if pat.starts_with('/') {
+                std::path::PathBuf::from(pat)
+            } else if let Some(r) = pat.strip_prefix("~/") {
+                home.join(r)
+            } else {
+                ssh.join(pat)
+            };
+            let (Some(dir), Some(file)) = (path.parent(), path.file_name().and_then(|f| f.to_str())) else { continue };
+            let Ok(rd) = std::fs::read_dir(dir) else { continue };
+            let (pre, post) = match file.split_once('*') {
+                Some((a, b)) => (a, Some(b)),
+                None => (file, None),
+            };
+            for e in rd.flatten() {
+                let name = e.file_name().to_string_lossy().into_owned();
+                let hit = match post {
+                    Some(post) => name.starts_with(pre) && name.ends_with(post),
+                    None => name == pre,
+                };
+                if hit && e.path().is_file() {
+                    text.push('\n');
+                    text.push_str(&std::fs::read_to_string(e.path()).unwrap_or_default());
+                }
+            }
+        }
+    }
+    text
+}
+
+/// This machine's own name as `host:` terms: looked for from three letters, whatever the word (`pi4`, `work`).
+fn own_machine_terms(names: Vec<String>) -> Vec<String> {
+    names
+        .into_iter()
+        .map(|h| h.trim().to_string())
+        .filter(|h| h.chars().count() >= 3 && !is_ip_like(h))
+        .map(|h| format!("{HOST_TERM}{h}"))
+        .collect()
+}
+
+/// The terms of this person that must not appear in a project's memory: login and git identity, and (as `host:` terms)
+/// the names of machines they know: this one's, the `~/.ssh/config` aliases, the `/etc/hosts` names.
 pub fn own_terms() -> Vec<String> {
     if let Ok(v) = std::env::var("HERDR_PLANNER_OWN_TERMS") {
         return v.split(',').map(|t| t.trim().to_string()).filter(|t| !t.is_empty()).collect();
@@ -704,27 +842,36 @@ pub fn own_terms() -> Vec<String> {
     static CACHE: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
     CACHE
         .get_or_init(|| {
-            let mut out: Vec<String> = Vec::new();
-            for key in ["USER", "LOGNAME", "HOSTNAME"] {
-                if let Ok(v) = std::env::var(key) {
-                    out.push(v);
-                }
-            }
-            if let Ok(h) = std::fs::read_to_string("/etc/hostname") {
-                out.push(h.trim().to_string());
+            let mut people: Vec<String> = Vec::new();
+            for key in ["USER", "LOGNAME"] {
+                people.extend(std::env::var(key).ok());
             }
             for key in ["user.name", "user.email"] {
                 if let Ok(o) = std::process::Command::new("git").args(["config", "--global", key]).stdin(std::process::Stdio::null()).output() {
                     let v = String::from_utf8_lossy(&o.stdout).trim().to_string();
                     if !v.is_empty() {
-                        out.push(v);
+                        people.push(v);
                     }
                 }
             }
             let mut seen = HashSet::new();
-            out.into_iter()
+            let mut out: Vec<String> = people
+                .into_iter()
                 .filter(|t| t.chars().count() >= 3 && !GENERIC_LOGINS.contains(&t.to_lowercase().as_str()) && seen.insert(t.to_lowercase()))
-                .collect()
+                .collect();
+            let mut hosts: Vec<String> = Vec::new();
+            let mut own_name: Vec<String> = Vec::new();
+            own_name.extend(std::env::var("HOSTNAME").ok());
+            own_name.extend(std::fs::read_to_string("/etc/hostname").ok().map(|h| h.trim().to_string()));
+            for term in own_machine_terms(own_name) {
+                if seen.insert(term.to_lowercase()) {
+                    out.push(term);
+                }
+            }
+            hosts.extend(etc_hosts_names(&std::fs::read_to_string("/etc/hosts").unwrap_or_default()));
+            hosts.extend(ssh_config_hosts(&ssh_config_text(&crate::config::home())));
+            out.extend(host_terms(hosts, 4).into_iter().filter(|t| seen.insert(t.to_lowercase())));
+            out
         })
         .clone()
 }
@@ -840,6 +987,58 @@ mod tests {
         let f = scan("машина buildhost, логин Jdoe и jd", "text", &["buildhost".into(), "jdoe".into(), "ab".into()]);
         assert_eq!(f.iter().map(|f| f.kind).collect::<Vec<_>>(), ["own", "own"]);
         assert!(scan("buildhostile", "text", &own("buildhost")).is_empty(), "a part of a word is not a hit");
+    }
+
+    #[test]
+    fn names_of_machines_from_ssh_config_and_hosts_are_found_as_hosts() {
+        let ssh = "Host app-semantics\n    HostName 10.31.21.29\nHost salehost dokploymain\n  HostName dokploy.acme-corp.io\nHost *\n  User x\nHost github.com\n  IdentityFile ~/.ssh/k # buildbox\nHost web\n";
+        let hosts = ssh_config_hosts(ssh);
+        assert_eq!(hosts, ["app-semantics", "salehost", "dokploymain", "dokploy.acme-corp.io"], "no patterns, addresses, public sites, generic words");
+        let etc = "127.0.0.1 localhost\n::1 localhost ip6-localhost\n10.0.0.5 gigabox gigabox.lan # note\n";
+        assert_eq!(etc_hosts_names(etc), ["gigabox", "gigabox.lan"]);
+        let terms: Vec<String> = hosts.iter().chain(etc_hosts_names(etc).iter()).map(|h| format!("host:{h}")).collect();
+        let f = scan("поднял стенд на app-semantics, ключ от salehost, деплой через dokploymain; web и github.com не тронуты", "text", &terms);
+        assert_eq!(f.iter().map(|f| (f.kind, f.text.as_str())).collect::<Vec<_>>(), [("host", "app-semantics"), ("host", "salehost"), ("host", "dokploymain")]);
+        assert!(scan("сервис app-semanticsx", "text", &terms).is_empty(), "a part of a word is not a hit");
+        assert_eq!(redact("зайти на app-semantics по ssh", &terms), "зайти на <хост> по ssh");
+    }
+
+    #[test]
+    fn an_alias_with_an_address_glued_on_is_found_by_the_bare_name() {
+        // a Tabby export: `Host DokployMain_10.1.2.3`
+        let ssh = "Host DokployMain_10.1.2.3\n  HostName 10.1.2.3\nHost flowise_10.14.129.139\nHost web_10.0.0.1\n";
+        let terms = host_terms(ssh_config_hosts(ssh), 4);
+        assert!(terms.contains(&"host:DokployMain_10.1.2.3".to_string()) && terms.contains(&"host:DokployMain".to_string()), "{terms:?}");
+        assert!(terms.contains(&"host:flowise".to_string()), "{terms:?}");
+        assert!(!terms.contains(&"host:web".to_string()), "a generic word stays a word: {terms:?}");
+        let f = scan("Деплой идёт через dokploymain, а ещё DokployMain_10.1.2.3 и flowise", "text", &terms);
+        assert_eq!(f.iter().map(|f| f.kind).collect::<Vec<_>>(), ["host", "host", "host"], "{f:?}");
+        assert_eq!(redact("через dokploymain", &terms), "через <хост>");
+        // runner names are short by choice: three letters are enough there
+        let r = host_terms(["vm-r".to_string(), "ab".to_string(), "10.2.3.4".to_string()], 3);
+        assert_eq!(r, ["host:vm-r"]);
+    }
+
+    #[test]
+    fn this_machines_own_name_is_found_from_three_letters() {
+        let terms = own_machine_terms(vec!["pi4".into(), "work".into(), "ab".into(), "10.0.0.5".into()]);
+        assert_eq!(terms, ["host:pi4", "host:work"]);
+        let f = scan("Бэкапы складываем на pi4 каждую ночь, а work — рабочая.", "text", &terms);
+        assert_eq!(f.iter().map(|f| f.text.as_str()).collect::<Vec<_>>(), ["pi4", "work"]);
+    }
+
+    #[test]
+    fn ssh_config_includes_are_followed_one_level() {
+        let home = tempfile::tempdir().unwrap();
+        let ssh = home.path().join(".ssh");
+        std::fs::create_dir_all(ssh.join("conf.d")).unwrap();
+        std::fs::write(ssh.join("config"), "Include conf.d/*.conf\nInclude ~/.ssh/extra\nHost first-box\n").unwrap();
+        std::fs::write(ssh.join("conf.d/a.conf"), "Host dokploymain\n").unwrap();
+        std::fs::write(ssh.join("conf.d/b.txt"), "Host not-included\n").unwrap();
+        std::fs::write(ssh.join("extra"), "Host salehost\n  HostName 10.1.1.1\n").unwrap();
+        let mut hosts = ssh_config_hosts(&ssh_config_text(home.path()));
+        hosts.sort();
+        assert_eq!(hosts, ["dokploymain", "first-box", "salehost"]);
     }
 
     #[test]
