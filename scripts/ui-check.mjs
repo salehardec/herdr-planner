@@ -380,10 +380,17 @@ section('panel widths', async () => {
     const back = await edgeWidth(c.el);
     check(`a double click on the edge of the ${c.name} brings the default width back`, Math.abs(back - w0) < 2 && !(await evalJs(`localStorage.getItem(${JSON.stringify(c.storage)})`)), `${w0} → ${back}`);
   }
+  // Each panel keeps its own width: four figures in the browser, four panels of their own width after a reload.
+  for (const c of panels) await forget(c.storage);
+  await fresh();
+  await evalJs('(() => { const s = localStorage; s.setItem("herdr-planner.navW", "28"); s.setItem("herdr-planner.focusW", "28"); s.setItem("herdr-planner.waitW", "24"); s.setItem("herdr-planner.chatW", "34"); return true; })()');
+  await fresh();
+  const own = await evalJs(`(() => { const r = parseFloat(getComputedStyle(document.documentElement).fontSize); const w = (s) => document.querySelector(s).getBoundingClientRect().width / r; return { nav: w('#nav'), focus: w('#focus'), wait: w('#drawer-wait'), chat: w('#chat') }; })()`);
+  check('each panel has its own width (28, 28, 24 and 34 rem after a reload)', Math.abs(own.nav - 28) < 0.3 && Math.abs(own.focus - 28) < 0.3 && Math.abs(own.wait - 24) < 0.3 && Math.abs(own.chat - 34) < 0.3, JSON.stringify(own));
   // The widest a panel goes still leaves the middle for the chat, and a smaller window squeezes the width it was given — the chosen
   // figure itself is not lost: the window is big again and the panel is as wide as it was.
   await resetUi();
-  await forget('herdr-planner.focusW');
+  for (const c of panels) await forget(c.storage);
   await fresh();
   await drag('#focus .panel-grip.left', -900);
   const wide = await evalJs(`(() => { const n = document.querySelector('#nav').getBoundingClientRect(); const f = document.querySelector('#focus').getBoundingClientRect(); return { gap: f.left - n.right, w: f.width, root: parseFloat(getComputedStyle(document.documentElement).fontSize) }; })()`);
