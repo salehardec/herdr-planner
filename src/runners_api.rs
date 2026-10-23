@@ -4,7 +4,7 @@
 use crate::app::{self, Shared};
 use crate::config::{now_ms, AppConfig};
 use crate::ssh::{self, MachineRef};
-use crate::runners::{self, Class, CleanPlan, Runner, RunnerState, RunnersFile};
+use crate::runners::{self, check_number, Class, CleanPlan, Runner, RunnerState, RunnersFile, CHECK_CPUS, CHECK_SLOTS};
 use crate::{runners_auto, runners_ctl, runners_disk};
 use crate::server::{client_is_local, same_origin};
 use crate::station;
@@ -373,6 +373,8 @@ pub async fn runner_probe(State(app): State<Shared>, headers: HeaderMap, Json(bo
         alerts: Default::default(),
         limits: None,
         busy_pct: None,
+        check_cpus: None,
+        check_slots: None,
     };
     let local = local_checks(&app.cfg, &target).await;
     let state = runners::probe(&app.cfg, &r).await;
@@ -501,6 +503,8 @@ pub async fn runner_add(State(app): State<Shared>, headers: HeaderMap, Json(body
         alerts: Default::default(),
         limits: None,
         busy_pct: None,
+        check_cpus: None,
+        check_slots: None,
     };
     if file.runners.is_empty() || body.default {
         file.default = label.clone();
@@ -545,6 +549,12 @@ pub struct SetBody {
     /// Load (load1 over the core count) at which this yard counts as busy, in percent; 0 — never busy (PLN-45).
     #[serde(default)]
     busy_pct: Option<u64>,
+    /// The CPU limit of the yard's check container, cores; 0 — no limit (PLN-58).
+    #[serde(default)]
+    check_cpus: Option<u64>,
+    /// How many full checks run on the yard at once; 0 — no queue (PLN-58).
+    #[serde(default)]
+    check_slots: Option<u64>,
     /// Back to the list's own threshold.
     #[serde(default)]
     busy_reset: bool,
@@ -595,6 +605,12 @@ pub async fn runner_set(State(app): State<Shared>, headers: HeaderMap, Json(body
         if body.busy_reset {
             r.busy_pct = None;
         }
+        if let Some(c) = body.check_cpus {
+            r.check_cpus = check_number(c, CHECK_CPUS);
+        }
+        if let Some(s) = body.check_slots {
+            r.check_slots = check_number(s, CHECK_SLOTS);
+        }
     }
     if body.default == Some(true) {
         file.default = body.id.clone();
@@ -614,6 +630,8 @@ pub async fn runner_set(State(app): State<Shared>, headers: HeaderMap, Json(body
                 s.note = r.note.clone();
                 s.alert_rules = r.alerts.clone();
                 s.limits = r.effective_limits(Some(&s.host));
+                s.check_cpus = r.check_cpu();
+                s.check_slots = r.check_slot();
             }
             // The threshold is a rule, not a read: the page shows it at once (PLN-45).
             if let Some(r) = file.get(&body.id) {

@@ -27,6 +27,13 @@
 # the least loaded is taken. YARD_RUNNER names one yard outright. YARD=local runs the same work on this machine, without
 # a container (a way out for the human; an agent whose yard does not answer stops instead, see the board's rule).
 #
+# The task's container: `--cpus 6 --memory 12g` and RUN_CHECKS_JOBS=3 by default (PLN-58: two full checks on sixteen cores
+# take twelve, the machine keeps four). A yard labelled «gpu» whose `nvidia-smi` answers gets its card into the container
+# (`--gpus all`, the graphics capabilities, /dev/dri when it is there); the page checks then draw with the GPU instead of
+# SwiftShader. A full run (pages, check) takes one of the yard's shared slots — two by default, the rest wait and say how
+# many runs are ahead. The yard's own check_cpus/check_slots in runners.json (or YARD_CPUS/YARD_SLOTS/YARD_SLOT_USE here)
+# say otherwise; see «Фокус · верфь» in the planner.
+#
 # The task's tag: $HERDR_PROJECTS_TAG, else the name of $TMPDIR (…/PLN-49), else $HERDR_PROJECTS_ID with the repository's
 # key from ~/.herdr-projects/settings/config.json, else dev-<user>. The container is yard-<tag>, labelled herdr.task=<tag>;
 # the cache volume is hp-yard-cache with herdr.shared=herdr-planner, so the planner shows it apart from other people's
@@ -38,9 +45,13 @@ D=${YARD_DOCKER:-docker}
 DFILE=scripts/yard/Dockerfile
 IMAGE_NAME=herdr-planner-yard
 VOLUME=${YARD_CACHE_VOLUME:-hp-yard-cache}
-CPUS=${YARD_CPUS:-8}
+# The check container's CPU limit and the full runs allowed at once: the yard's own from the planner's list (PLN-58)
+# once it is known, else 6 and 2; the variables here win as they always did.
+CPUS=${YARD_CPUS:-}
 MEM=${YARD_MEM:-12g}
-SLOTS=${YARD_SLOTS:-2}
+SLOTS=${YARD_SLOTS:-}
+SLOT_USE=${YARD_SLOT_USE:-1}
+GPU_FLAGS=
 CACHE_MAX_GB=${YARD_CACHE_MAX_GB:-15}
 LOG_DIR=${HERDR_YARD_LOG_DIR:-${TMPDIR:-/tmp}/yard}
 PG=
@@ -51,7 +62,7 @@ RUN_ID=${YARD_RUN_ID:-$(date +%Y%m%d-%H%M%S)-$$}
 trap '[ -z "$PG" ] || kill "$PG" 2>/dev/null || true' EXIT
 
 usage() {
-  sed -n '2,30p' "$SELF" | sed 's/^# \{0,1\}//'
+  sed -n '2,35p' "$SELF" | sed 's/^# \{0,1\}//'
 }
 
 say() { printf 'yard: %s\n' "$*"; }
@@ -243,6 +254,62 @@ ensure_yard() {
   fi
 }
 
+# ───────── the yard's own settings (PLN-58) ─────────
+
+# One command on the yard itself over ssh (the machine behind $DOCKER_HOST=ssh://…); nothing when it cannot be asked.
+yard_ssh() {
+  t=$YARD_SSH
+  port=
+  case "$t" in
+    *:* ) port=${t##*:}; t=${t%:*} ;;
+  esac
+  if [ -n "$port" ]; then
+    ssh -o BatchMode=yes -o ConnectTimeout=5 -p "$port" "$t" "$@" 2>/dev/null
+  else
+    ssh -o BatchMode=yes -o ConnectTimeout=5 "$t" "$@" 2>/dev/null
+  fi
+}
+
+# The resolved yard's entry in the planner's list, as `tags, check_cpus, check_slots`; nothing when the list is missing,
+# the yard is not in it, or there is no jq. The target is matched without its scheme, its user and its port.
+yard_rule() {
+  f=$HOME/.herdr-projects/settings/runners.json
+  [ -r "$f" ] && command -v jq >/dev/null 2>&1 || return 0
+  jq -r --arg host "$YARD_SSH" '
+    def h: sub("^[A-Za-z][A-Za-z0-9+.-]*://"; "") | sub("^[^@]*@"; "") | sub(":[0-9]+$"; "");
+    (.runners // [])[] | select(((.target // "") | h) == ($host | h))
+    | [((.tags // []) | join(",")), (.check_cpus // ""), (.check_slots // "")] | @tsv
+  ' "$f" 2>/dev/null | head -n 1
+}
+
+# A yard gives its card to the container when the list labels it «gpu» and the driver on the yard answers: the label is a
+# promise, `nvidia-smi` is the proof. Only an ssh yard can be asked, and only with ssh at hand.
+yard_gpu() {
+  printf '%s' "$YARD_TAGS" | tr '[:upper:]' '[:lower:]' | tr ',' '\n' | grep -qx gpu || return 1
+  case "${DOCKER_HOST:-}" in ssh://*) ;; *) return 1 ;; esac
+  command -v ssh >/dev/null 2>&1 || return 1
+  yard_ssh 'nvidia-smi -L' >/dev/null 2>&1
+}
+
+# The CPU limit of the check container, the slots of full runs and the GPU flags: the list's word for this yard, else the
+# defaults; YARD_CPUS, YARD_SLOTS and YARD_SLOT_USE here still win. A yard without a card runs as it always did.
+yard_settings() {
+  rule=$(yard_rule || true)
+  YARD_TAGS=$(printf '%s' "$rule" | cut -f1)
+  list_cpus=$(printf '%s' "$rule" | cut -f2)
+  list_slots=$(printf '%s' "$rule" | cut -f3)
+  CPUS=${YARD_CPUS:-${list_cpus:-6}}
+  SLOTS=${YARD_SLOTS:-${list_slots:-2}}
+  if [ "$SLOTS" = 0 ]; then SLOT_USE=0; fi
+  if yard_gpu; then
+    GPU_FLAGS='--gpus all -e NVIDIA_VISIBLE_DEVICES=all -e NVIDIA_DRIVER_CAPABILITIES=compute,utility,graphics'
+    if yard_ssh 'test -e /dev/dri' >/dev/null 2>&1; then
+      GPU_FLAGS="$GPU_FLAGS --device /dev/dri"
+    fi
+    say "верфь $YARD_SHOW: GPU в контейнере задачи (--gpus all), ЦП $CPUS, слотов $SLOTS"
+  fi
+}
+
 # ───────── the container ─────────
 
 image_tag() { printf '%s:%s' "$IMAGE_NAME" "$(sha12 "$DFILE")"; }
@@ -269,22 +336,65 @@ container_up() {
   if $D container inspect "$NAME" >/dev/null 2>&1; then
     have=$($D inspect -f '{{.Image}}' "$NAME")
     if [ "$have" != "$want" ]; then
-      # A new Dockerfile is a new image: the task's container is made again (its sources come back by sync).
+      # A new Dockerfile is a new image: the task's container is made again (its sources and its build come back by
+      # sync and the next build; nothing else is worth keeping alive across the image it was made from).
       say "образ верфи новый: контейнер $NAME пересоздаётся"
       $D rm -f "$NAME" >/dev/null
     fi
   fi
   if ! $D container inspect "$NAME" >/dev/null 2>&1; then
-    $D run -d --name "$NAME" --label "herdr.task=$TAG" --init --cpus "$CPUS" --memory "$MEM" --pids-limit 4096 \
-      --security-opt no-new-privileges -v "$VOLUME:/cache" \
+    gpu=0
+    if [ -n "$GPU_FLAGS" ]; then gpu=1; fi
+    cpus_flag=
+    jobs_flag=
+    if [ "$CPUS" != 0 ]; then
+      cpus_flag="--cpus $CPUS"
+      jobs_flag="-e RUN_CHECKS_JOBS=$((CPUS / 2))"
+    fi
+    # shellcheck disable=SC2086  # «--cpus 6» and «-e …» or nothing; the GPU flags are a few words of their own (PLN-58)
+    $D run -d --name "$NAME" --label "herdr.task=$TAG" --label "herdr.yard.cpus=$CPUS" --label "herdr.yard.gpu=$gpu" \
+      --init $cpus_flag --memory "$MEM" --pids-limit 4096 \
+      --security-opt no-new-privileges $GPU_FLAGS -v "$VOLUME:/cache" \
       -e CARGO_TARGET_DIR=/work/target -e HERDR_PLANNER_TARGET_DIR=/work/target \
       -e CARGO_HOME=/cache/cargo -e npm_config_cache=/cache/npm -e XDG_CACHE_HOME=/work/cache \
-      -e RUN_CHECKS_JOBS=$((CPUS / 2)) -e CHROMIUM=/opt/chrome/chrome \
+      $jobs_flag -e CHROMIUM=/opt/chrome/chrome \
       "$IMAGE" sleep infinity >/dev/null ||
       die 1 "yard: контейнер $NAME не запустился"
   else
     running=$($D inspect -f '{{.State.Running}}' "$NAME")
     [ "$running" = "true" ] || $D start "$NAME" >/dev/null
+    # The CPU limit belongs to the container and docker changes it in place: a run of this task, /work/target and the
+    # sources stay. The value here is this invocation's (the yard's check_cpus, or YARD_CPUS for one run). Docker cannot
+    # lift a limit with `--cpus 0`, so a zero is read back and said as it is — the container is never thrown away for it.
+    have_cpus=$($D inspect -f '{{.HostConfig.NanoCpus}}' "$NAME" 2>/dev/null || true)
+    case "$have_cpus" in ''|'<no value>'|null) have_cpus=0 ;; esac
+    want_cpus=$((CPUS * 1000000000))
+    if [ "$have_cpus" != "$want_cpus" ]; then
+      $D update --cpus "$CPUS" "$NAME" >/dev/null 2>&1 || true
+      now_cpus=$($D inspect -f '{{.HostConfig.NanoCpus}}' "$NAME" 2>/dev/null || true)
+      case "$now_cpus" in ''|'<no value>'|null) now_cpus=0 ;; esac
+      if [ "$now_cpus" = "$want_cpus" ]; then
+        say "контейнер $NAME: лимит ЦП $((have_cpus / 1000000000)) → $CPUS (на месте, контейнер не тронут)"
+      else
+        say "контейнер $NAME: лимит ЦП $((now_cpus / 1000000000)) остался (docker update не дал $CPUS); его сменит только пересоздание"
+      fi
+    fi
+    # The card, once in the container, stays. A probe that fails once (a busy yard, a five-second timeout) is not a
+    # reason to throw the container away — nor is a card that appeared later added to a live container: down and up do.
+    have_gpu=$($D inspect -f '{{json .HostConfig.DeviceRequests}}' "$NAME" 2>/dev/null || true)
+    case "$have_gpu" in ''|'<no value>'|null) have_gpu= ;; esac
+    if [ -z "$GPU_FLAGS" ] && [ -n "$have_gpu" ]; then
+      say "верфь сейчас не отвечает про карту: контейнер $NAME остаётся с ней, пока его не пересоздадут"
+    elif [ -n "$GPU_FLAGS" ] && [ -z "$have_gpu" ]; then
+      say "верфь даёт карту, а контейнер $NAME её не имеет: «sh $SELF down» и снова up добавят её"
+    elif [ -n "$GPU_FLAGS" ]; then
+      # A long-lived container that outlived a driver reload keeps stale device bindings: the yard's driver answers, the
+      # container's card does not. The checks fall back to SwiftShader by themselves; the container is never thrown away
+      # for it, and down/up are what bring the card back.
+      if ! $D exec "$NAME" nvidia-smi -L >/dev/null 2>&1; then
+        say "карта в контейнере $NAME не отвечает (nvidia-smi внутри): проверки пойдут на SwiftShader; «sh $SELF down» и снова up вернут карту"
+      fi
+    fi
   fi
 }
 
@@ -419,10 +529,10 @@ run_here() {
     # The result folder is copied while the run still holds the lock; the run's own exit code comes from its .rc file.
     if [ "$slot" = 1 ]; then
       start_logged "$log" "$D" exec -i -w /work/src -e "HERDR_PROJECTS_PROGRESS=$prog" \
-        -e "YARD_SLOTS=$SLOTS" -e YARD_SLOT_USE=1 "$NAME" \
+        -e "YARD_SLOTS=$SLOTS" -e YARD_SLOT_USE="$SLOT_USE" -e "UI_GPU=${UI_GPU:-}" "$NAME" \
         flock /work/.lock sh -c "$INNER" yard "$@"
     else
-      start_logged "$log" "$D" exec -i -w /work/src -e "HERDR_PROJECTS_PROGRESS=$prog" -e YARD_SLOT_USE=0 "$NAME" \
+      start_logged "$log" "$D" exec -i -w /work/src -e "HERDR_PROJECTS_PROGRESS=$prog" -e YARD_SLOT_USE=0 -e "UI_GPU=${UI_GPU:-}" "$NAME" \
         flock /work/.lock sh -c "$INNER" yard "$@"
     fi
     execpid=$STREAM_PID
@@ -433,10 +543,10 @@ run_here() {
   else
     if [ "$slot" = 1 ]; then
       run_logged "$log" "$D" exec -i -w /work/src -e "HERDR_PROJECTS_PROGRESS=$prog" \
-        -e "YARD_SLOTS=$SLOTS" -e YARD_SLOT_USE=1 "$NAME" \
+        -e "YARD_SLOTS=$SLOTS" -e YARD_SLOT_USE="$SLOT_USE" -e "UI_GPU=${UI_GPU:-}" "$NAME" \
         flock /work/.lock sh -c "$INNER" yard "$@"
     else
-      run_logged "$log" "$D" exec -i -w /work/src -e "HERDR_PROJECTS_PROGRESS=$prog" -e YARD_SLOT_USE=0 "$NAME" \
+      run_logged "$log" "$D" exec -i -w /work/src -e "HERDR_PROJECTS_PROGRESS=$prog" -e YARD_SLOT_USE=0 -e "UI_GPU=${UI_GPU:-}" "$NAME" \
         flock /work/.lock sh -c "$INNER" yard "$@"
     fi
     rc=$?
@@ -586,6 +696,7 @@ TAG=$(task_tag)
 NAME="yard-$TAG"
 IMAGE=$(image_tag)
 resolve_yard
+[ "$cmd" = where ] || yard_settings
 
 case "$cmd" in
   where) printf '%s\n' "$YARD_SHOW"; exit 0 ;;
@@ -632,6 +743,7 @@ case "$cmd" in
   status)
     ensure_yard
     say "верфь $YARD_SHOW, задача $TAG, образ $IMAGE"
+    say "контейнер задачи: ЦП ${CPUS:-—}, слотов ${SLOTS:-—}, GPU $([ -n "$GPU_FLAGS" ] && echo да || echo нет), память $MEM"
     if $D container inspect "$NAME" >/dev/null 2>&1; then
       $D ps --filter "name=^${NAME}$" --format 'контейнер {{.Names}}: {{.Status}}'
       # shellcheck disable=SC2016  # $(du) is for the container's shell, not for this one

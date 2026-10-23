@@ -20,6 +20,7 @@ import { spawn, execFileSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, writeFileSync, readFileSync, existsSync, unlinkSync, utimesSync, rmSync, readdirSync, appendFileSync, realpathSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { chooseMode, gpuFlags } from './chrome-gpu.mjs';
 
 const base = process.argv[2] || 'http://127.0.0.1:7117';
 const shots = process.argv[3] || null;
@@ -35,8 +36,10 @@ const profile = mkdtempSync(join(tmpdir(), 'herdr-planner-ui-'));
 // it writes the port into its profile folder.
 let port = 0;
 const readPort = () => { try { return Number(readFileSync(join(profile, 'DevToolsActivePort'), 'utf8').split('\n')[0]) || 0; } catch { return 0; } };
+// The card of the shipyard, or the software renderer of CI and a laptop (PLN-58); UI_GPU forces the choice.
+const gpuMode = chooseMode();
 const chrome = spawn(process.env.CHROMIUM || 'chromium', [
-  '--headless=new', '--no-sandbox', '--disable-gpu', '--use-gl=angle', '--use-angle=swiftshader', '--enable-unsafe-swiftshader',
+  '--headless=new', '--no-sandbox', ...gpuFlags(gpuMode),
   '--hide-scrollbars', `--user-data-dir=${profile}`, '--remote-debugging-port=0', '--window-size=1500,950',
   // a desktop with a mouse: headless would say `(hover: none)`, and the chat shows its actions by hover (PLN-60)
   '--blink-settings=primaryHoverType=2,availableHoverTypes=2,primaryPointerType=4,availablePointerTypes=4',
@@ -355,11 +358,28 @@ section('panel widths', async () => {
   };
   // The edge takes the keyboard's focus, and the focus is shown: an outline, and the mark of the edge lit.
   const fromKeyboard = async (sel, key) => {
-    await evalJs(`document.querySelector(${JSON.stringify(sel)}).focus(); true`);
+    const selJs = JSON.stringify(sel);
+    const take = async () => {
+      await evalJs(`document.querySelector(${selJs})?.focus(); true`);
+      await beat();
+      return evalJs(`document.activeElement === document.querySelector(${selJs})`);
+    };
+    // A panel that has just opened may move the focus into its own field a tick later (a loaded machine makes the tick
+    // longer): the grip takes it back, and the key only goes once the grip really has it.
+    let has = await take();
+    for (let i = 0; i < 4 && !has; i++) { await sleep(100); has = await take(); }
     await press(key);
     await beat();
-    const lit = await waitFor(`getComputedStyle(document.querySelector(${JSON.stringify(sel)}), '::after').opacity === '1'`, 3000);
-    return { lit, ...await evalJs(`(() => { const g = document.querySelector(${JSON.stringify(sel)}); const c = getComputedStyle(g); return { active: document.activeElement === g, focusRing: c.outlineStyle !== 'none' && parseFloat(c.outlineWidth) > 0, mark: getComputedStyle(g, '::after').opacity, f: g.matches(':focus'), fv: g.matches(':focus-visible') }; })()`) };
+    let lit = await waitFor(`getComputedStyle(document.querySelector(${selJs}), '::after').opacity === '1'`, 3000);
+    if (!lit) {
+      // The focus was taken away between the two anyway: take it again and send the key once more. The width moves twice
+      // at most, in the direction the checks below expect.
+      has = await take();
+      await press(key);
+      await beat();
+      lit = await waitFor(`getComputedStyle(document.querySelector(${selJs}), '::after').opacity === '1'`, 3000);
+    }
+    return { lit, ...await evalJs(`(() => { const g = document.querySelector(${selJs}); const c = getComputedStyle(g); return { active: document.activeElement === g, focusRing: c.outlineStyle !== 'none' && parseFloat(c.outlineWidth) > 0, mark: getComputedStyle(g, '::after').opacity, f: g.matches(':focus'), fv: g.matches(':focus-visible') }; })()`) };
   };
   // The navigator and the focus card start open; the wait list and the chat are opened by their keys.
   const panels = [
@@ -4227,8 +4247,11 @@ section('memory window', async () => {
   await click('#mem-save');
   await waitCard();
   await sayYes();
-  const longId = await evalJs(`(() => { const r = [...document.querySelectorAll('#mem-list [data-mem]')].find((e) => e.querySelector('.mm-title')?.title === ${JSON.stringify(LONG)}); return r?.dataset.mem || ''; })()`);
-  check('the new entry is a draft in the window', await waitFor(`document.querySelector('#mem-list [data-mem="${longId}"]')?.dataset.draft === "new"`, 8000) && longId !== '', longId);
+  // The list is redrawn after the save: wait for the row itself (a slow machine can be a tick or two behind), and only
+  // then take its id — an empty id would make every check below address nothing and say nothing about the page.
+  const newRow = `[...document.querySelectorAll('#mem-list [data-mem]')].find((e) => e.querySelector('.mm-title')?.title === ${JSON.stringify(LONG)})`;
+  check('the new entry is a draft in the window', await waitFor(`${newRow}?.dataset.draft === "new"`, 15000), await evalJs(`${newRow}?.dataset.mem || ''`));
+  const longId = await evalJs(`${newRow}?.dataset.mem || ''`);
   // the filter by state: written / draft / waiting
   await typeIn('#mem-f-state', 'draft');
   check('the filter «Черновик» shows the draft', await waitFor(`!!document.querySelector('#mem-list [data-mem="${longId}"]') && [...document.querySelectorAll('#mem-list [data-mem]')].every((e) => e.dataset.draft)`, 5000));
@@ -4263,6 +4286,10 @@ section('memory window', async () => {
     await evalJs(AUDIT);
     await beat();
     const m = await rowOf(longId);
+    if (!m) {
+      check(`${at}: the row is there`, false, longId);
+      return;
+    }
     const bad = await layoutProblems('#mem-window');
     check(`${at}: the long title keeps ${m.titleRem.toFixed(1)} rem beside the badge (at least 10), at most 3 lines, never on the badge`, m.titleRem >= 10 && m.lines <= 3 && !m.over, JSON.stringify(m));
     check(`${at}: nothing wider than its box in the window, and no sideways scroll`, bad.length === 0 && !m.sideways, bad.join('; '));
@@ -4663,6 +4690,14 @@ ws.onmessage = (e) => {
   }
 };
 await send('Runtime.enable');
+// One line about what draws the page: the yard's card or the software renderer (PLN-58). A GPU that silently fell back
+// to SwiftShader is seen here instead of being wondered at in the timings.
+const renderer = await evalJs(`(() => { const c = document.createElement('canvas');
+  const gl = c.getContext('webgl2') || c.getContext('webgl');
+  if (!gl) return 'no WebGL';
+  const d = gl.getExtension('WEBGL_debug_renderer_info');
+  return String(d ? gl.getParameter(d.UNMASKED_RENDERER_WEBGL) : gl.getParameter(gl.RENDERER)); })()`);
+console.log(`renderer: ${renderer ?? 'unknown'} (${gpuMode})`);
 await send('Network.enable');
 await send('Log.enable');
 await send('Page.enable');
@@ -4693,6 +4728,8 @@ section('runners', async () => {
   check('the world draws the yard outside the Galaxy boundary', !!yardDebug?.docks?.['vm-r'] && Math.hypot(yardDebug.docks['vm-r'].x, yardDebug.docks['vm-r'].z) > 760, JSON.stringify(yardDebug?.docks));
   await click('#nav [data-nav="run|vm-r"]');
   check('the shipyard focus opens: state, CPU, memory, disk, GPU', await waitFor('!!document.querySelector("[data-focus=runner]")', 12000) && await hasText('#focus', 'vm-r') && await hasText('#focus', 'на связи') && await hasText('#focus', 'CPU') && await hasText('#focus', 'GPU NVIDIA L4-24Q'), await text('#focus'));
+  check('the focus names the check container: its CPU limit and the slots of full checks',
+    await waitFor('!!document.querySelector("#rf-check-line")', 8000) && await hasText('#rf-check-line', 'ЦП 6') && await hasText('#rf-check-line', '2 проверки'), await text('#rf-check-line'));
   // The yard's look: a station with a light per container of a task, in the frame as a whole, calm when asked to be.
   check('the flight to the yard ends with it selected', await waitFor('world.debug().flight === "idle" && plannerDebug().selected?.kind === "runner"', 15000), JSON.stringify(await pd()));
   const yard = (await debug())?.docks?.['vm-r'];
@@ -4795,20 +4832,49 @@ section('runners', async () => {
   check('the settings form shows the limits in force', await waitFor('!!document.querySelector("#rf-lim-cpus")', 5000)
     && (await evalJs('document.querySelector("#rf-lim-cpus").value')) === '2'
     && (await evalJs('document.querySelector("#rf-lim-mem").value')) === '2'
-    && (await evalJs('document.querySelector("#rf-lim-per").value')) === '0', await text('#rf-edit'));
+    && (await evalJs('document.querySelector("#rf-lim-per").value')) === '0'
+    && (await evalJs('document.querySelector("#rf-check-cpus").value')) === '6'
+    && (await evalJs('document.querySelector("#rf-check-slots").value')) === '2', await text('#rf-edit'));
   await evalJs('(() => { const set = (id, v) => { const i = document.querySelector(id); i.value = v; i.dispatchEvent(new Event("input", { bubbles: true })); }; set("#rf-lim-cpus", "3"); set("#rf-lim-mem", "3"); set("#rf-lim-per", "1"); return true; })()');
   await twoPresses('#rf-set');
   check('saving keeps them and the maximum in the list file', await waitLog(() => {
     try { const r = JSON.parse(readFileSync(join(fixture, 'settings', 'runners.json'), 'utf8')).runners.find((x) => x.id === 'vm-r'); return r?.limits?.cpus === 3 && r?.limits?.mem_mb === 3072 && r?.limits?.per_task === 1; } catch { return false; }
   }, 10000), readFileSync(join(fixture, 'settings', 'runners.json'), 'utf8').slice(0, 400));
+  // The check container's numbers that are still the defaults are not written into the file: the yard follows a later
+  // change of the defaults (PLN-58).
+  check('a save that leaves the check numbers at their defaults writes none of them', await waitLog(() => {
+    try { const r = JSON.parse(readFileSync(join(fixture, 'settings', 'runners.json'), 'utf8')).runners.find((x) => x.id === 'vm-r'); return r && r.check_cpus == null && r.check_slots == null; } catch { return false; }
+  }, 5000), readFileSync(join(fixture, 'settings', 'runners.json'), 'utf8').slice(0, 400));
   check('the yard shows the new numbers at once', await waitFor('(() => { const e = document.querySelector("#rf-limits"); const s = e?.innerText || ""; return !!e && s.includes("ЦП 3") && s.includes("3 ГБ") && s.includes("на задачу не больше 1 контейнера"); })()', 8000), await text('#rf-limits'));
+  check('and the check line still follows the defaults', await hasText('#rf-check-line', 'ЦП 6') && await hasText('#rf-check-line', '2 проверки'), await text('#rf-check-line'));
+  // The human's own check numbers are written, and the yard shows them at once.
+  await click('#rf-edit-open');
+  await waitFor('!!document.querySelector("#rf-check-cpus")', 5000);
+  await evalJs('(() => { const set = (id, v) => { const i = document.querySelector(id); i.value = v; i.dispatchEvent(new Event("input", { bubbles: true })); }; set("#rf-check-cpus", "4"); set("#rf-check-slots", "1"); return true; })()');
+  await twoPresses('#rf-set');
+  check('another save writes the check numbers that are not the defaults', await waitLog(() => {
+    try { const r = JSON.parse(readFileSync(join(fixture, 'settings', 'runners.json'), 'utf8')).runners.find((x) => x.id === 'vm-r'); return r?.limits?.cpus === 3 && r?.check_cpus === 4 && r?.check_slots === 1; } catch { return false; }
+  }, 10000), readFileSync(join(fixture, 'settings', 'runners.json'), 'utf8').slice(0, 400));
+  check('and the check container’s own numbers too',
+    await waitFor('(() => { const s = document.querySelector("#rf-check-line")?.innerText || ""; return s.includes("ЦП 4") && s.includes("1 проверка"); })()', 8000), await text('#rf-check-line'));
+  // Typing the defaults back drops the yard's own numbers: the server keeps «a number equal to the default» as «no word
+  // in the file», so the save is not silently ignored (PLN-58).
+  await click('#rf-edit-open');
+  await waitFor('!!document.querySelector("#rf-check-cpus")', 5000);
+  await evalJs('(() => { const set = (id, v) => { const i = document.querySelector(id); i.value = v; i.dispatchEvent(new Event("input", { bubbles: true })); }; set("#rf-check-cpus", "6"); set("#rf-check-slots", "2"); return true; })()');
+  await twoPresses('#rf-set');
+  check('typing the defaults back drops the yard’s own check numbers', await waitLog(() => {
+    try { const r = JSON.parse(readFileSync(join(fixture, 'settings', 'runners.json'), 'utf8')).runners.find((x) => x.id === 'vm-r'); return r && r.check_cpus == null && r.check_slots == null; } catch { return false; }
+  }, 10000), readFileSync(join(fixture, 'settings', 'runners.json'), 'utf8').slice(0, 400));
+  check('and the check line is back to the defaults',
+    await waitFor('(() => { const s = document.querySelector("#rf-check-line")?.innerText || ""; return s.includes("ЦП 6") && s.includes("2 проверки"); })()', 8000), await text('#rf-check-line'));
   // An emptied field is «leave it as it is», not 0: zero would turn the maximum off.
   await click('#rf-edit-open');
   await waitFor('!!document.querySelector("#rf-lim-per")', 5000);
   await evalJs('(() => { const i = document.querySelector("#rf-lim-per"); i.value = ""; i.dispatchEvent(new Event("input", { bubbles: true })); return true; })()');
   await twoPresses('#rf-set');
   check('an emptied limit field keeps the value in force, not 0', await waitLog(() => {
-    try { const r = JSON.parse(readFileSync(join(fixture, 'settings', 'runners.json'), 'utf8')).runners.find((x) => x.id === 'vm-r'); return r?.limits?.cpus === 3 && r?.limits?.mem_mb === 3072 && r?.limits?.per_task === 1; } catch { return false; }
+    try { const r = JSON.parse(readFileSync(join(fixture, 'settings', 'runners.json'), 'utf8')).runners.find((x) => x.id === 'vm-r'); return r?.limits?.cpus === 3 && r?.limits?.mem_mb === 3072 && r?.limits?.per_task === 1 && r?.check_cpus == null && r?.check_slots == null; } catch { return false; }
   }, 10000), readFileSync(join(fixture, 'settings', 'runners.json'), 'utf8').slice(0, 400));
   // The build caches of the board's repositories (herdr.shared=alpha, scripts/yard.sh): apart from the tasks, never foreign.
   check('the build cache is a table of its own: the image with its size, the volume, the cache container',
