@@ -17,9 +17,10 @@ ENV DEBIAN_FRONTEND=noninteractive \
     LANG=C.UTF-8
 
 # The page's browser libraries and the tools the checks call: rsync (the sources come through `docker exec`), ss
-# (a server on our port is ours), timeout, flock, jq (the installer check), curl.
+# (a server on our port is ours), timeout, flock, jq (the installer check), sqlite3 (the journal's checks put rows into
+# the planner's own database), curl.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        ca-certificates curl gnupg jq rsync iproute2 procps util-linux \
+        ca-certificates curl gnupg jq rsync iproute2 procps util-linux sqlite3 \
         libnss3 libgbm1 libasound2 libatk-bridge2.0-0 libgtk-3-0 libxkbcommon0 \
         libxrandr2 libxcomposite1 libxdamage1 libxfixes3 libdrm2 libcups2 libdbus-1-3 \
         libx11-xcb1 libpango-1.0-0 libpangocairo-1.0-0 libcairo2 \
