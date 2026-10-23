@@ -1,6 +1,8 @@
 import type { JSX } from 'preact';
-import { answered, panels, requests, snap } from '../store';
+import { answered, armed, panels, requests, snap } from '../store';
 import { fromQueue, openRequest, queueCursor } from '../nav';
+import { boardOk, runTaskAction } from '../actions';
+import { addDialogs } from '../dialogs';
 import { t } from '../i18n';
 import { Gl } from './Gl';
 import { Grip } from './Grip';
@@ -20,6 +22,11 @@ export function Wait(): JSX.Element {
     else if (e.key === 'ArrowUp') { e.preventDefault(); queueCursor.value = Math.max(0, cur - 1); }
     else if (e.key === 'Enter') { e.preventDefault(); void openRequest(cur); }
   };
+  // The remarks are written in the Focus's own field: the row opens the task and puts the caret there.
+  const returnWithNotes = async (index: number): Promise<void> => {
+    await openRequest(index);
+    setTimeout(() => { (document.getElementById('tell') as HTMLTextAreaElement | null)?.focus(); }, 600);
+  };
   return (
     <section class={`panel waitlist ${open ? 'open' : ''}`} id="drawer-wait" aria-label={t('wait.title')} aria-hidden={!open} onKeyDown={onKey}>
       <header><span>{t('wait.title')} <kbd>B</kbd></span><span>{list.length}</span><button class="btn icon sm" type="button" aria-label={t('close')} onClick={() => { panels.wait.value = false; }}><Gl n="close" /></button></header>
@@ -31,6 +38,9 @@ export function Wait(): JSX.Element {
           const done = !alarm && answered.value.has(r.id);
           const sug = mem ? suggestions.find((m) => m.task === r.id) : undefined;
           const state = sug ? cardPick(sug) : 'none';
+          const task = r.task;
+          const armKey = task ? `${task.id}:approve` : '';
+          const armedNow = !!armKey && armed.value?.key === armKey;
           const row = (
             <button
               key={r.key} type="button" data-request={r.key} data-alert={r.alert?.kind} data-sel={r.id === 'coordinator' ? '' : r.id}
@@ -39,10 +49,24 @@ export function Wait(): JSX.Element {
               aria-selected={i === cur} onClick={() => void openRequest(i)}
             >
               <Gl n={alarm ? 'yard' : mem ? 'memory' : r.task?.status ?? 'waiting'} /><b>{r.tag}</b>
+              {r.why && <span class="why" data-why={r.why}>{r.why}</span>}
               <span class="tx">{mem && <span class="qk">{r.title}</span>}{r.text || r.title}</span><span class="pj">{r.repo}</span>
             </button>
           );
-          if (!sug) return row;
+          // The ready plan's own answers stand under the row the cursor is on (PLN-61).
+          const acts = r.type === 'plan' && task && i === cur && (
+            <div class="qacts">
+              <button class="btn sm" type="button" data-act="plan-open" data-id={task.id} onClick={() => { addDialogs.summary.value = { task: task.id, part: 'plan' }; }}>
+                <Gl n="expand" />{t('req.planOpen')}
+              </button>
+              <button
+                class={`btn sm go ${armedNow ? 'arm' : ''}`} type="button" data-act="approve" data-id={task.id} aria-disabled={!boardOk()}
+                onClick={() => runTaskAction('approve', task)}
+              >{armedNow ? t('req.confirmApprovePlan') : t('req.approvePlan')}</button>
+              <button class="btn sm" type="button" data-act="plan-return" data-id={task.id} onClick={() => void returnWithNotes(i)}>{t('req.returnWithNotes')}</button>
+            </div>
+          );
+          if (!sug) return <div class="qline" key={r.key}>{row}{acts}</div>;
           return (
             <div class="qw" key={r.key}>
               <input
@@ -50,6 +74,7 @@ export function Wait(): JSX.Element {
                 aria-label={t('mem.batchPickCard', { tag: sug.tag })} onChange={() => toggleCard(sug)}
               />
               {row}
+              {acts}
             </div>
           );
         })}

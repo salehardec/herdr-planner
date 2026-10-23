@@ -608,6 +608,7 @@ mod tests {
     const CODEX_LOGIN: &str = include_str!("menu_samples/codex-login.txt");
     const CODEX_APPROVAL: &str = include_str!("menu_samples/codex-approval.txt");
     const CLAUDE_PERMISSION: &str = include_str!("menu_samples/claude-permission.txt");
+    const CLAUDE_CREATE_FILE: &str = include_str!("menu_samples/claude-create-file.txt");
 
     fn labels(m: &Menu) -> Vec<&str> {
         m.options.iter().map(|o| o.label.as_str()).collect()
@@ -682,6 +683,22 @@ mod tests {
         assert!(m.context.contains("touch made-by-test.txt"), "{}", m.context);
         assert!(m.context.contains("Bash command") && !m.context.contains('╌'), "{}", m.context);
         assert!(m.question.len() < 60);
+    }
+
+    #[test]
+    fn claude_file_creation_prompt() {
+        let m = parse(CLAUDE_CREATE_FILE).expect("a menu");
+        assert_eq!(m.question, "Do you want to create closing-note2.md?");
+        assert_eq!(
+            labels(&m),
+            [
+                "Yes",
+                "Yes, and switch to accept edits (shift+tab) for this session",
+                "No"
+            ]
+        );
+        assert!(m.context.contains("closing-note2.md"), "{}", m.context);
+        assert_eq!(m.cursor, 0);
     }
 
     #[test]

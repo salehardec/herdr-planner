@@ -55,8 +55,31 @@ export function requestType(task: Task): string {
   return 'question';
 }
 
+/** Why a task waits for the human, in one word: the reason the badge and the queue name (PLN-61).
+ *  A task the board knows as a question (or as nothing at all) may be an agent on a dialog: the caller that has read
+ *  its screen passes `permission` and the reason is «разрешение». */
+export function waitReason(task: Task, permission = false): string {
+  if (task.status === 'plan') return t('reason.plan');
+  if (task.status === 'ready') return t('reason.ready');
+  if (task.status === 'failed') return t('reason.failed');
+  if (task.stage === 'pick') return t('reason.pick');
+  if (task.stage === 'stopped') return t('reason.limit');
+  if (task.stage === 'reviewneeds') return t('reason.review');
+  if (task.stage === 'approval') return task.review_failed || task.merge_blocked ? t('reason.review') : t('reason.ready');
+  if (permission || task.kind === 'permission') return t('reason.permission');
+  if (task.kind === 'auth') return t('reason.auth');
+  // `question`, no kind at all («Needs you»): the human is asked something, even when the board has no words for it.
+  return t('reason.question');
+}
+
+/** The status badge's words; a task that waits for the human says why (`Ждёт тебя · разрешение`). */
+export function attentionLabel(task: Task, permission = false): string {
+  const base = t(`status.${task.status}`);
+  return task.status === 'waiting' ? `${base} · ${waitReason(task, permission)}` : base;
+}
+
 const TITLE_KEY: Record<string, string> = {
-  pick: 'req.pick', limit: 'req.limit', reviewneeds: 'req.reviewneeds', plan: 'req.plan', approval: 'req.approval',
+  pick: 'req.pick', limit: 'req.limit', reviewneeds: 'req.reviewneeds', plan: 'req.planReady', approval: 'req.approval',
   failed: 'req.failed', memory: 'req.memory', permission: 'req.permission', auth: 'req.auth', question: 'req.question',
   'coordinator-dialog': 'req.coordinator.dialog', 'coordinator-options': 'req.coordinator.options',
 };
@@ -90,9 +113,13 @@ export function collectRequests(input: { tasks: Task[]; coordinator: Coordinator
   for (const task of input.tasks) {
     if (!ATTN.has(task.status)) continue;
     const type = requestType(task);
+    // A ready plan says exactly what it waits for; the agent's own words go on the Focus card.
+    const text = type === 'plan'
+      ? requestTitle('plan')
+      : firstSentence(task.msg || task.board_label || '') || requestTitle(type);
     out.push({
       key: `${type}:${task.id}`, type, title: requestTitle(type), id: task.id, tag: task.tag, repo: task.repo,
-      msg: task.msg || task.board_label || '', text: firstSentence(task.msg || task.board_label || ''), task,
+      msg: task.msg || task.board_label || '', text, why: waitReason(task), task,
       urgency: ORDER[task.status] ?? 9,
     });
   }
@@ -102,7 +129,7 @@ export function collectRequests(input: { tasks: Task[]; coordinator: Coordinator
       out.push({
         key: `runner-alert:${a.key}`, type: 'runner-alert', title: t(ALARM_TITLE_KEY[a.kind] ?? 'req.other'),
         id: r.id, tag: r.id, repo: t('nav.runners'), msg: alertText(a), text: alertText(a), alert: a,
-        urgency: ALARM_URGENCY,
+        why: t('reason.yard'), urgency: ALARM_URGENCY,
       });
     }
   }
@@ -112,21 +139,23 @@ export function collectRequests(input: { tasks: Task[]; coordinator: Coordinator
     const text = m.title || firstSentence(first);
     out.push({
       key: `memory:${m.task}`, type: 'memory', title: requestTitle('memory'), id: m.task, tag: m.tag, repo: m.repo,
-      msg: text, text, urgency: MEMORY_URGENCY,
+      msg: text, text, why: t('reason.memory'), urgency: MEMORY_URGENCY,
     });
   }
   const c = input.coordinator;
   if (c?.dialog) {
     out.push({
       key: 'coordinator-dialog', type: 'coordinator-dialog', title: requestTitle('coordinator-dialog'), id: 'coordinator',
-      tag: t('quasar.short'), repo: 'coordinator', msg: c.reply || '', text: firstSentence(c.reply || ''), urgency: -1,
+      tag: t('quasar.short'), repo: 'coordinator', msg: c.reply || '', text: firstSentence(c.reply || ''),
+      why: t('reason.coordinator'), urgency: -1,
     });
   } else if (c) {
     const options = parseOptions(c.reply);
     if (options.length) {
       out.push({
         key: 'coordinator-options', type: 'coordinator-options', title: requestTitle('coordinator-options'), id: 'coordinator',
-        tag: t('quasar.short'), repo: 'coordinator', msg: c.reply || '', text: firstSentence(c.reply || ''), options, urgency: 0.5,
+        tag: t('quasar.short'), repo: 'coordinator', msg: c.reply || '', text: firstSentence(c.reply || ''), options,
+        why: t('reason.coordinator'), urgency: 0.5,
       });
     }
   }

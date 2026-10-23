@@ -250,7 +250,7 @@ section('boot', async () => {
   check('the page fills the viewport', await waitFor('Math.abs(document.querySelector("#win").getBoundingClientRect().width - innerWidth) < 2'));
   const d0 = await debug();
   check('WebGL is on', d0?.webgl === true, JSON.stringify(d0 && { simple: d0.simple, fps: d0.fps }));
-  check('every live task is a planet', d0?.livePlanets === 17, String(d0?.livePlanets));
+  check('every live task is a planet', d0?.livePlanets === 20, String(d0?.livePlanets));
   check('the seven live statuses are drawn', ['failed', 'plan', 'queued', 'ready', 'review', 'waiting', 'working'].every((s) => d0?.statuses.includes(s)), (d0?.statuses || []).join(','));
   check('universes are projects, quiet ones marked', d0?.universes === 7 && d0?.quiet === 3, JSON.stringify({ u: d0?.universes, q: d0?.quiet }));
   check('the board dependencies are links', d0?.links.some((l) => l.from === 'alpha/9' && l.to === 'alpha/10') && d0?.links.some((l) => l.from === 'alpha/4' && l.to === 'gamma/1'), JSON.stringify(d0?.links));
@@ -330,6 +330,18 @@ section('panel widths', async () => {
     if (c.open) { await press(c.open[0], c.open[1]); await beat(); }
     await settled({ p: c.el }, (x) => !!x.p && x.p.l >= 0 && x.p.r <= 1510, 4000);
   };
+  // A drawer slides in and the chat follows it: the edge is taken only when the panel has stopped moving (a press at a stale
+  // place lands beside the edge and drags nothing, which a loaded machine makes easy to hit).
+  const still = async (sel) => {
+    let last = '';
+    let same = 0;
+    for (let i = 0; i < 60 && same < 3; i++) {
+      const now = JSON.stringify(await rectOf(sel));
+      same = now === last ? same + 1 : 0;
+      last = now;
+      await sleep(40);
+    }
+  };
   // The pointer drags the edge: the press, a few moves and the release, as a hand does.
   const drag = async (sel, dx) => {
     const g = await rectOf(sel);
@@ -380,6 +392,7 @@ section('panel widths', async () => {
     await forget(c.storage);
     await fresh();
     await openWith(c);
+    await still(c.el);
     const w0 = await edgeWidth(c.el);
     const grip = await rectOf(c.grip);
     const box = await rectOf(c.el);
@@ -416,6 +429,7 @@ section('panel widths', async () => {
   await press('KeyB', 'b'); await beat();
   await press('Slash', '/'); await beat();
   await settled({ w: '#drawer-wait', c: '#chat' }, (x) => !!x.w && x.w.l >= 0 && !!x.c && x.c.w > 100, 4000);
+  await still('#drawer-wait');
   await drag('#drawer-wait .panel-grip.right', 600);
   const beside = await evalJs(`(() => { const r = parseFloat(getComputedStyle(document.documentElement).fontSize); const w = document.querySelector('#drawer-wait').getBoundingClientRect(); const n = document.querySelector('#nav').getBoundingClientRect(); const c = document.querySelector('#chat').getBoundingClientRect(); const at = document.elementFromPoint(c.left + 12, (c.top + c.bottom) / 2); return { wait: w.width / r, nav: n.width / r, chat: c.width / r, gap: (c.left - w.right) / r, covered: !!at && !!at.closest('#drawer-wait'), max: Number(document.querySelector('#chat .panel-grip').getAttribute('aria-valuemax')) }; })()`);
   check('a «Ждёт тебя» wider than the navigator pushes the chat aside instead of covering it', beside.wait > beside.nav + 2 && beside.gap >= -1 && !beside.covered, JSON.stringify(beside));
@@ -687,15 +701,16 @@ section('queue', async () => {
   const camBack = (await debug()).camera;
   check('the screen is as it was', camBackOk, JSON.stringify({ camList, camBack }));
   check('the cursor is where it was', (await evalJs('[...document.querySelectorAll("#drawer-wait .q")].findIndex((e) => e.classList.contains("cur"))')) === cursor);
-  // Work through one: answer a request with the dock's own action, and come back to the list.
-  const idx = await evalJs(`[...document.querySelectorAll('#drawer-wait .q')].findIndex((e) => e.dataset.sel === 'alpha/16')`);
+  // Work through one: answer a question with the dock's own action, and come back to the list.
+  const idx = await evalJs(`[...document.querySelectorAll('#drawer-wait .q')].findIndex((e) => e.dataset.sel === 'alpha/2')`);
   await evalJs(`document.querySelectorAll('#drawer-wait .q')[${idx}].click()`);
-  await waitFor('plannerDebug().selected?.id === "alpha/16" && world.debug().flight === "idle"', 15000);
-  await click('#focus [data-act="perm-allow"]');
+  await waitFor('plannerDebug().selected?.id === "alpha/2" && world.debug().flight === "idle"', 15000);
+  await click('#focus [data-act="answer"]');
+  await evalJs('(() => { const i = document.querySelector("#tell"); i.value = "оставь старую"; i.dispatchEvent(new Event("input", { bubbles: true })); return true; })()');
   await evalJs('document.querySelector("[data-act=\\"tell-agent\\"]").click()');
   check('after the answer we are back in the list', await waitFor('plannerDebug().selected === null && document.querySelector("#drawer-wait").classList.contains("open")', 15000), JSON.stringify(await pd()));
   check('the answered request is struck out', await waitFor('!!document.querySelector("#drawer-wait .q.resolved")', 4000));
-  check('the answer reached the agent', calls().some((c) => c.argv[0] === 'tell' && c.argv[1] === 'alpha/16' && c.argv[3] === 'Да, разрешаю.'), JSON.stringify(lastCall()));
+  check('the answer reached the agent', calls().some((c) => c.argv[0] === 'tell' && c.argv[1] === 'alpha/2' && c.argv[3] === 'оставь старую'), JSON.stringify(lastCall()));
   void total; void opened;
   await shot('queue.png');
   await resetUi();
@@ -2024,6 +2039,30 @@ section('agent screen', async () => {
 
 section('requests', async () => {
   await resetUi();
+  // PLN-61: the queue names why each task waits, before any of them is answered.
+  await press('KeyB', 'b');
+  check('B opens «Ждёт тебя»', await waitFor('document.querySelector("#drawer-wait").classList.contains("open")', 5000));
+  const whys = await evalJs(`Object.fromEntries([...document.querySelectorAll('#drawer-wait .q')].map((e) => [e.dataset.sel, e.querySelector('.why')?.innerText || '']))`);
+  check('the queue names why each task waits: plan, permission, question, failed, to approve',
+    whys['alpha/3'] === 'план' && whys['alpha/16'] === 'разрешение' && whys['alpha/20'] === 'вопрос' && whys['alpha/21'] === 'вопрос'
+      && whys['alpha/22'] === 'вопрос' && whys['alpha/8'] === 'упала' && whys['alpha/4'] === 'к одобрению'
+      && !Object.values(whys).includes('ждёт'),
+    JSON.stringify(whys));
+  check('a ready plan says exactly what it waits for in the queue', await evalJs(`[...document.querySelectorAll('#drawer-wait .q')].some((e) => e.dataset.sel === 'alpha/3' && e.innerText.includes('План готов — ждёт твоего одобрения'))`), await evalJs(`[...document.querySelectorAll('#drawer-wait .q')].find((e) => e.dataset.sel === 'alpha/3')?.innerText || ''`));
+  await evalJs('document.querySelector("#drawer-wait .wlist").focus()');
+  for (let k = 0; k < 20; k++) {
+    const at = await evalJs('document.querySelector("#drawer-wait .q.cur")?.dataset.sel || ""');
+    if (at === 'alpha/3') break;
+    await press('ArrowDown', 'ArrowDown');
+    await pageTurn();
+  }
+  const qacts = await evalJs(`(() => { const row = document.querySelector('#drawer-wait .q.cur'); const a = row?.parentElement?.querySelector('.qacts'); return a ? { plan: !!a.querySelector('[data-act="plan-open"]'), approve: !!a.querySelector('[data-act="approve"]'), back: !!a.querySelector('[data-act="plan-return"]') } : null; })()`);
+  check('the plan row of the queue offers the plan, its approval and the return with remarks', qacts?.plan && qacts?.approve && qacts?.back, JSON.stringify(qacts));
+  await click('#drawer-wait .q.cur + .qacts [data-act="plan-open"]');
+  check('the queue opens the plan whole', await waitFor('!!document.querySelector("#summary")', 6000) && await hasText('#summary .summary-col', 'Снять копию базы'), (await text('#summary .summary-col')).slice(0, 80));
+  await press('Escape');
+  check('the plan window closes and the queue stays', await waitFor('!document.querySelector("#summary")', 4000) && await waitFor('document.querySelector("#drawer-wait").classList.contains("open")', 4000));
+  await resetUi();
   // A confirmation belongs to one task and one command.
   await go('alpha/4');
   await click('#focus [data-act="approve"]');
@@ -2059,8 +2098,11 @@ section('requests', async () => {
   await go('alpha/8');
   await click('#focus [data-act="retry"]');
   check('retry reaches the board', await waitFor(`plannerSnap().tasks.find((t) => t.id === 'alpha/8')?.status === 'working'`, 15000));
+  // With nothing to read on the agent's screen there is no row to press: the old answer stays — words in the field.
+  writeFileSync(join(fixture, 'state', 'dialog.txt'), '● Работаю над задачей…\n\n❯ \n  ⏵⏵ accept edits on');
   await go('alpha/16');
   check('a permission request shows its full text', await hasText('#focus', 'удалить девять старых веток'), (await text('#focus')).slice(0, 80));
+  check('without a permission dialog on the screen the answer is words in the field', await waitFor('!!document.querySelector(\'#focus [data-act="perm-allow"]\')', 10000));
   await click('#focus [data-act="perm-allow"]');
   check('a permission button prepares an editable answer', await waitFor('document.querySelector("#tell")?.value === "Да, разрешаю."', 4000));
   const dash = await post('/api/action', { action: 'tell', id: 'alpha/2', text: '-- hi' });
@@ -2098,6 +2140,195 @@ section('requests', async () => {
   await go('alpha/6');
   await click('#focus [data-act="files"]');
   check('the folder button opens yazi in the worktree', await waitLog(() => calls('terminal.jsonl').some((c) => c.argv[0] === 'yazi' && c.argv[1].includes('worktrees')), 6000), JSON.stringify(lastCall('terminal.jsonl')));
+  // ── PLN-61: «План готов», a permission dialog and a question without text are different cards with working buttons.
+  const permScreen = readFileSync(new URL('../src/menu_samples/claude-permission.txt', import.meta.url), 'utf8');
+  writeFileSync(join(fixture, 'state', 'dialog.txt'), permScreen);
+  await go('alpha/16');
+  const permCard = '#focus [data-type="permission"]';
+  check('a permission task shows what the agent asks, from its screen',
+    await waitFor(`!!document.querySelector(${JSON.stringify(permCard + ' [data-act="dlg-allow"]')})`, 15000)
+      && await hasText(permCard + ' .dlgctx', 'touch made-by-test.txt') && await hasText(permCard, 'Do you want to proceed?'),
+    (await text(permCard)).slice(0, 240));
+  check('the dialog offers the three answers and the agent screen',
+    await exists(permCard + ' [data-act="dlg-always"]') && await hasText(permCard + ' [data-act="dlg-always"]', 'не спрашивать')
+      && await hasText(permCard + ' [data-act="dlg-deny"]', 'Запретить') && await exists(permCard + ' [data-act="screen"][data-target="alpha/16"]'),
+    (await text(permCard)).slice(0, 240));
+  const kAllow = calls('keys.jsonl').length;
+  await click(permCard + ' [data-act="dlg-allow"]');
+  check('«Разрешить» presses the yes row in the agent\'s panel',
+    await waitLog(() => calls('keys.jsonl').slice(kAllow).some((c) => c.target === 'sw-alpha-16' && c.keys.join() === 'enter'), 10000),
+    JSON.stringify(calls('keys.jsonl').slice(kAllow)));
+  check('the card is ready again after the answer', await waitFor(`document.querySelector(${JSON.stringify(permCard + ' [data-act="dlg-always"]')})?.getAttribute('aria-disabled') !== 'true'`, 8000));
+  const kAlways = calls('keys.jsonl').length;
+  await click(permCard + ' [data-act="dlg-always"]');
+  check('«Разрешить и не спрашивать» presses the row after yes',
+    await waitLog(() => calls('keys.jsonl').slice(kAlways).filter((c) => c.target === 'sw-alpha-16').flatMap((c) => c.keys).join() === 'down,enter', 10000),
+    JSON.stringify(calls('keys.jsonl').slice(kAlways)));
+  check('the card is ready again', await waitFor(`document.querySelector(${JSON.stringify(permCard + ' [data-act="dlg-deny"]')})?.getAttribute('aria-disabled') !== 'true'`, 8000));
+  const kDeny = calls('keys.jsonl').length;
+  await click(permCard + ' [data-act="dlg-deny"]');
+  check('«Запретить» presses the no row',
+    await waitLog(() => calls('keys.jsonl').slice(kDeny).filter((c) => c.target === 'sw-alpha-16').flatMap((c) => c.keys).join() === 'down,down,down,enter', 10000),
+    JSON.stringify(calls('keys.jsonl').slice(kDeny)));
+  check('each permission answered in the planner reaches the Coordinator as one line',
+    await waitLog(() => {
+      const said = calls('coordinator.jsonl').map((c) => c.text);
+      return said.includes('[Действие в планировщике] ALP-16: разрешено действие агента')
+        && said.includes('[Действие в планировщике] ALP-16: разрешено действие агента, больше не спрашивать')
+        && said.includes('[Действие в планировщике] ALP-16: действие агента запрещено');
+    }, 15000), JSON.stringify(calls('coordinator.jsonl').slice(-3)));
+  await press('Slash', '/');
+  check('the line to the Coordinator is a notice in the chat', await waitFor('!document.querySelector("#chat").classList.contains("off")', 5000));
+  check('the chat shows it as a board notice, not as the human\'s own message',
+    await waitFor(`[...document.querySelectorAll('#clog [data-notice]')].some((e) => e.innerText.includes('[Действие в планировщике] ALP-16: разрешено действие агента'))`, 10000)
+      && await evalJs(`[...document.querySelectorAll('#clog .msg.q')].every((e) => !e.innerText.includes('Действие в планировщике'))`),
+    await evalJs(`[...document.querySelectorAll('#clog [data-notice]')].map((e) => e.innerText).join(' | ')`));
+  check('the notice is named as a board notice', await hasText('#clog [data-notice]', 'Доска'), await text('#clog [data-notice]'));
+  await resetUi();
+  // ── The PLN-60 case itself: the board calls the stopped agent a question (or gives it no kind) and «Needs you»; the
+  // screen has the real dialog. The card must come from the screen.
+  const fileScreen = readFileSync(new URL('../src/menu_samples/claude-create-file.txt', import.meta.url), 'utf8');
+  writeFileSync(join(fixture, 'state', 'dialog.txt'), fileScreen);
+  await go('alpha/21');
+  const dialogCard = '#focus [data-type="permission"]';
+  check('a dialog the board calls a question is a permission card: what is asked, from the screen',
+    await waitFor(`!!document.querySelector(${JSON.stringify(dialogCard + ' [data-act="dlg-allow"]')})`, 15000)
+      && await hasText(dialogCard + ' .dlg-q', 'Do you want to create closing-note2.md?')
+      && await hasText(dialogCard + ' .dlgctx', 'closing-note2.md') && !(await text(dialogCard)).includes('Needs you'),
+    (await text(dialogCard)).slice(0, 240));
+  check('the file prompt has its session row: «Разрешить и не спрашивать» is there',
+    await exists(dialogCard + ' [data-act="dlg-always"]') && await hasText(dialogCard + ' [data-act="dlg-allow"]', 'Разрешить')
+      && await hasText(dialogCard + ' [data-act="dlg-deny"]', 'Запретить'), (await text(dialogCard)).slice(0, 240));
+  check('its badge names a permission, not a question', await hasText('#focus .badge', 'Ждёт тебя · разрешение'), await text('#focus .badge'));
+  const kSession = calls('keys.jsonl').length;
+  await click(dialogCard + ' [data-act="dlg-always"]');
+  check('the session row sends the keys of that row',
+    await waitLog(() => calls('keys.jsonl').slice(kSession).filter((c) => c.target === 'sw-alpha-21').flatMap((c) => c.keys).join() === 'down,enter', 10000),
+    JSON.stringify(calls('keys.jsonl').slice(kSession)));
+  check('the answered dialog reaches the Coordinator',
+    await waitLog(() => calls('coordinator.jsonl').some((c) => c.text === '[Действие в планировщике] ALP-21: разрешено действие агента, больше не спрашивать'), 12000),
+    JSON.stringify(calls('coordinator.jsonl').slice(-1)));
+  // The same dialog answered on the agent's own screen (its menu card) is the human's action too.
+  await click(dialogCard + ' [data-act="screen"][data-target="alpha/21"]');
+  check('the agent screen shows the dialog as a card', await waitFor('!!document.querySelector("#agent-screen [data-menu-card]")', 12000));
+  await click('#agent-screen [data-menu-opt="0"]');
+  check('a dialog answered on the agent screen also reaches the Coordinator',
+    await waitLog(() => calls('coordinator.jsonl').some((c) => c.text === '[Действие в планировщике] ALP-21: разрешено действие агента'), 12000),
+    JSON.stringify(calls('coordinator.jsonl').slice(-1)));
+  await press('Escape');
+  await waitFor('!document.querySelector("#agent-screen")', 4000);
+  // No kind at all (herdr says the agent is blocked): still a permission when the screen has one.
+  writeFileSync(join(fixture, 'state', 'dialog.txt'), fileScreen);
+  await go('alpha/22');
+  check('a task with no kind and «Needs you» is a permission card too',
+    await waitFor('!!document.querySelector(\'#focus [data-type="permission"] [data-act="dlg-allow"]\')', 15000)
+      && await hasText('#focus [data-type="permission"] .dlg-q', 'Do you want to create closing-note2.md?')
+      && !(await text('#focus [data-type="permission"]')).includes('Needs you'),
+    (await text('#focus')).slice(0, 240));
+  check('its badge names a permission too', await hasText('#focus .badge', 'Ждёт тебя · разрешение'), await text('#focus .badge'));
+  // A question with no board text: the screen's question is shown, never the board's «Needs you».
+  writeFileSync(join(fixture, 'state', 'dialog.txt'), readFileSync(new URL('../src/menu_samples/claude-single.txt', import.meta.url), 'utf8'));
+  await go('alpha/20');
+  check('a question the board has no words for shows the agent\'s own question, not «Needs you»',
+    await waitFor('!!document.querySelector(\'#focus [data-type="question"]\')', 15000)
+      && await hasText('#focus [data-type="question"]', 'Which library?') && !(await text('#focus')).includes('Needs you'),
+    (await text('#focus')).slice(0, 200));
+  check('the badge of a waiting task names the reason', await hasText('#focus .badge', 'Ждёт тебя · вопрос'), await text('#focus .badge'));
+  // Without a readable screen there is no question text at all: the card says so and offers the agent's screen.
+  writeFileSync(join(fixture, 'state', 'dialog.txt'), '● Работаю над задачей…\n\n❯ \n  ⏵⏵ accept edits on');
+  await go('alpha/21');
+  await go('alpha/20');
+  const qCard = '#focus [data-type="question"]';
+  check('a question without text says exactly that and offers the agent screen',
+    await waitFor(`!!document.querySelector(${JSON.stringify(qCard + ' [data-act="screen"][data-target="alpha/20"]')})`, 15000)
+      && await hasText(qCard, 'Агент ждёт тебя, текста вопроса нет'),
+    (await text('#focus')).slice(0, 200));
+  // A ready plan: what it waits for, the plan whole, approval with a confirmation, remarks to the agent.
+  writeFileSync(join(fixture, 'state', 'dialog.txt'), permScreen);
+  await go('alpha/3');
+  const planCard = '#focus [data-type="plan"]';
+  check('a ready plan says it waits for approval and offers the plan and both answers',
+    await waitFor(`!!document.querySelector(${JSON.stringify(planCard)})`, 12000)
+      && await hasText(planCard, 'План готов — ждёт твоего одобрения') && await exists(planCard + ' [data-act="plan-open"]')
+      && await exists(planCard + ' [data-act="approve"]') && await exists(planCard + ' [data-act="plan-return"]'),
+    (await text(planCard)).slice(0, 240));
+  check('the badge of a ready plan says «План готов»', await hasText('#focus .badge', 'План готов'), await text('#focus .badge'));
+  check('with the plan waiting and the agent on a dialog, the approval is first and the dialog second',
+    await waitFor(`(() => { const t = [...document.querySelectorAll('#focus .req')].map((e) => e.dataset.type); return t[0] === 'plan' && t[1] === 'dialog'; })()`, 15000),
+    await evalJs(`[...document.querySelectorAll('#focus .req')].map((e) => e.dataset.type).join()`));
+  await click(planCard + ' [data-act="plan-open"]');
+  check('«Открыть план» shows the plan whole in a window',
+    await waitFor('!!document.querySelector("#summary")', 5000) && await hasText('#summary .summary-col', 'Снять копию базы') && await hasText('#summary .summary-col', 'Проверить откат'),
+    (await text('#summary .summary-col')).slice(0, 120));
+  check('the window is titled «План»', (await text('#summary header b')).includes('План'), await text('#summary header b'));
+  await press('Escape');
+  await waitFor('!document.querySelector("#summary")', 4000);
+  await evalJs('(() => { const i = document.querySelector("#tell"); i.value = "Пересмотри второй шаг"; i.dispatchEvent(new Event("input", { bubbles: true })); return true; })()');
+  await click(planCard + ' [data-act="plan-return"]');
+  check('«Вернуть с замечаниями» sends the words in the field with tell',
+    await waitLog(() => calls().some((c) => c.argv[0] === 'tell' && c.argv[1] === 'alpha/3' && c.argv[3] === 'Пересмотри второй шаг'), 10000),
+    JSON.stringify(lastCall()));
+  check('the return with remarks reaches the Coordinator',
+    await waitLog(() => calls('coordinator.jsonl').some((c) => c.text === '[Действие в планировщике] ALP-3: план возвращён с замечаниями'), 12000),
+    JSON.stringify(calls('coordinator.jsonl').slice(-2)));
+  await click(planCard + ' [data-act="approve"]');
+  check('approving a plan asks for confirmation first', await hasText(planCard + ' [data-act="approve"]', 'Подтвердить'), await text(planCard + ' [data-act="approve"]'));
+  await quiet();
+  check('the first press sends nothing', !calls().some((c) => c.argv[0] === 'approve' && c.argv[1] === 'alpha/3'));
+  await secondPress(planCard + ' [data-act="approve"]');
+  check('the confirmed approval runs herdr-projects approve', await waitLog(() => calls().some((c) => c.argv[0] === 'approve' && c.argv[1] === 'alpha/3'), 12000), JSON.stringify(lastCall()));
+  check('the approved plan lets the task go on', await waitFor(`plannerSnap().tasks.find((t) => t.id === 'alpha/3')?.status === 'working'`, 15000));
+  check('the approval is written in the journal', await waitApi('/api/state', (s) => (s.journal || []).some((e) => e.id === 'alpha/3' && e.text.includes('план одобрен'))), JSON.stringify((await stateApi())?.journal?.slice(0, 2)));
+  check('the approval reaches the Coordinator as one line',
+    await waitLog(() => calls('coordinator.jsonl').some((c) => c.text === '[Действие в планировщике] ALP-3: план одобрен'), 12000),
+    JSON.stringify(calls('coordinator.jsonl').slice(-2)));
+  // The board writes that line into the transcript as a board turn (a real Coordinator does it): it must be shown once.
+  const noticeLine = '[Действие в планировщике] ALP-3: план одобрен';
+  const chatFolder = realpathSync(join(fixture, 'board', 'coordinator', 'default', 'chat')).replace(/[^A-Za-z0-9]/g, '-');
+  const transcript = join(fixture, 'claude', 'projects', chatFolder, 'fixture.jsonl');
+  // The transcript is the fixture's for the sections after this one: the two records go away once the line is seen once.
+  const transcriptBefore = readFileSync(transcript, 'utf8');
+  appendFileSync(transcript, JSON.stringify({ type: 'user', timestamp: new Date().toISOString(), message: { role: 'user', content: noticeLine } }) + '\n');
+  appendFileSync(transcript, JSON.stringify({ type: 'assistant', timestamp: new Date().toISOString(), message: { role: 'assistant', model: 'claude-opus-5-5', stop_reason: 'end_turn', content: [{ type: 'text', text: 'Принято.' }] } }) + '\n');
+  // The chat is closed here: opening it reads the transcript again, and the line is in it now.
+  await press('Slash', '/');
+  check('the chat opens after the transcript has the line', await waitFor('!document.querySelector("#chat").classList.contains("off")', 5000));
+  check('a line the transcript holds is shown once, as that board turn, not again as a notice',
+    // The notice may stand for a moment while the transcript is on its way: the line is read from the turn itself.
+    await waitFor(`[...document.querySelectorAll('#clog .turn[data-n]')].some((e) => e.innerText.includes(${JSON.stringify(noticeLine)}))`, 12000)
+      && await evalJs(`(() => { const all = [...document.querySelectorAll('#clog .turn')].filter((e) => e.innerText.includes(${JSON.stringify(noticeLine)})); return all.length === 1 && all[0].hasAttribute('data-n'); })()`),
+    await evalJs(`[...document.querySelectorAll('#clog .turn')].filter((e) => e.innerText.includes(${JSON.stringify(noticeLine)})).map((e) => e.className + (e.hasAttribute('data-n') ? ' n' : ''))`));
+  // A reload holds only the last turns: a notice older than them is history, not a line pinned under newer turns. The
+  // same holds for a board line the Coordinator read inside a run (history drops it from the turns): no turn of its own,
+  // and it must not stand below the run's answer.
+  const later = Date.now();
+  for (let i = 0; i < 4; i++) {
+    appendFileSync(transcript, JSON.stringify({ type: 'user', timestamp: new Date(later + i * 1000).toISOString(), message: { role: 'user', content: `Ответ ${i + 1}` } }) + '\n');
+    appendFileSync(transcript, JSON.stringify({ type: 'assistant', timestamp: new Date(later + i * 1000 + 500).toISOString(), message: { role: 'assistant', model: 'claude-opus-5-5', stop_reason: 'end_turn', content: [{ type: 'text', text: `Принято ${i + 1}.` }] } }) + '\n');
+  }
+  await navigate(base + '/?noauto&nocoach&bloom=0');
+  await waitFor('window.world && world.debug().planets > 0', 20000);
+  await press('Slash', '/');
+  check('the chat opens on the last turns after the reload', await waitFor('!document.querySelector("#chat").classList.contains("off") && document.querySelectorAll("#clog .turn[data-n]").length >= 3', 12000), String(await evalJs('document.querySelectorAll("#clog .turn[data-n]").length')));
+  check('after a reload that holds only the last turns, an old notice is not pinned under them',
+    await waitFor('document.querySelectorAll("#clog [data-notice]").length === 0', 5000)
+      && await evalJs(`![...document.querySelectorAll('#clog .turn')].some((e) => e.innerText.includes(${JSON.stringify(noticeLine)}))`),
+    await evalJs(`[...document.querySelectorAll('#clog .turn')].map((e) => (e.hasAttribute('data-notice') ? 'NOTICE ' : '') + (e.innerText || '').replace(/\\s+/g, ' ').slice(0, 40)).join(' | ')`));
+  writeFileSync(transcript, transcriptBefore);
+  await navigate(base + '/?noauto&nocoach&bloom=0');
+  await waitFor('window.world && world.debug().planets > 0', 20000);
+  await resetUi();
+  // Both languages: the same cards in English.
+  writeFileSync(join(fixture, 'state', 'dialog.txt'), permScreen);
+  await evalJs('window.setLang("en"); true');
+  await go('alpha/16');
+  check('the permission card is in English, its buttons start with a capital',
+    await waitFor('!!document.querySelector(\'#focus [data-type="permission"] [data-act="dlg-allow"]\')', 12000)
+      && await hasText('#focus [data-type="permission"]', 'Permission request')
+      && await hasText('#focus [data-act="dlg-allow"]', 'Allow') && await hasText('#focus [data-act="dlg-always"]', 'Allow, do not ask again this session'),
+    (await text('#focus [data-type="permission"]')).slice(0, 200));
+  await evalJs('window.setLang("ru"); true');
+  try { unlinkSync(join(fixture, 'state', 'dialog.txt')); } catch { /* already gone */ }
   await shot('request-focus.png');
   await resetUi();
 });
@@ -5462,7 +5693,15 @@ section('runners ctl', async () => {
   // Auto-refresh off: no more reads; «Обновить» reads once.
   await click('#ctl-live');
   check('with the refresh off the window says so', await hasText('#ctl-paused', 'Автообновление выключено', 5000), await text('#ctl-paused'));
-  await sleep(300);
+  // A read that was already on its way when the switch was turned lands first: the count is taken once it has stopped moving.
+  let steady = 0;
+  let was = logCalls();
+  for (let i = 0; i < 60 && steady < 6; i++) {
+    await sleep(100);
+    const now = logCalls();
+    steady = now === was ? steady + 1 : 0;
+    was = now;
+  }
   const off = logCalls();
   await sleep(3500); // a negative: longer than the refresh period (2.5 s)
   check('and asks the yard no more', logCalls() === off, `${off} → ${logCalls()}`);

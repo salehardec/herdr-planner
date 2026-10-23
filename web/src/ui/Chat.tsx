@@ -23,6 +23,7 @@ import { Memory } from './FocusOther';
 import { dialogOpen } from '../dialogs';
 import { PendingFiles, SavedFiles } from './Attached';
 import { ChatTurn, PendingTurn } from './ChatTurn';
+import { RefText } from './TaskChip';
 import { AutoTextarea, fitText } from './AutoText';
 import { KeyButtons } from './Keys';
 import { MenuSlot } from './MenuCard';
@@ -140,6 +141,13 @@ export function Chat(): JSX.Element {
   const pending = pendingMessage();
   const opt = optimistic.value;
   const history = coord?.history ?? [];
+  // A line the planner sent is written into the transcript by the board too: it is shown once, as that board turn (or as
+  // the notice while the transcript does not have it yet), never twice. A notice older than the newest turn loaded here
+  // is history — its turn may simply not be in this page (the chat holds the last few), and a line the Coordinator read
+  // during a run is not a turn at all; either way it does not belong under newer turns with its old time.
+  const newestTurn = c.turns.reduce((m, x) => Math.max(m, x.at_a || x.at || 0), 0);
+  const notices = (coord?.notices ?? []).filter((n) => !c.turns.some((x) => x.q.trim() === n.text.trim())
+    && (newestTurn === 0 || n.at > newestTurn));
   const reply = coord?.reply ?? '';
   const err = c.error || (coord?.error ?? '');
   const busy = !!coord?.busy;
@@ -409,6 +417,15 @@ export function Chat(): JSX.Element {
             sentAt={coord?.sent_at ?? 0} sent={coord?.last_sent ?? ''}
           />
         )}
+        {notices.map((n) => (
+          <div class="turn board" data-notice={n.at} key={`notice-${n.at}-${n.text}`}>
+            <div class="msg notice" tabIndex={0}>
+              <span class="who"><Gl n="board" />{t('chat.board')}</span>
+              <span class="time">{timeOf(n.at)}</span>
+              <div class="txt"><RefText text={n.text} /></div>
+            </div>
+          </div>
+        ))}
         {pending && <PendingTurn text={pending.text} attachments={pending.attachments} />}
         {err && (
           <div class="msg a err"><span class="who"><Gl n="quasar" />{t('quasar.short')}</span><span class="txt">{err}</span></div>
