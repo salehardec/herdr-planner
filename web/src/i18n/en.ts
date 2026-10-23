@@ -689,4 +689,5 @@ export const en: Record<string, string | string[]> = {
   'strays.log.stop': 'Processes stopped: {n} of {total}', 'strays.log.stopKill': 'Processes stopped: {n} of {total}, of them by SIGKILL: {k}', 'strays.log.stopFailed': 'Processes stopped: {n} of {total}, failed: {f}',
   'strays.log.on': 'Automatic cleaning of processes turned on', 'strays.log.off': 'Automatic cleaning of processes turned off',
   'strays.log.who.human': 'human', 'strays.log.who.auto': 'automatic', 'strays.log.tags': 'Tasks: {list}',
+  'strays.unsupported': 'The search for stray processes works only on Linux (it reads /proc).', 'strays.boardDown': 'The board cannot be read now, or its data is old: processes are not judged until it answers, so that the process of a task the planner does not see yet is not taken for a stray.',
 };

@@ -18,7 +18,7 @@ interface Stray {
 }
 interface LogRow { n: number; at: number; who: string; ok: boolean; why: string; data: Record<string, any> }
 interface Data {
-  ok: boolean; error: string; at: number; now: number; auto: boolean; grace_ms: number; term_wait_ms: number;
+  ok: boolean; board_ok: boolean; supported: boolean; error: string; at: number; now: number; auto: boolean; grace_ms: number; term_wait_ms: number;
   total_rss: number; strays: Stray[]; journal: LogRow[];
   report?: { items: { result: string }[] }; stopped?: number;
 }
@@ -65,6 +65,7 @@ export function Strays(): JSX.Element {
     return <section class="st-sec" id="st-strays"><h3>{t('strays.title')}</h3><p class="hint bad">{err}</p><button class="btn sm" type="button" onClick={() => void load(true)}>{t('strays.retry')}</button></section>;
   }
   if (!data) return <section class="st-sec" id="st-strays"><h3>{t('strays.title')}</h3><p class="hint">{t('strays.loading')}</p></section>;
+  if (!data.supported) return <section class="st-sec" id="st-strays"><h3>{t('strays.title')}</h3><p class="hint" id="st-strays-unsupported">{t('strays.unsupported')}</p></section>;
   const list = data.strays;
   const ticked = list.filter((s) => picked[keyOf(s)]);
   const freed = ticked.reduce((a, s) => a + s.rss, 0);
@@ -111,7 +112,8 @@ export function Strays(): JSX.Element {
       <h3>{t('strays.title')}</h3>
       <p class="hint">{t('strays.text')}</p>
       {!data.ok && <p class="hint bad" id="st-strays-error">{data.error}</p>}
-      {data.ok && list.length === 0 && <p class="hint" id="st-strays-none">{t('strays.none')}</p>}
+      {data.ok && !data.board_ok && <p class="hint warn" id="st-strays-board">{t('strays.boardDown')}</p>}
+      {data.ok && data.board_ok && list.length === 0 && <p class="hint" id="st-strays-none">{t('strays.none')}</p>}
       {list.length > 0 && (
         <div class="rf-clean rf-strays-list">
           <div class="rft-wrap">

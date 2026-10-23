@@ -703,4 +703,5 @@ export const ru: Record<string, string | string[]> = {
   'strays.log.stop': 'Остановлено процессов: {n} из {total}', 'strays.log.stopKill': 'Остановлено процессов: {n} из {total}, из них SIGKILL: {k}', 'strays.log.stopFailed': 'Остановлено процессов: {n} из {total}, не удалось: {f}',
   'strays.log.on': 'Автоуборка процессов включена', 'strays.log.off': 'Автоуборка процессов выключена',
   'strays.log.who.human': 'человек', 'strays.log.who.auto': 'автоуборка', 'strays.log.tags': 'Задачи: {list}',
+  'strays.unsupported': 'Поиск зависших процессов работает только в Linux (читает /proc).', 'strays.boardDown': 'Доска сейчас не читается или данные старые: процессы не оцениваются, пока доска не ответит, чтобы не принять за зависший процесс задачи, которой планировщик ещё не видит.',
 };

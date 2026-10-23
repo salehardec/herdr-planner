@@ -26,6 +26,8 @@ fn state_json(app: &Shared, scan: &strays::Scan) -> serde_json::Value {
     json!({
         "ok": scan.ok,
         "error": scan.error,
+        "board_ok": scan.board_ok,
+        "supported": strays::supported(),
         "at": scan.at,
         "now": now_ms(),
         "auto": strays::auto_on(app),

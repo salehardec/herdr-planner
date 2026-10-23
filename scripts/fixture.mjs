@@ -1608,8 +1608,10 @@ fs.chmodSync(path.join(dir, 'bin', 'nvidia-smi'), 0o755);
       P(9103, 9101, path.join(copy('alpha/13'), 'src'), 'omp __omp_worker_daemon_broker', { ignore_term: true }),
       P(9111, 1, copy('gamma/2'), 'node /opt/omp/rea.mjs mcp', { pgid: 9111 }),
       P(9121, 1, copy('beta/1'), 'zsh -l', { rss: 6 * 1024 * 1024 }),
-      P(9151, 1, path.join(dir, 'worktrees', 'alpha', 'work-90'), 'node /opt/omp/rea.mjs mcp', { pgid: 9151 }),
+      P(9151, 1, path.join(dir, 'worktrees', 'alpha', 'work-12'), 'node /opt/omp/rea.mjs mcp', { pgid: 9151 }),
       P(9131, 1, copy('alpha/6'), 'omp --auto-approve'),
+      // a task started after the board was read: its number is above the newest the board knows
+      P(9171, 1, path.join(dir, 'worktrees', 'alpha', 'work-70'), 'omp --auto-approve'),
       P(9141, 1, path.join(dir, 'projects', 'AI', 'alpha'), 'node dev-server.js'),
       P(9161, 1, copy('alpha/13'), 'node other-users-process.js', { uid: 0 }),
     ],

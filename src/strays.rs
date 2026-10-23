@@ -32,6 +32,8 @@ pub const KIND: &str = "stray";
 pub const SCAN_EVERY_MS: u64 = 60_000;
 /// How long a leftover must have been seen before the automatic cleaning stops it: a task that has just been marked
 /// done may still be writing its last words.
+/// A board read older than this is not a ground for stopping anything.
+pub const BOARD_FRESH_MS: u64 = 5 * 60 * 1000;
 pub const GRACE_MS: u64 = 5 * 60 * 1000;
 /// How long SIGTERM is given before SIGKILL.
 pub const TERM_WAIT_MS: u64 = 5000;
@@ -284,6 +286,10 @@ pub struct TaskInfo {
 /// Everything the rule needs from the board, taken at one moment.
 #[derive(Debug, Clone, Default)]
 pub struct Board {
+    /// The board was read lately and without an error. A leftover is judged by what the board says about its task, so
+    /// from a read that failed (the old list is kept) or is old nothing is judged: a task started since would look
+    /// like a copy nobody has.
+    pub ok: bool,
     pub tasks: Vec<TaskInfo>,
     pub repos: Vec<String>,
     /// The folders that hold working copies (`<root>/<repo>/work-<n>`).
@@ -339,7 +345,8 @@ pub fn board_of(snap: &crate::app::Snapshot) -> Board {
     roots.sort();
     roots.dedup();
     let keep = snap.projects.iter().flat_map(|p| [p.root.as_str(), p.folder.as_str()]).filter(|p| !p.is_empty()).map(PathBuf::from).collect();
-    Board { tasks, repos: repos.into_iter().collect(), roots, keep }
+    let ok = snap.board.ok && snap.at > 0 && now_ms().saturating_sub(snap.at) < BOARD_FRESH_MS;
+    Board { ok, tasks, repos: repos.into_iter().collect(), roots, keep }
 }
 
 /// `work-12` or `work-12-slug` → 12.
@@ -383,7 +390,10 @@ fn verdict<'a>(cwd: &str, board: &'a Board) -> Option<(&'static str, Option<&'a 
             None => {
                 // Nobody has this copy: a leftover only when it is plainly a board copy (the board's own name for it,
                 // in a repository the board knows), never a folder somebody else made.
-                if n.is_some() && board.repos.iter().any(|r| *r == repo) {
+                // Numbers only grow: a number above the newest the board knows in that repository is a task started
+                // since the board was read, not one that left.
+                let newest = board.tasks.iter().filter(|t| t.repo == repo).map(|t| t.n).max();
+                if n.is_some_and(|n| newest.is_some_and(|m| n < m)) && board.repos.iter().any(|r| *r == repo) {
                     return Some(("gone", None, copy));
                 }
                 return None;
@@ -429,6 +439,9 @@ fn clip(s: &str, max: usize) -> String {
 
 /// The leftovers of a table, parents first. Pure: nothing is read or signalled here.
 pub fn find(table: &Table, board: &Board) -> Vec<Stray> {
+    if !board.ok {
+        return Vec::new();
+    }
     let by_pid: HashMap<u32, &Proc> = table.procs.iter().map(|p| (p.pid, p)).collect();
     // The planner itself, whatever it runs from, and the line above and below it.
     let mut safe: HashSet<u32> = HashSet::new();
@@ -662,6 +675,8 @@ pub async fn stop(sys: &dyn Sys, board: &Board, asked: &[Target], term_wait_ms: 
 pub struct Scan {
     pub at: u64,
     pub ok: bool,
+    /// The board could not be trusted at that moment, so no process was judged.
+    pub board_ok: bool,
     pub error: String,
     pub strays: Vec<Stray>,
 }
@@ -680,6 +695,11 @@ fn state() -> &'static Mutex<State> {
     S.get_or_init(|| Mutex::new(State::default()))
 }
 
+/// Whether this system can be looked at: `/proc` (Linux), or the checks' table.
+pub fn supported() -> bool {
+    cfg!(target_os = "linux") || std::env::var_os("HERDR_PLANNER_PROC_FILE").is_some_and(|v| !v.is_empty())
+}
+
 pub fn auto_on(app: &Shared) -> bool {
     app.db.meta_get(AUTO_KEY).is_some_and(|v| v == "1")
 }
@@ -694,11 +714,12 @@ pub async fn scan(app: &Shared) -> Scan {
         let snap = app.snapshot.read().await;
         board_of(&snap)
     };
+    let board_ok = board.ok;
     let result = tokio::task::spawn_blocking(move || sys().read().map(|t| find(&t, &board))).await.map_err(|e| e.to_string()).and_then(|r| r);
     let now = now_ms();
     let mut scan = match result {
-        Ok(strays) => Scan { at: now, ok: true, error: String::new(), strays },
-        Err(error) => Scan { at: now, ok: false, error, strays: Vec::new() },
+        Ok(strays) => Scan { at: now, ok: true, board_ok, error: String::new(), strays },
+        Err(error) => Scan { at: now, ok: false, board_ok, error, strays: Vec::new() },
     };
     let mut st = state().lock().unwrap_or_else(|e| e.into_inner());
     let keys: HashSet<(u32, u64)> = scan.strays.iter().map(|s| (s.pid, s.start)).collect();
@@ -855,7 +876,8 @@ mod tests {
 
     fn board() -> Board {
         Board {
-            tasks: vec![task("herdr-planner", 7, "done"), task("herdr-planner", 8, "active"), task("herdr-planner", 9, "archived")],
+            ok: true,
+            tasks: vec![task("herdr-planner", 7, "done"), task("herdr-planner", 8, "active"), task("herdr-planner", 9, "archived"), task("herdr-planner", 20, "active")],
             repos: vec!["herdr-planner".into()],
             roots: vec![PathBuf::from(WT)],
             keep: vec![PathBuf::from("/home/me/Projects/herdr-planner")],
@@ -897,15 +919,26 @@ mod tests {
             proc(24, 1, &format!("{WT}/APICache/hp-apicache-t-0161"), "claude"),
             proc(25, 1, &format!("{WT}/herdr-planner/scratch"), "sleep 9"),
             proc(26, 1, &format!("{WT}/unknown-repo/work-3"), "sleep 9"),
-            proc(27, 1, &format!("{WT}/herdr-planner/work-70-omp"), "not-the-copy-of-7"),
+            proc(27, 1, &format!("{WT}/herdr-planner/work-12-omp"), "not-the-copy-of-7"),
+            // a task started after the board was read: its number is above the newest one known
+            proc(29, 1, &format!("{WT}/herdr-planner/work-70-omp"), "omp --auto-approve"),
             proc(28, 1, "relative/path", "sleep 9"),
             other,
         ]);
         let f = find(&t, &board());
-        // work-70 has no task (a number nobody has) in a known repository: it is a copy the board no longer has.
+        // work-12 has no task (a number the board has passed) in a known repository: it is a copy the board no longer has.
         assert_eq!(f.iter().map(|s| s.pid).collect::<Vec<_>>(), vec![27]);
         assert_eq!(f[0].why, "gone");
-        assert_eq!(f[0].task, "herdr-planner/70");
+        assert_eq!(f[0].task, "herdr-planner/12");
+    }
+
+    #[test]
+    fn nothing_is_judged_from_a_board_that_failed_or_is_old() {
+        let mut b = board();
+        let t = table(vec![proc(10, 1, &format!("{WT}/herdr-planner/work-7-omp"), "omp --resume=abc")]);
+        assert_eq!(find(&t, &b).len(), 1);
+        b.ok = false;
+        assert!(find(&t, &b).is_empty());
     }
 
     #[test]
@@ -988,6 +1021,7 @@ mod tests {
         fs::create_dir_all(&copy).unwrap();
         let mut child = std::process::Command::new("sleep").arg("30").current_dir(&copy).spawn().unwrap();
         let board = Board {
+            ok: true,
             tasks: vec![TaskInfo { id: "alpha/5".into(), tag: "ALP-5".into(), repo: "alpha".into(), n: 5, worktree: String::new(), state: "done" }],
             repos: vec!["alpha".into()],
             roots: vec![root],

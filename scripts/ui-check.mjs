@@ -2765,8 +2765,8 @@ section('strays', async () => {
   check('it lists the leftovers of done and archived tasks and of a copy no task has, by folder, whatever the program is',
     await waitFor('document.querySelectorAll("#st-strays-table tbody tr").length === 6', 15000)
     && (await rows()).slice().sort().join() === [9101, 9102, 9103, 9111, 9121, 9151].join(), JSON.stringify(await rows()));
-  check('a task in work, a folder outside the board and another user are not listed',
-    !(await exists('[data-pid="9131"]')) && !(await exists('[data-pid="9141"]')) && !(await exists('[data-pid="9161"]')), JSON.stringify(await rows()));
+  check('a task in work, a task the board has not read yet, a folder outside the board and another user are not listed',
+    !(await exists('[data-pid="9131"]')) && !(await exists('[data-pid="9141"]')) && !(await exists('[data-pid="9161"]')) && !(await exists('[data-pid="9171"]')), JSON.stringify(await rows()));
   check('each row says why: the task is done, archived, or has no such copy',
     (await evalJs('document.querySelector("[data-pid=\\"9101\\"]").dataset.why')) === 'done' && (await evalJs('document.querySelector("[data-pid=\\"9111\\"]").dataset.why')) === 'archived'
     && (await evalJs('document.querySelector("[data-pid=\\"9151\\"]").dataset.why')) === 'gone');
@@ -2791,7 +2791,7 @@ section('strays', async () => {
   const sig = signals();
   check('the agent got SIGTERM before its helpers', sig.indexOf('TERM 9101') >= 0 && sig.indexOf('TERM 9101') < sig.indexOf('TERM 9102') && sig.indexOf('TERM 9101') < sig.indexOf('TERM 9103'), JSON.stringify(sig));
   check('the one that ignores SIGTERM got SIGKILL after it, the others did not', sig.indexOf('TERM 9103') >= 0 && sig.indexOf('KILL 9103') > sig.indexOf('TERM 9103') && !sig.includes('KILL 9101') && !sig.includes('KILL 9102'), JSON.stringify(sig));
-  check('nothing of a task in work, outside the board, another user or the unticked shell was signalled', !sig.some((l) => /9131|9141|9161|9121/.test(l)), JSON.stringify(sig));
+  check('nothing of a task in work, outside the board, another user or the unticked shell was signalled', !sig.some((l) => /9131|9141|9161|9171|9121/.test(l)), JSON.stringify(sig));
   check('the answer says what happened', await waitApi('/api/strays', (r) => r.journal.some((e) => e.who === 'human' && e.data.action === 'stop' && e.data.term === 4 && e.data.kill === 1 && e.data.count === 5)), await evalJs('fetch("/api/strays").then((x) => x.json()).then((r) => JSON.stringify(r.journal))'));
   await click('#st-strays-log summary');
   check('the journal of the card shows it, with the tasks', await hasText('#st-strays-log', 'Остановлено процессов: 5 из 5, из них SIGKILL: 1') && await hasText('#st-strays-log', 'ALP-13'), await text('#st-strays-log'));
