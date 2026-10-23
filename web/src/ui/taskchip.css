@@ -1,0 +1,15 @@
+/* A task key in a text: a chip with the dot of its state and a card on hover or focus (TaskChip.tsx).
+   `.k` in base.css gives the bold key on a tinted ground; this adds the pill, the dot and the card. */
+.k.tk{position:relative;display:inline-block;padding:0 0.375rem 0 0.3125rem;border-radius:0.6875rem;border:1px solid transparent;font-size:0.875em;line-height:1.35;vertical-align:baseline;white-space:nowrap;cursor:pointer}
+.k.tk:hover,.k.tk:focus-visible{background:var(--pl-raised);border-color:var(--s-line,var(--pl-line))}
+.k.tk .dotc{width:0.5rem;height:0.5rem;margin-right:0.3125rem;vertical-align:0.0625em}
+.k.tk.none{color:var(--pl-dim);font-weight:600}
+.k.tk .kcard{position:absolute;left:0;bottom:calc(100% + 0.375rem);z-index:30;min-width:14rem;max-width:22rem;padding:0.4375rem 0.625rem;border-radius:0.4375rem;background:var(--pl-panel-solid);border:1px solid var(--pl-line);box-shadow:0 0.5rem 1.5rem rgba(0,0,0,.35);font-weight:400;font-size:0.75rem;color:var(--pl-text);text-align:left;white-space:normal;line-height:1.4;text-decoration:none;display:none;pointer-events:none}
+.k.tk:hover .kcard,.k.tk:focus-visible .kcard{display:grid;gap:0.25rem;justify-items:start}
+.k.tk[data-side="down"] .kcard{bottom:auto;top:calc(100% + 0.375rem)}
+.k.tk .kcard b{display:block;color:var(--pl-title);font-weight:600;overflow-wrap:anywhere}
+.k.tk .kcard .hint{font-size:0.6562rem}
+/* inside a label over the scene the pill would be too much: the key stays plain there */
+.lb .k.tk{padding:0;border:0;background:none}
+.lb .k.tk .dotc{display:none}
+.lb .k.tk .kcard{display:none!important}

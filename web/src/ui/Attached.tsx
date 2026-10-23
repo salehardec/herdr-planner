@@ -2,6 +2,7 @@ import type { JSX } from 'preact';
 import { classOfSaved, fileUrl, type PendingFile, type SavedFile } from '../attach';
 import { t } from '../i18n';
 import { Gl } from './Gl';
+import { openLightbox } from '../lightbox';
 import './attach.css';
 
 const sizeText = (n: number): string => (n >= 1048576 ? `${(n / 1048576).toFixed(1)} MB` : n >= 1024 ? `${Math.round(n / 1024)} KB` : `${n} B`);
@@ -35,18 +36,24 @@ export function PendingFiles(props: { files: PendingFile[]; onRemove: (key: numb
 }
 
 /** Files already kept on the server: thumbnails for images, a player for sound, a link for text. */
-export function SavedFiles(props: { list: SavedFile[]; onRemove?: (id: string) => void; class?: string }): JSX.Element | null {
+export function SavedFiles(props: { list: SavedFile[]; onRemove?: (id: string) => void; class?: string; zoom?: boolean }): JSX.Element | null {
   const items = props.list.filter((a) => a && a.id);
   if (!items.length) return null;
+  const images = items.filter((a) => classOfSaved(a) === 'image');
   return (
     <div class={`saved ${props.class ?? ''}`}>
       {items.map((a) => {
         const cls = classOfSaved(a);
         const rm = props.onRemove && <button class="rm" type="button" data-file-rm={a.id} aria-label={`${t('chat.remove')} ${a.name}`} onClick={() => props.onRemove?.(a.id)}>×</button>;
         if (cls === 'image') {
+          const img = <img src={fileUrl(a)} alt={a.name || t('chat.image')} title={a.name} loading="lazy" />;
           return (
             <span class="sv img" key={a.id}>
-              <a class="shot" href={fileUrl(a)} target="_blank" rel="noopener"><img src={fileUrl(a)} alt={a.name || t('chat.image')} title={a.name} loading="lazy" /></a>
+              {props.zoom ? (
+                <button class="shot" type="button" aria-label={`${t('chat.lightbox.zoom')}: ${a.name || t('chat.image')}`} onClick={(e) => openLightbox(images, images.indexOf(a), e.currentTarget as HTMLElement)}>{img}</button>
+              ) : (
+                <a class="shot" href={fileUrl(a)} target="_blank" rel="noopener">{img}</a>
+              )}
               {rm}
             </span>
           );

@@ -5,6 +5,7 @@ import { closeStation, shipDlg, stationDlg } from './ui/station-api';
 import { memoryWin, rememberDlg } from './ui/memory-api';
 import { snap } from './store';
 import type { SavedFile } from './attach';
+import { closeLightbox, lightbox } from './lightbox';
 
 export const addDialogs = {
   universe: signal(false),
@@ -46,9 +47,11 @@ export function openNewTask(id: string, repo: string): void {
 
 export const dialogOpen = (): boolean =>
   addDialogs.universe.value || addDialogs.runner.value || addDialogs.firstRun.value || !!addDialogs.popover.value || !!addDialogs.tell.value
-  || !!addDialogs.summary.value || !!addDialogs.screen.value || !!addDialogs.ctlLogs.value || !!addDialogs.ctlAct.value || !!stationDlg.value || shipDlg.value || !!rememberDlg.value || !!memoryWin.value;
+  || !!addDialogs.summary.value || !!addDialogs.screen.value || !!addDialogs.ctlLogs.value || !!addDialogs.ctlAct.value || !!stationDlg.value || shipDlg.value || !!rememberDlg.value || !!memoryWin.value
+  || !!lightbox.value;
 
 export function closeDialogs(): void {
+  if (lightbox.value) { closeLightbox(); return; }
   if (addDialogs.ctlAct.value) { addDialogs.ctlAct.value = null; return; }
   if (addDialogs.ctlLogs.value) { addDialogs.ctlLogs.value = null; return; }
   if (addDialogs.screen.value) { addDialogs.screen.value = null; return; }
