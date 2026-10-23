@@ -325,6 +325,18 @@ section('panel widths', async () => {
     if (c.open) { await press(c.open[0], c.open[1]); await beat(); }
     await settled({ p: c.el }, (x) => !!x.p && x.p.l >= 0 && x.p.r <= 1510, 4000);
   };
+  // A drawer slides in and the chat follows it: the edge is taken only when the panel has stopped moving (a press at a stale
+  // place lands beside the edge and drags nothing, which a loaded machine makes easy to hit).
+  const still = async (sel) => {
+    let last = '';
+    let same = 0;
+    for (let i = 0; i < 60 && same < 3; i++) {
+      const now = JSON.stringify(await rectOf(sel));
+      same = now === last ? same + 1 : 0;
+      last = now;
+      await sleep(40);
+    }
+  };
   // The pointer drags the edge: the press, a few moves and the release, as a hand does.
   const drag = async (sel, dx) => {
     const g = await rectOf(sel);
@@ -358,6 +370,7 @@ section('panel widths', async () => {
     await forget(c.storage);
     await fresh();
     await openWith(c);
+    await still(c.el);
     const w0 = await edgeWidth(c.el);
     const grip = await rectOf(c.grip);
     const box = await rectOf(c.el);
@@ -394,6 +407,7 @@ section('panel widths', async () => {
   await press('KeyB', 'b'); await beat();
   await press('Slash', '/'); await beat();
   await settled({ w: '#drawer-wait', c: '#chat' }, (x) => !!x.w && x.w.l >= 0 && !!x.c && x.c.w > 100, 4000);
+  await still('#drawer-wait');
   await drag('#drawer-wait .panel-grip.right', 600);
   const beside = await evalJs(`(() => { const r = parseFloat(getComputedStyle(document.documentElement).fontSize); const w = document.querySelector('#drawer-wait').getBoundingClientRect(); const n = document.querySelector('#nav').getBoundingClientRect(); const c = document.querySelector('#chat').getBoundingClientRect(); const at = document.elementFromPoint(c.left + 12, (c.top + c.bottom) / 2); return { wait: w.width / r, nav: n.width / r, chat: c.width / r, gap: (c.left - w.right) / r, covered: !!at && !!at.closest('#drawer-wait'), max: Number(document.querySelector('#chat .panel-grip').getAttribute('aria-valuemax')) }; })()`);
   check('a «Ждёт тебя» wider than the navigator pushes the chat aside instead of covering it', beside.wait > beside.nav + 2 && beside.gap >= -1 && !beside.covered, JSON.stringify(beside));
