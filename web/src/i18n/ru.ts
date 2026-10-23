@@ -14,7 +14,7 @@ export const ru: Record<string, string | string[]> = {
   'kanban.aria': 'Стадии задач', 'kanban.waits': 'ждут {n}',
   'nav.title': 'Навигатор', 'nav.aria': 'Навигатор по Галактике', 'nav.today': 'Сегодня', 'nav.quiet': 'Тихие вселенные',
   'nav.thisMachine': 'эта машина', 'nav.addUniverse': 'Добавить вселенную в {galaxy}…',
-  'nav.resize': 'Ширина навигатора', 'nav.resizeTip': 'Потяни, чтобы изменить ширину; двойной щелчок — по умолчанию',
+  'grip.label': 'Ширина панели «{panel}»', 'grip.tip': 'Потяни, чтобы изменить ширину; двойной щелчок — по умолчанию',
   'crumbs.aria': 'Где я',
   'search.aria': 'Космический поиск', 'search.placeholder': 'Космический поиск: задача, проект, дело, чат…',
   'search.none': 'Ничего не найдено', 'search.galaxies': 'Галактики', 'search.quasar': 'Квазар', 'search.universes': 'Вселенные',

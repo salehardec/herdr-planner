@@ -2,8 +2,8 @@
    Свёрнутый — до 54 rem (864 px при 100 %), на больших окнах (шире 1400 в единицах интерфейса) и не больше 40 % ширины окна: так на 1920 это
    768 px, на 2560 при 100 % — 864 px, а не полэкрана при автомасштабе. Шире места между панелями он не бывает: left/right не пускают на соседей.
    колонка текста реплик — не шире 80ch, чтобы строки читались. */
-.chat{left:var(--mid-l);right:var(--mid-r);margin-inline:auto;width:auto;max-width:54rem;bottom:3.875rem;max-height:46vh;display:flex;flex-direction:column;font-size:0.9375rem;line-height:1.55;z-index:16;transition:transform var(--m-med) var(--m-ease),opacity var(--m-med);background:var(--pl-panel-solid)}
-:root:not(.bp1400) .chat{max-width:min(54rem,40vw)}
+.chat{left:var(--mid-l);right:var(--mid-r);margin-inline:auto;width:auto;max-width:min(var(--chat-user,54rem),100%);bottom:3.875rem;max-height:46vh;display:flex;flex-direction:column;font-size:0.9375rem;line-height:1.55;z-index:16;transition:transform var(--m-med) var(--m-ease),opacity var(--m-med);background:var(--pl-panel-solid)}
+:root:not(.bp1400) .chat{max-width:var(--chat-user,min(54rem,40vw))}
 .chat.off{transform:translateY(2.5rem);opacity:0;pointer-events:none}
 .chat>header{text-transform:none;letter-spacing:0;font-size:0.75rem;gap:0.5rem;justify-content:flex-start;flex-wrap:nowrap}
 .chat>header b{color:var(--pl-title);font-weight:600;white-space:nowrap}

@@ -11,6 +11,7 @@ import { closing, loadClosing } from '../closing';
 import { addDialogs } from '../dialogs';
 import { t } from '../i18n';
 import { Gl, Badge } from './Gl';
+import { Grip } from './Grip';
 import { RichText } from './RichText';
 import { Translatable } from './Translatable';
 import { RequestBlock } from './Request';
@@ -311,6 +312,7 @@ export function Focus(): JSX.Element {
         <button class="btn icon sm" type="button" id="fclose" data-act="focus-close" aria-label={t('focus.close')} onClick={() => { panels.focus.value = false; }}><Gl n="close" /></button>
       </header>
       <div class="fscroll">{body}</div>
+      <Grip panel="focus" side="left" />
     </aside>
   );
 }

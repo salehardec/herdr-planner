@@ -306,31 +306,162 @@ section('navigator', async () => {
   await press('ArrowDown');
   check('the arrow keys move along the tree', await waitFor('document.activeElement.dataset.nav !== undefined', 3000));
   await shot('navigator.png');
-  // the width: the edge is dragged, the width is remembered, a double click brings the default back
-  await evalJs('try { localStorage.removeItem("herdr-planner.navW"); } catch {} true');
-  const navW = () => evalJs('document.querySelector("#nav").getBoundingClientRect().width');
-  const w0 = await navW();
-  const grip = await rectOf('#nav .nav-grip');
-  check('the navigator has an edge to drag, on its right', !!grip && Math.abs(grip.r - (await rectOf('#nav')).r) < 2, JSON.stringify(grip));
-  check('the edge does not cover the tree\'s scrollbar: the tree\'s right edge is not the edge handle', await evalJs(`(() => { const t = document.querySelector('#nav .tree').getBoundingClientRect(); const e = document.elementFromPoint(t.right - 3, (t.top + t.bottom) / 2); return !!e && !e.classList.contains('nav-grip') && !!e.closest('.tree'); })()`));
-  const gx = (grip.l + grip.r) / 2; const gy = (grip.t + grip.b) / 2;
-  await send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: gx, y: gy });
-  await send('Input.dispatchMouseEvent', { type: 'mousePressed', x: gx, y: gy, button: 'left', buttons: 1, clickCount: 1 });
-  for (const dx of [20, 60, 100, 140]) await send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: gx + dx, y: gy, button: 'left', buttons: 1 });
-  await send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: gx + 140, y: gy, button: 'left', buttons: 0, clickCount: 1 });
-  check('dragging the edge widens the panel', await waitFor(`document.querySelector("#nav").getBoundingClientRect().width > ${w0 + 100}`, 3000), `${w0} → ${await navW()}`);
-  check('the width is remembered in the browser (in rem)', /^\d+(\.\d+)?$/.test(await evalJs('localStorage.getItem("herdr-planner.navW") || ""')), await evalJs('localStorage.getItem("herdr-planner.navW")'));
-  const w1 = await navW();
-  await navigate(base + '/?noauto&nocoach&bloom=0');
-  check('after a reload the panel has the same width', Math.abs((await navW()) - w1) < 2, `${w1} → ${await navW()}`);
-  await evalJs('document.querySelector("#nav .nav-grip").focus(); true');
-  await press('ArrowLeft');
-  check('the arrow keys on the edge change the width too', await waitFor(`document.querySelector("#nav").getBoundingClientRect().width < ${w1 - 8}`, 3000), `${w1} → ${await navW()}`);
-  await evalJs('document.querySelector("#nav .nav-grip").dispatchEvent(new MouseEvent("dblclick", { bubbles: true })); true');
-  check('a double click on the edge brings the default width back', await waitFor(`Math.abs(document.querySelector("#nav").getBoundingClientRect().width - ${w0}) < 2`, 3000) && !(await evalJs('localStorage.getItem("herdr-planner.navW")')), `${w0} → ${await navW()}`);
-  await evalJs('try { localStorage.removeItem("herdr-planner.navW"); } catch {} true');
   await send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: 700, y: 400 });
 }, { retry: true });
+
+section('panel widths', async () => {
+  // Every panel that stands at a side has the navigator's edge, and the chat in the middle has one too: all of them share a single
+  // handle (ui/Grip.tsx) and a single store of widths (panel-width.ts). Dragged, the width changes and is kept by the browser; a
+  // double click brings the default back; the arrow keys on the edge do the same from the keyboard.
+  const edgeWidth = (sel) => evalJs(`(() => { const e = document.querySelector(${JSON.stringify(sel)}); return e ? e.getBoundingClientRect().width : -1; })()`);
+  const forget = (key) => evalJs(`try { localStorage.removeItem(${JSON.stringify(key)}); } catch {} true`);
+  const fresh = async () => {
+    await navigate(base + '/?noauto&nocoach&bloom=0');
+    await waitFor('window.world && world.debug().planets > 0', 20000);
+    await beat();
+  };
+  // a panel that slides in is measured once it stands in the window, not on its way
+  const openWith = async (c) => {
+    if (c.open) { await press(c.open[0], c.open[1]); await beat(); }
+    await settled({ p: c.el }, (x) => !!x.p && x.p.l >= 0 && x.p.r <= 1510, 4000);
+  };
+  // The pointer drags the edge: the press, a few moves and the release, as a hand does.
+  const drag = async (sel, dx) => {
+    const g = await rectOf(sel);
+    const x = (g.l + g.r) / 2; const y = (g.t + g.b) / 2;
+    await send('Input.dispatchMouseEvent', { type: 'mouseMoved', x, y });
+    await send('Input.dispatchMouseEvent', { type: 'mousePressed', x, y, button: 'left', buttons: 1, clickCount: 1 });
+    for (const d of [dx / 4, dx / 2, (dx * 3) / 4, dx]) await send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: x + d, y, button: 'left', buttons: 1 });
+    await send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: x + dx, y, button: 'left', buttons: 0, clickCount: 1 });
+    await beat();
+  };
+  const dblclick = async (sel) => {
+    await evalJs(`document.querySelector(${JSON.stringify(sel)}).dispatchEvent(new MouseEvent("dblclick", { bubbles: true })); true`);
+    await beat();
+  };
+  // The edge takes the keyboard's focus, and the focus is shown: an outline, and the mark of the edge lit.
+  const fromKeyboard = async (sel, key) => {
+    await evalJs(`document.querySelector(${JSON.stringify(sel)}).focus(); true`);
+    await press(key);
+    await beat();
+    const lit = await waitFor(`getComputedStyle(document.querySelector(${JSON.stringify(sel)}), '::after').opacity === '1'`, 3000);
+    return { lit, ...await evalJs(`(() => { const g = document.querySelector(${JSON.stringify(sel)}); const c = getComputedStyle(g); return { active: document.activeElement === g, focusRing: c.outlineStyle !== 'none' && parseFloat(c.outlineWidth) > 0, mark: getComputedStyle(g, '::after').opacity, f: g.matches(':focus'), fv: g.matches(':focus-visible') }; })()`) };
+  };
+  // The navigator and the focus card start open; the wait list and the chat are opened by their keys.
+  const panels = [
+    { name: 'navigator', el: '#nav', grip: '#nav .panel-grip.right', storage: 'herdr-planner.navW', edge: 'right', open: null, arrow: 'ArrowRight', drag: 140, way: 'wider' },
+    { name: 'focus card', el: '#focus', grip: '#focus .panel-grip.left', storage: 'herdr-planner.focusW', edge: 'left', open: null, arrow: 'ArrowLeft', drag: -140, way: 'wider' },
+    { name: 'wait list', el: '#drawer-wait', grip: '#drawer-wait .panel-grip.right', storage: 'herdr-planner.waitW', edge: 'right', open: ['KeyB', 'b'], arrow: 'ArrowRight', drag: 140, way: 'wider' },
+    { name: 'chat', el: '#chat', grip: '#chat .panel-grip.left', storage: 'herdr-planner.chatW', edge: 'left', open: ['Slash', '/'], arrow: 'ArrowRight', drag: 40, way: 'narrower' },
+  ];
+  for (const c of panels) {
+    await forget(c.storage);
+    await fresh();
+    await openWith(c);
+    const w0 = await edgeWidth(c.el);
+    const grip = await rectOf(c.grip);
+    const box = await rectOf(c.el);
+    check(`the ${c.name} has an edge to drag, on its ${c.edge}`, !!grip && Math.abs((c.edge === 'right' ? grip.r - box.r : grip.l - box.l)) < 2, JSON.stringify({ grip, box }));
+    // a rem a press, four with Shift: the arrow that moves the edge as the panel grows makes it bigger
+    const k0 = await edgeWidth(c.el);
+    const keys = await fromKeyboard(c.grip, c.arrow);
+    const k1 = await edgeWidth(c.el);
+    check(`the edge of the ${c.name} takes the keyboard's focus, and the focus is shown`, keys.lit && keys.active && keys.focusRing, JSON.stringify(keys));
+    check(`the arrow keys on the edge of the ${c.name} change its width`, Math.abs(k1 - k0) >= 14 && (k1 - k0) * (c.way === 'wider' ? 1 : -1) > 0, `${k0} → ${k1}`);
+    const before = await edgeWidth(c.el);
+    await drag(c.grip, c.drag);
+    const w1 = await edgeWidth(c.el);
+    check(`dragging the edge of the ${c.name} makes it ${c.way}`, c.way === 'wider' ? w1 > w0 + 100 : w1 < w0 - 50, `${w0} → ${w1} (${before})`);
+    check(`the width of the ${c.name} is kept by the browser (in rem)`, /^\d+(\.\d+)?$/.test(await evalJs(`localStorage.getItem(${JSON.stringify(c.storage)}) || ""`)), await evalJs(`localStorage.getItem(${JSON.stringify(c.storage)})`));
+    await fresh();
+    await openWith(c);
+    check(`after a reload the ${c.name} has the same width`, Math.abs((await edgeWidth(c.el)) - w1) < 2, `${w1} → ${await edgeWidth(c.el)}`);
+    await dblclick(c.grip);
+    const back = await edgeWidth(c.el);
+    check(`a double click on the edge of the ${c.name} brings the default width back`, Math.abs(back - w0) < 2 && !(await evalJs(`localStorage.getItem(${JSON.stringify(c.storage)})`)), `${w0} → ${back}`);
+  }
+  // Each panel keeps its own width: four figures in the browser, four panels of their own width after a reload.
+  for (const c of panels) await forget(c.storage);
+  await fresh();
+  await evalJs('(() => { const s = localStorage; s.setItem("herdr-planner.navW", "28"); s.setItem("herdr-planner.focusW", "28"); s.setItem("herdr-planner.waitW", "24"); s.setItem("herdr-planner.chatW", "34"); return true; })()');
+  await fresh();
+  const own = await evalJs(`(() => { const r = parseFloat(getComputedStyle(document.documentElement).fontSize); const w = (s) => document.querySelector(s).getBoundingClientRect().width / r; const st = getComputedStyle(document.querySelector('#win')); return { nav: w('#nav'), focus: w('#focus'), wait: w('#drawer-wait'), chat: w('#chat'), chatVar: st.getPropertyValue('--chat-user').trim(), midL: st.getPropertyValue('--mid-l').trim(), midR: st.getPropertyValue('--mid-r').trim(), cls: document.querySelector('#chat').className, maxW: getComputedStyle(document.querySelector('#chat')).maxWidth }; })()`);
+  check('each panel has its own width (28, 28, 24 and 34 rem after a reload)', Math.abs(own.nav - 28) < 0.3 && Math.abs(own.focus - 28) < 0.3 && Math.abs(own.wait - 24) < 0.3 && Math.abs(own.chat - 34) < 0.3, JSON.stringify(own));
+  // «Ждёт тебя» stands over the navigator: when it is wider, the middle — the chat and the todos — starts after it, not under it.
+  await resetUi();
+  for (const c of panels) await forget(c.storage);
+  await fresh();
+  await press('KeyB', 'b'); await beat();
+  await press('Slash', '/'); await beat();
+  await settled({ w: '#drawer-wait', c: '#chat' }, (x) => !!x.w && x.w.l >= 0 && !!x.c && x.c.w > 100, 4000);
+  await drag('#drawer-wait .panel-grip.right', 600);
+  const beside = await evalJs(`(() => { const r = parseFloat(getComputedStyle(document.documentElement).fontSize); const w = document.querySelector('#drawer-wait').getBoundingClientRect(); const n = document.querySelector('#nav').getBoundingClientRect(); const c = document.querySelector('#chat').getBoundingClientRect(); const at = document.elementFromPoint(c.left + 12, (c.top + c.bottom) / 2); return { wait: w.width / r, nav: n.width / r, chat: c.width / r, gap: (c.left - w.right) / r, covered: !!at && !!at.closest('#drawer-wait'), max: Number(document.querySelector('#chat .panel-grip').getAttribute('aria-valuemax')) }; })()`);
+  check('a «Ждёт тебя» wider than the navigator pushes the chat aside instead of covering it', beside.wait > beside.nav + 2 && beside.gap >= -1 && !beside.covered, JSON.stringify(beside));
+  check('and the chat keeps the room it reads in, its own limit above the width it has', beside.chat >= 29.5 && beside.max >= beside.chat - 1, JSON.stringify(beside));
+
+  // Both side panels chosen wide, then a smaller window: they are cut together to what it leaves — not one of them against the
+  // other's stored figure, down to its minimum while the middle keeps more than the chat needs.
+  await resetUi();
+  for (const c of panels) await forget(c.storage);
+  await send('Emulation.setDeviceMetricsOverride', { width: 1920, height: 1080, deviceScaleFactor: 1, mobile: false });
+  await evalJs('(() => { const s = localStorage; s.setItem("herdr-planner.navW", "48"); s.setItem("herdr-planner.focusW", "30"); return true; })()');
+  await fresh();
+  await resized();
+  const big = await evalJs(`(() => { const r = parseFloat(getComputedStyle(document.documentElement).fontSize); const w = (s) => document.querySelector(s).getBoundingClientRect().width / r; return { nav: w('#nav'), focus: w('#focus') }; })()`);
+  await send('Emulation.setDeviceMetricsOverride', { width: 1500, height: 950, deviceScaleFactor: 1, mobile: false });
+  await resized();
+  await beat();
+  const cut = await evalJs(`(() => { const r = parseFloat(getComputedStyle(document.documentElement).fontSize); const n = document.querySelector('#nav').getBoundingClientRect(); const f = document.querySelector('#focus').getBoundingClientRect(); return { nav: n.width / r, focus: f.width / r, middle: (f.left - n.right) / r - 1.5 }; })()`);
+  check('a smaller window cuts both side panels together, neither to its minimum', Math.abs(big.nav - 48) < 1 && Math.abs(big.focus - 30) < 1 && cut.nav > 16.5 && cut.focus > 16.5, JSON.stringify({ big, cut }));
+  check('and they fill what the window leaves: the middle keeps the chat its 30 rem', Math.abs(cut.nav + cut.focus - (1500 / 16 - 33)) < 1.5 && cut.middle > 29.5, JSON.stringify(cut));
+
+  // The chat opened in that cut window: the focus card steps aside while the chat needs the room, and keeps the width it had —
+  // a resize must not bring it back at its minimum.
+  await press('Slash', '/');
+  await beat();
+  await resized();
+  await beat();
+  const openCut = await evalJs(`(() => { const st = getComputedStyle(document.querySelector('#win')); return { user: parseFloat(st.getPropertyValue('--focus-user')), nav: parseFloat(st.getPropertyValue('--nav-user')), tight: document.querySelector('#win').classList.contains('chat-tight') }; })()`);
+  check('the chat opened in a cut window leaves the focus card its width, not its minimum', Math.abs(openCut.user - cut.focus) < 0.6 && Math.abs(openCut.nav - cut.nav) < 0.6 && openCut.tight, JSON.stringify({ cut, openCut }));
+
+  // The edge is in the tab order, and Tab walks on from it: no trap, no jump to another planet.
+  await resetUi();
+  for (const c of panels) await forget(c.storage);
+  await fresh();
+  await evalJs('document.querySelector("#focus .panel-grip").focus(); true');
+  const tabStart = await evalJs('({ grip: document.activeElement?.classList?.contains("panel-grip") === true, none: plannerDebug().selected === null })');
+  await press('Tab');
+  const tabOn = await evalJs('({ grip: document.activeElement?.classList?.contains("panel-grip") === true, none: plannerDebug().selected === null })');
+  await evalJs('document.querySelector("#focus .panel-grip").focus(); true');
+  await press('Tab', 'Tab', 8);
+  const tabBack = await evalJs('({ grip: document.activeElement?.classList?.contains("panel-grip") === true, none: plannerDebug().selected === null })');
+  check('Tab on the edge of a panel moves the focus on, not to another planet', tabStart.grip && tabStart.none && !tabOn.grip && tabOn.none, JSON.stringify({ tabStart, tabOn }));
+  check('and Shift+Tab does not stay on it either', !tabBack.grip && tabBack.none, JSON.stringify(tabBack));
+
+  // The widest a panel goes still leaves the middle for the chat, and a smaller window squeezes the width it was given — the chosen
+  // figure itself is not lost: the window is big again and the panel is as wide as it was.
+  await resetUi();
+  for (const c of panels) await forget(c.storage);
+  await fresh();
+  await drag('#focus .panel-grip.left', -900);
+  const wide = await evalJs(`(() => { const n = document.querySelector('#nav').getBoundingClientRect(); const f = document.querySelector('#focus').getBoundingClientRect(); return { gap: f.left - n.right, w: f.width, root: parseFloat(getComputedStyle(document.documentElement).fontSize) }; })()`);
+  check('the widest the focus card goes still leaves the middle for the chat', wide.gap >= 30 * wide.root - 2, JSON.stringify(wide));
+  await send('Emulation.setDeviceMetricsOverride', { width: 1100, height: 900, deviceScaleFactor: 1, mobile: false });
+  await resized();
+  const small = await edgeWidth('#focus');
+  const chosen = await evalJs('Number(localStorage.getItem("herdr-planner.focusW")) * parseFloat(getComputedStyle(document.documentElement).fontSize)');
+  check('a smaller window squeezes the width to what it leaves', small < wide.w - 40, JSON.stringify({ small, wide: wide.w }));
+  check('the width the operator chose is not lost', chosen > small + 8, JSON.stringify({ chosen, small }));
+  await send('Emulation.setDeviceMetricsOverride', { width: 1500, height: 950, deviceScaleFactor: 1, mobile: false });
+  await resized();
+  check('a bigger window gives the panel its width back', Math.abs((await edgeWidth('#focus')) - wide.w) < 2, `${wide.w} → ${await edgeWidth('#focus')}`);
+  for (const c of panels) await forget(c.storage);
+  await fresh();
+  // a look at the handle: the mark of the edge shows on the panel under the pointer
+  await send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: 424, y: 500 });
+  await beat();
+  await shot('panel-grip.png');
+}, { retry: false });
 
 section('buttons', async () => {
   await resetUi();
@@ -3199,7 +3330,7 @@ const layoutRun = async (w, h, dsf, scale = 'auto') => {
     await click('#bchat'); await waitFor('!document.querySelector("#chat").classList.contains("off")', 4000);
     if (await exists('#cwide') && !(await exists('#win.chat-wide'))) await click('#cwide');
     await waitFor('!!document.querySelector("#win.chat-wide")', 3000);
-    const grip = await rectOf('#nav .nav-grip');
+    const grip = await rectOf('#nav .panel-grip.right');
     if (grip) {
       const gx = (grip.l + grip.r) / 2; const gy = (grip.t + grip.b) / 2;
       await send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: gx, y: gy });
@@ -3207,8 +3338,12 @@ const layoutRun = async (w, h, dsf, scale = 'auto') => {
       for (const x of [gx + 100, w * 0.6, w - 40]) await send('Input.dispatchMouseEvent', { type: 'mouseMoved', x, y: gy, button: 'left', buttons: 1 });
       await send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: w - 40, y: gy, button: 'left', buttons: 0, clickCount: 1 });
       await roomOk('the navigator dragged to the far right');
-      const max = await evalJs('Number(document.querySelector("#nav .nav-grip").getAttribute("aria-valuemax"))');
-      check(`${at}: the edge's own upper limit (${max} rem) is below what the window leaves (${(eff / 16).toFixed(0)} rem wide, ${max} + 27 + 30 rem wanted at most)`, max > 0 && max <= Math.max(21, eff / 16 - 27 - 29.9), String(max));
+      // The most the navigator may take is what the window leaves: its own gap, the focus card's column and the chat's 30 rem.
+      // The focus card gives its column back when it is closed, and steps aside while a chat that needs the room is open
+      // (chat-tight, chat-wide.ts) — then the navigator may take that space.
+      const lim = await evalJs(`(() => { const r = parseFloat(getComputedStyle(document.documentElement).fontSize); const win = document.querySelector('#win'); const aside = win.classList.contains('focus-off') || (win.classList.contains('chat-tight') && win.classList.contains('chat-open')); const right = aside ? 0.75 : document.querySelector('#focus').getBoundingClientRect().width / r + 1.5; return { max: Number(document.querySelector('#nav .panel-grip').getAttribute('aria-valuemax')), room: innerWidth / r - right }; })()`);
+      const wants = Math.max(16, Math.min(48, lim.room - 31.5));
+      check(`${at}: the edge's own upper limit (${lim.max} rem) is what the window leaves (${lim.room.toFixed(1)} rem beside the focus card's column, ${wants.toFixed(1)} rem for the navigator at most)`, lim.max > 0 && lim.max <= wants + 0.6, JSON.stringify(lim));
     }
     // a width kept from a big screen: the window here is cut to what fits
     await evalJs('try { localStorage.setItem("herdr-planner.navW", "48"); } catch {} true');

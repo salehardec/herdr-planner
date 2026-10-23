@@ -13,7 +13,7 @@ export const en: Record<string, string | string[]> = {
   'kanban.aria': 'Task stages', 'kanban.waits': '{n} waiting',
   'nav.title': 'Navigator', 'nav.aria': 'Galaxy navigator', 'nav.today': 'Today', 'nav.quiet': 'Quiet universes',
   'nav.thisMachine': 'this machine', 'nav.addUniverse': 'Add a universe to {galaxy}…',
-  'nav.resize': 'Navigator width', 'nav.resizeTip': 'Drag to change the width; double click for the default',
+  'grip.label': 'Width of the {panel} panel', 'grip.tip': 'Drag to change the width; double click for the default',
   'crumbs.aria': 'Where am I',
   'search.aria': 'Space search', 'search.placeholder': 'Space search: task, project, todo, chat…',
   'search.none': 'Nothing found', 'search.galaxies': 'Galaxies', 'search.quasar': 'Quasar', 'search.universes': 'Universes',
