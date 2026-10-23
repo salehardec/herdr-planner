@@ -1,9 +1,11 @@
 /* Чат с Координатором: пристыкован снизу по центру свободного места между навигатором и «Фокусом», крупный читаемый шрифт.
    Свёрнутый — до 54 rem (864 px при 100 %), на больших окнах (шире 1400 в единицах интерфейса) и не больше 40 % ширины окна: так на 1920 это
    768 px, на 2560 при 100 % — 864 px, а не полэкрана при автомасштабе. Шире места между панелями он не бывает: left/right не пускают на соседей.
-   колонка текста реплик — не шире 80ch, чтобы строки читались. */
-.chat{left:var(--mid-l);right:var(--mid-r);margin-inline:auto;width:auto;max-width:54rem;bottom:3.875rem;max-height:46vh;display:flex;flex-direction:column;font-size:0.9375rem;line-height:1.55;z-index:16;transition:transform var(--m-med) var(--m-ease),opacity var(--m-med);background:var(--pl-panel-solid)}
-:root:not(.bp1400) .chat{max-width:min(54rem,40vw)}
+   колонка текста реплик — не шире 80ch, чтобы строки читались.
+   Реплики (PLN-60, макет design/chat): вопросы человека — пузырь справа, ответы Координатора — слева во всю колонку, целиком;
+   события доски — строкой под ответом; уведомления доски — своим видом; действия — по наведению и фокусу. */
+.chat{left:var(--mid-l);right:var(--mid-r);margin-inline:auto;width:auto;max-width:min(var(--chat-user,54rem),100%);bottom:3.875rem;max-height:46vh;display:flex;flex-direction:column;font-size:0.9375rem;line-height:1.55;z-index:16;transition:transform var(--m-med) var(--m-ease),opacity var(--m-med);background:var(--pl-panel-solid)}
+:root:not(.bp1400) .chat{max-width:var(--chat-user,min(54rem,40vw))}
 .chat.off{transform:translateY(2.5rem);opacity:0;pointer-events:none}
 .chat>header{text-transform:none;letter-spacing:0;font-size:0.75rem;gap:0.5rem;justify-content:flex-start;flex-wrap:nowrap}
 .chat>header b{color:var(--pl-title);font-weight:600;white-space:nowrap}
@@ -13,33 +15,107 @@
 .chat .cq{flex:1;min-width:3.75rem;height:1.625rem;border:1px solid var(--pl-line);border-radius:0.8125rem;background:var(--pl-tile);padding:0 0.625rem;font-size:0.75rem;outline:none;appearance:none}
 .chat .cq:focus{border-color:var(--pl-focus)}
 .chat .cq::-webkit-search-cancel-button{display:none}
-.chat .log{overflow-x:hidden;overflow-y:auto;padding:0.625rem 1rem;scrollbar-width:thin;overscroll-behavior:contain;min-height:5.75rem;flex:1}
+.chat .log{overflow-x:hidden;overflow-y:auto;padding:0.625rem 1rem 0.75rem;scrollbar-width:thin;overscroll-behavior:contain;min-height:5.75rem;flex:1}
 .chat .older{display:block;margin:0 auto 0.625rem;font-size:0.75rem;color:var(--pl-accent-ink);background:none;border:0}
 .chat .older:hover{text-decoration:underline}
 .chat .meta{color:var(--pl-faint);font-size:0.6875rem;display:flex;gap:0.375rem;flex-wrap:wrap}
 .chat .meta.start{justify-content:center;margin-bottom:0.5rem}
-.chat .turn{margin:0 0 0.875rem;padding-bottom:0.75rem;border-bottom:1px dashed var(--pl-line)}
-.chat .turn:last-child{border-bottom:0}
-.chat .who{font-size:0.6875rem;color:var(--pl-faint);margin-right:0.5rem;white-space:nowrap}
-.chat .q{display:flex;gap:0.25rem;cursor:pointer;color:var(--pl-title);padding:2px 0}
-.chat .q:hover .txt{text-decoration:underline dotted}
-.chat .q .txt{white-space:pre-wrap;overflow-wrap:anywhere;min-width:0;max-width:min(100%,80ch)}
-.chat .a{display:flex;gap:0.25rem;padding:0.1875rem 0 0.1875rem 0.625rem;border-left:2px solid color-mix(in srgb,var(--pl-accent) 50%,transparent);margin:0.1875rem 0}
-.chat .a .txt{white-space:pre-wrap;overflow-wrap:anywhere;min-width:0;max-width:min(100%,80ch);color:var(--pl-text)}
-.chat .turn,.chat .a,.chat .q{min-width:0;max-width:100%}
-.chat .log img,.chat .log pre,.chat .log table{max-width:100%}
-.chat .a .txt.clamp{max-height:10em;overflow:hidden;-webkit-mask-image:linear-gradient(#000 70%,transparent);mask-image:linear-gradient(#000 70%,transparent)}
-.chat .a.err .txt{color:var(--pl-danger)}
-.chat .a.empty .txt{color:var(--pl-faint)}
-.chat .more{border:0;background:none;color:var(--pl-accent-ink);padding:0 0 0 0.75rem;font-size:0.75rem}
-.chat .more:hover{text-decoration:underline}
+/* a rule between days */
+.chat .day{display:flex;align-items:center;gap:0.625rem;margin:0.5rem 0 0.75rem;color:var(--pl-faint);font-size:0.6875rem;letter-spacing:.04em;text-transform:uppercase}
+.chat .day::before,.chat .day::after{content:"";flex:1;border-top:1px solid var(--pl-line)}
+
+/* a turn: the human's message, the answer */
+.chat .turn{position:relative;margin:0 0 0.75rem;min-width:0;max-width:100%}
+.chat .msg{position:relative;display:grid;grid-template-columns:auto 1fr;grid-template-areas:"who time" "body body";column-gap:0.5rem;row-gap:0;min-width:0;max-width:100%;outline-offset:2px}
+.chat .who{grid-area:who;position:relative;font-size:0.75rem;font-weight:600;color:var(--pl-dim);white-space:nowrap;display:inline-flex;gap:0.375rem;align-items:center;line-height:1.4}
+.chat .who .gl{width:0.8125rem;height:0.8125rem}
+.chat .msg .time{grid-area:time;font-size:0.75rem;color:var(--pl-faint);white-space:nowrap;align-self:center;line-height:1.4;overflow:hidden;text-overflow:ellipsis}
+.chat .msg>.txt,.chat .msg>.shots,.chat .msg>.cevs,.chat .msg>.ntl{grid-column:1/-1;min-width:0}
+.chat .msg>.txt{max-width:min(100%,80ch);white-space:pre-wrap;overflow-wrap:anywhere;color:var(--pl-text)}
+.chat .msg>.txt.md{white-space:normal}
+/* the human: a bubble on the right, not wider than 80 % or 52ch */
+.chat .msg.q{margin-left:auto;max-width:min(80%,52ch);background:color-mix(in srgb,var(--pl-accent) 14%,var(--pl-bg));border:1px solid color-mix(in srgb,var(--pl-accent) 30%,var(--pl-line));border-radius:0.75rem 0.75rem 0.25rem 0.75rem;padding:0.3125rem 0.75rem 0.375rem}
+.chat .msg.q .time{text-align:right}
+.chat .msg.q>.txt{color:var(--pl-title)}
+.chat .msg.q.pending{opacity:.75}
+.chat .msg.q.pending .time{font-style:italic}
+/* the Coordinator: the whole column */
+.chat .msg.a{margin-top:0.375rem;padding:0.125rem 0}
+.chat .msg.a .who{color:var(--pl-accent-ink)}
+.chat .msg.a.err>.txt{color:var(--pl-danger)}
+.chat .msg.a.empty>.txt{color:var(--pl-faint)}
 .chat .turn.hit{animation:hit 2s}
 @keyframes hit{0%,50%{background:color-mix(in srgb,var(--pl-accent) 22%,transparent)}}
-.chat .turn.board .q{font-style:italic}
-.chat .shots{margin:0.25rem 0 0.25rem 2.25rem}
-.chat .sv img{height:4rem;max-width:8.125rem}
+.chat .turn,.chat .msg{min-width:0;max-width:100%}
+.chat .log img,.chat .log pre,.chat .log table{max-width:100%}
+
+/* hover actions: a small bar in the corner, shown on hover and on focus; always there on a touch screen */
+/* the bar fades out, but comes at once: a button that is still hidden could not take the focus */
+.chat .acts{position:absolute;right:0.25rem;top:0.125rem;display:inline-flex;gap:0.125rem;padding:0.125rem;border-radius:0.375rem;background:var(--pl-panel-solid);border:1px solid var(--pl-line);box-shadow:0 0.25rem 0.75rem rgba(0,0,0,.25);opacity:0;visibility:hidden;transition:opacity var(--m-fast),visibility 0s linear var(--m-fast);z-index:2}
+.chat .msg:hover>.acts,.chat .msg:focus-within>.acts{opacity:1;visibility:visible;transition-delay:0s}
+.chat .acts .act{display:inline-flex;align-items:center;gap:0.25rem;height:1.375rem;padding:0 0.4375rem;border:0;border-radius:0.25rem;background:none;color:var(--pl-dim);font-size:0.6875rem;font-weight:600;white-space:nowrap}
+.chat .acts .act:hover{background:var(--pl-hover);color:var(--pl-title)}
+.chat .acts .gl{width:0.75rem;height:0.75rem}
+/* no mouse to hover with (a touch screen, a headless browser): a tap on the message brings the actions out, in the flow */
+@media (hover:none){
+  .chat .acts{display:none;position:static;grid-column:1/-1;justify-self:end;margin-top:0.25rem;box-shadow:none}
+  .chat .msg:focus-within>.acts{display:inline-flex;opacity:1;visibility:visible}
+}
+
+/* board events under the answer */
+.chat .cevs{display:grid;gap:0.25rem;margin-top:0.375rem}
+.chat .msg.a.evonly .cevs{margin-top:0.125rem}
+.chat .cev{padding:0.25rem 0.625rem 0.25rem 0.5rem;border-radius:0.375rem;background:color-mix(in srgb,var(--pl-accent) 8%,transparent);border:1px dashed color-mix(in srgb,var(--pl-accent) 40%,var(--pl-line));font-size:0.8125rem;color:var(--pl-dim);line-height:1.6;overflow-wrap:anywhere}
+.chat .cev .gl{width:0.8125rem;height:0.8125rem;color:var(--pl-accent-ink);vertical-align:-0.1875em;margin-right:0.375rem}
+.chat .cev .k{margin:0 0.0625rem}
+
+/* a board notice: its own kind of message */
+.chat .msg.notice{grid-template-areas:"who time" "ntl ntl" "body body";align-items:center;padding:0.4375rem 0.75rem 0.5rem;border-radius:0.5rem;background:color-mix(in srgb,var(--c-blue) 8%,var(--pl-bg));border:1px solid color-mix(in srgb,var(--c-blue) 30%,var(--pl-line))}
+.chat .msg.notice .who{color:color-mix(in srgb,var(--c-blue) 75%,var(--pl-text))}
+.chat .msg.notice .time{justify-self:end}
+.chat .msg.notice>.ntl{grid-area:ntl;display:flex;flex-wrap:wrap;align-items:center;gap:0.375rem 0.5rem;color:var(--pl-title);line-height:1.5}
+.chat .msg.notice>.ntl .ttl{min-width:0;overflow-wrap:anywhere}
+.chat .msg.notice>.txt{color:var(--pl-dim);font-size:0.8125rem}
+.chat .msg.notice.compact{padding-block:0.3125rem;margin-top:-0.5rem;border-top-left-radius:0;border-top-right-radius:0;border-top-color:transparent}
+.chat .msg.notice.compact .who,.chat .msg.notice.compact .time{display:none}
+
+/* files of a message */
+.chat .shots{display:flex;flex-wrap:wrap;gap:0.375rem;margin:0.375rem 0 0;align-items:center}
+.chat .shots .saved{margin:0}
+.chat .sv img{height:4.5rem;max-width:9rem}
+.chat .pasted{display:inline-flex;align-items:center;gap:0.375rem;height:1.5rem;padding:0 0.5rem;border-radius:0.3125rem;border:1px dashed var(--pl-line);color:var(--pl-faint);font-size:0.6875rem;white-space:nowrap}
+.chat .pasted .gl{width:0.75rem;height:0.75rem}
+
+/* Markdown of an answer: the agent's note sizes (summary.css) are for a window; here the text is the chat's */
+.chat .md{font-size:inherit;line-height:inherit}
+.chat .md>*:first-child{margin-top:0}
+.chat .md>*:last-child{margin-bottom:0}
+.chat .md h3,.chat .md h4,.chat .md h5{margin:0.625rem 0 0.25rem;font-size:1em}
+.chat .md h3{font-size:1.0625em}
+.chat .md ul,.chat .md ol{margin:0.25rem 0 0.5rem;gap:0.125rem}
+.chat .md ul ul,.chat .md ol ol,.chat .md ul ol,.chat .md ol ul{margin:0.125rem 0 0}
+.chat .md p{margin:0 0 0.5rem}
+.chat .md .pre{position:relative;margin:0.375rem 0 0.5rem}
+.chat .md .pre pre{margin:0;padding-right:5.5rem}
+.chat .md .pre .copy{position:absolute;right:0.375rem;top:0.375rem;height:1.375rem;padding:0 0.5rem;font-size:0.6875rem;border-radius:0.25rem;border:1px solid var(--pl-line);background:var(--pl-raised);color:var(--pl-dim)}
+.chat .md .pre .copy:hover{color:var(--pl-title);border-color:var(--pl-faint)}
+.chat .md .pre[data-lang]::before{content:attr(data-lang);position:absolute;right:5.75rem;top:0.5rem;font-size:0.625rem;color:var(--pl-faint);letter-spacing:.06em;text-transform:uppercase}
+.chat .md .tbl{overflow-x:auto;scrollbar-width:thin;margin:0.375rem 0 0.5rem}
+.chat .md .tbl table{margin:0;font-size:0.875em}
+.chat .md th,.chat .md td{padding:0.25rem 0.5rem}
+
+/* the Coordinator is working */
+.chat .working{display:flex;flex-wrap:wrap;align-items:center;gap:0.375rem;margin:0.25rem 0 0;padding:0.375rem 0.75rem;border-radius:0.5rem;background:color-mix(in srgb,var(--c-blue) 7%,transparent);color:var(--pl-dim);font-size:0.8125rem;line-height:1.4}
+.chat .working .who{color:var(--pl-accent-ink);font-size:0.75rem;font-weight:600}
+.chat .working .pulse{width:0.5rem;height:0.5rem;border-radius:50%;background:var(--c-blue);animation:pulse 1.6s ease-in-out infinite;flex:none}
+.chat .working .doing{font-family:var(--font);background:var(--pl-tile);border:1px solid var(--pl-line);border-radius:0.25rem;padding:0 0.375rem;font-size:0.75rem;max-width:34ch;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.chat .working .sep{color:var(--pl-faint)}
+@keyframes pulse{50%{opacity:.35;transform:scale(.8)}}
+
 .chat.drop{outline:2px dashed var(--c-green);outline-offset:-0.1875rem;box-shadow:0 0 1.75rem color-mix(in srgb,var(--c-green) 40%,transparent)}
-.chat .tolast{position:absolute;right:1rem;bottom:4.875rem;border-radius:0.75rem;z-index:3;background:var(--pl-panel-solid)}
+.chat .tolast{position:absolute;right:1rem;bottom:4.875rem;border-radius:0.75rem;z-index:3;background:var(--pl-panel-solid);gap:0.375rem}
+.chat .tolast.news{border-color:var(--pl-ok);color:var(--pl-ok)}
+.chat .tolast .n{display:inline-flex;align-items:center;justify-content:center;min-width:1.125rem;height:1.125rem;padding:0 0.3125rem;border-radius:0.5625rem;background:color-mix(in srgb,var(--pl-ok) 22%,var(--pl-bg));border:1px solid var(--pl-ok);font-size:0.6875rem;font-weight:700;line-height:1}
 .chat .chits{padding:0.25rem 0.5rem;max-height:10.625rem;overflow:auto;border-bottom:1px solid var(--pl-line);font-size:0.7812rem;scrollbar-width:thin}
 .chat .chits .h{display:grid;grid-template-columns:auto 1fr;gap:2px 0.5rem;padding:0.25rem 0.375rem;border-radius:0.25rem;cursor:pointer}
 .chat .chits .h:hover{background:var(--pl-hover)}
@@ -64,6 +140,7 @@
 @keyframes blink{0%,80%,100%{opacity:.25}40%{opacity:1}}
 .win.calm .chat{font-size:1rem}
 :root.bp900 .chat{left:0.5rem;right:0.5rem;max-width:none;bottom:3.75rem;max-height:60vh}:root.bp900 .win.todo-open .chat{max-height:max(8.75rem,calc(100vh - 11rem - var(--todo-h,0px)))}:root.bp900 .chat.off{transform:translateY(1.875rem)}
+:root.bp900 .chat .msg.q{max-width:92%}
 .chat .cmem{padding:0 0.75rem 0.375rem;border-bottom:1px solid var(--pl-line)}
 .chat .memory.compact{border:0;background:none;padding:0.25rem 0 0;grid-template-columns:auto 1fr auto auto;gap:0.5rem;align-items:center;font-size:0.7188rem}
 .chat .memory.compact .mhead{gap:0.375rem;justify-content:flex-start}
@@ -73,8 +150,12 @@
 /* Unread: a green light by the Coordinator's label of a message that has not been in view yet, a green count on the chat button and in the header */
 .udot{display:inline-block;flex:none;width:0.5rem;height:0.5rem;border-radius:50%;background:var(--pl-ok);box-shadow:0 0 0.4375rem color-mix(in srgb,var(--pl-ok) 70%,transparent);opacity:0;transform:scale(.4);transition:opacity .7s var(--m-ease),transform .7s var(--m-ease)}
 .udot.on{opacity:1;transform:none;transition-duration:var(--m-med)}
-.chat .who{position:relative}
-.chat .who .udot{position:absolute;left:-0.6875rem;top:0.25rem;pointer-events:none}
+.chat .who .udot{margin-left:0.125rem;pointer-events:none}
+.chat .who .udot:not(.on){display:none}
 .ubadge{display:inline-flex;align-items:center;justify-content:center;min-width:1.125rem;height:1.125rem;padding:0 0.3125rem;border-radius:0.5625rem;background:color-mix(in srgb,var(--pl-ok) 22%,var(--pl-bg));border:1px solid var(--pl-ok);color:var(--pl-ok);font-size:0.6875rem;font-weight:700;line-height:1}
 .chat .ubtn{border-color:var(--pl-ok);color:var(--pl-ok);gap:0.375rem}
 .chat .ubtn .udot{box-shadow:none}
+/* no movement when the reader asked for none */
+@media (prefers-reduced-motion:reduce){
+  .chat .working .pulse,.dots i,.chat .turn.hit,.udot{animation-name:none;transition:none}
+}

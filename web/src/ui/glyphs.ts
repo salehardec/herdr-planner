@@ -44,4 +44,11 @@ export const SPRITE = `
 <symbol id="g-shrink" viewBox="0 0 16 16"><path d="M13.5 6.5h-4v-4M9.5 6.5l4-4M2.5 9.5h4v4M6.5 9.5l-4 4"/></symbol>
 <symbol id="g-file" viewBox="0 0 16 16"><path d="M4 1.8h5.4L12.6 5v9.2H4z"/><path d="M9.2 1.8V5h3.4M6 8.2h4.4M6 10.6h4.4"/></symbol>
 <symbol id="g-sound" viewBox="0 0 16 16"><path d="M2.6 6.4h2.4L8 3.6v8.8L5 9.6H2.6z"/><path d="M10.4 6a3 3 0 0 1 0 4M12 4.2a5.4 5.4 0 0 1 0 7.6"/></symbol>
+<symbol id="g-copy" viewBox="0 0 16 16"><rect x="5.5" y="5.5" width="8" height="8" rx="1.5"/><path d="M10.5 5.5V3.8A1.3 1.3 0 0 0 9.2 2.5H3.8A1.3 1.3 0 0 0 2.5 3.8v5.4a1.3 1.3 0 0 0 1.3 1.3h1.7"/></symbol>
+<symbol id="g-quote" viewBox="0 0 16 16"><path d="M3 10.5V7.3A3.3 3.3 0 0 1 6.3 4M9.5 10.5V7.3A3.3 3.3 0 0 1 12.8 4"/><path d="M3 10.5h3M9.5 10.5h3"/></symbol>
+<symbol id="g-redo" viewBox="0 0 16 16"><path d="M3 8a5 5 0 1 0 1.5-3.6"/><path d="M3 2.8v3.4h3.4"/></symbol>
+<symbol id="g-board" viewBox="0 0 16 16"><rect x="2" y="2.5" width="12" height="11" rx="1.6"/><path d="M5.5 5.5v5M8 5.5v3M10.5 5.5v6"/></symbol>
+<symbol id="g-user" viewBox="0 0 16 16"><circle cx="8" cy="5.5" r="2.8"/><path d="M2.8 13.5a5.2 5.2 0 0 1 10.4 0"/></symbol>
+<symbol id="g-event" viewBox="0 0 16 16"><circle cx="8" cy="8" r="2.4"/><path d="M8 1.8v2.4M8 11.8v2.4M1.8 8h2.4M11.8 8h2.4"/></symbol>
+<symbol id="g-image" viewBox="0 0 16 16"><rect x="2" y="3" width="12" height="10" rx="1.5"/><path d="m2.5 11.5 3.5-3.5 2.5 2.5 2-2 3 3"/><circle cx="10.5" cy="6.5" r="1"/></symbol>
 </defs></svg>`;

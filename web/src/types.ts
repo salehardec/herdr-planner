@@ -495,6 +495,12 @@ export interface TurnData {
   from: 'human' | 'board';
   q: string;
   a: string;
+  /** What the Coordinator is doing now (its last tool call), only on a turn that is still running. */
+  doing?: string;
+  /** When the answer was written; absent while there is none. */
+  at_a?: number;
+  /** Media types of the images in the human's message; `/api/chat/image/{n}/{i}` serves them. */
+  images?: string[];
 }
 
 export interface MemorySuggestion { task: string; repo: string; tag: string; title: string; lines: { kind: string; text: string }[]; at: number }

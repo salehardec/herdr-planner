@@ -42,7 +42,8 @@ export interface PendingFile {
 }
 
 /** A saved file as the server reports it. */
-export interface SavedFile { id: string; name: string; mime?: string; size?: number }
+/** `url`: where the bytes are when not in the planner's attachments folder (an image out of the Coordinator's transcript). */
+export interface SavedFile { id: string; name: string; mime?: string; size?: number; url?: string }
 
 let seq = 0;
 
@@ -135,7 +136,8 @@ export function makeShelf(): {
   };
 }
 
-export const fileUrl = (a: string | { id: string }): string => '/api/attachments/' + encodeURIComponent(typeof a === 'string' ? a : a.id);
+export const fileUrl = (a: string | { id: string; url?: string }): string =>
+  (typeof a !== 'string' && a.url) ? a.url : '/api/attachments/' + encodeURIComponent(typeof a === 'string' ? a : a.id);
 
 /** Files in a paste event (a screenshot from the clipboard, files copied in a file manager). */
 export function pastedFiles(e: ClipboardEvent): File[] {

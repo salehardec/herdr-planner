@@ -72,6 +72,7 @@ pub fn router(app: Shared) -> Router {
         .route("/api/menu/answer", post(crate::menu_api::menu_answer))
         .route("/api/chat", post(api_chat))
         .route("/api/chat/history", get(api_chat_history))
+        .route("/api/chat/image/{n}/{i}", get(api_chat_image))
         .route(
             "/api/chat/attach",
             post(api_attach).layer(DefaultBodyLimit::max(attachments::MAX_BODY_BYTES)),
@@ -688,6 +689,26 @@ async fn api_chat_history(State(app): State<Shared>, Query(q): Query<HistoryQuer
             "total": page.total,
         }))
         .into_response(),
+        Err(e) => error(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
+    }
+}
+
+/// An image of a message in the Coordinator's transcript (turn `n` of the history, its `i`-th image).
+async fn api_chat_image(State(app): State<Shared>, Path((n, i)): Path<(usize, usize)>) -> Response {
+    let cfg = app.cfg.clone();
+    match tokio::task::spawn_blocking(move || history::image(&cfg, n, i)).await {
+        Ok(Some((mime, bytes))) => match HeaderValue::from_str(&mime) {
+            Ok(ct) => (
+                [
+                    (header::CONTENT_TYPE, ct),
+                    (header::CACHE_CONTROL, HeaderValue::from_static("private, max-age=3600")),
+                ],
+                bytes,
+            )
+                .into_response(),
+            Err(_) => error(StatusCode::NOT_FOUND, "image not found"),
+        },
+        Ok(None) => error(StatusCode::NOT_FOUND, "image not found"),
         Err(e) => error(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
     }
 }
