@@ -5146,7 +5146,15 @@ section('runners ctl', async () => {
   // Auto-refresh off: no more reads; «Обновить» reads once.
   await click('#ctl-live');
   check('with the refresh off the window says so', await hasText('#ctl-paused', 'Автообновление выключено', 5000), await text('#ctl-paused'));
-  await sleep(300);
+  // A read that was already on its way when the switch was turned lands first: the count is taken once it has stopped moving.
+  let steady = 0;
+  let was = logCalls();
+  for (let i = 0; i < 60 && steady < 6; i++) {
+    await sleep(100);
+    const now = logCalls();
+    steady = now === was ? steady + 1 : 0;
+    was = now;
+  }
   const off = logCalls();
   await sleep(3500); // a negative: longer than the refresh period (2.5 s)
   check('and asks the yard no more', logCalls() === off, `${off} → ${logCalls()}`);

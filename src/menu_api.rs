@@ -129,6 +129,7 @@ pub async fn menu_answer(
         };
         if let Some(what) = what {
             crate::app::planner_notice(&app, target, what).await;
+            // The page reads the notice from the snapshot: read it again, so the chat shows it at once.
             crate::app::refresh(&app).await;
         }
     }
