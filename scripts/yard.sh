@@ -333,20 +333,18 @@ container_up() {
   ensure_image
   ensure_volume
   want=$($D image inspect -f '{{.Id}}' "$IMAGE")
-  gpu=0
-  if [ -n "$GPU_FLAGS" ]; then gpu=1; fi
   if $D container inspect "$NAME" >/dev/null 2>&1; then
     have=$($D inspect -f '{{.Image}}' "$NAME")
-    have_cpus=$($D inspect -f '{{index .Config.Labels "herdr.yard.cpus"}}' "$NAME" 2>/dev/null || true)
-    have_gpu=$($D inspect -f '{{index .Config.Labels "herdr.yard.gpu"}}' "$NAME" 2>/dev/null || true)
-    if [ "$have" != "$want" ] || [ "$have_cpus" != "$CPUS" ] || [ "$have_gpu" != "$gpu" ]; then
-      # A new Dockerfile is a new image, and the CPU limit and the card are the container's own from its start: the task's
-      # container is made again (its sources come back by sync).
-      say "образ верфи новый или настройки верфи изменились (ЦП ${have_cpus:-—} → $CPUS, GPU ${have_gpu:-—} → $gpu): контейнер $NAME пересоздаётся"
+    if [ "$have" != "$want" ]; then
+      # A new Dockerfile is a new image: the task's container is made again (its sources and its build come back by
+      # sync and the next build; nothing else is worth keeping alive across the image it was made from).
+      say "образ верфи новый: контейнер $NAME пересоздаётся"
       $D rm -f "$NAME" >/dev/null
     fi
   fi
   if ! $D container inspect "$NAME" >/dev/null 2>&1; then
+    gpu=0
+    if [ -n "$GPU_FLAGS" ]; then gpu=1; fi
     cpus_flag=
     jobs_flag=
     if [ "$CPUS" != 0 ]; then
@@ -365,6 +363,31 @@ container_up() {
   else
     running=$($D inspect -f '{{.State.Running}}' "$NAME")
     [ "$running" = "true" ] || $D start "$NAME" >/dev/null
+    # The CPU limit belongs to the container and docker changes it in place: a run of this task, /work/target and the
+    # sources stay. The value here is this invocation's (the yard's check_cpus, or YARD_CPUS for one run). Docker cannot
+    # lift a limit with `--cpus 0`, so a zero is read back and said as it is — the container is never thrown away for it.
+    have_cpus=$($D inspect -f '{{.HostConfig.NanoCpus}}' "$NAME" 2>/dev/null || true)
+    case "$have_cpus" in ''|'<no value>'|null) have_cpus=0 ;; esac
+    want_cpus=$((CPUS * 1000000000))
+    if [ "$have_cpus" != "$want_cpus" ]; then
+      $D update --cpus "$CPUS" "$NAME" >/dev/null 2>&1 || true
+      now_cpus=$($D inspect -f '{{.HostConfig.NanoCpus}}' "$NAME" 2>/dev/null || true)
+      case "$now_cpus" in ''|'<no value>'|null) now_cpus=0 ;; esac
+      if [ "$now_cpus" = "$want_cpus" ]; then
+        say "контейнер $NAME: лимит ЦП $((have_cpus / 1000000000)) → $CPUS (на месте, контейнер не тронут)"
+      else
+        say "контейнер $NAME: лимит ЦП $((now_cpus / 1000000000)) остался (docker update не дал $CPUS); его сменит только пересоздание"
+      fi
+    fi
+    # The card, once in the container, stays. A probe that fails once (a busy yard, a five-second timeout) is not a
+    # reason to throw the container away — nor is a card that appeared later added to a live container: down and up do.
+    have_gpu=$($D inspect -f '{{json .HostConfig.DeviceRequests}}' "$NAME" 2>/dev/null || true)
+    case "$have_gpu" in ''|'<no value>'|null) have_gpu= ;; esac
+    if [ -z "$GPU_FLAGS" ] && [ -n "$have_gpu" ]; then
+      say "верфь сейчас не отвечает про карту: контейнер $NAME остаётся с ней, пока его не пересоздадут"
+    elif [ -n "$GPU_FLAGS" ] && [ -z "$have_gpu" ]; then
+      say "верфь даёт карту, а контейнер $NAME её не имеет: «sh $SELF down» и снова up добавят её"
+    fi
   fi
 }
 

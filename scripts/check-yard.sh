@@ -57,9 +57,13 @@ case "$1" in
     case "$2" in inspect) [ -e "$ST/container" ] && exit 0 || exit 1 ;; esac
     exit 0 ;;
   inspect)
-    case "$2" in
+    # `docker inspect -f <format> <name>`: the format is the third word, the second is `-f`.
+    fmt=${3:-$2}
+    case "$fmt" in
       '{{.Image}}') echo "sha256:aaaaaaaaaaaaaaaa" ;;
       '{{.State.Running}}') echo true ;;
+      *'HostConfig.NanoCpus'*) cat "$ST/nano" 2>/dev/null || echo 0 ;;
+      *'HostConfig.DeviceRequests'*) if [ -e "$ST/gpu-req" ]; then echo '[{"Capabilities":[["gpu"]],"Count":-1}]'; else echo null; fi ;;
       *'herdr.yard.cpus'*) cat "$ST/label-cpus" 2>/dev/null || true ;;
       *'herdr.yard.gpu'*) cat "$ST/label-gpu" 2>/dev/null || true ;;
       *) echo running ;;
@@ -67,13 +71,22 @@ case "$1" in
     exit 0 ;;
   run)
     : >"$ST/container"
+    rm -f "$ST"/nano "$ST"/gpu-req
+    prev=
     for a in "$@"; do
       case "$a" in
         herdr.yard.cpus=*) printf '%s' "${a#*=}" >"$ST/label-cpus" ;;
         herdr.yard.gpu=*) printf '%s' "${a#*=}" >"$ST/label-gpu" ;;
+        --gpus) : >"$ST/gpu-req" ;;
       esac
+      if [ "$prev" = "--cpus" ]; then printf '%s' "$((a * 1000000000))" >"$ST/nano"; fi
+      prev=$a
     done
     echo container-id; exit 0 ;;
+  update)
+    # docker refuses to lift a limit with `--cpus 0` (the limit stays): the stub does the same.
+    if [ "$2" = "--cpus" ] && [ "${3:-0}" != 0 ]; then printf '%s' "$((3 * 1000000000))" >"$ST/nano"; fi
+    exit 0 ;;
   start) : >"$ST/container"; exit 0 ;;
   rm) rm -f "$ST/container"; exit 0 ;;
   exec)
@@ -101,7 +114,7 @@ chmod +x "$BIN/docker" "$BIN/rsync" "$BIN/cargo"
 
 fresh() {
   rm -f "$ST"/docker.log "$ST"/rsync.log "$ST"/cargo.log "$ST"/container "$ST"/image "$ST"/volume \
-    "$ST"/down "$ST"/progress "$ST"/stale-image "$ST"/label-cpus "$ST"/label-gpu
+    "$ST"/down "$ST"/progress "$ST"/stale-image "$ST"/label-cpus "$ST"/label-gpu "$ST"/nano "$ST"/gpu-req
   rm -rf "$ST/out"
   : >"$ST/docker.log"; : >"$ST/rsync.log"; : >"$ST/cargo.log"
 }
@@ -143,6 +156,7 @@ refuse "без --privileged и без --network host" "--privileged|--network ho
 yard "$T/pln/PLN-7" up
 expect "образ не собирается, когда он есть" "image inspect" "$ST/docker.log"
 refuse "повторный up не собирает образ" "build --label" "$ST/docker.log"
+refuse "повторный up не трогает контейнер" "rm -f|run -d|update --cpus" "$ST/docker.log"
 
 # ── the working copy, the run, the exit code ──
 fresh
@@ -417,6 +431,45 @@ yard_pick "$T/pln/PLN-7" up
 refuse "ЦП 0 — контейнер без --cpus" " --cpus " "$ST/docker.log"
 expect "…память и прочее на месте" "--memory 12g" "$ST/docker.log"
 expect "…и это видно в метке" "--label herdr.yard.cpus=0" "$ST/docker.log"
+
+# On a live container nothing is thrown away: a CPU limit moves in place, and a card that a probe fails to see once
+# is not a reason to lose /work/target and a run of the same task (PLN-58).
+jq '.runners[0].check_cpus = 4' "$YFILE" >"$YFILE.new" && mv "$YFILE.new" "$YFILE"
+fresh
+yard_pick "$T/pln/PLN-7" up
+: >"$ST/docker.log"
+YARD_CPUS=8 yard_pick "$T/pln/PLN-7" up
+unset YARD_CPUS
+expect "другой YARD_CPUS двигает лимит ЦП на месте" "update --cpus 8 yard-PLN-7" "$ST/docker.log"
+refuse "…и не пересоздаёт контейнер" "rm -f|run -d" "$ST/docker.log"
+: >"$ST/docker.log"
+yard_pick "$T/pln/PLN-7" up
+expect "…а умолчание верфи возвращает её лимит" "update --cpus 4 yard-PLN-7" "$ST/docker.log"
+refuse "…по-прежнему без пересоздания" "rm -f|run -d" "$ST/docker.log"
+
+# A probe that fails once (a busy yard, a five-second timeout) leaves the card and the container where they are.
+: >"$ST/no-gpu"
+: >"$ST/docker.log"
+yard_pick "$T/pln/PLN-7" up
+refuse "сорвавшаяся проба карты не пересоздаёт контейнер" "rm -f|run -d" "$ST/docker.log"
+expect "и контейнер остаётся с картой" "остаётся с ней" "$T/out"
+rm -f "$ST/no-gpu"
+
+# A card that appeared on the yard later is not forced into a live container: down/up do it.
+fresh
+YARD_RUNNER=vm-r yard_pick "$T/pln/PLN-7" up
+YARD_RUNNER=
+: >"$ST/docker.log"
+yard_pick "$T/pln/PLN-7" up
+refuse "появившаяся карта не пересоздаёт контейнер" "rm -f|run -d" "$ST/docker.log"
+expect "и подсказывает down и up" "down" "$T/out"
+
+# Zero CPUs cannot be applied in place (docker keeps the limit): the container still stays, and the output says why.
+: >"$ST/docker.log"
+YARD_CPUS=0 yard_pick "$T/pln/PLN-7" up
+unset YARD_CPUS
+refuse "ЦП 0 не пересоздаёт контейнер" "rm -f|run -d" "$ST/docker.log"
+expect "и честно говорит, что лимит остался" "остался" "$T/out"
 
 # The browser's flags: the card when there is one, the software renderer otherwise (CI).
 if command -v node >/dev/null 2>&1; then
