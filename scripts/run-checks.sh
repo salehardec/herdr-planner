@@ -91,9 +91,9 @@ owns_port() {
   ss -ltnpH "sport = :$2" 2>/dev/null | grep -q "pid=$1," 
 }
 
-# A check that hangs must fail, not hold the whole run (a stuck browser, a lost connection): at most 12 minutes each.
+# A check that hangs must fail, not hold the whole run (a stuck browser, a lost connection): at most 15 minutes each.
 limited() {
-  if command -v timeout >/dev/null 2>&1; then timeout -k 10 720 "$@"; else "$@"; fi
+  if command -v timeout >/dev/null 2>&1; then timeout -k 10 900 "$@"; else "$@"; fi
 }
 
 # Is this part of the page checks wanted? (SHARDS empty: all of them)

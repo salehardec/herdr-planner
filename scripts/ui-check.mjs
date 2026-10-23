@@ -2050,8 +2050,7 @@ section('requests', async () => {
   const transcriptBefore = readFileSync(transcript, 'utf8');
   appendFileSync(transcript, JSON.stringify({ type: 'user', timestamp: new Date().toISOString(), message: { role: 'user', content: noticeLine } }) + '\n');
   appendFileSync(transcript, JSON.stringify({ type: 'assistant', timestamp: new Date().toISOString(), message: { role: 'assistant', model: 'claude-opus-5-5', stop_reason: 'end_turn', content: [{ type: 'text', text: 'Принято.' }] } }) + '\n');
-  await navigate(base + '/?noauto&nocoach&bloom=0');
-  await waitFor('window.world && world.debug().planets > 0', 20000);
+  // The chat is closed here: opening it reads the transcript again, and the line is in it now.
   await press('Slash', '/');
   check('the chat opens after the transcript has the line', await waitFor('!document.querySelector("#chat").classList.contains("off")', 5000));
   check('a line the transcript holds is shown once, as that board turn, not again as a notice',
