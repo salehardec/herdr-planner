@@ -175,8 +175,9 @@ of `ui-check.mjs` reads and edits that file.
   ports on `192.0.2.29`, tags `docker28 gpu x86_64`, masks `buildx_*` and `neighbor` (the compose project next door).
   The file has no `limits`: the first read writes the machine's share (8 cores, 16 GiB → `--cpus 2 --memory 2g`), and the
   `runners` section then sets its own numbers. It has no `check_cpus`/`check_slots` either, so the yard's check container
-  shows the defaults (6 CPUs, 2 full checks at once), and the same section sets 4 and 1. The same section adds a second
-  yard `vm-r2` (same stand-in) through the
+  shows the defaults (6 CPUs, 2 full checks at once), and the same section sets 4 and 1, then types 6 and 2 back: the
+  server keeps a number equal to the default as «no word», so the yard loses its own numbers again. The same section adds a
+  second yard `vm-r2` (same stand-in) through the
   wizard, writes a rule for the repository `alpha` (`/api/runner/pick`, `assign.alpha = vm-r2`) and a rule for
   `alpha/3`, and checks the pick in the snapshot, the block in the repository's and the task's own instructions
   (`state/board-settings.json`, key `@task:alpha/3` for the task), then clears both and removes the second yard. Every

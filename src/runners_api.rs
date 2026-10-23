@@ -4,7 +4,7 @@
 use crate::app::{self, Shared};
 use crate::config::{now_ms, AppConfig};
 use crate::ssh::{self, MachineRef};
-use crate::runners::{self, Class, CleanPlan, Runner, RunnerState, RunnersFile};
+use crate::runners::{self, check_number, Class, CleanPlan, Runner, RunnerState, RunnersFile, CHECK_CPUS, CHECK_SLOTS};
 use crate::{runners_auto, runners_ctl, runners_disk};
 use crate::server::{client_is_local, same_origin};
 use crate::station;
@@ -606,10 +606,10 @@ pub async fn runner_set(State(app): State<Shared>, headers: HeaderMap, Json(body
             r.busy_pct = None;
         }
         if let Some(c) = body.check_cpus {
-            r.check_cpus = Some(c);
+            r.check_cpus = check_number(c, CHECK_CPUS);
         }
         if let Some(s) = body.check_slots {
-            r.check_slots = Some(s);
+            r.check_slots = check_number(s, CHECK_SLOTS);
         }
     }
     if body.default == Some(true) {

@@ -213,6 +213,16 @@ pub const CHECK_CPUS: u64 = 6;
 /// How many full checks run on a yard at once until the list says otherwise (PLN-58): the rest wait for a slot.
 pub const CHECK_SLOTS: u64 = 2;
 
+/// A check setting as the list keeps it: a number equal to the default is «no word in the file». So a human who types
+/// the defaults back into the form drops the yard's own numbers and it follows the defaults again (PLN-58).
+pub fn check_number(value: u64, default: u64) -> Option<u64> {
+    if value == default {
+        None
+    } else {
+        Some(value)
+    }
+}
+
 fn file_version() -> u32 {
     FILE_VERSION
 }
@@ -759,9 +769,6 @@ pub struct Pick {
 pub struct Rules {
     pub default: String,
     pub busy_pct: u64,
-    /// The check container's CPU limit and the slots of full checks a yard gets when it says nothing (PLN-58).
-    pub check_cpus: u64,
-    pub check_slots: u64,
     pub assign: BTreeMap<String, String>,
     pub need: BTreeMap<String, Vec<String>>,
     pub tasks: BTreeMap<String, TaskRule>,
@@ -772,8 +779,6 @@ impl Rules {
         Self {
             default: file.default_runner().map(|r| r.id.clone()).unwrap_or_default(),
             busy_pct: file.busy_pct,
-            check_cpus: CHECK_CPUS,
-            check_slots: CHECK_SLOTS,
             assign: file.assign.clone(),
             need: file.need.clone(),
             tasks: file.tasks.clone(),
@@ -3183,6 +3188,17 @@ mod tests {
         // The state the page shows carries the same numbers.
         let s = RunnerState::from_runner(&r);
         assert_eq!((s.check_cpus, s.check_slots), (0, 0));
+    }
+
+    #[test]
+    fn a_check_number_equal_to_the_default_is_no_word_in_the_file() {
+        assert_eq!(check_number(6, CHECK_CPUS), None);
+        assert_eq!(check_number(2, CHECK_SLOTS), None);
+        assert_eq!(check_number(4, CHECK_CPUS), Some(4));
+        assert_eq!(check_number(1, CHECK_SLOTS), Some(1));
+        // 0 is a word of its own: «no limit», «no queue».
+        assert_eq!(check_number(0, CHECK_CPUS), Some(0));
+        assert_eq!(check_number(0, CHECK_SLOTS), Some(0));
     }
 
     #[test]

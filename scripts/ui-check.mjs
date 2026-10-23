@@ -4408,13 +4408,24 @@ section('runners', async () => {
   }, 10000), readFileSync(join(fixture, 'settings', 'runners.json'), 'utf8').slice(0, 400));
   check('and the check container’s own numbers too',
     await waitFor('(() => { const s = document.querySelector("#rf-check-line")?.innerText || ""; return s.includes("ЦП 4") && s.includes("1 проверка"); })()', 8000), await text('#rf-check-line'));
+  // Typing the defaults back drops the yard's own numbers: the server keeps «a number equal to the default» as «no word
+  // in the file», so the save is not silently ignored (PLN-58).
+  await click('#rf-edit-open');
+  await waitFor('!!document.querySelector("#rf-check-cpus")', 5000);
+  await evalJs('(() => { const set = (id, v) => { const i = document.querySelector(id); i.value = v; i.dispatchEvent(new Event("input", { bubbles: true })); }; set("#rf-check-cpus", "6"); set("#rf-check-slots", "2"); return true; })()');
+  await twoPresses('#rf-set');
+  check('typing the defaults back drops the yard’s own check numbers', await waitLog(() => {
+    try { const r = JSON.parse(readFileSync(join(fixture, 'settings', 'runners.json'), 'utf8')).runners.find((x) => x.id === 'vm-r'); return r && r.check_cpus == null && r.check_slots == null; } catch { return false; }
+  }, 10000), readFileSync(join(fixture, 'settings', 'runners.json'), 'utf8').slice(0, 400));
+  check('and the check line is back to the defaults',
+    await waitFor('(() => { const s = document.querySelector("#rf-check-line")?.innerText || ""; return s.includes("ЦП 6") && s.includes("2 проверки"); })()', 8000), await text('#rf-check-line'));
   // An emptied field is «leave it as it is», not 0: zero would turn the maximum off.
   await click('#rf-edit-open');
   await waitFor('!!document.querySelector("#rf-lim-per")', 5000);
   await evalJs('(() => { const i = document.querySelector("#rf-lim-per"); i.value = ""; i.dispatchEvent(new Event("input", { bubbles: true })); return true; })()');
   await twoPresses('#rf-set');
   check('an emptied limit field keeps the value in force, not 0', await waitLog(() => {
-    try { const r = JSON.parse(readFileSync(join(fixture, 'settings', 'runners.json'), 'utf8')).runners.find((x) => x.id === 'vm-r'); return r?.limits?.cpus === 3 && r?.limits?.mem_mb === 3072 && r?.limits?.per_task === 1 && r?.check_cpus === 4 && r?.check_slots === 1; } catch { return false; }
+    try { const r = JSON.parse(readFileSync(join(fixture, 'settings', 'runners.json'), 'utf8')).runners.find((x) => x.id === 'vm-r'); return r?.limits?.cpus === 3 && r?.limits?.mem_mb === 3072 && r?.limits?.per_task === 1 && r?.check_cpus == null && r?.check_slots == null; } catch { return false; }
   }, 10000), readFileSync(join(fixture, 'settings', 'runners.json'), 'utf8').slice(0, 400));
   // The build caches of the board's repositories (herdr.shared=alpha, scripts/yard.sh): apart from the tasks, never foreign.
   check('the build cache is a table of its own: the image with its size, the volume, the cache container',

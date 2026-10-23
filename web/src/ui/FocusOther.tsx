@@ -365,9 +365,6 @@ export function RunnerFocus(props: { entity: Entity }): JSX.Element {
     const per = limPer.trim() === '' ? limits.per_task : Number(limPer);
     const chkC = chkCpus.trim() === '' ? r.check_cpus : Number(chkCpus);
     const chkS = chkSlots.trim() === '' ? r.check_slots : Number(chkSlots);
-    // A number that is still the default is «no word in the file»: the yard keeps following a later change of it.
-    const defC = snap.value?.runner_rules?.check_cpus || 6;
-    const defS = snap.value?.runner_rules?.check_slots || 2;
     const busy = busyPct.trim();
     if (!Number.isInteger(cpus) || cpus < 0 || cpus > 1024
       || !Number.isFinite(memGb) || memGb < 0 || memGb > 1024
@@ -389,8 +386,10 @@ export function RunnerFocus(props: { entity: Entity }): JSX.Element {
           disk_free_pct: alertDiskPct.trim() === '' ? undefined : Number(alertDiskPct),
           offline_min: alertOfflineMin.trim() === '' ? undefined : Number(alertOfflineMin),
           limits: { cpus, mem_mb: Math.round(memGb * 1024), per_task: per },
-          check_cpus: chkC === defC ? undefined : chkC,
-          check_slots: chkS === defS ? undefined : chkS,
+          // The server keeps a number equal to the default as «no word in the file», so typing the defaults back drops
+          // the yard's own numbers (PLN-58).
+          check_cpus: chkC,
+          check_slots: chkS,
           busy_pct: busy === '' ? undefined : Number(busy),
           busy_reset: busy === '',
         });
