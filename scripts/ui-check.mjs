@@ -5681,6 +5681,8 @@ section('runners ctl', async () => {
   check('«Логи» opens a window with the tail', await waitFor('!!document.querySelector("#ctl-logs") && (document.querySelector("#ctl-term")?.innerText || "").includes("pg-ALP-3 line")', 20000), await text('#ctl-logs'));
   check('the command is docker logs --tail with the full id', calls('ssh.jsonl').some((c) => c.runner && c.inner === 'docker logs --tail 300 ' + id('a') + ' 2>&1'), JSON.stringify(calls('ssh.jsonl').slice(-2)));
   check('colour codes are not shown', !(await text('#ctl-term')).includes('[31m') && (await text('#ctl-term')).includes('red'));
+  check('the yard command journal: a header, a green «exit 0» and a red «exit 101» line', await evalJs('!!document.querySelector("#ctl-term .ll.yard-head") && !!document.querySelector("#ctl-term .ll.yard-end.ok") && !!document.querySelector("#ctl-term .ll.yard-end.bad")'), await text('#ctl-term'));
+  check('the header and the end line differ in colour from the output, in this theme', await evalJs('(() => { const c = (s) => getComputedStyle(document.querySelector(s)).color; return c("#ctl-term .ll.yard-end.ok") !== c("#ctl-term .ll.yard-end.bad") && c("#ctl-term .ll.yard-head") !== c("#ctl-term .ll:not(.yard-head):not(.yard-end)"); })()'));
   const n0 = await evalJs('document.querySelectorAll("#ctl-term .ll").length');
   check('the window refreshes itself: new lines come without a press', await waitFor(`document.querySelectorAll("#ctl-term .ll").length > ${n0}`, 20000), String(n0));
   // The search: only the lines with the words, the words marked.

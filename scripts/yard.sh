@@ -53,6 +53,10 @@ SLOTS=${YARD_SLOTS:-}
 SLOT_USE=${YARD_SLOT_USE:-1}
 GPU_FLAGS=
 CACHE_MAX_GB=${YARD_CACHE_MAX_GB:-15}
+# The container's log is the journal of its commands (PLN-56) and is bounded: three files of eight megabytes at most,
+# the oldest dropped by docker itself, so a container that lives for weeks cannot fill the yard's disk.
+LOG_MAX=${YARD_LOG_MAX:-8m}
+LOG_FILES=${YARD_LOG_FILES:-3}
 LOG_DIR=${HERDR_YARD_LOG_DIR:-${TMPDIR:-/tmp}/yard}
 PG=
 # One run of the wrapper, one name inside the container: its progress file and its result folder are its own, so a second
@@ -342,6 +346,21 @@ container_up() {
       $D rm -f "$NAME" >/dev/null
     fi
   fi
+  if $D container inspect "$NAME" >/dev/null 2>&1; then
+    # A container made before the journal has docker's default log: no bound. Its log cannot be bounded in place, so it
+    # is made again when no run holds it (the sources and the build come back with the next command); a busy one waits.
+    bounded=$($D inspect -f '{{.HostConfig.LogConfig.Type}} {{index .HostConfig.LogConfig.Config "max-size"}}' "$NAME" 2>/dev/null || true)
+    case "$bounded" in
+      json-file\ ?*) ;;
+      *)
+        if $D start "$NAME" >/dev/null 2>&1 && $D exec "$NAME" flock -n /work/.lock true >/dev/null 2>&1; then
+          say "журнал контейнера $NAME без ограничения размера: пересоздаю с ним"
+          $D rm -f "$NAME" >/dev/null
+        else
+          say "журнал контейнера $NAME без ограничения размера, но он занят: его пересоздаст следующий запуск"
+        fi ;;
+    esac
+  fi
   if ! $D container inspect "$NAME" >/dev/null 2>&1; then
     gpu=0
     if [ -n "$GPU_FLAGS" ]; then gpu=1; fi
@@ -354,6 +373,7 @@ container_up() {
     # shellcheck disable=SC2086  # «--cpus 6» and «-e …» or nothing; the GPU flags are a few words of their own (PLN-58)
     $D run -d --name "$NAME" --label "herdr.task=$TAG" --label "herdr.yard.cpus=$CPUS" --label "herdr.yard.gpu=$gpu" \
       --init $cpus_flag --memory "$MEM" --pids-limit 4096 \
+      --log-driver json-file --log-opt "max-size=$LOG_MAX" --log-opt "max-file=$LOG_FILES" \
       --security-opt no-new-privileges $GPU_FLAGS -v "$VOLUME:/cache" \
       -e CARGO_TARGET_DIR=/work/target -e HERDR_PLANNER_TARGET_DIR=/work/target \
       -e CARGO_HOME=/cache/cargo -e npm_config_cache=/cache/npm -e XDG_CACHE_HOME=/work/cache \
@@ -439,14 +459,40 @@ if [ "${YARD_SLOT_USE:-0}" = 1 ]; then
     fi
   done
 fi
-rsync -a --delete /work/in/ /work/src/
-cd /work/src
-# The debug binary finds the page when build.rs runs: a fresh container has no page yet (the sources never carry it), so
-# the first command in it builds the page. Later commands see it and pay nothing.
-if [ ! -f "${XDG_CACHE_HOME:-$HOME/.cache}/herdr-planner/web/dist/index.html" ] && [ ! -f web/dist/index.html ]; then
-  sh scripts/web-build.sh
-fi
-exec "$@"
+# The task's journal is the container's own log (PLN-56): `docker logs`, so the planner's «Логи», shows what the commands
+# printed. The main process is `sleep infinity`, a command arrives by `docker exec`; its output is copied to the main
+# process's stdout (/proc/1/fd/1), after a header line and before a line with the exit code and the duration. The agent
+# gets the output as it was: the journal is a copy, and the exit code is the command's own.
+J=/proc/1/fd/1
+[ -w "$J" ] || J=/dev/null
+stamp() { date '+%Y-%m-%d %H:%M:%S'; }
+span() {
+  s=$1
+  if [ "$s" -ge 3600 ]; then printf '%sh %sm %ss' $((s / 3600)) $((s % 3600 / 60)) $((s % 60))
+  elif [ "$s" -ge 60 ]; then printf '%sm %ss' $((s / 60)) $((s % 60))
+  else printf '%ss' "$s"; fi
+}
+body() {
+  rsync -a --delete /work/in/ /work/src/
+  cd /work/src
+  # The debug binary finds the page when build.rs runs: a fresh container has no page yet (the sources never carry it),
+  # so the first command in it builds the page. Later commands see it and pay nothing.
+  if [ ! -f "${XDG_CACHE_HOME:-$HOME/.cache}/herdr-planner/web/dist/index.html" ] && [ ! -f web/dist/index.html ]; then
+    sh scripts/web-build.sh
+  fi
+  "$@"
+}
+label=$(printf '%.200s' "${YARD_LABEL:-$*}" | tr '\n\t' '  ')
+begun=$(date +%s)
+printf '[yard] ▶ %s · yard.sh %s · run %s\n' "$(stamp)" "$label" "${YARD_RUN:-—}" >>"$J"
+rcf=/work/.rc.$$
+rm -f "$rcf"
+{ ( set -eu; body "$@" ); printf '%s' "$?" >"$rcf"; } 2>&1 | tee --output-error=warn-nopipe -a "$J" || true
+rc=$(cat "$rcf" 2>/dev/null || true)
+rm -f "$rcf"
+rc=${rc:-1}
+printf '[yard] ■ %s · yard.sh %s · exit %s · %s\n' "$(stamp)" "$label" "$rc" "$(span $(($(date +%s) - begun)))" >>"$J"
+exit "$rc"
 INNER_EOF
 )
 
@@ -529,10 +575,10 @@ run_here() {
     # The result folder is copied while the run still holds the lock; the run's own exit code comes from its .rc file.
     if [ "$slot" = 1 ]; then
       start_logged "$log" "$D" exec -i -w /work/src -e "HERDR_PROJECTS_PROGRESS=$prog" \
-        -e "YARD_SLOTS=$SLOTS" -e YARD_SLOT_USE="$SLOT_USE" -e "UI_GPU=${UI_GPU:-}" "$NAME" \
+        -e "YARD_SLOTS=$SLOTS" -e YARD_SLOT_USE="$SLOT_USE" -e "UI_GPU=${UI_GPU:-}" -e "YARD_LABEL=$LABEL" -e "YARD_RUN=$RUN_ID" "$NAME" \
         flock /work/.lock sh -c "$INNER" yard "$@"
     else
-      start_logged "$log" "$D" exec -i -w /work/src -e "HERDR_PROJECTS_PROGRESS=$prog" -e YARD_SLOT_USE=0 -e "UI_GPU=${UI_GPU:-}" "$NAME" \
+      start_logged "$log" "$D" exec -i -w /work/src -e "HERDR_PROJECTS_PROGRESS=$prog" -e YARD_SLOT_USE=0 -e "UI_GPU=${UI_GPU:-}" -e "YARD_LABEL=$LABEL" -e "YARD_RUN=$RUN_ID" "$NAME" \
         flock /work/.lock sh -c "$INNER" yard "$@"
     fi
     execpid=$STREAM_PID
@@ -543,10 +589,10 @@ run_here() {
   else
     if [ "$slot" = 1 ]; then
       run_logged "$log" "$D" exec -i -w /work/src -e "HERDR_PROJECTS_PROGRESS=$prog" \
-        -e "YARD_SLOTS=$SLOTS" -e YARD_SLOT_USE="$SLOT_USE" -e "UI_GPU=${UI_GPU:-}" "$NAME" \
+        -e "YARD_SLOTS=$SLOTS" -e YARD_SLOT_USE="$SLOT_USE" -e "UI_GPU=${UI_GPU:-}" -e "YARD_LABEL=$LABEL" -e "YARD_RUN=$RUN_ID" "$NAME" \
         flock /work/.lock sh -c "$INNER" yard "$@"
     else
-      run_logged "$log" "$D" exec -i -w /work/src -e "HERDR_PROJECTS_PROGRESS=$prog" -e YARD_SLOT_USE=0 -e "UI_GPU=${UI_GPU:-}" "$NAME" \
+      run_logged "$log" "$D" exec -i -w /work/src -e "HERDR_PROJECTS_PROGRESS=$prog" -e YARD_SLOT_USE=0 -e "UI_GPU=${UI_GPU:-}" -e "YARD_LABEL=$LABEL" -e "YARD_RUN=$RUN_ID" "$NAME" \
         flock /work/.lock sh -c "$INNER" yard "$@"
     fi
     rc=$?
@@ -678,6 +724,9 @@ local_work() {
 
 cmd=${1:-help}
 if [ $# -gt 0 ]; then shift; fi
+# What the container's journal calls the command (PLN-56): the wrapper's own word and its arguments.
+LABEL=$cmd
+if [ $# -gt 0 ]; then LABEL="$cmd $*"; fi
 
 case "$cmd" in
   help|-h|--help) usage; exit 0 ;;

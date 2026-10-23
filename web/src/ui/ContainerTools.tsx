@@ -109,6 +109,13 @@ const findContainer = (runner: string, id: string): RunnerContainer | undefined 
 
 interface LogsAnswer { ok: boolean; text: string; cut: boolean; tail: number; name: string; state: string; at: number }
 
+/** The journal's own lines of a yard command (PLN-56): `[yard] ▶ …` before its output, `[yard] ■ … exit N · 12s` after it. */
+function yardLine(line: string): string {
+  if (line.startsWith('[yard] ▶ ')) return ' yard-head';
+  if (!line.startsWith('[yard] ■ ')) return '';
+  return / · exit 0 · /.test(line) ? ' yard-end ok' : ' yard-end bad';
+}
+
 /** The line with the searched words marked. */
 function marked(line: string, q: string): (string | JSX.Element)[] {
   const needle = q.trim().toLowerCase();
@@ -222,7 +229,7 @@ export function ContainerLogs(): JSX.Element | null {
             {shown?.err && !shown.a ? <div class="hint bad" id="ctl-error">{shown.err}</div> : (
               <pre class="term" id="ctl-term">
                 {!shown ? t('req.reading') : found.lines.length === 0 ? (found.total === 0 ? t('ctl.logsEmpty') : t('ctl.logsNoMatch'))
-                  : found.lines.map((l, i) => <div key={i} class="ll">{marked(l, q)}</div>)}
+                  : found.lines.map((l, i) => <div key={i} class={`ll${yardLine(l)}`}>{marked(l, q)}</div>)}
               </pre>
             )}
           </div>
