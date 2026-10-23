@@ -3314,6 +3314,65 @@ section('crew wizard', async () => {
   await resetUi();
 });
 
+section('coach tour', async () => {
+  // PLN-62: every step of the hint tour keeps its label on one line, its text and its buttons inside the frame, apart from
+  // each other, inside the window and off what it points at; both themes, both languages, wide and narrow windows, and a
+  // wider monospace font (the Mac's) as well as ours.
+  const colors = join(fixture, 'theme', 'colors.toml');
+  const dark = readFileSync(colors, 'utf8');
+  const light = dark.replace('mode = "dark"', 'mode = "light"').replace('background = "#1a120c"', 'background = "#f9f1e8"').replace('foreground = "#ecded6"', 'foreground = "#372b1f"');
+  const wide = '#win *{letter-spacing:0.07em}';
+  const target = ['#nav', '.top-search', '#focus'];
+  const look = () => evalJs(`(() => {
+    const r = (e) => { if (!e) return null; const b = e.getBoundingClientRect(); return { l: b.left, t: b.top, r: b.right, b: b.bottom }; };
+    const c = document.querySelector('#coach'); if (!c) return null;
+    const n = c.querySelector('.n'), p = c.querySelector('p'), row = c.querySelector('.row');
+    const lh = parseFloat(getComputedStyle(n).lineHeight) || parseFloat(getComputedStyle(n).fontSize) * 1.4;
+    return { c: r(c), n: r(n), p: r(p), btns: [...c.querySelectorAll('button')].map(r), nLines: n.getClientRects().length, nLineH: lh, nText: n.innerText,
+      nH: n.getBoundingClientRect().height, scrollOk: c.scrollHeight <= c.clientHeight + 1 && c.scrollWidth <= c.clientWidth + 1, row: r(row), w: innerWidth, h: innerHeight };
+  })()`);
+  const inside = (a, f) => a.l >= f.l - 1 && a.r <= f.r + 1 && a.t >= f.t - 1 && a.b <= f.b + 1;
+  const room = async (tag, wideFont) => {
+    await evalJs('localStorage.removeItem("herdr-planner.seen"); true');
+    await navigate(base + '/?noauto&bloom=0');
+    if (!(await waitFor('!!document.querySelector("#coach")', 15000))) { check(`${tag}: the tour shows`, false); return; }
+    if (wideFont) await evalJs(`(() => { const s = document.createElement('style'); s.textContent = ${JSON.stringify(wide)}; document.head.appendChild(s); return true; })()`);
+    for (let step = 0; step < 3; step++) {
+      await frames(2); await beat();
+      const m = await look();
+      const at = `${tag}, step ${step + 1}`;
+      const tg = await rectOf(target[step]);
+      const visible = tg && tg.w > 0 && tg.h > 0;
+      const parts = m ? [m.n, m.p, ...m.btns] : [];
+      check(`${at}: the label is on one line, text and buttons are inside the frame`, !!m && m.nLines === 1 && m.nH < m.nLineH * 1.6 && parts.every((x) => inside(x, m.c)) && m.scrollOk, JSON.stringify(m));
+      check(`${at}: the label, the text and the buttons do not overlap`, !!m && parts.every((a, i) => parts.slice(i + 1).every((b) => apart(a, b))), JSON.stringify(m));
+      check(`${at}: the buttons are under the text`, !!m && m.btns.every((b) => b.t >= m.p.b - 1), JSON.stringify(m));
+      check(`${at}: the frame is inside the window and off what it points at`, !!m && m.c.l >= -1 && m.c.t >= -1 && m.c.r <= m.w + 1 && m.c.b <= m.h + 1 && (!visible || apart(m.c, tg)), JSON.stringify({ c: m?.c, tg, w: m?.w, h: m?.h }));
+      if (step === 1 && tag.includes('1500')) await shot(`coach-${tag.replace(/[^a-z0-9]+/gi, '-')}.png`);
+      if (step < 2) await click('#coach-next');
+    }
+    await click('#coach-done');
+  };
+    for (const [theme, file] of [['dark', dark], ['light', light]]) {
+    writeFileSync(colors, file);
+    await waitFor(`document.documentElement.dataset.mode === "${theme}"`, 20000);
+    for (const lang of ['ru', 'en']) {
+      await evalJs(`setLang("${lang}"); true`);
+      for (const [w, h] of [[1920, 1080], [1500, 950], [1100, 800], [500, 800]]) {
+        await send('Emulation.setDeviceMetricsOverride', { width: w, height: h, deviceScaleFactor: 1, mobile: false });
+        for (const font of ['ours', 'wide']) await room(`${theme} ${lang} ${w}×${h} ${font}`, font === 'wide');
+      }
+    }
+  }
+  writeFileSync(colors, dark);
+  await waitFor('document.documentElement.dataset.mode === "dark"', 20000);
+  await evalJs('setLang("ru"); true');
+  await send('Emulation.setDeviceMetricsOverride', { width: 1500, height: 950, deviceScaleFactor: 1, mobile: false });
+  await navigate(base + '/?noauto&nocoach&bloom=0');
+  await evalJs('localStorage.setItem("herdr-planner.seen", "coach"); true');
+  await resetUi();
+});
+
 section('ship', async () => {
   await resetUi();
   await evalJs('planner.goHome(); true');
