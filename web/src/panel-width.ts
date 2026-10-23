@@ -72,17 +72,18 @@ function wanted(id: PanelId): number {
 }
 
 interface Columns {
-  /** the left and the right side columns with their gaps, and the middle between them, in rem */
+  /** the left and the right side columns with their gaps, in rem */
   left: number;
   right: number;
+  /** what the chat and the todos get: the focus card's column is given back while a chat that needs the room is open */
   middle: number;
 }
 
 /** The two side columns and the middle between them as they stand now — the figures base.css calls --mid-l and --mid-r, and what
-    the chat and the todos are given. A width the operator chose is cut to what the window leaves, the two columns together
-    keeping the chat's 30 rem: the left one first, then the right against the left as it stands. A panel still on the sheet's own
-    width is not cut here (the sheet's layout for narrow windows is the designer's). The left column is the wider of the navigator
-    and «Ждёт тебя»: the list stands over the navigator. */
+    the chat and the todos are given. A width the operator chose is cut to what the window leaves: the two columns together keep
+    the chat's 30 rem, each giving way by the same share when both are too wide. A panel still on the sheet's own width is not cut
+    here (the sheet's layout for narrow windows is the designer's). The left column is the wider of the navigator and «Ждёт тебя»:
+    the list stands over the navigator. */
 function columns(): Columns {
   // the window's width in rem (effectiveWidth() is in design pixels, 16 to the rem); the columns leave a gap at each edge
   const win = effectiveWidth() / 16;
@@ -93,14 +94,25 @@ function columns(): Columns {
   const room = win - 2 * COLUMN - MID_MIN;
   let left = Math.max(nav, wait);
   let right = focus;
-  if (left > 0 && panelWidths.value[leftId] !== null) left = Math.max(PANELS[leftId].min, Math.min(left, room - right));
-  if (right > 0 && panelWidths.value.focus !== null) right = Math.max(PANELS.focus.min, Math.min(right, room - left));
+  const leftChosen = left > 0 && panelWidths.value[leftId] !== null;
+  const rightChosen = right > 0 && panelWidths.value.focus !== null;
+  if (leftChosen && rightChosen) {
+    if (left + right > room) {
+      // The left gives way first — but never below its own half of the room, so a wide wish on the right is not paid for by
+      // the left sitting at its minimum while the right keeps nearly all of its own; the panel that wants less leaves the rest
+      // to the other.
+      left = Math.max(PANELS[leftId].min, Math.min(left, Math.max(room - right, room / 2)));
+      right = Math.max(PANELS.focus.min, Math.min(right, room - left));
+    }
+  } else if (leftChosen) left = Math.max(PANELS[leftId].min, Math.min(left, room - right));
+  else if (rightChosen) right = Math.max(PANELS.focus.min, Math.min(right, room - left));
   const l = left > 0 ? left + COLUMN : EDGE;
-  let r = right > 0 ? right + COLUMN : EDGE;
-  // the chat needs 30 rem and a gap; where the middle would be less, the focus card steps aside while the chat is open
-  // (the `chat-tight` class, chat-wide.ts), so its column is not counted here either
-  if (OPEN.chat() && win - l - r < MID_MIN + COLUMN) r = EDGE;
-  return { left: l, right: r, middle: win - l - r };
+  const r = right > 0 ? right + COLUMN : EDGE;
+  // The chat needs 30 rem and a gap. Where the middle with the focus card would be less, the card steps aside while the chat is
+  // open (the `chat-tight` class, chat-wide.ts): the chat and the todos get its column, while the card keeps its own width — the
+  // figure written for it — and comes back with it when the chat closes.
+  const aside = OPEN.chat() && win - l - r < MID_MIN + COLUMN;
+  return { left: l, right: r, middle: win - l - (aside ? EDGE : r) };
 }
 
 /** The width the panel is drawn at now, in rem; null: the sheet's own (no width has been chosen, or the sheet's width is not

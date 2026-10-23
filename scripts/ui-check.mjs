@@ -415,6 +415,15 @@ section('panel widths', async () => {
   check('a smaller window cuts both side panels together, neither to its minimum', Math.abs(big.nav - 48) < 1 && Math.abs(big.focus - 30) < 1 && cut.nav > 16.5 && cut.focus > 16.5, JSON.stringify({ big, cut }));
   check('and they fill what the window leaves: the middle keeps the chat its 30 rem', Math.abs(cut.nav + cut.focus - (1500 / 16 - 33)) < 1.5 && cut.middle > 29.5, JSON.stringify(cut));
 
+  // The chat opened in that cut window: the focus card steps aside while the chat needs the room, and keeps the width it had —
+  // a resize must not bring it back at its minimum.
+  await press('Slash', '/');
+  await beat();
+  await resized();
+  await beat();
+  const openCut = await evalJs(`(() => { const st = getComputedStyle(document.querySelector('#win')); return { user: parseFloat(st.getPropertyValue('--focus-user')), nav: parseFloat(st.getPropertyValue('--nav-user')), tight: document.querySelector('#win').classList.contains('chat-tight') }; })()`);
+  check('the chat opened in a cut window leaves the focus card its width, not its minimum', Math.abs(openCut.user - cut.focus) < 0.6 && Math.abs(openCut.nav - cut.nav) < 0.6 && openCut.tight, JSON.stringify({ cut, openCut }));
+
   // The edge is in the tab order, and Tab walks on from it: no trap, no jump to another planet.
   await resetUi();
   for (const c of panels) await forget(c.storage);
