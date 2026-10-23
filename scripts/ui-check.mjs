@@ -2751,6 +2751,80 @@ section('station', async () => {
   await resetUi();
 });
 
+section('strays', async () => {
+  // PLN-53: the processes finished tasks left running. The planner reads a table of stand-ins (load/procs.json); a «signal»
+  // only edits that file and is written to procs.json.signals, so nothing real is ever stopped.
+  await resetUi();
+  const procsFile = join(fixture, 'load', 'procs.json');
+  const sigFile = procsFile + '.signals';
+  const signals = () => (existsSync(sigFile) ? readFileSync(sigFile, 'utf8').split('\n').filter(Boolean) : []);
+  const rows = () => evalJs('[...document.querySelectorAll("#st-strays-table tbody tr")].map((r) => Number(r.dataset.pid))');
+  await evalJs('planner.goHome()');
+  await menuPick('Станция');
+  check('the station has the card of stray processes', await waitFor('!!document.querySelector("#st-strays")', 30000));
+  check('it lists the leftovers of done and archived tasks and of a copy no task has, by folder, whatever the program is',
+    await waitFor('document.querySelectorAll("#st-strays-table tbody tr").length === 6', 15000)
+    && (await rows()).slice().sort().join() === [9101, 9102, 9103, 9111, 9121, 9151].join(), JSON.stringify(await rows()));
+  check('a task in work, a task the board has not read yet, a folder outside the board and another user are not listed',
+    !(await exists('[data-pid="9131"]')) && !(await exists('[data-pid="9141"]')) && !(await exists('[data-pid="9161"]')) && !(await exists('[data-pid="9171"]')), JSON.stringify(await rows()));
+  check('each row says why: the task is done, archived, or has no such copy',
+    (await evalJs('document.querySelector("[data-pid=\\"9101\\"]").dataset.why')) === 'done' && (await evalJs('document.querySelector("[data-pid=\\"9111\\"]").dataset.why')) === 'archived'
+    && (await evalJs('document.querySelector("[data-pid=\\"9151\\"]").dataset.why')) === 'gone');
+  check('a helper sits under its agent (one step in), the agent is at the top',
+    (await evalJs('getComputedStyle(document.querySelector("[data-pid=\\"9102\\"] .st-cmd")).getPropertyValue("--depth")')).trim() === '1'
+    && (await evalJs('getComputedStyle(document.querySelector("[data-pid=\\"9101\\"] .st-cmd")).getPropertyValue("--depth")')).trim() === '0');
+  check('a row shows the task, the pid, the command, how long it runs and its memory',
+    await hasText('[data-pid="9102"]', 'ALP-13') && await hasText('[data-pid="9102"]', 'rea.mjs mcp') && await hasText('[data-pid="9102"]', '120 МиБ') && await hasText('[data-pid="9102"]', '3 ч'), await text('[data-pid="9102"]'));
+  check('a shell is shown but not ticked; the others are',
+    (await evalJs('document.querySelector("[data-pid=\\"9121\\"] input").checked')) === false && (await evalJs('document.querySelector("[data-pid=\\"9101\\"] input").checked')) === true);
+  check('«было → стало» counts the ticked ones', await hasText('#st-strays-was', 'Было процессов: 6 → станет: 1'), await text('#st-strays-was'));
+  check('the automatic cleaning is off by default', (await evalJs('document.querySelector("#st-strays-auto").dataset.auto')) === 'off');
+  check('the buttons start with a capital letter', (await evalJs('["#st-strays-stop","#st-strays-check","#st-strays-auto-btn"].every((b) => /^\\p{Lu}/u.test(document.querySelector(b).innerText))')));
+  await evalJs('document.querySelector("#st-strays").scrollIntoView({ block: "start" }); true');
+  await shot('station-strays.png');
+
+  // Stop: the first press changes nothing; the second sends SIGTERM parents first, SIGKILL only for the one that ignores it.
+  await click('#st-strays-stop');
+  check('the first press only asks again and nothing is signalled', await hasText('#st-strays-stop', 'Точно остановить') && signals().length === 0, await text('#st-strays-stop'));
+  await secondPress('#st-strays-stop');
+  check('the second press stops the ticked ones', await waitFor('document.querySelectorAll("#st-strays-table tbody tr").length === 1', 15000), JSON.stringify(await rows()));
+  const sig = signals();
+  check('the agent got SIGTERM before its helpers', sig.indexOf('TERM 9101') >= 0 && sig.indexOf('TERM 9101') < sig.indexOf('TERM 9102') && sig.indexOf('TERM 9101') < sig.indexOf('TERM 9103'), JSON.stringify(sig));
+  check('the one that ignores SIGTERM got SIGKILL after it, the others did not', sig.indexOf('TERM 9103') >= 0 && sig.indexOf('KILL 9103') > sig.indexOf('TERM 9103') && !sig.includes('KILL 9101') && !sig.includes('KILL 9102'), JSON.stringify(sig));
+  check('nothing of a task in work, outside the board, another user or the unticked shell was signalled', !sig.some((l) => /9131|9141|9161|9171|9121/.test(l)), JSON.stringify(sig));
+  check('the answer says what happened', await waitApi('/api/strays', (r) => r.journal.some((e) => e.who === 'human' && e.data.action === 'stop' && e.data.term === 4 && e.data.kill === 1 && e.data.count === 5)), await evalJs('fetch("/api/strays").then((x) => x.json()).then((r) => JSON.stringify(r.journal))'));
+  await click('#st-strays-log summary');
+  check('the journal of the card shows it, with the tasks', await hasText('#st-strays-log', 'Остановлено процессов: 5 из 5, из них SIGKILL: 1') && await hasText('#st-strays-log', 'ALP-13'), await text('#st-strays-log'));
+  check('the planner keeps a line about it in its own journal', await waitFor('plannerSnap().journal.some((j) => j.s === "runner" && j.text.includes("остановлено процессов завершённых задач"))', 8000));
+
+  // A new leftover is found by the loop and by «Проверить»; the server refuses a pid that is not a leftover.
+  const table = JSON.parse(readFileSync(procsFile, 'utf8'));
+  const copy13 = table.procs.find((p) => p.pid === 9161).cwd;
+  table.procs.push({ pid: 9201, ppid: 1, pgid: 9201, comm: 'omp', cmd: 'omp --auto-approve work', cwd: copy13, rss: 1 << 26, age_ms: 600000, start: 7001 });
+  table.procs.push({ pid: 9202, ppid: 1, pgid: 9202, comm: 'zsh', cmd: 'zsh', cwd: copy13, rss: 1 << 22, age_ms: 600000, start: 7002 });
+  writeFileSync(procsFile, JSON.stringify(table));
+  await click('#st-strays-check');
+  check('«Проверить» finds the new ones', await waitFor('document.querySelectorAll("#st-strays-table tbody tr").length === 3', 15000), JSON.stringify(await rows()));
+  const refused = await evalJs(`fetch("/api/strays/stop", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ targets: [{ pid: 9131, start: 5000 + 9131 }, { pid: 9161, start: 5000 + 9161 }], confirm: true }) }).then((x) => x.json())`);
+  check('a task in work and another user\'s process are refused even when asked by pid', refused.report?.items?.every((o) => o.result === 'refused') && refused.stopped === 0, JSON.stringify(refused.report));
+  check('and an unconfirmed stop is refused as a whole', (await evalJs(`fetch("/api/strays/stop", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ targets: [{ pid: 9201, start: 7001 }] }) }).then((x) => x.status)`)) === 400);
+  check('nothing was signalled for those', !signals().some((l) => /9131|9161|9201|9202/.test(l)), JSON.stringify(signals()));
+
+  // The automatic cleaning: the switch asks twice, then stops what has been seen long enough, never a shell.
+  await click('#st-strays-auto-btn');
+  check('switching on asks again and says what will go', await hasText('#st-strays-auto-btn', 'Точно включить') && await exists('#st-strays-auto-now') && (await evalJs('document.querySelector("#st-strays-auto").dataset.auto')) === 'off', await text('#st-strays-auto'));
+  await secondPress('#st-strays-auto-btn');
+  check('it is on', await waitFor('document.querySelector("#st-strays-auto")?.dataset.auto === "on"', 8000));
+  check('it stops the leftover by itself after the grace time', await waitFor('document.querySelectorAll("#st-strays-table tbody tr").length === 2', 20000) && signals().includes('TERM 9201'), JSON.stringify(signals()));
+  check('and leaves the shells', !signals().some((l) => /9202|9121/.test(l)) && JSON.parse(readFileSync(procsFile, 'utf8')).procs.some((p) => p.pid === 9202), JSON.stringify(signals()));
+  check('the journal tells the automatic cleaning from the human', await waitApi('/api/strays', (r) => r.auto === true && r.journal.some((e) => e.who === 'auto' && e.data.action === 'stop' && e.data.term === 1) && r.journal.some((e) => e.who === 'human' && e.data.action === 'switch' && e.data.on === true)), await evalJs('fetch("/api/strays").then((x) => x.json()).then((r) => JSON.stringify(r.journal))'));
+  await click('#st-strays-auto-btn');
+  check('switching off needs no second press', await waitFor('document.querySelector("#st-strays-auto")?.dataset.auto === "off"', 8000));
+  await evalJs('document.querySelector("#st-strays").scrollIntoView({ block: "start" }); true');
+  await shot('station-strays-after.png');
+  await resetUi();
+});
+
 section('crew wizard', async () => {
   // First run: the coach tour first, then the wizard «Экипаж корабля», once. ?nocoach and ?calm leave it out.
   await evalJs('localStorage.removeItem("herdr-planner.crew-seen"); localStorage.removeItem("herdr-planner.seen"); true');
