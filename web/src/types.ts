@@ -457,7 +457,7 @@ export interface Snapshot {
   limits: Usage;
   todo: TodoItem[];
   /** Lines worth keeping in a universe's memory, proposed when a task was done; they wait for the human. */
-  memory_suggestions: { task: string; repo: string; tag: string; title: string; lines: { kind: string; text: string }[]; at: number }[];
+  memory_suggestions: MemorySuggestion[];
   journal: JournalEntry[];
   coordinator: CoordinatorState;
   /** Shipyards: machines the tasks' containers run on. */
@@ -503,6 +503,8 @@ export interface TurnData {
   q: string;
   a: string;
 }
+
+export interface MemorySuggestion { task: string; repo: string; tag: string; title: string; lines: { kind: string; text: string }[]; at: number }
 
 export interface Request {
   key: string;

@@ -1,5 +1,5 @@
 /* Requests to the human: one list from the board's tasks, the Coordinator and the shipyards' alarms. */
-import type { Request, Runner, RunnerAlert, Task, Status, CoordinatorState } from './types';
+import type { Request, Runner, RunnerAlert, Task, Status, CoordinatorState, MemorySuggestion } from './types';
 import { firstSentence } from './util/format';
 import { t } from './i18n';
 
@@ -7,6 +7,8 @@ const ORDER: Record<Status, number> = { waiting: 0, failed: 1, ready: 2, plan: 3
 const ATTN = new Set<Status>(['waiting', 'failed', 'ready', 'plan']);
 /** Between a ready plan (3) and a task in review (4): an alarm needs the human, but not before a task's own request. */
 const ALARM_URGENCY = 3.5;
+/** A «В память» proposal waits for the human like the rest, but never before a task's own request or an alarm. */
+const MEMORY_URGENCY = 3.8;
 const GB = 1024 * 1024 * 1024;
 const gb = (b?: number): string => String(((b ?? 0) / GB).toFixed(1));
 
@@ -76,7 +78,7 @@ export function attentionLabel(task: Task): string {
 
 const TITLE_KEY: Record<string, string> = {
   pick: 'req.pick', limit: 'req.limit', reviewneeds: 'req.reviewneeds', plan: 'req.planReady', approval: 'req.approval',
-  failed: 'req.failed', permission: 'req.permission', auth: 'req.auth', question: 'req.question',
+  failed: 'req.failed', memory: 'req.memory', permission: 'req.permission', auth: 'req.auth', question: 'req.question',
   'coordinator-dialog': 'req.coordinator.dialog', 'coordinator-options': 'req.coordinator.options',
 };
 
@@ -104,7 +106,7 @@ export function alertText(a: RunnerAlert): string {
 
 export const requestTitle = (type: string): string => t(TITLE_KEY[type] ?? 'req.other');
 
-export function collectRequests(input: { tasks: Task[]; coordinator: CoordinatorState | null; runners?: Runner[] }): Request[] {
+export function collectRequests(input: { tasks: Task[]; coordinator: CoordinatorState | null; runners?: Runner[]; suggestions?: MemorySuggestion[] }): Request[] {
   const out: Request[] = [];
   for (const task of input.tasks) {
     if (!ATTN.has(task.status)) continue;
@@ -128,6 +130,15 @@ export function collectRequests(input: { tasks: Task[]; coordinator: Coordinator
         why: t('reason.yard'), urgency: ALARM_URGENCY,
       });
     }
+  }
+  // Lines a model proposed for a universe's memory after a task was done: each one waits until it is kept or dropped.
+  for (const m of input.suggestions ?? []) {
+    const first = m.lines.find((l) => l.text.trim())?.text ?? '';
+    const text = m.title || firstSentence(first);
+    out.push({
+      key: `memory:${m.task}`, type: 'memory', title: requestTitle('memory'), id: m.task, tag: m.tag, repo: m.repo,
+      msg: text, text, why: t('reason.memory'), urgency: MEMORY_URGENCY,
+    });
   }
   const c = input.coordinator;
   if (c?.dialog) {

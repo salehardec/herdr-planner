@@ -183,7 +183,8 @@ onState((s: Snapshot) => {
   // New requests to the human: a sound and a notification, if switched on.
   const list = requests.value;
   const keys = new Set(list.map((r) => r.key));
-  const fresh2 = list.filter((r) => !seenRequests.has(r.key));
+  // A «В память» proposal has its own toast above: no beep and no system notification for it.
+  const fresh2 = list.filter((r) => !seenRequests.has(r.key) && r.type !== 'memory');
   seenRequests = keys;
   if (!first && notifyOn.value && fresh2.length) {
     beep();
