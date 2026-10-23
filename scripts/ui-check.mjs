@@ -2298,6 +2298,22 @@ section('requests', async () => {
     await waitFor(`[...document.querySelectorAll('#clog .turn[data-n]')].some((e) => e.innerText.includes(${JSON.stringify(noticeLine)}))`, 12000)
       && await evalJs(`(() => { const all = [...document.querySelectorAll('#clog .turn')].filter((e) => e.innerText.includes(${JSON.stringify(noticeLine)})); return all.length === 1 && all[0].hasAttribute('data-n'); })()`),
     await evalJs(`[...document.querySelectorAll('#clog .turn')].filter((e) => e.innerText.includes(${JSON.stringify(noticeLine)})).map((e) => e.className + (e.hasAttribute('data-n') ? ' n' : ''))`));
+  // A reload holds only the last turns: a notice older than them is history, not a line pinned under newer turns. The
+  // same holds for a board line the Coordinator read inside a run (history drops it from the turns): no turn of its own,
+  // and it must not stand below the run's answer.
+  const later = Date.now();
+  for (let i = 0; i < 4; i++) {
+    appendFileSync(transcript, JSON.stringify({ type: 'user', timestamp: new Date(later + i * 1000).toISOString(), message: { role: 'user', content: `Ответ ${i + 1}` } }) + '\n');
+    appendFileSync(transcript, JSON.stringify({ type: 'assistant', timestamp: new Date(later + i * 1000 + 500).toISOString(), message: { role: 'assistant', model: 'claude-opus-5-5', stop_reason: 'end_turn', content: [{ type: 'text', text: `Принято ${i + 1}.` }] } }) + '\n');
+  }
+  await navigate(base + '/?noauto&nocoach&bloom=0');
+  await waitFor('window.world && world.debug().planets > 0', 20000);
+  await press('Slash', '/');
+  check('the chat opens on the last turns after the reload', await waitFor('!document.querySelector("#chat").classList.contains("off") && document.querySelectorAll("#clog .turn[data-n]").length >= 3', 12000), String(await evalJs('document.querySelectorAll("#clog .turn[data-n]").length')));
+  check('after a reload that holds only the last turns, an old notice is not pinned under them',
+    await waitFor('document.querySelectorAll("#clog [data-notice]").length === 0', 5000)
+      && await evalJs(`![...document.querySelectorAll('#clog .turn')].some((e) => e.innerText.includes(${JSON.stringify(noticeLine)}))`),
+    await evalJs(`[...document.querySelectorAll('#clog .turn')].map((e) => (e.hasAttribute('data-notice') ? 'NOTICE ' : '') + (e.innerText || '').replace(/\\s+/g, ' ').slice(0, 40)).join(' | ')`));
   writeFileSync(transcript, transcriptBefore);
   await navigate(base + '/?noauto&nocoach&bloom=0');
   await waitFor('window.world && world.debug().planets > 0', 20000);
