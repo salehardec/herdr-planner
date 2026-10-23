@@ -3805,8 +3805,11 @@ section('memory window', async () => {
   await click('#mem-save');
   await waitCard();
   await sayYes();
-  const longId = await evalJs(`(() => { const r = [...document.querySelectorAll('#mem-list [data-mem]')].find((e) => e.querySelector('.mm-title')?.title === ${JSON.stringify(LONG)}); return r?.dataset.mem || ''; })()`);
-  check('the new entry is a draft in the window', await waitFor(`document.querySelector('#mem-list [data-mem="${longId}"]')?.dataset.draft === "new"`, 8000) && longId !== '', longId);
+  // The list is redrawn after the save: wait for the row itself (a slow machine can be a tick or two behind), and only
+  // then take its id — an empty id would make every check below address nothing and say nothing about the page.
+  const newRow = `[...document.querySelectorAll('#mem-list [data-mem]')].find((e) => e.querySelector('.mm-title')?.title === ${JSON.stringify(LONG)})`;
+  check('the new entry is a draft in the window', await waitFor(`${newRow}?.dataset.draft === "new"`, 15000), await evalJs(`${newRow}?.dataset.mem || ''`));
+  const longId = await evalJs(`${newRow}?.dataset.mem || ''`);
   // the filter by state: written / draft / waiting
   await typeIn('#mem-f-state', 'draft');
   check('the filter «Черновик» shows the draft', await waitFor(`!!document.querySelector('#mem-list [data-mem="${longId}"]') && [...document.querySelectorAll('#mem-list [data-mem]')].every((e) => e.dataset.draft)`, 5000));
@@ -3841,6 +3844,10 @@ section('memory window', async () => {
     await evalJs(AUDIT);
     await beat();
     const m = await rowOf(longId);
+    if (!m) {
+      check(`${at}: the row is there`, false, longId);
+      return;
+    }
     const bad = await layoutProblems('#mem-window');
     check(`${at}: the long title keeps ${m.titleRem.toFixed(1)} rem beside the badge (at least 10), at most 3 lines, never on the badge`, m.titleRem >= 10 && m.lines <= 3 && !m.over, JSON.stringify(m));
     check(`${at}: nothing wider than its box in the window, and no sideways scroll`, bad.length === 0 && !m.sideways, bad.join('; '));
