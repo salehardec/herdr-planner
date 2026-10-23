@@ -3255,9 +3255,12 @@ const layoutRun = async (w, h, dsf, scale = 'auto') => {
       for (const x of [gx + 100, w * 0.6, w - 40]) await send('Input.dispatchMouseEvent', { type: 'mouseMoved', x, y: gy, button: 'left', buttons: 1 });
       await send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: w - 40, y: gy, button: 'left', buttons: 0, clickCount: 1 });
       await roomOk('the navigator dragged to the far right');
-      // the most the navigator may take is what the window leaves: its own gap, the focus card's column and the chat's 30 rem
-      const lim = await evalJs(`(() => { const r = parseFloat(getComputedStyle(document.documentElement).fontSize); return { max: Number(document.querySelector('#nav .panel-grip').getAttribute('aria-valuemax')), room: innerWidth / r - document.querySelector('#focus').getBoundingClientRect().width / r }; })()`);
-      check(`${at}: the edge's own upper limit (${lim.max} rem) is below what the window leaves (${lim.room.toFixed(0)} rem without the focus card, 33 rem for the gaps and the chat)`, lim.max > 0 && lim.max <= Math.max(16, lim.room - 32.4), JSON.stringify(lim));
+      // The most the navigator may take is what the window leaves: its own gap, the focus card's column and the chat's 30 rem.
+      // The focus card gives its column back when it is closed, and steps aside while a chat that needs the room is open
+      // (chat-tight, chat-wide.ts) — then the navigator may take that space.
+      const lim = await evalJs(`(() => { const r = parseFloat(getComputedStyle(document.documentElement).fontSize); const win = document.querySelector('#win'); const aside = win.classList.contains('focus-off') || (win.classList.contains('chat-tight') && win.classList.contains('chat-open')); const right = aside ? 0.75 : document.querySelector('#focus').getBoundingClientRect().width / r + 1.5; return { max: Number(document.querySelector('#nav .panel-grip').getAttribute('aria-valuemax')), room: innerWidth / r - right }; })()`);
+      const wants = Math.max(16, Math.min(48, lim.room - 31.5));
+      check(`${at}: the edge's own upper limit (${lim.max} rem) is what the window leaves (${lim.room.toFixed(1)} rem beside the focus card's column, ${wants.toFixed(1)} rem for the navigator at most)`, lim.max > 0 && lim.max <= wants + 0.6, JSON.stringify(lim));
     }
     // a width kept from a big screen: the window here is cut to what fits
     await evalJs('try { localStorage.setItem("herdr-planner.navW", "48"); } catch {} true');
