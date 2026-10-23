@@ -2935,6 +2935,8 @@ section('universes', async () => {
   check('the board key is suggested', (await evalJs('document.querySelector("#u-key").value')).length >= 2);
   await click('#u-go');
   check('adding asks twice (confirmation)', await hasText('#u-go', 'Точно'));
+  // A lost `progress` must not hang the dialog: the page asks the server for the job's last word (PLN-57).
+  await evalJs('window.__noProgress = true; true');
   // Watch for the progress list from before the second press: the fixture's board answers so fast
   // that it can already be replaced by the done card. The done card is checked right below.
   const steps = waitFor('!!document.querySelector("#u-steps") && document.querySelectorAll("#u-steps li").length >= 2', 20000);
@@ -2944,6 +2946,7 @@ section('universes', async () => {
   await click('#u-fly');
   check('«Лететь к ней» flies to the new universe', await waitFor('plannerDebug().selected?.kind === "universe" && plannerDebug().selected.id === "newrepo"', 20000), JSON.stringify(await pd()));
   check('the new universe is on the board (an empty one at first)', await waitFor(`plannerSnap().projects.some((p) => p.name === 'newrepo')`, 10000));
+  await evalJs('window.__noProgress = false; true');
   // an address: hosting and write access come from gh / glab
   await evalJs(`document.querySelector('#nav [data-kind="addUniverse"]').click(); true`);
   await waitFor('!!document.querySelector("#addu")', 3000);
@@ -4722,7 +4725,13 @@ await send('Page.addScriptToEvaluateOnNewDocument', { source: `(() => { const f 
   // what makes the page ask for the state on its own account: it became visible again, or its event stream broke and came back
   document.addEventListener('visibilitychange', () => { if (!document.hidden) net.shown++; });
   const ES = window.EventSource;
-  if (ES) { window.EventSource = function (...a) { const es = new ES(...a); es.addEventListener('error', () => { net.streamErrors++; }); return es; }; window.EventSource.prototype = ES.prototype; }
+  // __noProgress drops the "progress" events a page listens for: a stream that falls behind is given the state
+  // instead of the missed ones, and a screen that waits for such an event must not hang (see the universes section).
+  if (ES) { window.EventSource = function (...a) { const es = new ES(...a); es.addEventListener('error', () => { net.streamErrors++; });
+    const add = es.addEventListener.bind(es);
+    // The flag is read when the event comes, not when the listener is put on: the page listens once, at load.
+    es.addEventListener = (t, f, o) => (t === 'progress' ? add(t, (e) => { if (!window.__noProgress) f(e); }, o) : add(t, f, o));
+    return es; }; window.EventSource.prototype = ES.prototype; }
   net.keys = [];
   document.addEventListener('keydown', (e) => { window.__keyN = (window.__keyN || 0) + 1; net.keys.push(e.code + '>' + (e.target && (e.target.id || e.target.tagName)) + (e.defaultPrevented ? '!' : '')); if (net.keys.length > 12) net.keys.shift(); }, true);
   window.fetch = function (...a) { net.pending++; const u = String(a[0] && a[0].url || a[0]); return f.apply(this, a).then((r) => { if (!r.ok) net.bad.push(u + ' ' + r.status); return r; }, (e) => { net.bad.push(u + ' ' + e.message); throw e; }).finally(() => { net.pending--; net.log.push(u); }); }; })()` });

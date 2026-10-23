@@ -207,6 +207,8 @@ pub struct App {
     pub cfg: AppConfig,
     pub db: Db,
     pub bus: Bus,
+    /// The last words of the newest «add a universe» job, for a dialog whose event stream lost its `progress`.
+    pub add_job: crate::api::AddJob,
     /// Something changed on disk: read the board again soon.
     pub poke: Notify,
     pub snapshot: RwLock<Snapshot>,
@@ -364,6 +366,7 @@ impl App {
             cfg,
             db,
             bus: Bus::new(),
+            add_job: crate::api::AddJob::default(),
             poke: Notify::new(),
             snapshot: RwLock::new(snapshot),
             auth,

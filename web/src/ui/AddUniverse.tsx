@@ -20,6 +20,9 @@ interface Inspect {
   suggested_name: string; suggested_key: string; clone_dir: string; exists_on_disk: boolean; on_board: boolean; board_name?: string; notes: string[];
 }
 interface Step { id: string; label: string; state: string; detail: string; percent?: number | null }
+/** How an add ended, as the server reports it (`universe::AddResult`), and the words of its job. */
+interface AddResult { name: string; key: string; root: string; origin?: string; upstream?: string; fork_of?: string; settings?: string[]; notes?: string[] }
+interface Word { job?: string; steps?: Step[]; done?: boolean; ok?: boolean; result?: AddResult; error?: string }
 
 type Tab = 'folder' | 'address';
 export const tab = signal<Tab>('folder');
@@ -35,7 +38,7 @@ const dir = signal('');
 const mode = signal<'folder' | 'clone' | 'fork' | 'study'>('folder');
 const job = signal<string | null>(null);
 const steps = signal<Step[]>([]);
-const result = signal<any | null>(null);
+const result = signal<AddResult | null>(null);
 const failed = signal('');
 let timer = 0;
 let off: (() => void) | null = null;
@@ -44,6 +47,12 @@ const reset = (): void => {
   input.value = ''; entries.value = []; info.value = null; err.value = ''; name.value = ''; key.value = ''; dir.value = '';
   job.value = null; steps.value = []; result.value = null; failed.value = ''; mode.value = tab.value === 'folder' ? 'folder' : 'clone';
 };
+
+/** What a job's word does to the dialog: the steps it shows, or how it ended. */
+function apply(p: Word): void {
+  if (p.steps) steps.value = p.steps;
+  if (p.done) { if (p.ok) result.value = p.result ?? null; else failed.value = p.error ?? ''; }
+}
 
 async function complete(): Promise<void> {
   try {
@@ -80,18 +89,37 @@ export function openAddUniverse(): void {
 
 export function AddUniverse(): JSX.Element | null {
   const d = addDialogs.universe.value;
+  const jid = job.value;
+  const ended = !!result.value || !!failed.value;
   useEffect(() => {
     if (!d) return;
     off = onProgress((p) => {
       if (p.job !== job.value) return;
-      if (p.steps) steps.value = p.steps;
-      if (p.done) { if (p.ok) result.value = p.result; else failed.value = p.error ?? ''; }
+      apply(p);
     });
     return () => { off?.(); off = null; };
-  }, [!!d]);
+  }, [d]);
+  // A stream that falls behind is given the current state instead of the missed events (`events`): a lost
+  // `progress` would leave the dialog waiting for good while the universe is already on the board. So while the
+  // job runs, its last word is asked for here too.
+  useEffect(() => {
+    if (!jid || !d || ended) return;
+    let stop = false;
+    let t = 0;
+    const ask = async (): Promise<void> => {
+      try {
+        const r = await api<Word>(`/api/universe/job?id=${encodeURIComponent(jid)}`);
+        if (!stop && r.job === jid) apply(r);
+      } catch { /* nothing said yet: the stream or the next ask brings it */ }
+      if (!stop) t = window.setTimeout(() => { void ask(); }, 700);
+    };
+    t = window.setTimeout(() => { void ask(); }, 400);
+    return () => { stop = true; window.clearTimeout(t); };
+  }, [jid, d, ended]);
   if (!d) return null;
   const gname = snap.value?.host ?? '';
   const i = info.value;
+  const done = result.value;
   const k = 'add-universe';
   const on = armed.value?.key === k;
   const busy = job.value !== null && !result.value && !failed.value;
@@ -180,6 +208,9 @@ export function AddUniverse(): JSX.Element | null {
           {job.value && (
             <>
               <ul class="steps" id="u-steps">
+                {steps.value.length === 0 && (
+                  <li class="run"><span class="i">{'…'}</span><div>{t('addu.starting')}</div></li>
+                )}
                 {steps.value.map((s) => (
                   <li class={s.state} key={s.id}>
                     <span class="i">{s.state === 'ok' ? '✓' : s.state === 'err' ? '✕' : s.state === 'run' ? '…' : '·'}</span>
@@ -192,18 +223,18 @@ export function AddUniverse(): JSX.Element | null {
                 ))}
               </ul>
               {failed.value && <div class="hint bad">{failed.value}</div>}
-              {result.value && (
+              {done && (
                 <div class="info" id="u-done">
-                  <b>{t('addu.done')}</b> {result.value.name} · {result.value.key}
-                  <div>{result.value.root}</div>
-                  {result.value.fork_of && <div>{t('addu.forkOf', { o: result.value.fork_of })}</div>}
-                  {result.value.settings?.length > 0 && <div>{t('addu.settings')}: <code>{result.value.settings.join(' · ')}</code></div>}
-                  {(result.value.notes ?? []).map((n: string, idx: number) => <div class="hint" key={idx}>{n}</div>)}
+                  <b>{t('addu.done')}</b> {done.name} · {done.key}
+                  <div>{done.root}</div>
+                  {done.fork_of && <div>{t('addu.forkOf', { o: done.fork_of })}</div>}
+                  {(done.settings ?? []).length > 0 && <div>{t('addu.settings')}: <code>{(done.settings ?? []).join(' · ')}</code></div>}
+                  {(done.notes ?? []).map((n: string, idx: number) => <div class="hint" key={idx}>{n}</div>)}
                 </div>
               )}
               <div class="act">
-                {result.value && <button class="btn primary" type="button" id="u-fly" onClick={() => { close(); void navigateTo({ kind: 'universe', id: result.value.name }); }}>{t('addu.fly')}</button>}
-                {(result.value || failed.value) && <button class="btn" type="button" onClick={close}>{t('close')}</button>}
+                {done && <button class="btn primary" type="button" id="u-fly" onClick={() => { close(); void navigateTo({ kind: 'universe', id: done.name }); }}>{t('addu.fly')}</button>}
+                {(done || failed.value) && <button class="btn" type="button" onClick={close}>{t('close')}</button>}
               </div>
             </>
           )}
