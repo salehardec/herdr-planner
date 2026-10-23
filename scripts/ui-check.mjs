@@ -38,6 +38,8 @@ const readPort = () => { try { return Number(readFileSync(join(profile, 'DevTool
 const chrome = spawn(process.env.CHROMIUM || 'chromium', [
   '--headless=new', '--no-sandbox', '--disable-gpu', '--use-gl=angle', '--use-angle=swiftshader', '--enable-unsafe-swiftshader',
   '--hide-scrollbars', `--user-data-dir=${profile}`, '--remote-debugging-port=0', '--window-size=1500,950',
+  // a desktop with a mouse: headless would say `(hover: none)`, and the chat shows its actions by hover (PLN-60)
+  '--blink-settings=primaryHoverType=2,availableHoverTypes=2,primaryPointerType=4,availablePointerTypes=4',
   '--host-resolver-rules=MAP remote.test 127.0.0.1', 'about:blank',
 ], { stdio: 'ignore' });
 // Whatever happens, the browser goes and its profile (hundreds of MB in /tmp) goes with it.
@@ -769,6 +771,45 @@ section('chat', async () => {
   check('the text is large and readable: 15px, a measure under 80ch', await waitFor('(() => { const c = getComputedStyle(document.querySelector("#chat")); const w = document.querySelector("#chat").getBoundingClientRect().width; return parseFloat(c.fontSize) >= 15 && w < 80 * 9.6 + 40; })()'));
   check('the Coordinator\'s options (from its words) are buttons under the chat', await waitFor('document.querySelectorAll("#cvariants .btn").length === 2', 8000), await evalJs('document.querySelectorAll("#cvariants .btn").length'));
   check('the memory of the Coordinator: 75 % and yellow', await hasText('#memory-c', '75') && await exists('#memory-c.warn'), await text('#memory-c'));
+  // PLN-60: Markdown in an answer, a board event as an event line, the task chips, the hover actions (design/chat).
+  const md = await evalJs(`(() => { const a = document.querySelector('#clog .turn[data-n="7"] .msg.a .txt'); if (!a) return null; return { strong: a.querySelector('strong')?.innerText || '', code: !!a.querySelector('code'), li: a.querySelectorAll('ul li').length, pre: !!a.querySelector('pre'), copy: a.querySelector('.pre [data-act="copy-code"]')?.innerText || '', table: a.querySelectorAll('table td').length, link: a.querySelector('a[href="https://example.com/alp-8"]')?.target || '', text: a.innerText }; })()`);
+  check('answer 8 is drawn as Markdown: bold, code, a nested list, a fence with «Копировать», a table, a link', !!md && md.strong === 'ALP-8' && md.code && md.li === 3 && md.pre && md.copy === 'Копировать' && md.table === 4 && md.link === '_blank', JSON.stringify(md).slice(0, 300));
+  check('no raw ** or backticks are left in the text', !!md && !md.text.includes('**') && !md.text.includes('`'), md?.text.slice(0, 200));
+  const ev = await evalJs(`(() => { const a = document.querySelector('#clog .turn[data-n="8"] .msg.a'); if (!a) return null; return { body: a.querySelector('.txt')?.innerText || '', ev: a.querySelector('.cev')?.innerText || '', chip: a.querySelector('.cev [data-tag="ALP-9"]')?.title || '' }; })()`);
+  check('answer 9 ends with a board event: an event line in Russian with the task as a chip, not an English sentence in the text', !!ev && ev.ev.includes('Агент запущен на') && ev.ev.includes('ALP-9') && !ev.body.includes('Started an agent') && ev.body.startsWith('Ответ 9'), JSON.stringify(ev));
+  check('the chip tells the task\'s name and state', !!ev && ev.chip.includes('ALP-9') && ev.chip.includes('·') && ev.chip.length > 10, ev?.chip);
+  await evalJs('setLang("en"); true');
+  check('English: the event line speaks English', await waitFor(`(document.querySelector('#clog .turn[data-n="8"] .cev')?.innerText || '').includes('Started an agent on')`, 4000) && (await text('#clog .turn[data-n="8"] .msg.q .who')) === 'You', await text('#clog .turn[data-n="8"] .cev'));
+  await evalJs('setLang("ru"); true');
+  await waitFor(`(document.querySelector('#clog .turn[data-n="8"] .msg.q .who')?.innerText || '') === 'Вы'`, 4000);
+  // the actions: hidden until the mouse is over the message, but reachable with the keyboard (a pointer that can hover is emulated: headless has none)
+  // (with a mouse the bar is invisible until hovered or focused; without one — a touch screen — it is not drawn until the message is tapped or focused)
+  await send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: 4, y: 4 });
+  await frames(2);
+  const actsSel = '#clog .turn[data-n="8"] .msg.a';
+  const actsShown = `(() => { const c = getComputedStyle(document.querySelector(${JSON.stringify(actsSel)} + ' .acts')); return c.display !== 'none' && c.visibility !== 'hidden'; })()`;
+  const actsBefore = await evalJs(actsShown);
+  // the message itself takes the focus (Tab reaches it); its actions come out at once and the next Tab reaches them
+  await evalJs(`document.querySelector(${JSON.stringify(actsSel)}).focus(); true`);
+  await frames(2);
+  const actsOnMessage = await evalJs(actsShown);
+  const acts = await evalJs(`(() => { const b = document.querySelector(${JSON.stringify(actsSel)} + ' [data-act="to-memory"][data-who="a"]'); b.focus(); const focused = document.activeElement === b; const labels = [...b.parentElement.querySelectorAll('button')].map((x) => x.innerText); b.blur(); return { hover: matchMedia('(hover: hover)').matches, focused, labels }; })()`);
+  check('«В память» and the other actions are hidden until hovered, and Tab brings them out', !actsBefore && actsOnMessage && !!acts && acts.focused && acts.labels.join(' ') === 'Копировать Цитировать В память', JSON.stringify({ actsBefore, actsOnMessage, ...acts }));
+  await click('#clog .turn[data-n="8"] .msg.a [data-act="quote"]');
+  check('«Цитировать» puts the answer into the line as a quote', await waitFor(`document.querySelector('#ask-in').value.startsWith('> Ответ 9')`, 3000), await evalJs('document.querySelector("#ask-in").value'));
+  await click('#clog .turn[data-n="8"] .msg.q [data-reuse]');
+  check('«Повторить» puts the question back into the line', await waitFor(`document.querySelector('#ask-in').value === 'Вопрос 9: как дела по ALP-9?'`, 3000), await evalJs('document.querySelector("#ask-in").value'));
+  await evalJs('(() => { const t = document.querySelector("#ask-in"); t.value = ""; t.dispatchEvent(new Event("input", { bubbles: true })); return true; })()');
+  // the Coordinator at work: how long, what it does (the last tool call of the running turn), its sub-agents
+  writeFileSync(join(fixture, 'state', 'coordinator-busy'), '1');
+  writeFileSync(coordPoke, readFileSync(coordPoke, 'utf8'));
+  check('while it works the chat says so, with what it does and for how long', await waitFor(`(() => { const w = document.querySelector('#cworking'); return !!w && w.innerText.includes('Читаю board details ALP-10') && /работает · \\d+ (ч|мин|с)/.test(w.innerText) && w.innerText.includes('1 субагент'); })()`, 25000), await text('#cworking'));
+  await send('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-reduced-motion', value: 'reduce' }] });
+  check('reduced motion: the pulse and the dots do not animate', await waitFor(`getComputedStyle(document.querySelector('#cworking .pulse')).animationName === 'none' && getComputedStyle(document.querySelector('#cworking .dots i')).animationName === 'none'`, 3000));
+  await send('Emulation.setEmulatedMedia', { features: [] });
+  unlinkSync(join(fixture, 'state', 'coordinator-busy'));
+  writeFileSync(coordPoke, readFileSync(coordPoke, 'utf8'));
+  await waitFor('!document.querySelector("#cworking")', 25000);
   await shot('chat.png');
   // ↑ scrolls the log by a step and, at its top, asks for five older turns: press until they have come (each press after the page has
   // handled the one before; how many presses it takes depends on the size of the log, not on the machine).
@@ -777,6 +818,19 @@ section('chat', async () => {
   check('scrolling up (↑) loads the earlier turns', await waitFor('document.querySelectorAll("#clog .turn:not(.pending)").length > 3', 8000), await turnCount());
   for (let i = 0; i < 80 && (await turnCount()) < 10; i++) { await press('ArrowUp'); await pageTurn(); await waitFor('!window.__net || window.__net.pending === 0', 5000); }
   check('the start of the conversation is marked', await waitFor('!!document.querySelector("#clog .meta.start")', 4000));
+  // PLN-60: a board notice is its own kind of message; an image of a message opens large
+  const notice = await evalJs(`(() => { const t = document.querySelector('#clog .turn[data-n="6"]'); if (!t) return null; const n = t.querySelector('.msg.notice'); return { notice: !!n, q: !!t.querySelector('.msg.q'), who: n?.querySelector('.who')?.innerText || '', chip: !!n?.querySelector('.ntl [data-tag="ALP-7"]'), badge: n?.querySelector('.ntl > .badge')?.innerText || '', text: n?.innerText || '' }; })()`);
+  check('turn 7 is a board notice: «Доска», the task as a chip, its name (with its own quotes) and its state, without the instruction', !!notice && notice.notice && !notice.q && notice.who === 'Доска' && notice.chip && notice.badge === 'ждёт тебя' && notice.text.includes('«Документация «API экспорта»: примеры»') && !notice.text.includes('Посмотри') && !notice.text.includes('[Уведомление'), JSON.stringify(notice));
+  // the picture is an image block of the transcript record (Claude Code drops the path lines): the planner serves it from there
+  const thumb = await evalJs(`(() => { const t = document.querySelector('#clog .turn[data-n="5"]'); if (!t) return null; const img = t.querySelector('.msg.q .shot img'); return { src: img?.getAttribute('src') || '', w: img?.naturalWidth || 0, button: t.querySelector('.msg.q .shot')?.tagName, text: t.querySelector('.msg.q .txt')?.innerText || '', plate: !!t.querySelector('.pasted') }; })()`);
+  check('turn 6 shows its image as a thumbnail out of the transcript, and neither the header nor the plate is in the bubble', !!thumb && thumb.src === '/api/chat/image/5/0' && thumb.w === 1 && thumb.button === 'BUTTON' && thumb.text === 'Вопрос 6: как дела по ALP-6? Вот снимок.' && !thumb.plate, JSON.stringify(thumb));
+  const imgApi = await evalJs(`fetch('/api/chat/image/5/0').then(async (r) => [r.status, r.headers.get('content-type'), (await r.arrayBuffer()).byteLength])`);
+  const imgNone = await evalJs(`fetch('/api/chat/image/5/1').then((r) => r.status)`);
+  check('/api/chat/image serves the bytes as image/png and knows no second image', imgApi[0] === 200 && imgApi[1] === 'image/png' && imgApi[2] === 70 && imgNone === 404, JSON.stringify([imgApi, imgNone]));
+  await click('#clog .turn[data-n="5"] .msg.q .shot');
+  check('a click opens the image over the page, the focus is on «Закрыть»', await waitFor('!!document.querySelector("#lightbox img") && document.activeElement?.id === "lbclose"', 4000));
+  await press('Escape');
+  check('Esc closes it and the focus comes back to the thumbnail', await waitFor('!document.querySelector("#lightbox") && document.activeElement?.classList.contains("shot")', 4000), await evalJs('document.activeElement?.outerHTML.slice(0, 80)'));
   check('a button brings us back to the latest', await waitFor('!!document.querySelector("#tolast")', 3000));
   await click('#tolast');
   // The button scrolls smoothly: a loaded runner needs more than a moment for the animation to end.
@@ -943,6 +997,27 @@ section('chat', async () => {
   check('a 60 000-letter Cyrillic message (120 000 bytes) is sent, not refused', cyrOk[0] === 200 && !String(cyrOk[1] || '').includes('Argument list'), JSON.stringify(cyrOk));
   const cyrTooLong = await evalJs(`fetch('/api/chat', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ text: 'ж'.repeat(70000) }) }).then(async (r) => [r.status, (await r.json()).error])`);
   check('a Cyrillic message over the byte limit is refused clearly, not a 502', cyrTooLong[0] === 400 && cyrTooLong[1].includes('130000') && !cyrTooLong[1].includes('Argument list'), JSON.stringify(cyrTooLong));
+  // PLN-60: the draft survives a reload; a chip opens the task; the light theme
+  await evalJs('(() => { const t = document.querySelector("#ask-in"); t.value = "черновик на потом"; t.dispatchEvent(new Event("input", { bubbles: true })); return true; })()');
+  check('the words typed are kept as a draft', await waitFor(`localStorage.getItem('planner.chat.draft') === 'черновик на потом'`, 3000), await evalJs(`localStorage.getItem('planner.chat.draft')`));
+  await navigate(base + '/?noauto&nocoach&bloom=0');
+  await press('Slash', '/');
+  check('after a reload the draft is back in the line', await waitFor(`document.querySelector('#ask-in')?.value === 'черновик на потом'`, 8000), await evalJs(`document.querySelector('#ask-in')?.value`));
+  await waitFor('document.querySelectorAll("#clog .turn:not(.pending)").length === 3', 8000);
+  await evalJs('(() => { const t = document.querySelector("#ask-in"); t.focus(); return true; })()');
+  await press('Escape');
+  check('Esc clears the line and the draft', await waitFor(`document.querySelector('#ask-in').value === '' && !localStorage.getItem('planner.chat.draft')`, 3000));
+  await press('Slash', '/');
+  await waitFor('!document.querySelector("#chat").classList.contains("off")', 3000);
+  await click('#clog .turn[data-n="8"] .cev [data-tag="ALP-9"]');
+  check('a click on a task chip opens the task in the Focus', await waitFor('plannerDebug().selected?.id === "alpha/9"', 12000), JSON.stringify(await pd()));
+  const colorsChat = join(fixture, 'theme', 'colors.toml');
+  const darkChat = readFileSync(colorsChat, 'utf8');
+  writeFileSync(colorsChat, darkChat.replace('mode = "dark"', 'mode = "light"').replace('background = "#1a120c"', 'background = "#f9f1e8"').replace('foreground = "#ecded6"', 'foreground = "#372b1f"').replace('red = "#e48682"', 'red = "#a54746"'));
+  check('the light theme reaches the chat', await waitFor('document.documentElement.dataset.mode === "light" && !document.querySelector("#chat").classList.contains("off")', 20000));
+  await shot('chat-light.png');
+  writeFileSync(colorsChat, darkChat);
+  await waitFor('document.documentElement.dataset.mode !== "light"', 20000);
   await press('Escape');
 });
 
@@ -5551,6 +5626,16 @@ section('chat unread', async () => {
   const waiting = ask('Что на ревью?') - 1;
   interim(waiting + 1, 'Сейчас посмотрю доску.');
   check('an interim line is lit', await waitFor(dots(waiting) + ' === 1', 10000));
+  // PLN-60: the turn has an interim line and a tool call still going: the working line counts from its question and names the call
+  writeFileSync(join(fixture, 'state', 'coordinator-busy'), '1');
+  // a change of a task record makes the server read the Coordinator's line again now, not at the next minute
+  const pokeBusy = join(fixture, 'board', 'tasks', 'alpha', '11', 'task.json');
+  writeFileSync(pokeBusy, readFileSync(pokeBusy, 'utf8'));
+  // (innerText breaks the line between the flex items of the working line: compared without the breaks)
+  check('the working line shows the call of a turn that already has an interim line, and counts from the question', await waitFor(`(() => { const w = (document.querySelector('#cworking')?.innerText || '').replace(/\\s+/g, ' '); return w.includes('· ls') && /работает · \\d+ (ч|мин|с)/.test(w) && !/· 0 с/.test(w); })()`, 40000), await text('#cworking'));
+  unlinkSync(join(fixture, 'state', 'coordinator-busy'));
+  writeFileSync(pokeBusy, readFileSync(pokeBusy, 'utf8'));
+  await waitFor('!document.querySelector("#cworking")', 25000);
   check('and read while the window is in front', await waitFor(dots(waiting) + ' === 0 && !document.querySelector("#bchat-n")', 10000), JSON.stringify(await stored()));
   await focus(false);
   toolDone(waiting + 1); final(waiting + 1, 'alpha/4 на ревью, ждёт тебя.');
@@ -5582,6 +5667,7 @@ section('chat unread', async () => {
   await waitFor('(() => { const l = document.querySelector("#clog"); return l.scrollHeight - l.scrollTop - l.clientHeight < 30; })()', 12000);
   await click('#cunread');
   check('the header button takes it back to the first unread', await waitFor(`(() => { const e = document.querySelector('#clog .turn[data-n="${first}"]'); const l = document.querySelector('#clog'); if (!e) return false; const r = e.getBoundingClientRect(); const o = l.getBoundingClientRect(); return r.top >= o.top - 2 && r.top < o.top + 80; })()`, 15000));
+  check('the «down» button counts the new messages below', await waitFor(`(() => { const b = document.querySelector('#tolast'); return !!b && Number(b.querySelector('.n')?.innerText) >= 1 && /нов/.test(b.innerText); })()`, 5000), await text('#tolast'));
   check('still six: a window that is not in front reads nothing', await hasText('#bchat-n', '6', 100));
 
   // The wide chat is restored open by a reload: it waits for the history and then goes to the first unread, too.
