@@ -1027,7 +1027,15 @@ mod tests {
             roots: vec![root],
             keep: vec![],
         };
-        let mut table = Real.read().unwrap();
+        // Between fork and exec the child still wears its parent's command line: wait for the real one.
+        let end = std::time::Instant::now() + Duration::from_secs(5);
+        let mut table = loop {
+            let t = Real.read().unwrap();
+            if t.procs.iter().any(|p| p.pid == child.id() && p.cmd.contains("sleep 30")) || std::time::Instant::now() > end {
+                break t;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        };
         // The planner's own children are safe (the board's commands run in a copy)…
         let own = find(&table, &board);
         // …and the same process is a leftover once it is nobody's child of ours.
