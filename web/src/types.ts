@@ -387,6 +387,10 @@ export interface Runner {
   limits: RunnerLimits;
   /** This yard's own busy threshold in percent, `null` — the list's (PLN-45). */
   busy_pct: number | null;
+  /** The CPU limit of this yard's check container, cores; 0 — no limit (PLN-58). */
+  check_cpus: number;
+  /** How many full checks may run on this yard at once; 0 — no queue (PLN-58). */
+  check_slots: number;
   /** Live tasks that keep more containers than the yard allows. */
   over: RunnerOver[];
   /** When the yard stopped answering (ms); 0 while it answers. */

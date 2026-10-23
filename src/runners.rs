@@ -133,9 +133,27 @@ pub struct Runner {
     /// 0 — never busy (PLN-45).
     #[serde(default)]
     pub busy_pct: Option<u64>,
+    /// The CPU limit of this yard's check container (`scripts/yard.sh`, `docker run --cpus`), cores; 0 — no limit,
+    /// absent — CHECK_CPUS (PLN-58).
+    #[serde(default)]
+    pub check_cpus: Option<u64>,
+    /// How many full checks may run on this yard at once (`scripts/yard.sh`, the shared slots); 0 — no queue,
+    /// absent — CHECK_SLOTS (PLN-58).
+    #[serde(default)]
+    pub check_slots: Option<u64>,
 }
 
 impl Runner {
+    /// The CPU limit of the yard's check container: its own, else CHECK_CPUS; 0 — no limit.
+    pub fn check_cpu(&self) -> u64 {
+        self.check_cpus.unwrap_or(CHECK_CPUS)
+    }
+
+    /// How many full checks run on the yard at once: its own, else CHECK_SLOTS; 0 — no queue.
+    pub fn check_slot(&self) -> u64 {
+        self.check_slots.unwrap_or(CHECK_SLOTS)
+    }
+
     /// The limits the rule talks about: the list file's own, else the machine's share once it has been read, else the
     /// fallback; a human who set zeros said «no limits» and gets them.
     pub fn effective_limits(&self, host: Option<&HostState>) -> Limits {
@@ -188,6 +206,12 @@ pub struct RunnersFile {
 pub fn busy_default() -> u64 {
     85
 }
+
+/// The CPU limit of a yard's check container until the list says otherwise (`scripts/yard.sh`, PLN-58): two of them on
+/// sixteen cores take twelve, and the machine keeps four for the containers and the board.
+pub const CHECK_CPUS: u64 = 6;
+/// How many full checks run on a yard at once until the list says otherwise (PLN-58): the rest wait for a slot.
+pub const CHECK_SLOTS: u64 = 2;
 
 fn file_version() -> u32 {
     FILE_VERSION
@@ -305,6 +329,16 @@ pub fn validate(file: &RunnersFile) -> Result<(), String> {
         if let Some(p) = r.busy_pct {
             if p > 100 {
                 return Err(format!("runners.json: порог занятости у верфи {} — от 0 до 100 %", r.id));
+            }
+        }
+        if let Some(c) = r.check_cpus {
+            if c > 1024 {
+                return Err(format!("runners.json: ЦП контейнера проверок у верфи {} — не больше 1024", r.id));
+            }
+        }
+        if let Some(s) = r.check_slots {
+            if s > 64 {
+                return Err(format!("runners.json: полных проверок разом у верфи {} — не больше 64", r.id));
             }
         }
     }
@@ -658,6 +692,12 @@ pub struct RunnerState {
     /// This yard's own busy threshold, as the list file has it (PLN-45); `None` — the list's.
     #[serde(default)]
     pub busy_pct: Option<u64>,
+    /// The CPU limit of this yard's check container (`scripts/yard.sh`), cores; 0 — no limit (PLN-58).
+    #[serde(default)]
+    pub check_cpus: u64,
+    /// How many full checks may run on this yard at once; 0 — no queue (PLN-58).
+    #[serde(default)]
+    pub check_slots: u64,
     /// Live tasks that keep more containers than the yard allows (PLN-43).
     #[serde(default)]
     pub over: Vec<OverCount>,
@@ -683,6 +723,8 @@ impl RunnerState {
             note: r.note.clone(),
             limits: r.effective_limits(None),
             busy_pct: r.busy_pct,
+            check_cpus: r.check_cpu(),
+            check_slots: r.check_slot(),
             ..Self::default()
         }
     }
@@ -3047,6 +3089,8 @@ mod tests {
             alerts: Default::default(),
             limits: None,
             busy_pct: None,
+            check_cpus: None,
+            check_slots: None,
         };
         assert_eq!(r.effective_limits(Some(&host)).cpus, 4, "no word in the file: the machine's share");
         assert_eq!(r.effective_limits(None), Limits::fallback());
@@ -3120,6 +3164,35 @@ mod tests {
     }
 
     #[test]
+    fn the_check_container_takes_six_cpus_and_two_slots_until_the_list_says_otherwise() {
+        let mut r = yard_file().get("vm-r").cloned().expect("vm-r");
+        assert_eq!((CHECK_CPUS, CHECK_SLOTS), (6, 2));
+        assert_eq!((r.check_cpu(), r.check_slot()), (6, 2), "no word in the file: the defaults");
+        r.check_cpus = Some(4);
+        r.check_slots = Some(1);
+        assert_eq!((r.check_cpu(), r.check_slot()), (4, 1));
+        // A human who set zeros meant «no limit» and «no queue», not «use the defaults again».
+        r.check_cpus = Some(0);
+        r.check_slots = Some(0);
+        assert_eq!((r.check_cpu(), r.check_slot()), (0, 0));
+        // The state the page shows carries the same numbers.
+        let s = RunnerState::from_runner(&r);
+        assert_eq!((s.check_cpus, s.check_slots), (0, 0));
+    }
+
+    #[test]
+    fn the_check_settings_are_checked_before_they_are_saved() {
+        let mut file = yard_file();
+        file.runners[0].check_cpus = Some(1025);
+        assert!(validate(&file).is_err());
+        file.runners[0].check_cpus = Some(6);
+        file.runners[0].check_slots = Some(65);
+        assert!(validate(&file).is_err());
+        file.runners[0].check_slots = Some(2);
+        assert!(validate(&file).is_ok());
+    }
+
+    #[test]
     fn the_machines_share_is_written_once_into_the_list() {
         let mut file = RunnersFile {
             default: "vm-r".into(),
@@ -3137,6 +3210,8 @@ mod tests {
                     alerts: Default::default(),
                     limits: None,
                     busy_pct: None,
+                    check_cpus: None,
+                    check_slots: None,
                 },
                 Runner {
                     id: "silent".into(),
@@ -3151,6 +3226,8 @@ mod tests {
                     alerts: Default::default(),
                     limits: None,
                     busy_pct: None,
+                    check_cpus: None,
+                    check_slots: None,
                 },
             ],
             ..RunnersFile::default()
@@ -3190,6 +3267,8 @@ mod tests {
                 alerts: Default::default(),
                 limits: Some(Limits { cpus: 3, mem_mb: 1536, per_task: 2 }),
                 busy_pct: Some(90),
+                check_cpus: None,
+                check_slots: None,
             }],
             assign: BTreeMap::new(),
             need: BTreeMap::new(),
@@ -3236,6 +3315,8 @@ mod tests {
                 alerts: Default::default(),
                 limits: None,
                 busy_pct: None,
+                check_cpus: None,
+                check_slots: None,
             }],
             ..RunnersFile::default()
         };
@@ -3269,6 +3350,8 @@ mod tests {
             alerts: Default::default(),
             limits,
             busy_pct: None,
+            check_cpus: None,
+            check_slots: None,
         };
         let file = RunnersFile {
             default: "vm-r".into(),
@@ -3315,6 +3398,8 @@ mod tests {
                 alerts: Default::default(),
                 limits: None,
                 busy_pct: None,
+                check_cpus: None,
+                check_slots: None,
             }],
             ..RunnersFile::default()
         };
@@ -3555,6 +3640,8 @@ mod tests {
             alerts: Default::default(),
             limits: None,
             busy_pct: None,
+            check_cpus: None,
+            check_slots: None,
         };
         RunnersFile {
             default: "vm-r".into(),
