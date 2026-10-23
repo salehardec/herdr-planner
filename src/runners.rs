@@ -135,11 +135,11 @@ pub struct Runner {
     pub busy_pct: Option<u64>,
     /// The CPU limit of this yard's check container (`scripts/yard.sh`, `docker run --cpus`), cores; 0 — no limit,
     /// absent — CHECK_CPUS (PLN-58).
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub check_cpus: Option<u64>,
     /// How many full checks may run on this yard at once (`scripts/yard.sh`, the shared slots); 0 — no queue,
     /// absent — CHECK_SLOTS (PLN-58).
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub check_slots: Option<u64>,
 }
 
@@ -3183,6 +3183,21 @@ mod tests {
         // The state the page shows carries the same numbers.
         let s = RunnerState::from_runner(&r);
         assert_eq!((s.check_cpus, s.check_slots), (0, 0));
+    }
+
+    #[test]
+    fn a_yard_without_check_numbers_keeps_them_out_of_the_file() {
+        let mut file = yard_file();
+        for r in &mut file.runners {
+            r.check_cpus = None;
+            r.check_slots = None;
+        }
+        let text = serde_json::to_string(&file).unwrap();
+        assert!(!text.contains("check_cpus") && !text.contains("check_slots"), "{text}");
+        file.runners[0].check_cpus = Some(4);
+        file.runners[0].check_slots = Some(1);
+        let text = serde_json::to_string(&file).unwrap();
+        assert!(text.contains("\"check_cpus\":4") && text.contains("\"check_slots\":1"), "{text}");
     }
 
     #[test]

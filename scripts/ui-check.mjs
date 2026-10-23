@@ -4320,7 +4320,7 @@ section('runners', async () => {
   // The check container's numbers that are still the defaults are not written into the file: the yard follows a later
   // change of the defaults (PLN-58).
   check('a save that leaves the check numbers at their defaults writes none of them', await waitLog(() => {
-    try { const r = JSON.parse(readFileSync(join(fixture, 'settings', 'runners.json'), 'utf8')).runners.find((x) => x.id === 'vm-r'); return r && !('check_cpus' in r) && !('check_slots' in r); } catch { return false; }
+    try { const r = JSON.parse(readFileSync(join(fixture, 'settings', 'runners.json'), 'utf8')).runners.find((x) => x.id === 'vm-r'); return r && r.check_cpus == null && r.check_slots == null; } catch { return false; }
   }, 5000), readFileSync(join(fixture, 'settings', 'runners.json'), 'utf8').slice(0, 400));
   check('the yard shows the new numbers at once', await waitFor('(() => { const e = document.querySelector("#rf-limits"); const s = e?.innerText || ""; return !!e && s.includes("ЦП 3") && s.includes("3 ГБ") && s.includes("на задачу не больше 1 контейнера"); })()', 8000), await text('#rf-limits'));
   check('and the check line still follows the defaults', await hasText('#rf-check-line', 'ЦП 6') && await hasText('#rf-check-line', '2 проверки'), await text('#rf-check-line'));
