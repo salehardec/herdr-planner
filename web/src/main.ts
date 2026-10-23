@@ -19,7 +19,7 @@ import { escape, installKeys, setMode } from './keys';
 import { installCard } from './ui/hovercard';
 import { effectiveWidth, installScale } from './scale';
 import { chatWide, installChatWide, installWideRoom } from './chat-wide';
-import { installNavWidth } from './nav-width';
+import { installPanelWidths } from './panel-width';
 import { connectTasks } from './actions';
 import { installTodoDnD } from './ui/Todo';
 import { toast } from './toast';
@@ -126,6 +126,7 @@ effect(() => {
   w?.classList.toggle('chat-wide', panels.chat.value && chatWide.value);
   w?.classList.toggle('nav-off', !panels.nav.value);
   w?.classList.toggle('focus-off', !panels.focus.value);
+  w?.classList.toggle('wait-open', panels.wait.value);
 });
 effect(() => { world.setSelection(selected.value); });
 
@@ -204,9 +205,7 @@ onState((s: Snapshot) => {
 
 /* ───────── start ───────── */
 
-installNavWidth();
 installChatWide();
-installWideRoom();
 installKeys();
 installCard();
 installTodoDnD($('scene'));
@@ -216,6 +215,10 @@ onResize();
 if (narrow.value) { panels.nav.value = false; panels.focus.value = false; }
 
 render(h(App, null), $('app'));
+// the widths are measured against the panels themselves (a panel with no width of its own is as wide as its sheet makes it),
+// so the page has to have drawn them first; the room the chat and the todos need follows those widths
+installPanelWidths();
+installWideRoom();
 connect();
 
 /* handles for the checks and for the console */

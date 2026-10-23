@@ -17,6 +17,7 @@ import { sigOf } from '../chat-read';
 import { markRead, SEE_MS, unreadCount, unreadTurns, windowActive } from '../chat-unread';
 import { dayTimeOf, timeOf } from '../util/dates';
 import { Gl } from './Gl';
+import { Grip } from './Grip';
 import { RichText } from './RichText';
 import { Memory } from './FocusOther';
 import { openRemember } from './memory-api';
@@ -326,6 +327,7 @@ export function Chat(): JSX.Element {
 
   return (
     <section class={`panel chat ${chatWide.value ? 'wide' : ''} ${open ? '' : 'off'} ${todoOver.value ? 'drop' : ''}`} id="chat" aria-label={t('chat.aria')} aria-hidden={!open} {...dropProps}>
+      <Grip panel="chat" side="left" />
       <header>
         <b>{t('quasar.label')}</b>
         <span class={`st ${err ? 'bad' : busy ? 'busy' : ''}`} id="cstate">● {status}</span>
