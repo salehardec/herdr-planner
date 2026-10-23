@@ -77,7 +77,7 @@ export const en: Record<string, string | string[]> = {
   'req.notesRequired': 'Write your remarks in the field below.', 'req.allowAlways': 'Allow, do not ask again this session', 'req.dialog': 'The agent asks for permission',
   'req.questionNoText': 'The agent waits for you, and there is no question text',
   'reason.plan': 'plan', 'reason.ready': 'to approve', 'reason.failed': 'failed', 'reason.permission': 'permission', 'reason.question': 'question',
-  'reason.auth': 'sign-in', 'reason.pick': 'choice', 'reason.limit': 'limit', 'reason.review': 'review', 'reason.waiting': 'waiting',
+  'reason.auth': 'sign-in', 'reason.pick': 'choice', 'reason.limit': 'limit', 'reason.review': 'review',
   'reason.yard': 'yard', 'reason.coordinator': 'coordinator', 'reason.memory': 'memory',
   'req.showReviewer': 'Show the reviewer’s screen', 'req.screenHint': 'The board does not give the dialog: herdr reads it.', 'req.reading': 'reading the screen…',
   'req.refreshScreen': 'Refresh the screen',

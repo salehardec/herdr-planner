@@ -304,8 +304,11 @@ task('alpha', 11, { state: 'idle', stage: 'todo', title: 'Заметка на п
 task('alpha', 13, { state: 'done', stage: 'done', title: 'Старое дело', msg: 'Merged into main.' });
 task('alpha', 15, { state: 'done', stage: 'done', title: 'Свежее дело', msg: 'Merged: https://github.com/o/alpha/pull/15', pr: 'https://github.com/o/alpha/pull/15' });
 task('alpha', 16, { state: 'blocked', kind: 'permission', stage: 'working', title: 'Лишние ветки', msg: longPermission });
-// A question the board has no line for: the agent waits, and only its screen has anything to show (PLN-61).
-task('alpha', 20, { state: 'blocked', kind: 'question', stage: 'working', title: 'Вопрос без текста', msg: '' });
+// A question the board has no line for: an empty message reaches the page as the board's own «Needs you» (PLN-61).
+task('alpha', 20, { state: 'blocked', kind: 'question', stage: 'working', title: 'Вопрос без текста', msg: 'Needs you' });
+// The PLN-60 case itself: an agent stopped on a permission dialog. The board knows it as a question, or as nothing at all.
+task('alpha', 21, { state: 'blocked', kind: 'question', stage: 'working', title: 'Диалог разрешения', msg: 'Needs you' });
+task('alpha', 22, { state: 'blocked', stage: 'working', title: 'Диалог без вида', msg: 'Needs you' });
 task('beta', 1, { state: 'done', stage: 'done', title: 'Единственное сделанное', msg: 'Merged into main.' });
 task('gamma', 1, { app: 'pi', state: 'working', stage: 'working', title: 'Идёт работа', msg: 'Writing', progress: 30 });
 task('gamma', 2, { state: 'done', stage: 'done', title: 'Архивная задача', msg: 'Merged into main.', archivedAt: 1792407710774 });
@@ -346,6 +349,8 @@ const META = {
   'alpha/15': { ago: 4 * HOUR, desc: 'Export button now shows progress; the job reports percent through the existing event channel.' },
   'alpha/16': { ago: 12 * MIN, desc: 'Find and remove the old branches work/1–work/9; they are all merged into main, work/10 stays.' },
   'alpha/20': { ago: 8 * MIN, desc: 'Агент ждёт ответа, но доска не отдала ни строки вопроса: текст бывает только на экране агента.' },
+  'alpha/21': { ago: 6 * MIN, desc: 'Агент остановился на диалоге разрешения; доска знает только «Needs you» и вид «вопрос».' },
+  'alpha/22': { ago: 5 * MIN, desc: 'Агент остановился на диалоге разрешения; доска не назвала даже вида — только «Needs you».' },
   'beta/1': { ago: 9 * DAY, desc: 'Initial beta bootstrap: CI config and the first smoke test.' },
   'gamma/1': { ago: 27 * HOUR, desc: 'Writing the pricing notes for the gamma service; the color tokens come from alpha/4.', afterDone: [{ id: 'gamma/2', title: 'Архивная задача' }] },
   'gamma/2': { ago: 3 * DAY, desc: 'Archived: old gamma CLI cleanup.' },

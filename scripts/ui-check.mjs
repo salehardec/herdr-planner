@@ -245,7 +245,7 @@ section('boot', async () => {
   check('the page fills the viewport', await waitFor('Math.abs(document.querySelector("#win").getBoundingClientRect().width - innerWidth) < 2'));
   const d0 = await debug();
   check('WebGL is on', d0?.webgl === true, JSON.stringify(d0 && { simple: d0.simple, fps: d0.fps }));
-  check('every live task is a planet', d0?.livePlanets === 18, String(d0?.livePlanets));
+  check('every live task is a planet', d0?.livePlanets === 20, String(d0?.livePlanets));
   check('the seven live statuses are drawn', ['failed', 'plan', 'queued', 'ready', 'review', 'waiting', 'working'].every((s) => d0?.statuses.includes(s)), (d0?.statuses || []).join(','));
   check('universes are projects, quiet ones marked', d0?.universes === 7 && d0?.quiet === 3, JSON.stringify({ u: d0?.universes, q: d0?.quiet }));
   check('the board dependencies are links', d0?.links.some((l) => l.from === 'alpha/9' && l.to === 'alpha/10') && d0?.links.some((l) => l.from === 'alpha/4' && l.to === 'gamma/1'), JSON.stringify(d0?.links));
@@ -1804,7 +1804,9 @@ section('requests', async () => {
   check('B opens «Ждёт тебя»', await waitFor('document.querySelector("#drawer-wait").classList.contains("open")', 5000));
   const whys = await evalJs(`Object.fromEntries([...document.querySelectorAll('#drawer-wait .q')].map((e) => [e.dataset.sel, e.querySelector('.why')?.innerText || '']))`);
   check('the queue names why each task waits: plan, permission, question, failed, to approve',
-    whys['alpha/3'] === 'план' && whys['alpha/16'] === 'разрешение' && whys['alpha/20'] === 'вопрос' && whys['alpha/8'] === 'упала' && whys['alpha/4'] === 'к одобрению',
+    whys['alpha/3'] === 'план' && whys['alpha/16'] === 'разрешение' && whys['alpha/20'] === 'вопрос' && whys['alpha/21'] === 'вопрос'
+      && whys['alpha/22'] === 'вопрос' && whys['alpha/8'] === 'упала' && whys['alpha/4'] === 'к одобрению'
+      && !Object.values(whys).includes('ждёт'),
     JSON.stringify(whys));
   check('a ready plan says exactly what it waits for in the queue', await evalJs(`[...document.querySelectorAll('#drawer-wait .q')].some((e) => e.dataset.sel === 'alpha/3' && e.innerText.includes('План готов — ждёт твоего одобрения'))`), await evalJs(`[...document.querySelectorAll('#drawer-wait .q')].find((e) => e.dataset.sel === 'alpha/3')?.innerText || ''`));
   await evalJs('document.querySelector("#drawer-wait .wlist").focus()');
@@ -1943,15 +1945,55 @@ section('requests', async () => {
     await evalJs(`[...document.querySelectorAll('#clog .turn.notice')].map((e) => e.innerText).join(' | ')`));
   check('the notice is named as a board notice', await hasText('#clog .turn.notice', 'уведомление доски'), await text('#clog .turn.notice'));
   await resetUi();
-  // A question the board has no text for: the card says so and offers the agent's screen.
+  // ── The PLN-60 case itself: the board calls the stopped agent a question (or gives it no kind) and «Needs you»; the
+  // screen has the real dialog. The card must come from the screen.
+  const fileScreen = readFileSync(new URL('../src/menu_samples/claude-create-file.txt', import.meta.url), 'utf8');
+  writeFileSync(join(fixture, 'state', 'dialog.txt'), fileScreen);
+  await go('alpha/21');
+  const dialogCard = '#focus [data-type="permission"]';
+  check('a dialog the board calls a question is a permission card: what is asked, from the screen',
+    await waitFor(`!!document.querySelector(${JSON.stringify(dialogCard + ' [data-act="dlg-allow"]')})`, 15000)
+      && await hasText(dialogCard + ' .dlg-q', 'Do you want to create closing-note2.md?')
+      && await hasText(dialogCard + ' .dlgctx', 'closing-note2.md') && !(await text(dialogCard)).includes('Needs you'),
+    (await text(dialogCard)).slice(0, 240));
+  check('the file prompt has its session row: «Разрешить и не спрашивать» is there',
+    await exists(dialogCard + ' [data-act="dlg-always"]') && await hasText(dialogCard + ' [data-act="dlg-allow"]', 'Разрешить')
+      && await hasText(dialogCard + ' [data-act="dlg-deny"]', 'Запретить'), (await text(dialogCard)).slice(0, 240));
+  check('its badge names a permission, not a question', await hasText('#focus .badge', 'Ждёт тебя · разрешение'), await text('#focus .badge'));
+  const kSession = calls('keys.jsonl').length;
+  await click(dialogCard + ' [data-act="dlg-always"]');
+  check('the session row sends the keys of that row',
+    await waitLog(() => calls('keys.jsonl').slice(kSession).filter((c) => c.target === 'sw-alpha-21').flatMap((c) => c.keys).join() === 'down,enter', 10000),
+    JSON.stringify(calls('keys.jsonl').slice(kSession)));
+  check('the answered dialog reaches the Coordinator',
+    await waitLog(() => calls('coordinator.jsonl').some((c) => c.text === '[Действие в планировщике] ALP-21: разрешено действие агента, больше не спрашивать'), 12000),
+    JSON.stringify(calls('coordinator.jsonl').slice(-1)));
+  // No kind at all (herdr says the agent is blocked): still a permission when the screen has one.
+  writeFileSync(join(fixture, 'state', 'dialog.txt'), fileScreen);
+  await go('alpha/22');
+  check('a task with no kind and «Needs you» is a permission card too',
+    await waitFor('!!document.querySelector(\'#focus [data-type="permission"] [data-act="dlg-allow"]\')', 15000)
+      && await hasText('#focus [data-type="permission"] .dlg-q', 'Do you want to create closing-note2.md?')
+      && !(await text('#focus [data-type="permission"]')).includes('Needs you'),
+    (await text('#focus')).slice(0, 240));
+  check('its badge names a permission too', await hasText('#focus .badge', 'Ждёт тебя · разрешение'), await text('#focus .badge'));
+  // A question with no board text: the screen's question is shown, never the board's «Needs you».
+  writeFileSync(join(fixture, 'state', 'dialog.txt'), readFileSync(new URL('../src/menu_samples/claude-single.txt', import.meta.url), 'utf8'));
+  await go('alpha/20');
+  check('a question the board has no words for shows the agent\'s own question, not «Needs you»',
+    await waitFor('!!document.querySelector(\'#focus [data-type="question"]\')', 15000)
+      && await hasText('#focus [data-type="question"]', 'Which library?') && !(await text('#focus')).includes('Needs you'),
+    (await text('#focus')).slice(0, 200));
+  check('the badge of a waiting task names the reason', await hasText('#focus .badge', 'Ждёт тебя · вопрос'), await text('#focus .badge'));
+  // Without a readable screen there is no question text at all: the card says so and offers the agent's screen.
   writeFileSync(join(fixture, 'state', 'dialog.txt'), '● Работаю над задачей…\n\n❯ \n  ⏵⏵ accept edits on');
+  await go('alpha/21');
   await go('alpha/20');
   const qCard = '#focus [data-type="question"]';
   check('a question without text says exactly that and offers the agent screen',
     await waitFor(`!!document.querySelector(${JSON.stringify(qCard + ' [data-act="screen"][data-target="alpha/20"]')})`, 15000)
       && await hasText(qCard, 'Агент ждёт тебя, текста вопроса нет'),
     (await text('#focus')).slice(0, 200));
-  check('the badge of a waiting task names the reason', await hasText('#focus .badge', 'Ждёт тебя · вопрос'), await text('#focus .badge'));
   // A ready plan: what it waits for, the plan whole, approval with a confirmation, remarks to the agent.
   writeFileSync(join(fixture, 'state', 'dialog.txt'), permScreen);
   await go('alpha/3');
@@ -1991,7 +2033,23 @@ section('requests', async () => {
   check('the approval reaches the Coordinator as one line',
     await waitLog(() => calls('coordinator.jsonl').some((c) => c.text === '[Действие в планировщике] ALP-3: план одобрен'), 12000),
     JSON.stringify(calls('coordinator.jsonl').slice(-2)));
+  // The board writes that line into the transcript as a board turn (a real Coordinator does it): it must be shown once.
+  const noticeLine = '[Действие в планировщике] ALP-3: план одобрен';
+  const chatFolder = realpathSync(join(fixture, 'board', 'coordinator', 'default', 'chat')).replace(/[^A-Za-z0-9]/g, '-');
+  const transcript = join(fixture, 'claude', 'projects', chatFolder, 'fixture.jsonl');
+  appendFileSync(transcript, JSON.stringify({ type: 'user', timestamp: new Date().toISOString(), message: { role: 'user', content: noticeLine } }) + '\n');
+  appendFileSync(transcript, JSON.stringify({ type: 'assistant', timestamp: new Date().toISOString(), message: { role: 'assistant', model: 'claude-opus-5-5', stop_reason: 'end_turn', content: [{ type: 'text', text: 'Принято.' }] } }) + '\n');
+  await navigate(base + '/?noauto&nocoach&bloom=0');
+  await waitFor('window.world && world.debug().planets > 0', 20000);
+  await press('Slash', '/');
+  check('the chat opens after the transcript has the line', await waitFor('!document.querySelector("#chat").classList.contains("off")', 5000));
+  check('a line the transcript holds is shown once, as that board turn, not again as a notice',
+    await waitFor(`[...document.querySelectorAll('#clog .turn')].some((e) => e.innerText.includes(${JSON.stringify(noticeLine)}))`, 12000)
+      && await evalJs(`(() => { const ts = [...document.querySelectorAll('#clog .turn')].filter((e) => e.innerText.includes(${JSON.stringify(noticeLine)})); return ts.length === 1 && ts[0].classList.contains('board') && !ts[0].classList.contains('notice'); })()`),
+    await evalJs(`[...document.querySelectorAll('#clog .turn')].filter((e) => e.innerText.includes(${JSON.stringify(noticeLine)})).map((e) => e.className)`));
+  await resetUi();
   // Both languages: the same cards in English.
+  writeFileSync(join(fixture, 'state', 'dialog.txt'), permScreen);
   await evalJs('window.setLang("en"); true');
   await go('alpha/16');
   check('the permission card is in English, its buttons start with a capital',

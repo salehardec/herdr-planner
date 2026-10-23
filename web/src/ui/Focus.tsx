@@ -2,7 +2,7 @@ import { signal } from '@preact/signals';
 import type { JSX } from 'preact';
 import { useEffect, useState } from 'preact/hooks';
 import {
-  currentView, details, linkSel, panels, requests, runners, selected, snap, taskOf,
+  currentView, details, linkSel, panels, requests, runners, screens, selected, snap, taskOf,
 } from '../store';
 import { api } from '../api';
 import { openFiles, removeLink, archiveAllDone } from '../actions';
@@ -11,6 +11,7 @@ import { closing, loadClosing } from '../closing';
 import { addDialogs } from '../dialogs';
 import { t } from '../i18n';
 import { attentionLabel } from '../requests';
+import { boardPlaceholder, taskPermission } from '../permission';
 import { Gl, Badge } from './Gl';
 import { RichText } from './RichText';
 import { Translatable } from './Translatable';
@@ -78,11 +79,11 @@ function TaskFocus(props: { task: Task }): JSX.Element {
     <div class="fbody" data-focus="task">
       <div class="fhd">
         <span class="lbl">{t('focus.title')} · <span class="tagk">{task.tag}</span></span>
-        <Badge status={task.status} label={attentionLabel(task)} />
+        <Badge status={task.status} label={attentionLabel(task, !!taskPermission(task, screens.value[task.id]?.menu))} />
         <span class="agent">{agentLabel}</span>
       </div>
       <h2>{task.title}</h2>
-      <p class="line"><Translatable text={task.msg || task.board_label} /></p>
+      <p class="line"><Translatable text={(task.msg.trim() && !boardPlaceholder(task.msg) ? task.msg : '') || task.board_label} /></p>
       {linkCard && (
         <div class="req s-ready">
           <div class="rh"><Gl n="link" />{t('focus.link')}</div>

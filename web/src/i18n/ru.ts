@@ -82,7 +82,7 @@ export const ru: Record<string, string | string[]> = {
   'req.notesRequired': 'Напиши замечания в поле ниже.', 'req.allowAlways': 'Разрешить и не спрашивать в этой сессии', 'req.dialog': 'Агент просит разрешение',
   'req.questionNoText': 'Агент ждёт тебя, текста вопроса нет',
   'reason.plan': 'план', 'reason.ready': 'к одобрению', 'reason.failed': 'упала', 'reason.permission': 'разрешение', 'reason.question': 'вопрос',
-  'reason.auth': 'вход', 'reason.pick': 'выбор', 'reason.limit': 'лимит', 'reason.review': 'ревью', 'reason.waiting': 'ждёт',
+  'reason.auth': 'вход', 'reason.pick': 'выбор', 'reason.limit': 'лимит', 'reason.review': 'ревью',
   'reason.yard': 'верфь', 'reason.coordinator': 'координатор', 'reason.memory': 'память',
   'req.showReviewer': 'Показать экран ревьюера', 'req.screenHint': 'Содержимое диалога доска не отдаёт: его читает herdr.', 'req.reading': 'читаю экран…',
   'req.refreshScreen': 'Обновить экран',

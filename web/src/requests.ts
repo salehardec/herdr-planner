@@ -55,8 +55,10 @@ export function requestType(task: Task): string {
   return 'question';
 }
 
-/** Why a task waits for the human, in one word: the reason the badge and the queue name (PLN-61). */
-export function waitReason(task: Task): string {
+/** Why a task waits for the human, in one word: the reason the badge and the queue name (PLN-61).
+ *  A task the board knows as a question (or as nothing at all) may be an agent on a dialog: the caller that has read
+ *  its screen passes `permission` and the reason is «разрешение». */
+export function waitReason(task: Task, permission = false): string {
   if (task.status === 'plan') return t('reason.plan');
   if (task.status === 'ready') return t('reason.ready');
   if (task.status === 'failed') return t('reason.failed');
@@ -64,16 +66,16 @@ export function waitReason(task: Task): string {
   if (task.stage === 'stopped') return t('reason.limit');
   if (task.stage === 'reviewneeds') return t('reason.review');
   if (task.stage === 'approval') return task.review_failed || task.merge_blocked ? t('reason.review') : t('reason.ready');
-  if (task.kind === 'permission') return t('reason.permission');
+  if (permission || task.kind === 'permission') return t('reason.permission');
   if (task.kind === 'auth') return t('reason.auth');
-  if (task.kind === 'question') return t('reason.question');
-  return t('reason.waiting');
+  // `question`, no kind at all («Needs you»): the human is asked something, even when the board has no words for it.
+  return t('reason.question');
 }
 
 /** The status badge's words; a task that waits for the human says why (`Ждёт тебя · разрешение`). */
-export function attentionLabel(task: Task): string {
+export function attentionLabel(task: Task, permission = false): string {
   const base = t(`status.${task.status}`);
-  return task.status === 'waiting' ? `${base} · ${waitReason(task)}` : base;
+  return task.status === 'waiting' ? `${base} · ${waitReason(task, permission)}` : base;
 }
 
 const TITLE_KEY: Record<string, string> = {

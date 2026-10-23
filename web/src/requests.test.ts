@@ -33,7 +33,10 @@ describe('requests to the human', () => {
     expect(waitReason(task({ status: 'failed', state: 'error' }))).toBe('упала');
     expect(waitReason(task({ kind: 'permission' }))).toBe('разрешение');
     expect(waitReason(task({ kind: 'question' }))).toBe('вопрос');
+    // The board gives no kind when herdr reports a blocked agent with no text: that is not «ждёт».
+    expect(waitReason(task({ kind: '', msg: 'Needs you' }))).toBe('вопрос');
     expect(attentionLabel(task({ status: 'waiting', kind: 'permission' }))).toBe('Ждёт тебя · разрешение');
+    expect(attentionLabel(task({ status: 'waiting', kind: 'question', msg: 'Needs you' }), true)).toBe('Ждёт тебя · разрешение');
     expect(attentionLabel(task({ status: 'plan', stage: 'plan' }))).toBe('План готов');
   });
   it('a ready plan request says what it waits for', () => {

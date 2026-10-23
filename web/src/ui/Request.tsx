@@ -3,7 +3,7 @@ import { useEffect, useState } from 'preact/hooks';
 import { armed, details, screens, tellDraft } from '../store';
 import { pickAttempt, runTaskAction, boardOk, tellTask, fetchScreen, answerMenu } from '../actions';
 import { requestType, requestTitle, PERMISSION_ALLOW, PERMISSION_DENY } from '../requests';
-import { taskPermission, questionText, type PermissionNote, type PermissionPrompt } from '../permission';
+import { taskPermission, questionText, boardPlaceholder, type PermissionNote, type PermissionPrompt } from '../permission';
 import type { MenuData, Task } from '../types';
 import { t } from '../i18n';
 import { addDialogs } from '../dialogs';
@@ -86,7 +86,7 @@ function DialogButtons(props: { task: Task; prompt: PermissionPrompt; menu: Menu
 }
 
 /** The answers that fit what the task asks of the human, wherever the request is drawn (the Focus, the whole-page result). */
-export function RequestActions(props: { task: Task; input?: string; prompt?: PermissionPrompt | null; menu?: MenuData | null }): JSX.Element | null {
+export function RequestActions(props: { task: Task; input?: string }): JSX.Element | null {
   const task = props.task;
   const type = requestType(task);
   const attention = ['waiting', 'failed', 'ready', 'plan'].includes(task.status);
@@ -109,24 +109,22 @@ export function RequestActions(props: { task: Task; input?: string; prompt?: Per
   };
   return (
     <>
-      {type === 'permission' && (props.prompt
-        ? <DialogButtons task={task} prompt={props.prompt} menu={props.menu ?? null} />
-        : (
-          <>
+      {type === 'permission' && (
+        <>
+          <div class="row">
+            <button class="btn go" type="button" data-act="perm-allow" data-id={task.id} aria-disabled={dis} onClick={() => draft(PERMISSION_ALLOW())}>{t('req.allow')}</button>
+            <button class="btn danger" type="button" data-act="perm-deny" data-id={task.id} aria-disabled={dis} onClick={() => draft(PERMISSION_DENY())}>{t('req.deny')}</button>
+            <ScreenBtn task={task} />
+            <span class="hint">{t('req.textBelow')}</span>
+          </div>
+          {task.stage === 'approval' && (
             <div class="row">
-              <button class="btn go" type="button" data-act="perm-allow" data-id={task.id} aria-disabled={dis} onClick={() => draft(PERMISSION_ALLOW())}>{t('req.allow')}</button>
-              <button class="btn danger" type="button" data-act="perm-deny" data-id={task.id} aria-disabled={dis} onClick={() => draft(PERMISSION_DENY())}>{t('req.deny')}</button>
-              <ScreenBtn task={task} />
-              <span class="hint">{t('req.textBelow')}</span>
+              <ArmBtn id={task.id} cmd="anyway" label={t('act.anyway')} armLabel={t('req.confirmAnyway')} cls="danger" task={task} />
+              <ArmBtn id={task.id} cmd="review" label={t('req.returnReview')} armLabel={t('req.confirmReturn')} cls="" task={task} />
             </div>
-            {task.stage === 'approval' && (
-              <div class="row">
-                <ArmBtn id={task.id} cmd="anyway" label={t('act.anyway')} armLabel={t('req.confirmAnyway')} cls="danger" task={task} />
-                <ArmBtn id={task.id} cmd="review" label={t('req.returnReview')} armLabel={t('req.confirmReturn')} cls="" task={task} />
-              </div>
-            )}
-          </>
-        ))}
+          )}
+        </>
+      )}
       {type === 'auth' && (
         <>
           <div class="row">
@@ -209,7 +207,7 @@ export function RequestHead(props: { task: Task; menu?: MenuData | null }): JSX.
   const type = requestType(task);
   const text = type === 'question'
     ? questionText(task, props.menu) || t('req.questionNoText')
-    : (task.msg || task.board_label || '');
+    : (task.msg.trim() && !boardPlaceholder(task.msg) ? task.msg : '') || task.board_label || '';
   return (
     <>
       <div class="rh"><Gl n={task.status} />{requestTitle(type)}</div>
@@ -238,12 +236,25 @@ export function RequestBlock(props: { task: Task; input?: string }): JSX.Element
   const menu: MenuData | null = shown && !shown.error && shown.menu ? shown.menu : null;
   // The screen is read once for the cards that ask a permission or a question: what the agent says is not in the board.
   useEffect(() => {
-    const wants = task.status === 'plan' || task.kind === 'permission' || task.kind === 'question' || task.kind === 'auth';
+    // A dialog may come as `kind: question` or with no kind at all (the board says «Needs you»): the screen decides.
+    const wants = task.status === 'plan' || task.kind === 'permission' || task.kind === 'question' || task.kind === 'auth'
+      || (task.status === 'waiting' && !task.kind);
     if (attention && wants && task.exited_at === 0 && task.status !== 'queued' && task.status !== 'done') void fetchScreen(task.id);
   }, [task.id, task.status, task.msg, task.stage, task.kind, attention]);
   if (!attention) return null;
   // A permission the screen makes plain: the board says so, or the prompt names a tool or a command.
   const prompt = taskPermission(task, menu);
+  // The board calls a dialog a question (or gives it no kind): when the screen draws a permission prompt, that is the card.
+  if (prompt && (type === 'permission' || type === 'question')) {
+    return (
+      <div class="req s-waiting" data-type="permission">
+        <div class="rh"><Gl n="waiting" />{t('req.permission')}</div>
+        {task.msg.trim() && !boardPlaceholder(task.msg) && <p class="full"><Translatable text={task.msg} /></p>}
+        <DialogWhat prompt={prompt} />
+        <DialogButtons task={task} prompt={prompt} menu={menu} />
+      </div>
+    );
+  }
   if (type === 'plan') {
     return (
       <>
@@ -267,8 +278,7 @@ export function RequestBlock(props: { task: Task; input?: string }): JSX.Element
     <>
       <div class={`req s-${task.status}`} data-type={type}>
         <RequestHead task={task} menu={menu} />
-        {type === 'permission' && prompt && <DialogWhat prompt={prompt} />}
-        <RequestActions task={task} input={props.input} prompt={type === 'permission' ? prompt : null} menu={menu} />
+        <RequestActions task={task} input={props.input} />
       </div>
     </>
   );

@@ -8,6 +8,7 @@ import { addDialogs } from '../dialogs';
 import { taskOf } from '../store';
 import { t } from '../i18n';
 import { attentionLabel } from '../requests';
+import { taskPermission } from '../permission';
 import { clockOf } from '../util/dates';
 import { Badge, Gl } from './Gl';
 import { TellBox } from './AgentActions';
@@ -116,7 +117,7 @@ export function AgentScreen(): JSX.Element | null {
             <Gl n="screen" />
             <b>{title}</b>
             {task && <span class="tagk">{task.tag}</span>}
-            {task && <Badge status={task.status} label={attentionLabel(task)} />}
+            {task && <Badge status={task.status} label={attentionLabel(task, !!taskPermission(task, r?.menu ?? null))} />}
           </span>
           <span class="sh-buttons">
             <span class="hint" id="screen-updated" data-at={at} title={t('screen.updatedTip')}>

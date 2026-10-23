@@ -25,7 +25,7 @@ The one that changes the answer is `CODEX_HOME`.
 ## The board (`DIR/board`, read by the server with `--data`)
 
 - `repos.json` (name → folder) and `repo-keys.json` (`had`: key → name).
-- `tasks/<repo>/<n>/task.json` for every row of `list --json` (23 with the base world; 523 with
+- `tasks/<repo>/<n>/task.json` for every row of `list --json` (25 with the base world; 525 with
   `--scale`), and `closing.md` for `alpha/15` (English, 7 lines), `alpha/13` (Russian, 4 lines)
   and `beta/1` (one line).
 - `coordinator/default/state.json` (`run.kind` claude) and `chat/` (the transcript folder).
@@ -45,15 +45,16 @@ The two groups (AI, herdr) give the galaxy two arms. `origins/` holds the bare r
 
 ### Planets (`herdr-projects list --json`, the same tags as before)
 
-Live (18): `ALP-2` waiting (question) · `ALP-3` plan · `ALP-4` ready (pass, PR 12) · `ALP-5` waiting
+Live (20): `ALP-2` waiting (question) · `ALP-3` plan · `ALP-4` ready (pass, PR 12) · `ALP-5` waiting
 (review failed) · `ALP-6` working, omp · `ALP-7` review, pi · `ALP-8` failed · `ALP-9` queued ·
 `ALP-10` queued, waits for `ALP-9` · `ALP-11` queued · `ALP-16` waiting (permission) · `ALP-20` waiting
-(question, no text at all) · `GAM-1` working,
+(question, the board's «Needs you») · `ALP-21` waiting (a dialog the board calls a question) · `ALP-22`
+waiting (a dialog with no kind at all) · `GAM-1` working,
 pi, waits for `ALP-4` · `DEL-1` waiting (codex, checks fail) · `DEL-2`, `DEL-3` waiting (pick, 3 attempts) ·
 `SIG-1` failed (no summary; no `worker.agent` setting) · `SIG-2` waiting, omp.
 Done (3): `ALP-13`, `ALP-15`, `BET-1`. Archived (2): `GAM-2`, `DOC-1`.
 
-Ages (`created`): `ALP-2` 25 min, `ALP-16` 12 min, `ALP-20` 8 min, `ALP-5` 50 min, `ALP-15` 4 h, `ALP-3` 2 h, `ALP-9` 2 h,
+Ages (`created`): `ALP-2` 25 min, `ALP-16` 12 min, `ALP-20` 8 min, `ALP-21` 6 min, `ALP-22` 5 min, `ALP-5` 50 min, `ALP-15` 4 h, `ALP-3` 2 h, `ALP-9` 2 h,
 `ALP-6` 5 h, `DEL-1` 6 h, `SIG-1` 7 h (today); `ALP-10`, `GAM-1`, `DEL-2`, `SIG-2`, `ALP-7` yesterday;
 `ALP-8`, `DEL-3`, `GAM-2` 3 days; `ALP-11`, `ALP-13`, `BET-1`, `DOC-1` 9 days.
 

@@ -7,6 +7,7 @@ import { signal } from '@preact/signals';
 import type { ComponentChildren, JSX } from 'preact';
 import { useEffect, useRef, useState } from 'preact/hooks';
 import { answerMenu } from '../actions';
+import { permissionPrompt } from '../permission';
 import { t } from '../i18n';
 import type { MenuAnswer, MenuData, MenuOption } from '../types';
 import { Gl } from './Gl';
@@ -83,7 +84,12 @@ function MenuCardBody(props: Props): JSX.Element {
     if (off) return;
     setBusy(true);
     setErr('');
-    const r = await answerMenu(props.target, props.role ?? '', menu.sig, answer);
+    // A permission answered on the agent's screen is the human's action on the task too: name it for the Coordinator.
+    const perm = permissionPrompt(menu);
+    const note = perm && answer.kind === 'pick'
+      ? (answer.at === perm.allow ? 'allow' : answer.at === perm.always ? 'always' : answer.at === perm.deny ? 'deny' : undefined)
+      : undefined;
+    const r = await answerMenu(props.target, props.role ?? '', menu.sig, answer, note);
     setBusy(false);
     if (r.ok) { setDone({ sig: menu.sig, label, at: Date.now() }); props.onDone?.(label); }
     else setErr(r.gone ? t('amenu.gone') : t('amenu.failed', { why: r.error }));
