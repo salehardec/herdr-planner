@@ -10,6 +10,7 @@ import { fetchDetails, navigateTo } from '../nav';
 import { closing, loadClosing } from '../closing';
 import { addDialogs } from '../dialogs';
 import { t } from '../i18n';
+import { attentionLabel } from '../requests';
 import { Gl, Badge } from './Gl';
 import { RichText } from './RichText';
 import { Translatable } from './Translatable';
@@ -77,7 +78,7 @@ function TaskFocus(props: { task: Task }): JSX.Element {
     <div class="fbody" data-focus="task">
       <div class="fhd">
         <span class="lbl">{t('focus.title')} · <span class="tagk">{task.tag}</span></span>
-        <Badge status={task.status} label={task.label || t(`status.${task.status}`)} />
+        <Badge status={task.status} label={attentionLabel(task)} />
         <span class="agent">{agentLabel}</span>
       </div>
       <h2>{task.title}</h2>

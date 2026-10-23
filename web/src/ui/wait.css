@@ -1,13 +1,16 @@
 .waitlist{top:3.75rem;left:0.75rem;width:21.25rem;bottom:4.375rem;display:flex;flex-direction:column;z-index:17;transform:translateX(-110%);opacity:0;pointer-events:none;transition:transform var(--m-med) var(--m-ease),opacity var(--m-med);background:var(--pl-panel-solid)}
 .waitlist.open{transform:none;opacity:1;pointer-events:auto}
-.wlist{overflow:auto;padding:0.375rem;display:grid;gap:2px;align-content:start;flex:1;scrollbar-width:thin;outline:none}
-.q{display:grid;grid-template-columns:1rem auto minmax(0,1fr) auto;gap:0.5rem;align-items:center;width:100%;border:0;background:none;padding:0.375rem 0.375rem;text-align:left;border-radius:0.3125rem;color:var(--pl-dim)}
+.wlist{overflow:auto;padding:0.375rem;display:grid;grid-template-columns:minmax(0,1fr);gap:2px;align-content:start;flex:1;scrollbar-width:thin;outline:none}
+.q{display:grid;grid-template-columns:1rem auto auto minmax(0,1fr) auto;gap:0.5rem;align-items:center;width:100%;min-width:0;border:0;background:none;padding:0.375rem 0.375rem;text-align:left;border-radius:0.3125rem;color:var(--pl-dim)}
 .q:hover{background:var(--pl-hover)}
 .q.cur{background:color-mix(in srgb,var(--pl-accent) 18%,transparent);color:var(--pl-title)}
 .q .gl{color:var(--s-ink)}
 .q b{color:var(--pl-title)}
+.q .why{font-size:0.6562rem;line-height:1.4;padding:0 0.25rem;border-radius:0.25rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0;max-width:7rem;color:var(--pl-title);background:color-mix(in srgb,var(--pl-accent) 22%,transparent)}
 .q .tx{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .q .pj{color:var(--pl-faint);font-size:0.6562rem}
 .q.resolved{opacity:.55;text-decoration:line-through;color:var(--pl-faint)}
+.qline{display:contents}
+.qacts{display:flex;flex-wrap:wrap;gap:0.25rem;padding:0 0.375rem 0.375rem 1.5rem;min-width:0;grid-column:1/-1}
 .wnote{padding:0.375rem 0.625rem;border-top:1px solid var(--pl-line)}
 :root.bp900 .waitlist{left:0.5rem;right:0.5rem;width:auto;top:auto;bottom:0.5rem;max-height:60vh;z-index:40}

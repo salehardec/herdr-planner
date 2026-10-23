@@ -1025,11 +1025,26 @@ async fn api_action(
                     "approval needs an explicit confirmation",
                 );
             }
+            let was_plan = stage_of(&app, id).await == "plan";
             let mut args = vec!["approve", id];
             if body.action == "anyway" {
                 args.push("--anyway");
             }
-            run_board(&app.cfg, &args, Duration::from_secs(60)).await
+            let out = run_board(&app.cfg, &args, Duration::from_secs(60)).await;
+            if out.is_ok() {
+                let what = if body.action == "anyway" {
+                    "слияние одобрено (всё равно)"
+                } else if was_plan {
+                    "план одобрен"
+                } else {
+                    "слияние одобрено"
+                };
+                app::planner_notice(&app, id, what).await;
+                if was_plan && body.action == "approve" {
+                    app::journal_note(&app, id, "plan", "план одобрен в планировщике").await;
+                }
+            }
+            out
         }
         "retry" => run_id(&app, &body, &["retry"], 60).await,
         "review" => run_id(&app, &body, &["review"], 60).await,
@@ -1329,7 +1344,17 @@ async fn api_action(
             if let Some(e) = text_limit_error(text, "сообщение") {
                 return error(StatusCode::BAD_REQUEST, e);
             }
-            run_board(&app.cfg, &["tell", id, "--", text], Duration::from_secs(60)).await
+            let was_plan = stage_of(&app, id).await == "plan";
+            let out = run_board(&app.cfg, &["tell", id, "--", text], Duration::from_secs(60)).await;
+            if out.is_ok() {
+                if was_plan {
+                    app::planner_notice(&app, id, "план возвращён с замечаниями").await;
+                    app::journal_note(&app, id, "plan", "план возвращён с замечаниями").await;
+                } else {
+                    app::planner_notice(&app, id, "агенту отправлено сообщение").await;
+                }
+            }
+            out
         }
         "archive-done" => return archive_done(&app, &body).await,
         "yazi" => return yazi(&app, &body, local).await,
@@ -1378,6 +1403,18 @@ fn task_id(body: &ActionBody) -> Result<&str, String> {
         return Err("bad task id".into());
     }
     Ok(id)
+}
+
+/// The stage the task had in the page's last snapshot: what the human's action was about (a plan, a merge).
+async fn stage_of(app: &Shared, id: &str) -> String {
+    app.snapshot
+        .read()
+        .await
+        .tasks
+        .iter()
+        .find(|t| t.id == id)
+        .map(|t| t.stage.clone())
+        .unwrap_or_default()
 }
 
 async fn run_id(

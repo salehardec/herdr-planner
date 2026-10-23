@@ -141,10 +141,11 @@ export async function sendKey(target: string, key: string, role = ''): Promise<v
 /** The result of an answer to a selection menu: sent, or refused because the menu on the screen is not the one the page showed. */
 export type MenuResult = { ok: true } | { ok: false; gone: boolean; error: string };
 
-/** Answers a selection menu of an agent: the server reads the screen again and presses the keys that make the choice. */
-export async function answerMenu(target: string, role: string, sig: string, answer: MenuAnswer): Promise<MenuResult> {
+/** Answers a selection menu of an agent: the server reads the screen again and presses the keys that make the choice.
+    `note` names a permission the human gave (`allow`, `always`, `deny`), so the Coordinator learns of it. */
+export async function answerMenu(target: string, role: string, sig: string, answer: MenuAnswer, note?: string): Promise<MenuResult> {
   try {
-    await post('/api/menu/answer', { target, role: role || undefined, sig, answer });
+    await post('/api/menu/answer', { target, role: role || undefined, sig, answer, note });
     return { ok: true };
   } catch (e) {
     const err = e as ApiError;

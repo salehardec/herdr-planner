@@ -13,8 +13,8 @@ export const addDialogs = {
   popover: signal<{ id: string; repo: string } | null>(null),
   /** A todo item dropped on a planet: the window to correct it before it goes to the task's agent. */
   tell: signal<{ id: string; task: string } | null>(null),
-  /** The agent's result or the description in a window over the page, with the task's actions. */
-  summary: signal<{ task: string; part: 'closing' | 'description' } | null>(null),
+  /** The agent's result, the description or the plan in a window over the page, with the task's actions. */
+  summary: signal<{ task: string; part: 'closing' | 'description' | 'plan' } | null>(null),
   /** An agent's terminal screen in a window over the page; `reviewer` reads the `<agent>-r` pane. */
   screen: signal<{ task: string; role?: 'reviewer' } | null>(null),
   /** The log tail of one container of a shipyard. */

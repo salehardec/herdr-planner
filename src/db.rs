@@ -1842,6 +1842,7 @@ mod tests {
                     size: 9,
                 }],
             }],
+            notices: Vec::new(),
             busy_until: 0,
         };
         db.chat_save(&chat);

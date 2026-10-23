@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { collectRequests, parseOptions, requestType } from './requests';
+import { attentionLabel, collectRequests, parseOptions, requestType, waitReason } from './requests';
 import type { Task } from './types';
 
 const task = (over: Partial<Task>): Task => ({
@@ -27,6 +27,20 @@ describe('requests to the human', () => {
     expect(requestType(task({ kind: 'auth' }))).toBe('auth');
     expect(requestType(task({}))).toBe('question');
   });
+  it('names the reason a task waits, in the badge and in the queue', () => {
+    expect(waitReason(task({ status: 'plan', stage: 'plan' }))).toBe('план');
+    expect(waitReason(task({ status: 'ready', stage: 'approval' }))).toBe('к одобрению');
+    expect(waitReason(task({ status: 'failed', state: 'error' }))).toBe('упала');
+    expect(waitReason(task({ kind: 'permission' }))).toBe('разрешение');
+    expect(waitReason(task({ kind: 'question' }))).toBe('вопрос');
+    expect(attentionLabel(task({ status: 'waiting', kind: 'permission' }))).toBe('Ждёт тебя · разрешение');
+    expect(attentionLabel(task({ status: 'plan', stage: 'plan' }))).toBe('План готов');
+  });
+  it('a ready plan request says what it waits for', () => {
+    const list = collectRequests({ tasks: [task({ id: 'a/3', n: 3, status: 'plan', stage: 'plan', msg: 'Plan ready' })], coordinator: null });
+    expect(list[0].why).toBe('план');
+    expect(list[0].text).toBe('План готов — ждёт твоего одобрения');
+  });
   it('lists the shipyards’ alarms after the board’s own requests', () => {
     const runners = [{
       id: 'vm-r',
@@ -38,6 +52,7 @@ describe('requests to the human', () => {
       runners,
     });
     expect(list.map((r) => r.type)).toEqual(['approval', 'plan', 'runner-alert']);
+    expect(list.map((r) => r.why)).toEqual(['к одобрению', 'план', 'верфь']);
     expect(list[2].id).toBe('vm-r');
     expect(list[2].tag).toBe('vm-r');
     expect(list[2].text).toContain('8 %');

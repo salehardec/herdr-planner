@@ -378,6 +378,12 @@ export function Chat(): JSX.Element {
             sentAt={coord?.sent_at ?? 0} sent={coord?.last_sent ?? ''}
           />
         )}
+        {(coord?.notices ?? []).map((n) => (
+          <div class="turn board notice" data-notice={n.at} key={`notice-${n.at}-${n.text}`}>
+            <div class="notice-tx">{n.text}</div>
+            <div class="meta"><span>{dayTimeOf(n.at)}</span><span>· {t('chat.boardNotice')}</span></div>
+          </div>
+        ))}
         {pending && (
           <div class="turn pending">
             <div class="q"><span class="who">{t('chat.you')}</span><span class="txt">{pending.text}</span></div>

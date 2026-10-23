@@ -30,6 +30,9 @@
 .req{display:grid;gap:0.375rem;padding:0.5rem 0.5625rem;border:1px solid var(--s-line);border-radius:0.4375rem;background:color-mix(in srgb,var(--s) 8%,var(--pl-tile))}
 .req .rh{display:flex;gap:0.375rem;align-items:center;color:var(--s-ink);font-weight:700;font-size:0.7188rem}
 .req .full{color:var(--pl-text);white-space:pre-wrap;word-break:break-word;max-height:12.5rem;overflow:auto}
+.req.second{border-style:dashed}
+.req .dlg-q{font-weight:600}
+.req .dlgctx{margin:0;padding:0.375rem 0.5rem;border-radius:0.3125rem;background:var(--pl-bg);border:1px solid var(--pl-line);font:0.6875rem/1.45 var(--font);white-space:pre-wrap;word-break:break-word;max-height:11rem;overflow:auto;color:var(--pl-dim)}
 .keys{display:flex;flex-wrap:wrap;gap:0.25rem}
 .picks{display:grid;gap:0.3125rem}
 .pick{border:1px solid var(--pl-line);border-radius:0.375rem;background:var(--pl-tile);padding:0.375rem 0.5rem;display:grid;grid-template-columns:auto minmax(0,1fr) auto;gap:0.25rem 0.5rem;align-items:center}

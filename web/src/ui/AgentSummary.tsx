@@ -1,11 +1,13 @@
-/* The agent's result or the task's description in a centred window over the Galaxy: markdown in a wide
+/* The agent's result, the task's description or its plan in a centred window over the Galaxy: markdown in a wide
    column, with the answers of the task in reach. Esc (see keys.ts through dialogs.ts), «Свернуть» and a
    click on the background close it. */
 import type { JSX } from 'preact';
 import { useEffect } from 'preact/hooks';
 import { addDialogs } from '../dialogs';
-import { taskOf } from '../store';
+import { details, taskOf } from '../store';
 import { closing, loadClosing } from '../closing';
+import { fetchDetails } from '../nav';
+import { attentionLabel } from '../requests';
 import { t } from '../i18n';
 import { Badge, Gl } from './Gl';
 import { Translatable } from './Translatable';
@@ -21,11 +23,13 @@ export function AgentSummary(): JSX.Element | null {
   const task = ref ? taskOf(ref.task) : undefined;
   useEffect(() => {
     if (task && part === 'closing') void loadClosing(task);
+    if (task && part === 'plan' && !details.value[task.id]?.plan) void fetchDetails(task.id);
   }, [task?.id, task?.status, task?.msg, part]);
   if (!ref) return null;
   const close = (): void => { addDialogs.summary.value = null; };
   const cl = task && part === 'closing' ? closing.value[task.id] : undefined;
-  const title = part === 'description' ? t('focus.description') : t('focus.closing');
+  const plan = task && part === 'plan' ? details.value[task.id]?.plan?.text : '';
+  const title = part === 'description' ? t('focus.description') : part === 'plan' ? t('focus.plan') : t('focus.closing');
   return (
     <div class="scrim summary-scrim" id="summary" onMouseDown={(e) => { if (e.target === e.currentTarget) close(); }}>
       <section class="panel summary" role="dialog" aria-modal="true" aria-label={title}>
@@ -34,7 +38,7 @@ export function AgentSummary(): JSX.Element | null {
             <Gl n="expand" />
             <b>{title}</b>
             {task && <span class="tagk">{task.tag}</span>}
-            {task && <Badge status={task.status} label={task.label || t(`status.${task.status}`)} />}
+            {task && <Badge status={task.status} label={attentionLabel(task)} />}
           </span>
           <span class="sh-buttons">
             <button class="btn" type="button" data-act="summary-close" onClick={close}><Gl n="shrink" />{t('focus.collapse')}</button>
@@ -50,6 +54,8 @@ export function AgentSummary(): JSX.Element | null {
                   task.description
                     ? <Translatable text={task.description} md bar="top" />
                     : <p class="hint">{t('focus.descriptionNone')}</p>
+                ) : part === 'plan' ? (
+                  plan ? <Translatable text={plan} md bar="top" /> : <p class="hint">{t('focus.planLoading')}</p>
                 ) : cl?.text ? <Translatable text={cl.text} md bar="top" /> : (
                   <p class="hint">{task.status === 'done' ? t('focus.closingNone') : t('focus.closingLoading')}</p>
                 )}

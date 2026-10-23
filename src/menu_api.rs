@@ -24,6 +24,9 @@ pub struct AnswerBody {
     /// The `sig` of the menu the page showed.
     sig: String,
     answer: AnswerJson,
+    /// What the human did, when the page knows the words for it: `allow`, `always` or `deny` (a permission
+    /// prompt). The Coordinator is told; an unrecognised value is not news.
+    note: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -114,6 +117,19 @@ pub async fn menu_answer(
         };
         if let Err(e) = done {
             return error(StatusCode::BAD_GATEWAY, e);
+        }
+    }
+    // A permission answered from a task's card is a human's action on that task: the Coordinator learns of it.
+    if target != "coordinator" {
+        let what = match body.note.as_deref() {
+            Some("allow") => Some("разрешено действие агента"),
+            Some("always") => Some("разрешено действие агента, больше не спрашивать"),
+            Some("deny") => Some("действие агента запрещено"),
+            _ => None,
+        };
+        if let Some(what) = what {
+            crate::app::planner_notice(&app, target, what).await;
+            crate::app::refresh(&app).await;
         }
     }
     Json(json!({"ok": true, "steps": steps.len()})).into_response()

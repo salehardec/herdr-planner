@@ -24,6 +24,8 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 const JOURNAL_MAX: usize = 80;
 /// How many sent Coordinator messages the page keeps with their images.
 pub const CHAT_HISTORY_MAX: usize = 20;
+/// How many of the planner's own notices the chat keeps.
+pub const CHAT_NOTICES_MAX: usize = 20;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct BoardStatus {
@@ -74,6 +76,8 @@ pub struct CoordinatorState {
     pub source: String,
     /// Sent messages, newest last, with the images that went with them.
     pub history: Vec<ChatMessage>,
+    /// The planner's own notices to the Coordinator (what the human did), newest last.
+    pub notices: Vec<ChatNotice>,
     /// Sub-agents of the Coordinator: the Quasar's moons.
     pub subagents: Vec<subagents::Subagent>,
     pub subagents_note: String,
@@ -154,8 +158,20 @@ pub struct ChatState {
     /// Newest last; capped at [`CHAT_HISTORY_MAX`].
     #[serde(default)]
     pub history: Vec<ChatMessage>,
+    /// The planner's lines to the Coordinator about what the human did, newest last. They are shown in the
+    /// chat as notices, never as the human's own messages, and they live in memory: the board command that
+    /// carries them is what the Coordinator keeps.
+    #[serde(skip)]
+    pub notices: Vec<ChatNotice>,
     #[serde(skip)]
     pub busy_until: u64,
+}
+
+/// One line the planner sent to the Coordinator because of an action in the planner.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct ChatNotice {
+    pub text: String,
+    pub at: u64,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -283,6 +299,7 @@ impl App {
                 view: CoordinatorView::default(),
                 source: "herdr-projects coordinator".into(),
                 history: Vec::new(),
+                notices: Vec::new(),
                 subagents: Vec::new(),
                 subagents_note: String::new(),
                 context: ContextOut::default(),
@@ -608,6 +625,41 @@ pub async fn apply_lag(app: &Shared) {
     }
 }
 
+/// The one line the Coordinator reads about an action the human took in the planner (PLN-61).
+pub fn notice_line(tag: &str, action: &str) -> String {
+    format!("[Действие в планировщике] {tag}: {action}")
+}
+
+/// Tells the Coordinator what the human just did, through the board's own channel (`coordinator tell`), and keeps the
+/// same line in the chat as a notice. The board call goes in the background: the page must not wait for the Coordinator.
+pub async fn planner_notice(app: &Shared, id: &str, action: &str) {
+    let tag = {
+        let snap = app.snapshot.read().await;
+        snap.tasks
+            .iter()
+            .chain(snap.archived.iter())
+            .find(|t| t.id == id)
+            .map(|t| t.tag.clone())
+            .unwrap_or_else(|| id.to_string())
+    };
+    let line = notice_line(&tag, action);
+    {
+        let mut chat = app.chat.lock().await;
+        chat.notices.push(ChatNotice {
+            text: line.clone(),
+            at: now_ms(),
+        });
+        let extra = chat.notices.len().saturating_sub(CHAT_NOTICES_MAX);
+        if extra > 0 {
+            chat.notices.drain(0..extra);
+        }
+    }
+    let cfg = app.cfg.clone();
+    tokio::spawn(async move {
+        let _ = run_board(&cfg, &["coordinator", "tell", "--", &line], Duration::from_secs(30)).await;
+    });
+}
+
 /// A line for the journal that is not a task's status (a shipyard's cleaning, a block connected).
 pub async fn journal_note(app: &Shared, id: &str, status: &str, text: &str) {
     let now = now_ms();
@@ -767,6 +819,7 @@ async fn refresh_inner(app: &Shared) {
         save_chat(app, &chat);
     }
     let history_msgs = chat.history.clone();
+    let notices = chat.notices.clone();
     *app.chat.lock().await = chat;
 
     let seq = app.snapshot.read().await.seq + 1;
@@ -873,6 +926,7 @@ async fn refresh_inner(app: &Shared) {
         view: coord_view,
         source: "herdr-projects coordinator · последние строки окна Координатора".into(),
         history: history_msgs,
+        notices,
         subagents: coord_subs,
         subagents_note: coord_note,
         context,
@@ -1143,6 +1197,30 @@ pub async fn details(app: &Shared, id: &str) -> Result<Details, String> {
 mod tests {
     use super::*;
     use crate::board::parse_list;
+
+    #[test]
+    fn the_notice_line_names_the_task_and_the_action() {
+        assert_eq!(
+            notice_line("PLN-60", "план одобрен"),
+            "[Действие в планировщике] PLN-60: план одобрен"
+        );
+    }
+
+    #[test]
+    fn the_planners_notices_are_not_the_humans_chat_history() {
+        let chat = ChatState {
+            last_sent: "привет".into(),
+            history: vec![ChatMessage { text: "привет".into(), at: 1, attachments: Vec::new() }],
+            notices: vec![ChatNotice { text: notice_line("PLN-60", "план одобрен"), at: 2 }],
+            ..ChatState::default()
+        };
+        let json = serde_json::to_string(&chat).unwrap();
+        assert!(!json.contains("Действие в планировщике"), "{json}");
+        assert!(json.contains("привет"));
+        let back: ChatState = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.history.len(), 1);
+        assert!(back.notices.is_empty(), "a notice lives in the running planner, not in the saved chat");
+    }
 
     #[test]
     fn a_task_is_finished_when_its_agent_left_its_pane_went_or_it_was_archived() {

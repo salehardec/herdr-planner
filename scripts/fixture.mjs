@@ -304,6 +304,8 @@ task('alpha', 11, { state: 'idle', stage: 'todo', title: 'Заметка на п
 task('alpha', 13, { state: 'done', stage: 'done', title: 'Старое дело', msg: 'Merged into main.' });
 task('alpha', 15, { state: 'done', stage: 'done', title: 'Свежее дело', msg: 'Merged: https://github.com/o/alpha/pull/15', pr: 'https://github.com/o/alpha/pull/15' });
 task('alpha', 16, { state: 'blocked', kind: 'permission', stage: 'working', title: 'Лишние ветки', msg: longPermission });
+// A question the board has no line for: the agent waits, and only its screen has anything to show (PLN-61).
+task('alpha', 17, { state: 'blocked', kind: 'question', stage: 'working', title: 'Вопрос без текста', msg: '' });
 task('beta', 1, { state: 'done', stage: 'done', title: 'Единственное сделанное', msg: 'Merged into main.' });
 task('gamma', 1, { app: 'pi', state: 'working', stage: 'working', title: 'Идёт работа', msg: 'Writing', progress: 30 });
 task('gamma', 2, { state: 'done', stage: 'done', title: 'Архивная задача', msg: 'Merged into main.', archivedAt: 1792407710774 });
@@ -343,6 +345,7 @@ const META = {
   'alpha/13': { ago: 9 * DAY, desc: 'Старое дело: убрать устаревший флаг совместимости из конфига.', noExit: true },
   'alpha/15': { ago: 4 * HOUR, desc: 'Export button now shows progress; the job reports percent through the existing event channel.' },
   'alpha/16': { ago: 12 * MIN, desc: 'Find and remove the old branches work/1–work/9; they are all merged into main, work/10 stays.' },
+  'alpha/17': { ago: 8 * MIN, desc: 'Агент ждёт ответа, но доска не отдала ни строки вопроса: текст бывает только на экране агента.' },
   'beta/1': { ago: 9 * DAY, desc: 'Initial beta bootstrap: CI config and the first smoke test.' },
   'gamma/1': { ago: 27 * HOUR, desc: 'Writing the pricing notes for the gamma service; the color tokens come from alpha/4.', afterDone: [{ id: 'gamma/2', title: 'Архивная задача' }] },
   'gamma/2': { ago: 3 * DAY, desc: 'Archived: old gamma CLI cleanup.' },

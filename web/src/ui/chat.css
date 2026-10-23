@@ -36,6 +36,9 @@
 .chat .turn.hit{animation:hit 2s}
 @keyframes hit{0%,50%{background:color-mix(in srgb,var(--pl-accent) 22%,transparent)}}
 .chat .turn.board .q{font-style:italic}
+.chat .turn.notice{margin:0 0 0.5rem;padding:0.25rem 0.5rem;border-bottom:0;border-left:2px solid color-mix(in srgb,var(--pl-accent) 55%,transparent);color:var(--pl-dim);font-size:0.8125rem}
+.chat .turn.notice .notice-tx{white-space:pre-wrap;overflow-wrap:anywhere}
+.chat .turn.notice .meta{margin-top:0.125rem}
 .chat .shots{margin:0.25rem 0 0.25rem 2.25rem}
 .chat .sv img{height:4rem;max-width:8.125rem}
 .chat.drop{outline:2px dashed var(--c-green);outline-offset:-0.1875rem;box-shadow:0 0 1.75rem color-mix(in srgb,var(--c-green) 40%,transparent)}

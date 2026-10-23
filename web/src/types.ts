@@ -178,12 +178,19 @@ export interface CoordinatorState {
   sent_at: number;
   source: string;
   history: ChatMessage[];
+  /** What the planner told the Coordinator about the human's actions: shown as notices, not as the human's lines. */
+  notices: ChatNotice[];
   subagents: Subagent[];
   subagents_note: string;
   /** Tokens of the last turn against the window of the model (0 when unknown). */
   context: { used: number; window: number; percent: number; known: boolean; model: string };
   can_compact: boolean;
   program: string;
+}
+
+export interface ChatNotice {
+  text: string;
+  at: number;
 }
 
 export interface TodoItem {
@@ -506,6 +513,8 @@ export interface Request {
   repo: string;
   msg: string;
   text: string;
+  /** Why the human is needed, in one word: «план», «разрешение», «вопрос», «упала», «к одобрению». */
+  why?: string;
   task?: Task;
   options?: { label: string; value: string }[];
   /** An alarm of a shipyard: the row leads to that yard's focus, not to a task. */

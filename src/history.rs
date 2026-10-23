@@ -24,6 +24,8 @@ const MAX_QUESTION: usize = 100_000;
 const MAX_ANSWER: usize = 8000;
 /// Board notices the Coordinator is told by itself, not typed by the human.
 const BOARD_PREFIX: &str = "[Уведомление доски]";
+/// What the planner tells the Coordinator about the human's own actions (approving a plan, allowing an agent).
+const ACTION_PREFIX: &str = "[Действие в планировщике]";
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Turn {
@@ -120,7 +122,7 @@ pub fn parse(text: &str) -> Vec<Turn> {
 /// together with the one that started it; one final answer covers them all. So
 /// a notice is dropped and a human's words are added to the turn of the run.
 fn open_turn(turns: &mut Vec<Turn>, q: String, at: u64, queued: bool, running: &mut bool) {
-    let from = if q.starts_with(BOARD_PREFIX) {
+    let from = if q.starts_with(BOARD_PREFIX) || q.starts_with(ACTION_PREFIX) {
         "board"
     } else {
         "human"
@@ -461,6 +463,21 @@ mod tests {
         assert_eq!(t.len(), 2, "the notice inside the run is not a turn of its own");
         assert_eq!((t[0].from, t[0].q.as_str(), t[0].a.as_str()), ("human", "сливай", "Слил APC-4."));
         assert_eq!((t[1].from, t[1].a.as_str()), ("board", "APC-5 готова."), "a notice at rest is a turn");
+    }
+
+    #[test]
+    fn an_action_in_the_planner_is_a_board_notice() {
+        let text = [
+            r#"{"type":"user","timestamp":"2026-10-19T09:00:00.000Z","message":{"content":"продолжай"}}"#,
+            r#"{"type":"assistant","timestamp":"2026-10-19T09:00:05.000Z","message":{"stop_reason":"end_turn","content":[{"type":"text","text":"Жду."}]}}"#,
+            r#"{"type":"user","timestamp":"2026-10-19T09:01:00.000Z","message":{"content":"[Действие в планировщике] PLN-60: план одобрен"}}"#,
+            r#"{"type":"assistant","timestamp":"2026-10-19T09:01:05.000Z","message":{"stop_reason":"end_turn","content":[{"type":"text","text":"Принято, продолжаю."}]}}"#,
+        ]
+        .join("\n");
+        let t = parse(&text);
+        assert_eq!(t.len(), 2);
+        assert_eq!((t[1].from, t[1].q.as_str()), ("board", "[Действие в планировщике] PLN-60: план одобрен"));
+        assert_eq!((t[0].from, t[0].q.as_str()), ("human", "продолжай"));
     }
 
     #[test]
