@@ -3,6 +3,7 @@ import { answered, panels, requests, snap } from '../store';
 import { fromQueue, openRequest, queueCursor } from '../nav';
 import { t } from '../i18n';
 import { Gl } from './Gl';
+import { Grip } from './Grip';
 import { BatchBar } from './MemoryBatch';
 import { cardPick, memPick, toggleCard } from './memory-batch';
 import './wait.css';
@@ -55,6 +56,7 @@ export function Wait(): JSX.Element {
       </div>
       {suggestions.length > 0 && <div class="wbatch"><BatchBar scope="wait" list={suggestions} /></div>}
       {fromQueue.value && <div class="hint wnote">{t('wait.back')}</div>}
+      <Grip panel="wait" side="right" />
     </section>
   );
 }

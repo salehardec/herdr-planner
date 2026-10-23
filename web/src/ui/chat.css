@@ -4,8 +4,8 @@
    колонка текста реплик — не шире 80ch, чтобы строки читались.
    Реплики (PLN-60, макет design/chat): вопросы человека — пузырь справа, ответы Координатора — слева во всю колонку, целиком;
    события доски — строкой под ответом; уведомления доски — своим видом; действия — по наведению и фокусу. */
-.chat{left:var(--mid-l);right:var(--mid-r);margin-inline:auto;width:auto;max-width:54rem;bottom:3.875rem;max-height:46vh;display:flex;flex-direction:column;font-size:0.9375rem;line-height:1.55;z-index:16;transition:transform var(--m-med) var(--m-ease),opacity var(--m-med);background:var(--pl-panel-solid)}
-:root:not(.bp1400) .chat{max-width:min(54rem,40vw)}
+.chat{left:var(--mid-l);right:var(--mid-r);margin-inline:auto;width:auto;max-width:min(var(--chat-user,54rem),100%);bottom:3.875rem;max-height:46vh;display:flex;flex-direction:column;font-size:0.9375rem;line-height:1.55;z-index:16;transition:transform var(--m-med) var(--m-ease),opacity var(--m-med);background:var(--pl-panel-solid)}
+:root:not(.bp1400) .chat{max-width:var(--chat-user,min(54rem,40vw))}
 .chat.off{transform:translateY(2.5rem);opacity:0;pointer-events:none}
 .chat>header{text-transform:none;letter-spacing:0;font-size:0.75rem;gap:0.5rem;justify-content:flex-start;flex-wrap:nowrap}
 .chat>header b{color:var(--pl-title);font-weight:600;white-space:nowrap}

@@ -154,7 +154,8 @@ export function installKeys(): void {
       case 'KeyH': void goHome(); return;
       case 'Digit0': case 'Home': e.preventDefault(); void goOverview(); return;
       case 'Enter': if (selected.value) { const w = getWorld(); if (w) void w.flyTo({ kind: 'entity', entity: selected.value }); } return;
-      case 'Tab': if (!(target as HTMLElement | null)?.closest?.('button,a')) { e.preventDefault(); nextPlanet(e.shiftKey ? -1 : 1); } return;
+      // Tab walks the interface's own controls (a button, a link, the edge of a panel); elsewhere it is the next planet
+      case 'Tab': if (!(target as HTMLElement | null)?.closest?.('button,a,[role="separator"]')) { e.preventDefault(); nextPlanet(e.shiftKey ? -1 : 1); } return;
       case 'BracketLeft': nextUniverse(-1); return;
       case 'BracketRight': nextUniverse(1); return;
       case 'Equal': case 'NumpadAdd': getWorld()?.zoomBy(0.86); return;
