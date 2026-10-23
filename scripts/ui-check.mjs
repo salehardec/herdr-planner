@@ -20,6 +20,7 @@ import { spawn, execFileSync } from 'node:child_process';
 import { mkdtempSync, writeFileSync, readFileSync, existsSync, unlinkSync, utimesSync, rmSync, readdirSync, appendFileSync, realpathSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { chooseMode, gpuFlags } from './chrome-gpu.mjs';
 
 const base = process.argv[2] || 'http://127.0.0.1:7117';
 const shots = process.argv[3] || null;
@@ -35,8 +36,10 @@ const profile = mkdtempSync(join(tmpdir(), 'herdr-planner-ui-'));
 // it writes the port into its profile folder.
 let port = 0;
 const readPort = () => { try { return Number(readFileSync(join(profile, 'DevToolsActivePort'), 'utf8').split('\n')[0]) || 0; } catch { return 0; } };
+// The card of the shipyard, or the software renderer of CI and a laptop (PLN-58); UI_GPU forces the choice.
+const gpuMode = chooseMode();
 const chrome = spawn(process.env.CHROMIUM || 'chromium', [
-  '--headless=new', '--no-sandbox', '--disable-gpu', '--use-gl=angle', '--use-angle=swiftshader', '--enable-unsafe-swiftshader',
+  '--headless=new', '--no-sandbox', ...gpuFlags(gpuMode),
   '--hide-scrollbars', `--user-data-dir=${profile}`, '--remote-debugging-port=0', '--window-size=1500,950',
   '--host-resolver-rules=MAP remote.test 127.0.0.1', 'about:blank',
 ], { stdio: 'ignore' });
@@ -4078,6 +4081,14 @@ ws.onmessage = (e) => {
   }
 };
 await send('Runtime.enable');
+// One line about what draws the page: the yard's card or the software renderer (PLN-58). A GPU that silently fell back
+// to SwiftShader is seen here instead of being wondered at in the timings.
+const renderer = await evalJs(`(() => { const c = document.createElement('canvas');
+  const gl = c.getContext('webgl2') || c.getContext('webgl');
+  if (!gl) return 'no WebGL';
+  const d = gl.getExtension('WEBGL_debug_renderer_info');
+  return String(d ? gl.getParameter(d.UNMASKED_RENDERER_WEBGL) : gl.getParameter(gl.RENDERER)); })()`);
+console.log(`renderer: ${renderer ?? 'unknown'} (${gpuMode})`);
 await send('Network.enable');
 await send('Log.enable');
 await send('Page.enable');
@@ -4108,6 +4119,8 @@ section('runners', async () => {
   check('the world draws the yard outside the Galaxy boundary', !!yardDebug?.docks?.['vm-r'] && Math.hypot(yardDebug.docks['vm-r'].x, yardDebug.docks['vm-r'].z) > 760, JSON.stringify(yardDebug?.docks));
   await click('#nav [data-nav="run|vm-r"]');
   check('the shipyard focus opens: state, CPU, memory, disk, GPU', await waitFor('!!document.querySelector("[data-focus=runner]")', 12000) && await hasText('#focus', 'vm-r') && await hasText('#focus', 'на связи') && await hasText('#focus', 'CPU') && await hasText('#focus', 'GPU NVIDIA L4-24Q'), await text('#focus'));
+  check('the focus names the check container: its CPU limit and the slots of full checks',
+    await waitFor('!!document.querySelector("#rf-check-line")', 8000) && await hasText('#rf-check-line', 'ЦП 6') && await hasText('#rf-check-line', '2 проверки'), await text('#rf-check-line'));
   // The yard's look: a station with a light per container of a task, in the frame as a whole, calm when asked to be.
   check('the flight to the yard ends with it selected', await waitFor('world.debug().flight === "idle" && plannerDebug().selected?.kind === "runner"', 15000), JSON.stringify(await pd()));
   const yard = (await debug())?.docks?.['vm-r'];
@@ -4210,20 +4223,24 @@ section('runners', async () => {
   check('the settings form shows the limits in force', await waitFor('!!document.querySelector("#rf-lim-cpus")', 5000)
     && (await evalJs('document.querySelector("#rf-lim-cpus").value')) === '2'
     && (await evalJs('document.querySelector("#rf-lim-mem").value')) === '2'
-    && (await evalJs('document.querySelector("#rf-lim-per").value')) === '0', await text('#rf-edit'));
-  await evalJs('(() => { const set = (id, v) => { const i = document.querySelector(id); i.value = v; i.dispatchEvent(new Event("input", { bubbles: true })); }; set("#rf-lim-cpus", "3"); set("#rf-lim-mem", "3"); set("#rf-lim-per", "1"); return true; })()');
+    && (await evalJs('document.querySelector("#rf-lim-per").value')) === '0'
+    && (await evalJs('document.querySelector("#rf-check-cpus").value')) === '6'
+    && (await evalJs('document.querySelector("#rf-check-slots").value')) === '2', await text('#rf-edit'));
+  await evalJs('(() => { const set = (id, v) => { const i = document.querySelector(id); i.value = v; i.dispatchEvent(new Event("input", { bubbles: true })); }; set("#rf-lim-cpus", "3"); set("#rf-lim-mem", "3"); set("#rf-lim-per", "1"); set("#rf-check-cpus", "4"); set("#rf-check-slots", "1"); return true; })()');
   await twoPresses('#rf-set');
   check('saving keeps them and the maximum in the list file', await waitLog(() => {
-    try { const r = JSON.parse(readFileSync(join(fixture, 'settings', 'runners.json'), 'utf8')).runners.find((x) => x.id === 'vm-r'); return r?.limits?.cpus === 3 && r?.limits?.mem_mb === 3072 && r?.limits?.per_task === 1; } catch { return false; }
+    try { const r = JSON.parse(readFileSync(join(fixture, 'settings', 'runners.json'), 'utf8')).runners.find((x) => x.id === 'vm-r'); return r?.limits?.cpus === 3 && r?.limits?.mem_mb === 3072 && r?.limits?.per_task === 1 && r?.check_cpus === 4 && r?.check_slots === 1; } catch { return false; }
   }, 10000), readFileSync(join(fixture, 'settings', 'runners.json'), 'utf8').slice(0, 400));
   check('the yard shows the new numbers at once', await waitFor('(() => { const e = document.querySelector("#rf-limits"); const s = e?.innerText || ""; return !!e && s.includes("ЦП 3") && s.includes("3 ГБ") && s.includes("на задачу не больше 1 контейнера"); })()', 8000), await text('#rf-limits'));
+  check('and the check container’s own numbers too',
+    await waitFor('(() => { const s = document.querySelector("#rf-check-line")?.innerText || ""; return s.includes("ЦП 4") && s.includes("1 проверка"); })()', 8000), await text('#rf-check-line'));
   // An emptied field is «leave it as it is», not 0: zero would turn the maximum off.
   await click('#rf-edit-open');
   await waitFor('!!document.querySelector("#rf-lim-per")', 5000);
   await evalJs('(() => { const i = document.querySelector("#rf-lim-per"); i.value = ""; i.dispatchEvent(new Event("input", { bubbles: true })); return true; })()');
   await twoPresses('#rf-set');
   check('an emptied limit field keeps the value in force, not 0', await waitLog(() => {
-    try { const r = JSON.parse(readFileSync(join(fixture, 'settings', 'runners.json'), 'utf8')).runners.find((x) => x.id === 'vm-r'); return r?.limits?.cpus === 3 && r?.limits?.mem_mb === 3072 && r?.limits?.per_task === 1; } catch { return false; }
+    try { const r = JSON.parse(readFileSync(join(fixture, 'settings', 'runners.json'), 'utf8')).runners.find((x) => x.id === 'vm-r'); return r?.limits?.cpus === 3 && r?.limits?.mem_mb === 3072 && r?.limits?.per_task === 1 && r?.check_cpus === 4 && r?.check_slots === 1; } catch { return false; }
   }, 10000), readFileSync(join(fixture, 'settings', 'runners.json'), 'utf8').slice(0, 400));
   // The build caches of the board's repositories (herdr.shared=alpha, scripts/yard.sh): apart from the tasks, never foreign.
   check('the build cache is a table of its own: the image with its size, the volume, the cache container',

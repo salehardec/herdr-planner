@@ -17,13 +17,15 @@ ENV DEBIAN_FRONTEND=noninteractive \
     LANG=C.UTF-8
 
 # The page's browser libraries and the tools the checks call: rsync (the sources come through `docker exec`), ss
-# (a server on our port is ours), timeout, flock, jq (the installer check), curl.
+# (a server on our port is ours), timeout, flock, jq (the installer check), curl, sqlite3 (the page check seeds the
+# yard's journal into the planner's database). libgl/libegl/libvulkan are what a card needs under Chrome (PLN-58).
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        ca-certificates curl gnupg jq rsync iproute2 procps util-linux \
+        ca-certificates curl gnupg jq rsync iproute2 procps util-linux sqlite3 \
         libnss3 libgbm1 libasound2 libatk-bridge2.0-0 libgtk-3-0 libxkbcommon0 \
         libxrandr2 libxcomposite1 libxdamage1 libxfixes3 libdrm2 libcups2 libdbus-1-3 \
         libx11-xcb1 libpango-1.0-0 libpangocairo-1.0-0 libcairo2 \
         libexpat1 libuuid1 \
+        libgl1 libegl1 libgles2 libglvnd0 libvulkan1 libxcb-dri3-0 libxcb-present0 libxshmfence1 \
         fonts-liberation fonts-dejavu-core \
     && curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
     && apt-get install -y --no-install-recommends nodejs \
@@ -37,6 +39,15 @@ RUN set -eux; \
     mkdir -p /opt/chrome; \
     ln -s "$path" /opt/chrome/chrome; \
     rm -f /tmp/chrome.txt
+
+# The card's Vulkan and EGL entries (PLN-58): nvidia-container-toolkit mounts the driver's libraries but not their JSON
+# files, and this machine keeps them outside the paths Debian's glvnd and Vulkan loader look in. Without a card the
+# libraries are simply missing and both loaders move on to Mesa's software GL.
+RUN mkdir -p /usr/share/vulkan/icd.d /usr/share/glvnd/egl_vendor.d \
+    && printf '%s\n' '{ "file_format_version": "1.0.0", "ICD": { "library_path": "libGLX_nvidia.so.0", "api_version": "1.3.194" } }' \
+        > /usr/share/vulkan/icd.d/nvidia_icd.json \
+    && printf '%s\n' '{ "file_format_version": "1.0.0", "ICD": { "library_path": "libEGL_nvidia.so.0" } }' \
+        > /usr/share/glvnd/egl_vendor.d/10_nvidia.json
 
 # Where a task works: the sources copied under the lock, the incoming rsync tree, the page and npm caches, the target of
 # the build and what the checks leave behind (screenshots, the parts' text, the progress file). The cache volume gets
