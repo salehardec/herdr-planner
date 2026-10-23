@@ -338,6 +338,9 @@ export interface RunnerTaskRule { runner?: string; tags?: string[] }
 export interface RunnerRules {
   default: string;
   busy_pct: number;
+  /** The check container's CPU limit and slots a yard gets when its own file says nothing (PLN-58). */
+  check_cpus: number;
+  check_slots: number;
   assign: Record<string, string>;
   need: Record<string, string[]>;
   tasks: Record<string, RunnerTaskRule>;

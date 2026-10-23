@@ -759,6 +759,9 @@ pub struct Pick {
 pub struct Rules {
     pub default: String,
     pub busy_pct: u64,
+    /// The check container's CPU limit and the slots of full checks a yard gets when it says nothing (PLN-58).
+    pub check_cpus: u64,
+    pub check_slots: u64,
     pub assign: BTreeMap<String, String>,
     pub need: BTreeMap<String, Vec<String>>,
     pub tasks: BTreeMap<String, TaskRule>,
@@ -769,6 +772,8 @@ impl Rules {
         Self {
             default: file.default_runner().map(|r| r.id.clone()).unwrap_or_default(),
             busy_pct: file.busy_pct,
+            check_cpus: CHECK_CPUS,
+            check_slots: CHECK_SLOTS,
             assign: file.assign.clone(),
             need: file.need.clone(),
             tasks: file.tasks.clone(),

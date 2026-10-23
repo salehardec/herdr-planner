@@ -4312,12 +4312,26 @@ section('runners', async () => {
     && (await evalJs('document.querySelector("#rf-lim-per").value')) === '0'
     && (await evalJs('document.querySelector("#rf-check-cpus").value')) === '6'
     && (await evalJs('document.querySelector("#rf-check-slots").value')) === '2', await text('#rf-edit'));
-  await evalJs('(() => { const set = (id, v) => { const i = document.querySelector(id); i.value = v; i.dispatchEvent(new Event("input", { bubbles: true })); }; set("#rf-lim-cpus", "3"); set("#rf-lim-mem", "3"); set("#rf-lim-per", "1"); set("#rf-check-cpus", "4"); set("#rf-check-slots", "1"); return true; })()');
+  await evalJs('(() => { const set = (id, v) => { const i = document.querySelector(id); i.value = v; i.dispatchEvent(new Event("input", { bubbles: true })); }; set("#rf-lim-cpus", "3"); set("#rf-lim-mem", "3"); set("#rf-lim-per", "1"); return true; })()');
   await twoPresses('#rf-set');
   check('saving keeps them and the maximum in the list file', await waitLog(() => {
-    try { const r = JSON.parse(readFileSync(join(fixture, 'settings', 'runners.json'), 'utf8')).runners.find((x) => x.id === 'vm-r'); return r?.limits?.cpus === 3 && r?.limits?.mem_mb === 3072 && r?.limits?.per_task === 1 && r?.check_cpus === 4 && r?.check_slots === 1; } catch { return false; }
+    try { const r = JSON.parse(readFileSync(join(fixture, 'settings', 'runners.json'), 'utf8')).runners.find((x) => x.id === 'vm-r'); return r?.limits?.cpus === 3 && r?.limits?.mem_mb === 3072 && r?.limits?.per_task === 1; } catch { return false; }
   }, 10000), readFileSync(join(fixture, 'settings', 'runners.json'), 'utf8').slice(0, 400));
+  // The check container's numbers that are still the defaults are not written into the file: the yard follows a later
+  // change of the defaults (PLN-58).
+  check('a save that leaves the check numbers at their defaults writes none of them', await waitLog(() => {
+    try { const r = JSON.parse(readFileSync(join(fixture, 'settings', 'runners.json'), 'utf8')).runners.find((x) => x.id === 'vm-r'); return r && !('check_cpus' in r) && !('check_slots' in r); } catch { return false; }
+  }, 5000), readFileSync(join(fixture, 'settings', 'runners.json'), 'utf8').slice(0, 400));
   check('the yard shows the new numbers at once', await waitFor('(() => { const e = document.querySelector("#rf-limits"); const s = e?.innerText || ""; return !!e && s.includes("ЦП 3") && s.includes("3 ГБ") && s.includes("на задачу не больше 1 контейнера"); })()', 8000), await text('#rf-limits'));
+  check('and the check line still follows the defaults', await hasText('#rf-check-line', 'ЦП 6') && await hasText('#rf-check-line', '2 проверки'), await text('#rf-check-line'));
+  // The human's own check numbers are written, and the yard shows them at once.
+  await click('#rf-edit-open');
+  await waitFor('!!document.querySelector("#rf-check-cpus")', 5000);
+  await evalJs('(() => { const set = (id, v) => { const i = document.querySelector(id); i.value = v; i.dispatchEvent(new Event("input", { bubbles: true })); }; set("#rf-check-cpus", "4"); set("#rf-check-slots", "1"); return true; })()');
+  await twoPresses('#rf-set');
+  check('another save writes the check numbers that are not the defaults', await waitLog(() => {
+    try { const r = JSON.parse(readFileSync(join(fixture, 'settings', 'runners.json'), 'utf8')).runners.find((x) => x.id === 'vm-r'); return r?.limits?.cpus === 3 && r?.check_cpus === 4 && r?.check_slots === 1; } catch { return false; }
+  }, 10000), readFileSync(join(fixture, 'settings', 'runners.json'), 'utf8').slice(0, 400));
   check('and the check container’s own numbers too',
     await waitFor('(() => { const s = document.querySelector("#rf-check-line")?.innerText || ""; return s.includes("ЦП 4") && s.includes("1 проверка"); })()', 8000), await text('#rf-check-line'));
   // An emptied field is «leave it as it is», not 0: zero would turn the maximum off.
