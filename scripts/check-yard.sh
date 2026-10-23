@@ -57,17 +57,41 @@ case "$1" in
     case "$2" in inspect) [ -e "$ST/container" ] && exit 0 || exit 1 ;; esac
     exit 0 ;;
   inspect)
-    case "$2" in
+    # `docker inspect -f <format> <name>`: the format is the third word, the second is `-f`.
+    fmt=${3:-$2}
+    case "$fmt" in
       '{{.Image}}') echo "sha256:aaaaaaaaaaaaaaaa" ;;
       '{{.State.Running}}') echo true ;;
+      *'HostConfig.NanoCpus'*) cat "$ST/nano" 2>/dev/null || echo 0 ;;
+      *'HostConfig.DeviceRequests'*) if [ -e "$ST/gpu-req" ]; then echo '[{"Capabilities":[["gpu"]],"Count":-1}]'; else echo null; fi ;;
+      *'herdr.yard.cpus'*) cat "$ST/label-cpus" 2>/dev/null || true ;;
+      *'herdr.yard.gpu'*) cat "$ST/label-gpu" 2>/dev/null || true ;;
       *) echo running ;;
     esac
     exit 0 ;;
-  run) : >"$ST/container"; echo container-id; exit 0 ;;
+  run)
+    : >"$ST/container"
+    rm -f "$ST"/nano "$ST"/gpu-req
+    prev=
+    for a in "$@"; do
+      case "$a" in
+        herdr.yard.cpus=*) printf '%s' "${a#*=}" >"$ST/label-cpus" ;;
+        herdr.yard.gpu=*) printf '%s' "${a#*=}" >"$ST/label-gpu" ;;
+        --gpus) : >"$ST/gpu-req" ;;
+      esac
+      if [ "$prev" = "--cpus" ]; then printf '%s' "$((a * 1000000000))" >"$ST/nano"; fi
+      prev=$a
+    done
+    echo container-id; exit 0 ;;
+  update)
+    # docker refuses to lift a limit with `--cpus 0` (the limit stays): the stub does the same.
+    if [ "$2" = "--cpus" ] && [ "${3:-0}" != 0 ]; then printf '%s' "$((3 * 1000000000))" >"$ST/nano"; fi
+    exit 0 ;;
   start) : >"$ST/container"; exit 0 ;;
   rm) rm -f "$ST/container"; exit 0 ;;
   exec)
     case "$*" in
+      *"nvidia-smi -L"*) [ -e "$ST/card-dead" ] && exit 1; exit 0 ;;
       *"cat /work/progress."*) cat "$ST/progress" 2>/dev/null; exit 0 ;;
       *"test -d /work/out"*) [ -d "$ST/out" ] && exit 0 || exit 1 ;;
     esac
@@ -91,7 +115,7 @@ chmod +x "$BIN/docker" "$BIN/rsync" "$BIN/cargo"
 
 fresh() {
   rm -f "$ST"/docker.log "$ST"/rsync.log "$ST"/cargo.log "$ST"/container "$ST"/image "$ST"/volume \
-    "$ST"/down "$ST"/progress "$ST"/stale-image
+    "$ST"/down "$ST"/progress "$ST"/stale-image "$ST"/label-cpus "$ST"/label-gpu "$ST"/nano "$ST"/gpu-req "$ST"/card-dead
   rm -rf "$ST/out"
   : >"$ST/docker.log"; : >"$ST/rsync.log"; : >"$ST/cargo.log"
 }
@@ -120,7 +144,8 @@ expect "образ собран из Dockerfile, тег — его хеш" "buil
 expect "образ помечен herdr.shared=herdr-planner" "build --label herdr.shared=herdr-planner" "$ST/docker.log"
 expect "том кэша создан с той же меткой" "volume create --label herdr.shared=herdr-planner hp-yard-cache" "$ST/docker.log"
 expect "контейнер задачи назван по TMPDIR и помечен herdr.task" "run -d --name yard-PLN-7 --label herdr.task=PLN-7" "$ST/docker.log"
-expect "лимиты контейнера: 8 ЦП, 12 ГБ, 4096 процессов, no-new-privileges" "--cpus 8 --memory 12g --pids-limit 4096 --security-opt no-new-privileges" "$ST/docker.log"
+expect "лимиты контейнера: 6 ЦП, 12 ГБ, 4096 процессов, no-new-privileges" "--cpus 6 --memory 12g --pids-limit 4096 --security-opt no-new-privileges" "$ST/docker.log"
+expect "настройки верфи записаны в метки контейнера" "--label herdr.yard.cpus=6 --label herdr.yard.gpu=0" "$ST/docker.log"
 expect "том кэша смонтирован в /cache" "-v hp-yard-cache:/cache" "$ST/docker.log"
 expect "target сборки — внутри /work, не в общем кэше" "-e CARGO_TARGET_DIR=/work/target" "$ST/docker.log"
 refuse "ни одного опубликованного порта" " -p [0-9]" "$ST/docker.log"
@@ -132,6 +157,7 @@ refuse "без --privileged и без --network host" "--privileged|--network ho
 yard "$T/pln/PLN-7" up
 expect "образ не собирается, когда он есть" "image inspect" "$ST/docker.log"
 refuse "повторный up не собирает образ" "build --label" "$ST/docker.log"
+refuse "повторный up не трогает контейнер" "rm -f|run -d|update --cpus" "$ST/docker.log"
 
 # ── the working copy, the run, the exit code ──
 fresh
@@ -270,6 +296,10 @@ for a in "$@"; do
 done
 [ -n "$host" ] || exit 255
 [ -e "$ST/down-$host" ] && exit 255
+case "$*" in
+  *nvidia-smi*) [ -e "$ST/no-gpu" ] && exit 1; echo 'GPU 0: NVIDIA L4 (UUID: GPU-00000000)'; exit 0 ;;
+  *"/dev/dri"*) [ -e "$ST/no-dri" ] && exit 1; exit 0 ;;
+esac
 printf '%s 8\n' "$(cat "$ST/load-$host" 2>/dev/null || echo 0.10)"
 EOF
 chmod +x "$BIN/ssh"
@@ -343,6 +373,132 @@ rm -f "$ST/down-vm-r" "$ST/down-vm-g"
 YARD_RUNNER=vm-r yard_pick "$T/pln/PLN-7" where
 if [ "$(cat "$T/out")" = "vm-r" ]; then ok "YARD_RUNNER names the yard outright"; else bad "YARD_RUNNER: $(cat "$T/out")"; fi
 YARD_RUNNER=
+
+# ── the GPU and the check container's settings (PLN-58) ──
+printf '0.10' >"$ST/load-vm-g"; printf '0.10' >"$ST/load-vm-r"
+rm -f "$ST/no-gpu" "$ST/no-dri" "$ST/down-vm-g" "$ST/down-vm-r"
+cat >"$YFILE" <<'EOF'
+{
+  "version": 1,
+  "default": "vm-g",
+  "runners": [
+    { "id": "vm-g", "target": "vm-g", "tags": ["docker28", "gpu"], "check_cpus": 4, "check_slots": 1 },
+    { "id": "vm-r", "target": "vm-r", "tags": ["x86_64"] }
+  ]
+}
+EOF
+fresh
+yard_pick "$T/pln/PLN-7" up
+[ "$status" = 0 ] || bad "up на верфи с картой: код $status ($(cat "$T/out"))"
+expect "метка gpu и отвечающий nvidia-smi дают контейнеру карту" "--gpus all -e NVIDIA_VISIBLE_DEVICES=all -e NVIDIA_DRIVER_CAPABILITIES=compute,utility,graphics" "$ST/docker.log"
+expect "и узлы дисплея, когда они есть" "\-\-device /dev/dri" "$ST/docker.log"
+expect "ЦП контейнера проверок — из настроек верфи" " --cpus 4 " "$ST/docker.log"
+expect "карта и ЦП записаны в метки контейнера" "--label herdr.yard.cpus=4 --label herdr.yard.gpu=1" "$ST/docker.log"
+
+fresh
+yard_pick "$T/pln/PLN-7" check
+[ "$status" = 0 ] || bad "check на верфи с картой: код $status ($(cat "$T/out"))"
+expect "полная проверка берёт слот верфи" "YARD_SLOTS=1" "$ST/docker.log"
+expect "очередь полных проверок включена по умолчанию" "YARD_SLOT_USE=1" "$ST/docker.log"
+
+# A yard without the label gets no card, and keeps the defaults.
+fresh
+YARD_RUNNER=vm-r yard_pick "$T/pln/PLN-7" up
+YARD_RUNNER=
+[ "$status" = 0 ] || bad "up на верфи без метки gpu: код $status ($(cat "$T/out"))"
+refuse "без метки gpu — без --gpus" "\-\-gpus" "$ST/docker.log"
+refuse "и без узлов дисплея" "\-\-device /dev/dri" "$ST/docker.log"
+expect "по умолчанию 6 ЦП" " --cpus 6 " "$ST/docker.log"
+
+# A label is a promise, the driver is the proof.
+: >"$ST/no-gpu"
+fresh
+yard_pick "$T/pln/PLN-7" up
+refuse "метка gpu без отвечающего драйвера — без --gpus" "\-\-gpus" "$ST/docker.log"
+rm -f "$ST/no-gpu"
+
+# The card without the display nodes: the container gets the card and no /dev/dri.
+: >"$ST/no-dri"
+fresh
+yard_pick "$T/pln/PLN-7" up
+expect "карта и без /dev/dri остаётся в контейнере" "\-\-gpus all" "$ST/docker.log"
+refuse "но узлы дисплея не пробрасываются" "\-\-device /dev/dri" "$ST/docker.log"
+rm -f "$ST/no-dri"
+
+# 0 CPUs is the human's «no limit»: docker gets no --cpus at all.
+jq '.runners[0].check_cpus = 0' "$YFILE" >"$YFILE.new" && mv "$YFILE.new" "$YFILE"
+fresh
+yard_pick "$T/pln/PLN-7" up
+refuse "ЦП 0 — контейнер без --cpus" " --cpus " "$ST/docker.log"
+expect "…память и прочее на месте" "--memory 12g" "$ST/docker.log"
+expect "…и это видно в метке" "--label herdr.yard.cpus=0" "$ST/docker.log"
+
+# On a live container nothing is thrown away: a CPU limit moves in place, and a card that a probe fails to see once
+# is not a reason to lose /work/target and a run of the same task (PLN-58).
+jq '.runners[0].check_cpus = 4' "$YFILE" >"$YFILE.new" && mv "$YFILE.new" "$YFILE"
+fresh
+yard_pick "$T/pln/PLN-7" up
+: >"$ST/docker.log"
+YARD_CPUS=8 yard_pick "$T/pln/PLN-7" up
+unset YARD_CPUS
+expect "другой YARD_CPUS двигает лимит ЦП на месте" "update --cpus 8 yard-PLN-7" "$ST/docker.log"
+refuse "…и не пересоздаёт контейнер" "rm -f|run -d" "$ST/docker.log"
+: >"$ST/docker.log"
+yard_pick "$T/pln/PLN-7" up
+expect "…а умолчание верфи возвращает её лимит" "update --cpus 4 yard-PLN-7" "$ST/docker.log"
+refuse "…по-прежнему без пересоздания" "rm -f|run -d" "$ST/docker.log"
+
+# A probe that fails once (a busy yard, a five-second timeout) leaves the card and the container where they are.
+: >"$ST/no-gpu"
+: >"$ST/docker.log"
+yard_pick "$T/pln/PLN-7" up
+refuse "сорвавшаяся проба карты не пересоздаёт контейнер" "rm -f|run -d" "$ST/docker.log"
+expect "и контейнер остаётся с картой" "остаётся с ней" "$T/out"
+rm -f "$ST/no-gpu"
+
+# A card that answered at the yard but stopped answering inside a long-lived container (a driver reload): the container
+# stays and the output says the checks go to SwiftShader; Chrome falls back on its own (the probe in chrome-gpu.mjs).
+: >"$ST/card-dead"
+: >"$ST/docker.log"
+yard_pick "$T/pln/PLN-7" up
+refuse "замолчавшая внутри карта не пересоздаёт контейнер" "rm -f|run -d" "$ST/docker.log"
+expect "и вывод говорит, что проверки пойдут на SwiftShader" "SwiftShader" "$T/out"
+rm -f "$ST/card-dead"
+
+# A card that appeared on the yard later is not forced into a live container: down/up do it.
+fresh
+YARD_RUNNER=vm-r yard_pick "$T/pln/PLN-7" up
+YARD_RUNNER=
+: >"$ST/docker.log"
+yard_pick "$T/pln/PLN-7" up
+refuse "появившаяся карта не пересоздаёт контейнер" "rm -f|run -d" "$ST/docker.log"
+expect "и подсказывает down и up" "down" "$T/out"
+
+# Zero CPUs cannot be applied in place (docker keeps the limit): the container still stays, and the output says why.
+: >"$ST/docker.log"
+YARD_CPUS=0 yard_pick "$T/pln/PLN-7" up
+unset YARD_CPUS
+refuse "ЦП 0 не пересоздаёт контейнер" "rm -f|run -d" "$ST/docker.log"
+expect "и честно говорит, что лимит остался" "остался" "$T/out"
+
+# The browser's flags: the card when there is one, the software renderer otherwise (CI).
+if command -v node >/dev/null 2>&1; then
+  flags=$(node --input-type=module -e '
+    import { chooseMode, gpuFlags } from "./scripts/chrome-gpu.mjs";
+    const soft = chooseMode({ UI_GPU: "" }, false);
+    const hard = chooseMode({ UI_GPU: "" }, true, () => true);
+    const broken = chooseMode({ UI_GPU: "" }, true, () => false);
+    const forced = chooseMode({ UI_GPU: "swiftshader" }, true, () => true);
+    console.log(soft, gpuFlags(soft).includes("--disable-gpu"), hard, gpuFlags(hard).includes("--disable-gpu"), broken, forced);
+  ' 2>"$T/chrome-gpu.err") || bad "chrome-gpu.mjs не загрузился: $(cat "$T/chrome-gpu.err")"
+  if [ "$flags" = "swiftshader true vulkan false swiftshader swiftshader" ]; then
+    ok "флаги Chrome: без карты — swiftshader, с картой — vulkan, карта без WebGL и UI_GPU сильнее"
+  else
+    bad "флаги Chrome: $flags"
+  fi
+else
+  echo "skip флаги Chrome: нет node"
+fi
 
 if command -v shellcheck >/dev/null 2>&1 && shellcheck --version >/dev/null 2>&1; then
   if shellcheck -s sh scripts/yard.sh scripts/check-yard.sh; then ok "shellcheck"; else bad "shellcheck"; fi

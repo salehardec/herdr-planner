@@ -1,8 +1,9 @@
 #!/usr/bin/env node
 // A big Galaxy: 50 universes / 500 planets (scripts/fixture.mjs --scale 50x500). The layout must stay orderly
 // (nothing overlaps, everything inside the boundary), the labels few and without collisions, and the
-// page's own work per frame small. The frame time in the headless browser is software GL: it is only
-// a sanity bound; the real number (median < 20 ms on integrated graphics) is checked by hand.
+// page's own work per frame small. The browser draws with the yard's card when there is one and with software GL
+// otherwise (scripts/chrome-gpu.mjs, PLN-58); the time checked here is the page's own update work, not the drawing,
+// so the limit holds either way. The real frame time (median < 20 ms on integrated graphics) is checked by hand.
 //   FIXTURE=DIR node scripts/perf-check.mjs http://127.0.0.1:PORT [screenshot-dir]
 // It runs next to other checks on shared machines, so it waits for states (never for a time) and measures the page's own work
 // against a yardstick taken in the same page at the same moment, not against a number of milliseconds.
@@ -11,6 +12,7 @@ import { spawn } from 'node:child_process';
 import { mkdtempSync, writeFileSync, rmSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { chooseMode, gpuFlags } from './chrome-gpu.mjs';
 
 const base = process.argv[2] || 'http://127.0.0.1:7117';
 const shots = process.argv[3] || null;
@@ -19,8 +21,10 @@ const profile = mkdtempSync(join(tmpdir(), 'herdr-planner-perf-'));
 // it writes the port into its profile folder.
 let port = 0;
 const readPort = () => { try { return Number(readFileSync(join(profile, 'DevToolsActivePort'), 'utf8').split('\n')[0]) || 0; } catch { return 0; } };
+// The card of the shipyard, or the software renderer of CI and a laptop (PLN-58); UI_GPU forces the choice.
+const gpuMode = chooseMode();
 const chrome = spawn(process.env.CHROMIUM || 'chromium', [
-  '--headless=new', '--no-sandbox', '--disable-gpu', '--use-gl=angle', '--use-angle=swiftshader', '--enable-unsafe-swiftshader',
+  '--headless=new', '--no-sandbox', ...gpuFlags(gpuMode),
   '--hide-scrollbars', `--user-data-dir=${profile}`, '--remote-debugging-port=0', '--window-size=1500,950', 'about:blank',
 ], { stdio: 'ignore' });
 // Whatever happens, the browser goes and its profile (hundreds of MB in /tmp) goes with it.
@@ -63,6 +67,13 @@ const waitFor = async (expr, ms = 30000) => {
 const frames = (n) => evalJs(`new Promise((done) => { let k = ${n}; const f = () => (--k <= 0 ? done(true) : requestAnimationFrame(f)); requestAnimationFrame(f); setTimeout(() => done(false), 30000); })`);
 const flightIdle = () => waitFor('world.debug().flight === "idle"', 90000);
 await send('Runtime.enable'); await send('Page.enable');
+// One line about what draws the page (PLN-58): the yard's card, or the software renderer of CI and a laptop.
+const renderer = await evalJs(`(() => { const c = document.createElement('canvas');
+  const gl = c.getContext('webgl2') || c.getContext('webgl');
+  if (!gl) return 'no WebGL';
+  const d = gl.getExtension('WEBGL_debug_renderer_info');
+  return String(d ? gl.getParameter(d.UNMASKED_RENDERER_WEBGL) : gl.getParameter(gl.RENDERER)); })()`);
+console.log(`renderer: ${renderer ?? 'unknown'} (${gpuMode})`);
 await send('Emulation.setFocusEmulationEnabled', { enabled: true });
 await send('Page.navigate', { url: base + '/?noauto&nocoach&bloom=0' });
 await waitFor('!!window.world && world.debug().planets > 400', 90000);
