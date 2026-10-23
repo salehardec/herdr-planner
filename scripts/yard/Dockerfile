@@ -17,7 +17,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
     LANG=C.UTF-8
 
 # The page's browser libraries and the tools the checks call: rsync (the sources come through `docker exec`), ss
-# (a server on our port is ours), timeout, flock, jq (the installer check), curl.
+# (a server on our port is ours), timeout, flock, jq (the installer check), curl, sqlite3 (the page checks seed the yard journal).
 RUN apt-get update && apt-get install -y --no-install-recommends \
         ca-certificates curl gnupg jq rsync iproute2 procps util-linux sqlite3 \
         libnss3 libgbm1 libasound2 libatk-bridge2.0-0 libgtk-3-0 libxkbcommon0 \
