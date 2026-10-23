@@ -387,6 +387,13 @@ container_up() {
       say "верфь сейчас не отвечает про карту: контейнер $NAME остаётся с ней, пока его не пересоздадут"
     elif [ -n "$GPU_FLAGS" ] && [ -z "$have_gpu" ]; then
       say "верфь даёт карту, а контейнер $NAME её не имеет: «sh $SELF down» и снова up добавят её"
+    elif [ -n "$GPU_FLAGS" ]; then
+      # A long-lived container that outlived a driver reload keeps stale device bindings: the yard's driver answers, the
+      # container's card does not. The checks fall back to SwiftShader by themselves; the container is never thrown away
+      # for it, and down/up are what bring the card back.
+      if ! $D exec "$NAME" nvidia-smi -L >/dev/null 2>&1; then
+        say "карта в контейнере $NAME не отвечает (nvidia-smi внутри): проверки пойдут на SwiftShader; «sh $SELF down» и снова up вернут карту"
+      fi
     fi
   fi
 }

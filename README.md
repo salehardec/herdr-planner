@@ -635,8 +635,11 @@ Rust 1.99, Node 22, закреплённый Chrome for Testing) с меткой
 отвечает `nvidia-smi`, даёт контейнеру карту
 (`--gpus all`, `NVIDIA_DRIVER_CAPABILITIES=compute,utility,graphics` и `/dev/dri`, если он есть), и проверки страницы
 рисуют на ней: `scripts/ui-check.mjs` печатает одну строку `renderer: …` — `ANGLE (NVIDIA, Vulkan … L4)` на верфи и
-`ANGLE (Google, Vulkan … SwiftShader)` в CI (`UI_GPU=vulkan|egl|gl|swiftshader` выбирает режим руками). Образ несёт
-библиотеки GL/EGL/Vulkan и записи драйвера в `/usr/share/vulkan/icd.d` и `/usr/share/glvnd/egl_vendor.d`: toolkit
+`ANGLE (Google, Vulkan … SwiftShader)` в CI (`UI_GPU=vulkan|egl|gl|swiftshader` выбирает режим руками). Карта, которая
+отвечает `nvidia-smi`, но не поднимает WebGL (контейнер пережил перезагрузку драйвера), проверку не валит:
+`chrome-gpu.mjs` пробует режим одноразовым браузером и откатывается на SwiftShader с объяснением, а `yard.sh` говорит,
+что карту вернут `down` и `up`. Образ несёт библиотеки GL/EGL/Vulkan и записи драйвера в
+`/usr/share/vulkan/icd.d` и `/usr/share/glvnd/egl_vendor.d`: toolkit
 монтирует сами библиотеки, но не их JSON. ЦП контейнера проверок и число слотов правятся в «Фокусе · верфь»
 (`check_cpus`/`check_slots` в `runners.json`); число, равное умолчанию, в файл не пишется — такая верфь следует за
 переменой умолчаний. `YARD_CPUS`, `YARD_SLOTS` и `YARD_SLOT_USE` переопределяют их на один

@@ -91,6 +91,7 @@ case "$1" in
   rm) rm -f "$ST/container"; exit 0 ;;
   exec)
     case "$*" in
+      *"nvidia-smi -L"*) [ -e "$ST/card-dead" ] && exit 1; exit 0 ;;
       *"cat /work/progress."*) cat "$ST/progress" 2>/dev/null; exit 0 ;;
       *"test -d /work/out"*) [ -d "$ST/out" ] && exit 0 || exit 1 ;;
     esac
@@ -114,7 +115,7 @@ chmod +x "$BIN/docker" "$BIN/rsync" "$BIN/cargo"
 
 fresh() {
   rm -f "$ST"/docker.log "$ST"/rsync.log "$ST"/cargo.log "$ST"/container "$ST"/image "$ST"/volume \
-    "$ST"/down "$ST"/progress "$ST"/stale-image "$ST"/label-cpus "$ST"/label-gpu "$ST"/nano "$ST"/gpu-req
+    "$ST"/down "$ST"/progress "$ST"/stale-image "$ST"/label-cpus "$ST"/label-gpu "$ST"/nano "$ST"/gpu-req "$ST"/card-dead
   rm -rf "$ST/out"
   : >"$ST/docker.log"; : >"$ST/rsync.log"; : >"$ST/cargo.log"
 }
@@ -455,6 +456,15 @@ refuse "сорвавшаяся проба карты не пересоздаёт
 expect "и контейнер остаётся с картой" "остаётся с ней" "$T/out"
 rm -f "$ST/no-gpu"
 
+# A card that answered at the yard but stopped answering inside a long-lived container (a driver reload): the container
+# stays and the output says the checks go to SwiftShader; Chrome falls back on its own (the probe in chrome-gpu.mjs).
+: >"$ST/card-dead"
+: >"$ST/docker.log"
+yard_pick "$T/pln/PLN-7" up
+refuse "замолчавшая внутри карта не пересоздаёт контейнер" "rm -f|run -d" "$ST/docker.log"
+expect "и вывод говорит, что проверки пойдут на SwiftShader" "SwiftShader" "$T/out"
+rm -f "$ST/card-dead"
+
 # A card that appeared on the yard later is not forced into a live container: down/up do it.
 fresh
 YARD_RUNNER=vm-r yard_pick "$T/pln/PLN-7" up
@@ -476,12 +486,13 @@ if command -v node >/dev/null 2>&1; then
   flags=$(node --input-type=module -e '
     import { chooseMode, gpuFlags } from "./scripts/chrome-gpu.mjs";
     const soft = chooseMode({ UI_GPU: "" }, false);
-    const hard = chooseMode({ UI_GPU: "" }, true);
-    const forced = chooseMode({ UI_GPU: "swiftshader" }, true);
-    console.log(soft, gpuFlags(soft).includes("--disable-gpu"), hard, gpuFlags(hard).includes("--disable-gpu"), forced);
-  ' 2>&1) || bad "chrome-gpu.mjs не загрузился: $flags"
-  if [ "$flags" = "swiftshader true vulkan false swiftshader" ]; then
-    ok "флаги Chrome: без карты — swiftshader, с картой — vulkan, UI_GPU сильнее"
+    const hard = chooseMode({ UI_GPU: "" }, true, () => true);
+    const broken = chooseMode({ UI_GPU: "" }, true, () => false);
+    const forced = chooseMode({ UI_GPU: "swiftshader" }, true, () => true);
+    console.log(soft, gpuFlags(soft).includes("--disable-gpu"), hard, gpuFlags(hard).includes("--disable-gpu"), broken, forced);
+  ' 2>"$T/chrome-gpu.err") || bad "chrome-gpu.mjs не загрузился: $(cat "$T/chrome-gpu.err")"
+  if [ "$flags" = "swiftshader true vulkan false swiftshader swiftshader" ]; then
+    ok "флаги Chrome: без карты — swiftshader, с картой — vulkan, карта без WebGL и UI_GPU сильнее"
   else
     bad "флаги Chrome: $flags"
   fi

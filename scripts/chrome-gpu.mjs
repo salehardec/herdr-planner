@@ -3,11 +3,18 @@
 // no display: ANGLE on Vulkan, or on EGL. Everywhere else — GitHub CI, a laptop — the software renderer draws, as it
 // always did, and the flags are the ones the checks were seen green with.
 //
+// A card that answers `nvidia-smi` is not yet a card that draws: a container that has outlived a driver reload keeps
+// stale device bindings, and Chrome then makes no WebGL context at all. So the hardware mode is tried once with a
+// throwaway browser, and a mode that cannot draw falls back to SwiftShader with a line saying why — a full check is
+// never lost to a card that stopped working.
+//
 // UI_GPU forces the answer: `vulkan`, `egl`, `gl` or `swiftshader` (and `0`/`off` for the last one, `1`/`on` for the
 // card). `scripts/ui-check.mjs` prints the renderer it got, so a silent fall back to SwiftShader is seen in the output.
 
-import { execFileSync } from 'node:child_process';
-import { existsSync } from 'node:fs';
+import { execFileSync, spawnSync } from 'node:child_process';
+import { existsSync, mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 /** The software renderer of the headless browser: no card, every frame on the CPU (CI's flags, unchanged). */
 export const SOFTWARE_MODE = 'swiftshader';
@@ -23,7 +30,7 @@ export const MODE_FLAGS = {
   gl: ['--use-gl=angle', '--use-angle=gl', '--ignore-gpu-blocklist'],
 };
 
-/** A card the browser can use: the NVIDIA driver's device node, or `nvidia-smi` answering. */
+/** A card the browser might use: the driver's device node, or `nvidia-smi` answering. */
 export function hasGpu() {
   if (existsSync('/dev/nvidia0')) return true;
   try {
@@ -34,14 +41,50 @@ export function hasGpu() {
   }
 }
 
-/** The mode: UI_GPU's word when it has one, else the card's (Vulkan) or the software renderer. */
-export function chooseMode(env = process.env, gpu = hasGpu()) {
+/** One throwaway headless Chrome: does a WebGL context come up with these flags? A card that cannot draw is no card. */
+export function gpuWorks(chromium, flags, timeout = 20000) {
+  let dir = null;
+  try {
+    dir = mkdtempSync(join(tmpdir(), 'chrome-gpu-'));
+    const page = 'data:text/html,<body><script>const c=document.createElement("canvas");'
+      + 'const gl=c.getContext("webgl2")||c.getContext("webgl");'
+      + 'document.body.textContent=gl?"webgl":"no webgl";</script></body>';
+    const out = spawnSync(chromium, ['--headless=new', '--no-sandbox', ...flags, `--user-data-dir=${dir}`, '--dump-dom', page],
+      { encoding: 'utf8', timeout });
+    return out.status === 0 && !/no webgl/i.test(out.stdout || '') && /webgl/i.test(out.stdout || '');
+  } catch {
+    return false;
+  } finally {
+    if (dir) {
+      try { rmSync(dir, { recursive: true, force: true, maxRetries: 3 }); } catch { /* best effort */ }
+    }
+  }
+}
+
+/** The mode: UI_GPU's word when it has one, else the card's (Vulkan, once it proves it draws) or the software one. */
+export function chooseMode(env = process.env, gpu = hasGpu(), works = null) {
+  const can = works ?? ((flags) => gpuWorks(env.CHROMIUM || 'chromium', flags));
   const forced = String(env.UI_GPU || '').trim().toLowerCase();
-  if (forced === '1' || forced === 'on' || forced === 'auto' || forced === 'gpu') return 'vulkan';
   if (forced === '0' || forced === 'off' || forced === 'no' || forced === 'software') return SOFTWARE_MODE;
-  if (MODE_FLAGS[forced]) return forced;
-  if (forced) console.error(`chrome-gpu: неизвестный UI_GPU=${forced}; беру ${gpu ? 'vulkan' : SOFTWARE_MODE}`);
-  return gpu ? 'vulkan' : SOFTWARE_MODE;
+  if (forced === '1' || forced === 'on' || forced === 'auto' || forced === 'gpu') {
+    if (can(MODE_FLAGS.vulkan)) return 'vulkan';
+    console.error(`chrome-gpu: карта не даёт WebGL; беру ${SOFTWARE_MODE}`);
+    return SOFTWARE_MODE;
+  }
+  if (MODE_FLAGS[forced]) {
+    if (!can(MODE_FLAGS[forced])) {
+      console.error(`chrome-gpu: UI_GPU=${forced} не даёт WebGL; беру ${SOFTWARE_MODE}`);
+      return SOFTWARE_MODE;
+    }
+    return forced;
+  }
+  if (forced) {
+    console.error(`chrome-gpu: неизвестный UI_GPU=${forced}; беру ${gpu ? 'vulkan' : SOFTWARE_MODE}`);
+  }
+  if (!gpu) return SOFTWARE_MODE;
+  if (can(MODE_FLAGS.vulkan)) return 'vulkan';
+  console.error(`chrome-gpu: карта отвечает, но WebGL на ней не поднялся; беру ${SOFTWARE_MODE}`);
+  return SOFTWARE_MODE;
 }
 
 /** The flags of one mode; an unknown mode gets the software renderer's. */
