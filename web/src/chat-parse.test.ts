@@ -33,6 +33,15 @@ describe('board events at the end of an answer', () => {
     expect(eventText(parseEvent('Updated PLN-7 (description)')!)).toBe('Updated PLN-7 (description)');
     expect(eventText(parseEvent('Removed BOT-1, OMRC-1')!)).toBe('Removed BOT-1, OMRC-1');
   });
+  it('the forms Claude Code uses most: parentheses after the keys, «;», a plan', () => {
+    expect(eventText(parseEvent('Added PLN-12 (queued after PLN-9) and started an agent on it')!)).toBe('Добавлена PLN-12, агент запущен (в очереди после PLN-9)');
+    expect(eventText(parseEvent('Updated APC-3 (description) and started an agent on it')!)).toBe('Изменена APC-3, агент запущен (описание)');
+    expect(eventText(parseEvent("Approved PLN-7's plan")!)).toBe('Одобрен план PLN-7');
+    const r = splitEvents('Approved SRV-3; updated ANS-2 (description)');
+    expect(r.events.map((e) => eventText(e))).toEqual(['Одобрена SRV-3', 'Изменена ANS-2 (описание)']);
+    const two = splitEvents('Added ANS-4 and started an agent on it; stopped SRV-5, added SRV-6 and started an agent on it');
+    expect(two.events.map((e) => e.verb)).toEqual(['added', 'stopped']);
+  });
   it('an unknown wording stays as it was, still as an event', () => {
     const ev = parseEvent('Approved APC-3 and told the reviewer');
     expect(ev?.keys).toEqual(['APC-3']);
@@ -88,6 +97,13 @@ describe('board notices', () => {
     const n = parseNotice('[Уведомление доски] alpha/7 «Кэш»: ждёт тебя (needs you). Агент спрашивает про формат. Посмотри board details alpha/7 и доложи.');
     expect(n!.note).toBe('Агент спрашивает про формат.');
   });
+  it('a title with quotes of its own runs to the state', () => {
+    const n = parseNotice('[Уведомление доски] alpha/3 «Мастер «Подключение системы»: проще и понятнее»: ждёт тебя (needs you). Посмотри board details alpha/3 и коротко доложи итог.');
+    expect(n!.title).toBe('Мастер «Подключение системы»: проще и понятнее');
+    expect(n!.stateRu).toBe('ждёт тебя');
+    expect(n!.stateEn).toBe('needs you');
+    expect(n!.note).toBe('');
+  });
   it('a short notice without a title', () => {
     const n = parseNotice('[Уведомление доски] apicache/2 ждёт тебя');
     expect(n).toEqual({ id: 'apicache/2', title: '', stateRu: 'ждёт тебя', stateEn: '', note: '' });
@@ -109,6 +125,10 @@ describe('attachments of a human message', () => {
   it('several files', () => {
     const r = splitAttachments(`смотри\n\nВложения (файлы на машине с доской):\n/x/${A}\n/x/${B}\n/x/0123456789abcdef0123456789abcdef.txt`);
     expect(r.files.map((f) => f.id)).toEqual([A, B, '0123456789abcdef0123456789abcdef.txt']);
+  });
+  it('the header alone (Claude Code kept the files as image blocks) is taken off the text', () => {
+    expect(splitAttachments('вот снимок\nКартинки (файлы на машине с доской):')).toEqual({ text: 'вот снимок', files: [], pasted: 0 });
+    expect(splitAttachments('смотри\n\nВложения (файлы на машине с доской):  ')).toEqual({ text: 'смотри', files: [], pasted: 0 });
   });
   it('a path that is not a saved file keeps the text as it is', () => {
     const q = 'смотри\n\nКартинки (файлы на машине с доской):\n/etc/passwd';

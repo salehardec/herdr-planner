@@ -30,17 +30,19 @@ const VERBS: [RegExp, Verb][] = [
   [/^Restarted\b/, 'restarted'], [/^Paused\b/, 'paused'], [/^Resumed\b/, 'resumed'], [/^Moved\b/, 'moved'], [/^Archived\b/, 'archived'],
 ];
 const CYRILLIC = /[Ѐ-ӿ]/;
-/** A new sentence starts after `. ` and a capital letter, or on a new line. */
-const SENTENCE = /\.\s+(?=[A-Z])|\n+/;
+/** A new sentence starts after `. ` and a capital letter, after `; `, or on a new line. */
+const SENTENCE = /\.\s+(?=[A-Z])|;\s+|\n+/;
 
 /** One sentence as a board event, or null when it is not one (a false event is worse than a missed one). */
 export function parseEvent(sentence: string): BoardEvent | null {
   const raw = sentence.trim().replace(/\.$/, '');
   if (!raw || CYRILLIC.test(raw)) return null;
-  const hit = VERBS.find(([re]) => re.test(raw));
+  // after `; ` the verb is written small: «Approved SRV-3; updated ANS-2»
+  const cap = raw.charAt(0).toUpperCase() + raw.slice(1);
+  const hit = VERBS.find(([re]) => re.test(cap));
   if (!hit) return null;
   const verb = hit[1];
-  let body = raw.replace(hit[0], '').trim();
+  let body = cap.replace(hit[0], '').trim();
   let paren = '';
   const pm = /\s*\(([^()]*)\)$/.exec(body);
   if (pm) { paren = pm[1].trim(); body = body.slice(0, pm.index).trim(); }
@@ -51,6 +53,9 @@ export function parseEvent(sentence: string): BoardEvent | null {
   if (lead) {
     for (const m of lead[1].matchAll(KEY)) keys.push(m[1]);
     rest = body.slice(lead[1].length).trim().replace(/^,\s*/, '');
+    // the parentheses may stand right after the keys: «Added PLN-12 (queued after PLN-9) and started an agent on it»
+    const mid = /^\(([^()]*)\)\s*/.exec(rest);
+    if (mid && !paren) { paren = mid[1].trim(); rest = rest.slice(mid[0].length).trim(); }
   }
   if (!keys.length && verb !== 'updated') return null;
   return { verb, keys, rest, paren, raw };
@@ -99,18 +104,21 @@ export function eventText(ev: BoardEvent): string {
     merged: 'chat.ev.merged', rejected: 'chat.ev.rejected', restarted: 'chat.ev.restarted', paused: 'chat.ev.paused',
     resumed: 'chat.ev.resumed', moved: 'chat.ev.moved', archived: 'chat.ev.archived',
   };
+  const agent = /^and started (an agent|agents) on (it|them)$/;
   switch (ev.verb) {
     case 'added':
       if (!ev.rest) return tn('chat.ev.added', n, { keys }) + tail;
-      if (/^and started an agent on (it|them)$/.test(ev.rest)) return tn('chat.ev.addedAgent', n, { keys }) + tail;
+      if (agent.test(ev.rest)) return tn('chat.ev.addedAgent', n, { keys }) + tail;
       break;
     case 'approved':
       if (!ev.rest) return tn('chat.ev.approved', n, { keys }) + tail;
       if (/^and pushed (it|them) to GitLab$/.test(ev.rest)) return tn('chat.ev.approvedGitlab', n, { keys }) + tail;
+      if (/^'s plans?$/.test(ev.rest)) return tn('chat.ev.approvedPlan', n, { keys }) + tail;
       break;
     case 'updated':
       if (!ev.keys.length) return t('chat.ev.updatedWhat', { what: ev.rest }) + tail;
       if (!ev.rest) return tn('chat.ev.updated', n, { keys }) + tail;
+      if (agent.test(ev.rest)) return tn('chat.ev.updatedAgent', n, { keys }) + tail;
       break;
     case 'sent':
       if (ev.rest === 'the CI failure to fix') return tn('chat.ev.sentCi', n, { keys }) + tail;
@@ -132,7 +140,8 @@ export interface Notice {
   note: string;
 }
 
-const NOTICE = /^\[Уведомление доски\]\s*(\S+\/\d+)\s*(?:«([^»]*)»)?\s*:?\s*([\s\S]*)$/;
+// the title may hold «quotes» of its own: it runs to the last «»: » before the state (greedy, within the line)
+const NOTICE = /^\[Уведомление доски\]\s*(\S+\/\d+)\s*(?:«(.*)»\s*:)?\s*([\s\S]*)$/;
 
 /** A board notice taken apart; null for a human's words or an unknown shape. */
 export function parseNotice(q: string): Notice | null {
@@ -164,7 +173,8 @@ export function noticeStatus(n: Notice): string {
 
 /** What a file saved by the planner is called: `<32 hex>.<ext>` (the same shape as `attachments::parse_id`). */
 const SAVED = /^[0-9a-f]{32}\.(png|jpe?g|gif|webp|mp3|wav|ogg|flac|m4a|aac|txt|md|log|json|ya?ml|toml|csv)$/i;
-const FILES_TAIL = /\n*(?:Картинки|Вложения) \(файлы на машине с доской\):\n([\s\S]*)$/;
+// Claude Code keeps the files of a message as image blocks and drops the path lines: the header may stand alone
+const FILES_TAIL = /\n*(?:Картинки|Вложения) \(файлы на машине с доской\):[ \t]*(?:\n([\s\S]*))?$/;
 const PASTED = /\[Image(?: #\d+| ?: ?source: ?[^\]]*)?\]\s*/g;
 
 /** The human's words apart from the files the planner listed after them and the images pasted into the terminal. */
@@ -173,9 +183,9 @@ export function splitAttachments(q: string): { text: string; files: SavedFile[];
   const files: SavedFile[] = [];
   const m = FILES_TAIL.exec(text);
   if (m) {
-    const lines = m[1].split('\n').map((s) => s.trim()).filter(Boolean);
+    const lines = (m[1] ?? '').split('\n').map((s) => s.trim()).filter(Boolean);
     const names = lines.map((p) => p.slice(p.lastIndexOf('/') + 1));
-    if (lines.length && names.every((n) => SAVED.test(n))) {
+    if (names.every((n) => SAVED.test(n))) {
       for (const n of names) files.push({ id: n, name: n });
       text = text.slice(0, m.index);
     }

@@ -51,11 +51,17 @@ export function EventLine(props: { ev: BoardEvent }): JSX.Element {
 }
 
 /** A message of the human (not a notice): the words, the files, the hover actions. */
+/** The images Claude Code kept inside the transcript record, served by the planner from it. */
+const turnImages = (tn: TurnData): SavedFile[] =>
+  (tn.images ?? []).map((mime, i) => ({ id: `turn-${tn.n}-${i}`, name: `${t('chat.image')} ${i + 1}`, mime, url: `/api/chat/image/${tn.n}/${i}` }));
+
 function Human(props: { turn: TurnData; unread: boolean; onReuse: (q: string) => void; pending?: boolean; files?: SavedFile[] }): JSX.Element {
   const tn = props.turn;
   const parsed = splitAttachments(tn.q);
-  const { text, pasted } = parsed;
-  const files = [...parsed.files, ...(props.files ?? [])];
+  const { text } = parsed;
+  const files = [...parsed.files, ...turnImages(tn), ...(props.files ?? [])];
+  // a picture pasted into the Coordinator's own window has a mark and no block: only then the plate
+  const pasted = files.length ? 0 : parsed.pasted;
   return (
     <div class={`msg q ${props.pending ? 'pending' : ''}`} tabIndex={0} data-unread={props.unread && !tn.a ? tn.n : undefined} data-sig={0}>
       <span class="who"><Gl n="user" />{t('chat.you')}</span>
@@ -103,7 +109,7 @@ function Answer(props: { turn: TurnData; unread: boolean }): JSX.Element {
   return (
     <div class={`msg a ${body ? '' : 'evonly'}`} tabIndex={0} data-unread={props.unread ? tn.n : undefined} data-sig={sigOf(tn.a)}>
       <span class="who"><Gl n="quasar" />{t('quasar.short')}<Unread on={props.unread} /></span>
-      <span class="time">{timeOf(tn.at)}</span>
+      <span class="time">{timeOf(tn.at_a || tn.at)}</span>
       {body && <Markdown class="txt" text={body} chips copy />}
       {events.length > 0 && <div class="cevs">{events.map((ev, i) => <EventLine key={i} ev={ev} />)}</div>}
       <Acts text={tn.a} who="a" n={tn.n} />

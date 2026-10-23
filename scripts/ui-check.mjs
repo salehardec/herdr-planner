@@ -671,11 +671,13 @@ section('chat', async () => {
   await evalJs('(() => { const t = document.querySelector("#ask-in"); t.value = ""; t.dispatchEvent(new Event("input", { bubbles: true })); return true; })()');
   // the Coordinator at work: how long, what it does (the last tool call of the running turn), its sub-agents
   writeFileSync(join(fixture, 'state', 'coordinator-busy'), '1');
-  check('while it works the chat says so, with what it does and for how long', await waitFor(`(() => { const w = document.querySelector('#cworking'); return !!w && w.innerText.includes('Читаю board details ALP-10') && /работает · \\d+ (мин|с)/.test(w.innerText) && w.innerText.includes('1 субагент'); })()`, 25000), await text('#cworking'));
+  writeFileSync(coordPoke, readFileSync(coordPoke, 'utf8'));
+  check('while it works the chat says so, with what it does and for how long', await waitFor(`(() => { const w = document.querySelector('#cworking'); return !!w && w.innerText.includes('Читаю board details ALP-10') && /работает · \\d+ (ч|мин|с)/.test(w.innerText) && w.innerText.includes('1 субагент'); })()`, 25000), await text('#cworking'));
   await send('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-reduced-motion', value: 'reduce' }] });
   check('reduced motion: the pulse and the dots do not animate', await waitFor(`getComputedStyle(document.querySelector('#cworking .pulse')).animationName === 'none' && getComputedStyle(document.querySelector('#cworking .dots i')).animationName === 'none'`, 3000));
   await send('Emulation.setEmulatedMedia', { features: [] });
   unlinkSync(join(fixture, 'state', 'coordinator-busy'));
+  writeFileSync(coordPoke, readFileSync(coordPoke, 'utf8'));
   await waitFor('!document.querySelector("#cworking")', 25000);
   await shot('chat.png');
   // ↑ scrolls the log by a step and, at its top, asks for five older turns: press until they have come (each press after the page has
@@ -687,9 +689,13 @@ section('chat', async () => {
   check('the start of the conversation is marked', await waitFor('!!document.querySelector("#clog .meta.start")', 4000));
   // PLN-60: a board notice is its own kind of message; an image of a message opens large
   const notice = await evalJs(`(() => { const t = document.querySelector('#clog .turn[data-n="6"]'); if (!t) return null; const n = t.querySelector('.msg.notice'); return { notice: !!n, q: !!t.querySelector('.msg.q'), who: n?.querySelector('.who')?.innerText || '', chip: !!n?.querySelector('.ntl [data-tag="ALP-7"]'), badge: n?.querySelector('.ntl > .badge')?.innerText || '', text: n?.innerText || '' }; })()`);
-  check('turn 7 is a board notice: «Доска», the task as a chip, its name and its state, without the instruction', !!notice && notice.notice && !notice.q && notice.who === 'Доска' && notice.chip && notice.badge === 'ждёт тебя' && notice.text.includes('Документация API экспорта') && !notice.text.includes('Посмотри') && !notice.text.includes('[Уведомление'), JSON.stringify(notice));
-  const thumb = await evalJs(`(() => { const t = document.querySelector('#clog .turn[data-n="5"]'); if (!t) return null; return { img: !!t.querySelector('.msg.q .shot img'), button: t.querySelector('.msg.q .shot')?.tagName, text: t.querySelector('.msg.q .txt')?.innerText || '' }; })()`);
-  check('turn 6 shows its image as a thumbnail, and the list of files is not in the text', !!thumb && thumb.img && thumb.button === 'BUTTON' && thumb.text === 'Вопрос 6: как дела по ALP-6? Вот снимок.', JSON.stringify(thumb));
+  check('turn 7 is a board notice: «Доска», the task as a chip, its name (with its own quotes) and its state, without the instruction', !!notice && notice.notice && !notice.q && notice.who === 'Доска' && notice.chip && notice.badge === 'ждёт тебя' && notice.text.includes('«Документация «API экспорта»: примеры»') && !notice.text.includes('Посмотри') && !notice.text.includes('[Уведомление'), JSON.stringify(notice));
+  // the picture is an image block of the transcript record (Claude Code drops the path lines): the planner serves it from there
+  const thumb = await evalJs(`(() => { const t = document.querySelector('#clog .turn[data-n="5"]'); if (!t) return null; const img = t.querySelector('.msg.q .shot img'); return { src: img?.getAttribute('src') || '', w: img?.naturalWidth || 0, button: t.querySelector('.msg.q .shot')?.tagName, text: t.querySelector('.msg.q .txt')?.innerText || '', plate: !!t.querySelector('.pasted') }; })()`);
+  check('turn 6 shows its image as a thumbnail out of the transcript, and neither the header nor the plate is in the bubble', !!thumb && thumb.src === '/api/chat/image/5/0' && thumb.w === 1 && thumb.button === 'BUTTON' && thumb.text === 'Вопрос 6: как дела по ALP-6? Вот снимок.' && !thumb.plate, JSON.stringify(thumb));
+  const imgApi = await evalJs(`fetch('/api/chat/image/5/0').then(async (r) => [r.status, r.headers.get('content-type'), (await r.arrayBuffer()).byteLength])`);
+  const imgNone = await evalJs(`fetch('/api/chat/image/5/1').then((r) => r.status)`);
+  check('/api/chat/image serves the bytes as image/png and knows no second image', imgApi[0] === 200 && imgApi[1] === 'image/png' && imgApi[2] === 70 && imgNone === 404, JSON.stringify([imgApi, imgNone]));
   await click('#clog .turn[data-n="5"] .msg.q .shot');
   check('a click opens the image over the page, the focus is on «Закрыть»', await waitFor('!!document.querySelector("#lightbox img") && document.activeElement?.id === "lbclose"', 4000));
   await press('Escape');
@@ -5411,6 +5417,16 @@ section('chat unread', async () => {
   const waiting = ask('Что на ревью?') - 1;
   interim(waiting + 1, 'Сейчас посмотрю доску.');
   check('an interim line is lit', await waitFor(dots(waiting) + ' === 1', 10000));
+  // PLN-60: the turn has an interim line and a tool call still going: the working line counts from its question and names the call
+  writeFileSync(join(fixture, 'state', 'coordinator-busy'), '1');
+  // a change of a task record makes the server read the Coordinator's line again now, not at the next minute
+  const pokeBusy = join(fixture, 'board', 'tasks', 'alpha', '11', 'task.json');
+  writeFileSync(pokeBusy, readFileSync(pokeBusy, 'utf8'));
+  // (innerText breaks the line between the flex items of the working line: compared without the breaks)
+  check('the working line shows the call of a turn that already has an interim line, and counts from the question', await waitFor(`(() => { const w = (document.querySelector('#cworking')?.innerText || '').replace(/\\s+/g, ' '); return w.includes('· ls') && /работает · \\d+ (ч|мин|с)/.test(w) && !/· 0 с/.test(w); })()`, 40000), await text('#cworking'));
+  unlinkSync(join(fixture, 'state', 'coordinator-busy'));
+  writeFileSync(pokeBusy, readFileSync(pokeBusy, 'utf8'));
+  await waitFor('!document.querySelector("#cworking")', 25000);
   check('and read while the window is in front', await waitFor(dots(waiting) + ' === 0 && !document.querySelector("#bchat-n")', 10000), JSON.stringify(await stored()));
   await focus(false);
   toolDone(waiting + 1); final(waiting + 1, 'alpha/4 на ревью, ждёт тебя.');

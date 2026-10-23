@@ -87,9 +87,10 @@ function caretLines(ta: HTMLTextAreaElement): { first: boolean; last: boolean } 
 /** «1 мин 20 с» / «1 min 20 s» from milliseconds. */
 function elapsedText(ms: number): string {
   const total = Math.max(0, Math.floor(ms / 1000));
-  const m = Math.floor(total / 60);
+  const h = Math.floor(total / 3600);
+  const m = Math.floor(total / 60) % 60;
   const sec = total % 60;
-  return m > 0 ? t('chat.elapsedMs', { m, s: sec }) : t('chat.elapsedS', { s: sec });
+  return h > 0 ? t('chat.elapsedHm', { h, m }) : m > 0 ? t('chat.elapsedMs', { m, s: sec }) : t('chat.elapsedS', { s: sec });
 }
 
 /** The Coordinator is working: for how long, what it does now (its last tool call), how many sub-agents run. */
@@ -98,12 +99,13 @@ function Working(props: { since: number; doing: string; subagents: number }): JS
     const id = window.setInterval(() => { now.value = Date.now(); }, 1000);
     return () => window.clearInterval(id);
   }, []);
-  const since = props.since || now.value;
+  // no turn to count from (the Coordinator is busy with something that is not a message of this chat): no time
+  const since = props.since;
   return (
     <div class="working" id="cworking" role="status" aria-live="polite">
       <span class="pulse" aria-hidden="true" />
       <span class="who">{t('quasar.short')}</span>
-      <span>{t('chat.working', { time: elapsedText(now.value - since) })}</span>
+      <span>{since > 0 ? t('chat.working', { time: elapsedText(now.value - since) }) : t('chat.workingNow')}</span>
       {props.doing && <><span class="sep">·</span><span class="doing" title={props.doing}>{props.doing}</span></>}
       {props.subagents > 0 && <><span class="sep">·</span><span>{tn('chat.subagentsN', props.subagents)}</span></>}
       <span class="dots"><i /><i /><i /></span>
@@ -143,9 +145,10 @@ export function Chat(): JSX.Element {
   const dialog = !!coord?.dialog;
   // The Coordinator's last words: its transcript's, or (while that answer is not written yet) the tail of its window.
   const lastReply = (showTurns ? c.turns[c.turns.length - 1].a : '') || reply;
-  // The turn it is answering now (no answer yet): the working line counts from it and shows what it does.
+  // The turn it is answering now: no answer yet, or an interim line and a tool call still going (`doing`). The
+  // working line counts from it and shows what it does.
   const lastTurn = showTurns ? c.turns[c.turns.length - 1] : null;
-  const lastOpen = lastTurn && !lastTurn.a ? lastTurn : null;
+  const lastOpen = lastTurn && (!lastTurn.a || lastTurn.doing) ? lastTurn : null;
   const options = dialog || busy ? [] : parseOptions(lastReply);
   const scr = screens.value.coordinator;
   const unread = unreadTurns.value;
