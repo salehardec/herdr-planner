@@ -249,19 +249,72 @@ pub async fn universe_add(
     let req = body.req;
     let job2 = job.clone();
     tokio::spawn(async move {
-        let bus = app2.bus.clone();
         let jid = job2.clone();
+        let jobs = app2.clone();
         let progress = move |steps: &[crate::universe::Step]| {
-            bus.send("progress", json!({"job": jid, "steps": steps, "done": false}).to_string());
+            let payload = json!({"job": jid, "steps": steps, "done": false});
+            jobs.add_job.note(&payload);
+            jobs.bus.send("progress", payload.to_string());
         };
         let payload = match crate::universe::add(&app2.cfg, &req, &progress).await {
             Ok(r) => json!({"job": job2, "done": true, "ok": true, "result": r}),
             Err(e) => json!({"job": job2, "done": true, "ok": false, "error": e}),
         };
+        app2.add_job.note(&payload);
         app2.bus.send("progress", payload.to_string());
         app::refresh(&app2).await;
     });
     Json(json!({"ok": true, "job": job})).into_response()
+}
+
+/// The last word of the newest «add a universe» job, kept for the dialog.
+///
+/// The page learns a job's steps and its end from `progress` events, and a stream that falls behind is given the
+/// current state instead of the missed events (see [`events`]): a lost `done` would leave the dialog waiting for
+/// good while the universe is already on the board. So the last payload is kept here, and the dialog can ask
+/// ([`universe_job`]) while it waits.
+#[derive(Default)]
+pub struct AddJob(std::sync::Mutex<Option<(String, serde_json::Value)>>);
+
+impl AddJob {
+    /// Remembers a payload of the job it names; anything without a job id is not about a job.
+    fn note(&self, payload: &serde_json::Value) {
+        let Some(id) = payload.get("job").and_then(serde_json::Value::as_str) else { return };
+        let id = id.to_string();
+        if let Ok(mut last) = self.0.lock() {
+            *last = Some((id, payload.clone()));
+        }
+    }
+
+    fn get(&self, job: &str) -> Option<serde_json::Value> {
+        let last = self.0.lock().ok()?;
+        match last.as_ref() {
+            Some((id, payload)) if id == job => Some(payload.clone()),
+            _ => None,
+        }
+    }
+}
+
+/// A job id: `u` and the milliseconds it was made at (see [`universe_add`]).
+fn valid_job(id: &str) -> bool {
+    id.len() > 1 && id.len() <= 24 && id.starts_with('u') && id[1..].bytes().all(|b| b.is_ascii_digit())
+}
+
+#[derive(Deserialize)]
+pub struct JobQuery {
+    id: String,
+}
+
+/// `GET /api/universe/job?id=`: what that «add a universe» job said last — its steps, or how it ended. 404 while
+/// it has said nothing (the dialog asks again).
+pub async fn universe_job(State(app): State<Shared>, Query(q): Query<JobQuery>) -> Response {
+    if !valid_job(&q.id) {
+        return error(StatusCode::BAD_REQUEST, "bad job id");
+    }
+    match app.add_job.get(&q.id) {
+        Some(payload) => Json(payload).into_response(),
+        None => error(StatusCode::NOT_FOUND, "this job has said nothing yet"),
+    }
 }
 
 #[derive(Deserialize)]
@@ -346,5 +399,36 @@ pub async fn universe_fork(State(app): State<Shared>, headers: HeaderMap, Json(b
             Err(e) => error(StatusCode::BAD_GATEWAY, e),
         },
         _ => error(StatusCode::BAD_REQUEST, "unknown operation"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_add_job_keeps_its_own_last_word_only() {
+        let job = AddJob::default();
+        assert!(job.get("u1").is_none());
+        job.note(&json!({"job": "u1", "steps": [{"id": "check"}], "done": false}));
+        assert_eq!(job.get("u1").unwrap()["steps"][0]["id"], "check");
+        // A dialog that asks about another job gets nothing: nobody else's steps.
+        assert!(job.get("u2").is_none());
+        // The end of the job replaces its steps.
+        job.note(&json!({"job": "u1", "done": true, "ok": true, "result": {"name": "newrepo"}}));
+        assert_eq!(job.get("u1").unwrap()["result"]["name"], "newrepo");
+        assert!(job.get("u1").unwrap().get("steps").is_none());
+        // A payload that names no job is nobody's and does not erase the last one.
+        job.note(&json!({"done": true}));
+        assert_eq!(job.get("u1").unwrap()["result"]["name"], "newrepo");
+    }
+
+    #[test]
+    fn only_an_add_job_id_is_asked_about() {
+        assert!(valid_job("u1792694972479"));
+        assert!(!valid_job("u"));
+        assert!(!valid_job("1792694972479"));
+        assert!(!valid_job("u12a"));
+        assert!(!valid_job("u1234567890123456789012345"));
     }
 }

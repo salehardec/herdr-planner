@@ -1792,10 +1792,10 @@ pub async fn container_shell(
         Ok(a) => a,
         Err(e) => return fail(422, e),
     };
-    // As with «Терминал»: a window of this machine's own terminal, not a bare child with no tty.
+    // As with «Терминал»: a window of this machine's own terminal, not a bare child with no tty, and the same
+    // wrapper: the terminal's own `COLORTERM` travels with the ssh call (see `ssh::terminal_argv`).
     match tokio::process::Command::new("xdg-terminal-exec")
-        .arg(&app.cfg.ssh_bin)
-        .args(&args)
+        .args(ssh::terminal_argv(&app.cfg.ssh_bin, &args))
         .spawn()
     {
         Ok(_) => Json(json!({
@@ -1850,10 +1850,10 @@ pub async fn runner_terminal(
         Err(e) => return fail(422, e),
     };
     // The same way the planner's other terminal actions go: a window of this machine's own terminal, not a bare
-    // child with no tty (that one starts ssh and shows nobody anything).
+    // child with no tty (that one starts ssh and shows nobody anything). The wrapper passes the terminal's own
+    // `COLORTERM` along: ssh carries `TERM` alone (see `ssh::terminal_argv`).
     match tokio::process::Command::new("xdg-terminal-exec")
-        .arg(&app.cfg.ssh_bin)
-        .args(&args)
+        .args(ssh::terminal_argv(&app.cfg.ssh_bin, &args))
         .spawn()
     {
         Ok(_) => Json(json!({

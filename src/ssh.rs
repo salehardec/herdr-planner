@@ -114,8 +114,52 @@ pub fn hand_check(target: &str, options: &[&str], remote: &str) -> String {
     s
 }
 
-/// The argv that opens a terminal on the yard: `ssh -t [-p port] dest`. The caller owns the terminal.
+/// The shell code that gives the far side a terminal type it has terminfo for (PLN-57).
+///
+/// A terminal window of this machine sends its own `TERM` (`xterm-kitty` for kitty, `foot-extra`, …), and neither a
+/// shipyard nor a task container has to have that entry: `htop` then says «Error opening terminal: xterm-kitty» and
+/// `top` «unknown terminal type». The code looks the type up the way a program there would — `infocmp`, else
+/// `tput longname`, else the compiled database itself — and replaces a type the far side does not know with
+/// `xterm-256color`, and that one, if it is missing too, with `xterm`. `dumb`/`unknown`/an empty `TERM` are no
+/// terminal at all (a full-screen program cannot draw on them either), so they take the same road. `COLORTERM` (the
+/// terminal's `truecolor`) comes as the first argument — ssh carries `TERM` alone, since a shipyard's sshd keeps
+/// `AcceptEnv LANG LC_*` — and is exported beside it, so the colours stay what they were. Nothing is written on the
+/// far side: every lookup only reads.
+const TERM_FALLBACK: &str = r#"t=${TERM:-}
+case $t in ''|dumb|unknown) t= ;; esac
+have() { [ -n "$1" ] || return 1
+  if command -v infocmp >/dev/null 2>&1; then infocmp "$1" >/dev/null 2>&1; return; fi
+  if command -v tput >/dev/null 2>&1; then tput -T "$1" longname >/dev/null 2>&1; return; fi
+  case $1 in ?*) f=${1%"${1#?}"} ;; *) return 1 ;; esac
+  h=$(printf %x "'$f" 2>/dev/null)
+  for d in "${TERMINFO:-}" "${HOME:-/root}/.terminfo" /etc/terminfo /lib/terminfo /usr/share/terminfo; do
+    [ -n "$d" ] || continue
+    if [ -e "$d/$f/$1" ] || { [ -n "$h" ] && [ -e "$d/$h/$1" ]; }; then return 0; fi
+  done
+  return 1
+}
+if ! have "$t"; then TERM=xterm-256color; have "$TERM" || TERM=xterm; export TERM; fi
+if [ -n "${1:-}" ]; then COLORTERM=$1; export COLORTERM; fi"#;
+
+/// A shell script for a remote command: `sh -c '<script>'`, with the script's own quotes escaped for the login
+/// shell that parses the command line first (`ssh -t` hands it to `$SHELL -c`).
+fn sh_c(script: &str) -> String {
+    format!("sh -c '{}'", script.replace('\'', "'\\''"))
+}
+
+/// The argv that opens a terminal on the yard: `ssh -t [-p port] dest sh -c '<term check>; exec "$SHELL" -l'`. The
+/// check of [`TERM_FALLBACK`] runs first, so the login shell — the one the terminal would have had — starts with a
+/// `TERM` the yard has terminfo for. The caller owns the terminal.
 pub fn tty_args(target: &str) -> Result<Vec<String>, String> {
+    let mut args = tty_prefix(target)?;
+    args.push(sh_c(&format!(
+        "{TERM_FALLBACK}\nexec \"${{SHELL:-/bin/sh}}\" -l"
+    )));
+    Ok(args)
+}
+
+/// `-t [-p port] dest`: the ssh side of a terminal, without its remote command.
+fn tty_prefix(target: &str) -> Result<Vec<String>, String> {
     if !valid_target(target) {
         return Err(format!("недопустимый адрес машины: {target:?}"));
     }
@@ -131,17 +175,45 @@ pub fn tty_args(target: &str) -> Result<Vec<String>, String> {
 
 /// The argv that opens a terminal inside one container (PLN-44): `ssh -t [-p port] dest docker exec -it <id> …`.
 /// The shell is bash when the image has it and sh otherwise (`sh -c` picks one and `exec`s it, so the terminal is the
-/// container's own). Only a full docker id may reach the command; the caller checks the container is a task's and is
-/// running. The caller owns the terminal, as with `tty_args`.
+/// container's own), after the [`TERM_FALLBACK`] of the image's own terminal type. Only a full docker id may reach the
+/// command; the caller checks the container is a task's and is running. The caller owns the terminal, as with
+/// `tty_args`.
 pub fn container_shell_args(target: &str, id: &str) -> Result<Vec<String>, String> {
     if id.len() != 64 || !id.chars().all(|c| c.is_ascii_hexdigit()) {
         return Err(format!("недопустимый id контейнера: {id:?}"));
     }
-    let mut args = tty_args(target)?;
-    args.push(format!(
-        "docker exec -it {id} sh -c 'if command -v bash >/dev/null 2>&1; then exec bash; else exec sh; fi'"
-    ));
+    let mut args = tty_prefix(target)?;
+    // The check runs inside the container, not on the yard: an image may have no terminfo for the terminal's type.
+    let inner = format!(
+        "{TERM_FALLBACK}\nif command -v bash >/dev/null 2>&1; then exec bash; else exec sh; fi"
+    );
+    args.push(format!("docker exec -it {id} {}", sh_c(&inner)));
     Ok(args)
+}
+
+/// The local wrapper of a terminal window that runs `ssh …` (see [`terminal_argv`]): the terminal's `COLORTERM`
+/// travels as the first argument of the far side's shell, because ssh passes `TERM` alone.
+const COLOR_AS_ARGUMENT: &str = r#"c=${COLORTERM:-}
+case $c in ''|*[!A-Za-z0-9._+-]*) exec "$@" ;; esac
+exec "$@" herdr "$c""#;
+
+/// The argv of the terminal window that opens `ssh_bin args…`: `sh -c <wrapper> herdr ssh_bin args…`.
+///
+/// The window is the one that knows the terminal's `COLORTERM` (`truecolor`), while the board does not, and a
+/// shipyard's sshd takes only `LANG LC_*` from the client: without the wrapper a truecolor terminal would reach the
+/// far side as a plain 256-colour one as soon as `TERM` is fixed up. The wrapper puts the colour after the remote
+/// command as a plain word, where [`TERM_FALLBACK`] exports it (`sh -c '…' herdr truecolor`); anything that is not
+/// such a word is left out rather than quoted through two shells.
+pub fn terminal_argv(ssh_bin: &str, args: &[String]) -> Vec<String> {
+    let mut argv: Vec<String> = vec![
+        "sh".into(),
+        "-c".into(),
+        COLOR_AS_ARGUMENT.into(),
+        "herdr".into(),
+        ssh_bin.to_string(),
+    ];
+    argv.extend(args.iter().cloned());
+    argv
 }
 
 fn valid_session(s: &str) -> bool {
@@ -557,13 +629,20 @@ mod tests {
         assert_eq!(args[n - 2], "me@192.0.2.29");
         assert_eq!(args[n - 3], "2222");
         assert_eq!(args[n - 4], "-p");
-        assert_eq!(tty_args("me@192.0.2.29:2222").unwrap().join(" "), "-t -p 2222 me@192.0.2.29");
-        assert_eq!(tty_args("vm-r").unwrap().join(" "), "-t vm-r");
+        let yard = tty_args("me@192.0.2.29:2222").unwrap();
+        assert_eq!(yard[..4], ["-t", "-p", "2222", "me@192.0.2.29"]);
+        // The terminal checks the far side's terminfo first, then starts the login shell it would have started
+        // anyway (PLN-57).
+        assert!(yard[4].starts_with("sh -c '"), "{yard:?}");
+        assert!(yard[4].contains("infocmp") && yard[4].contains("xterm-256color"), "{yard:?}");
+        assert!(yard[4].ends_with("exec \"${SHELL:-/bin/sh}\" -l'"), "{yard:?}");
+        assert_eq!(tty_args("vm-r").unwrap()[..2], ["-t", "vm-r"]);
         // A shell goes into the container by its full id: `ssh -t … docker exec -it …`.
         let id = "a".repeat(64);
         let shell = container_shell_args("me@192.0.2.29:2222", &id).unwrap();
         assert_eq!(shell[..4], ["-t", "-p", "2222", "me@192.0.2.29"]);
         assert!(shell[4].starts_with(&format!("docker exec -it {id} sh -c '")));
+        assert!(shell[4].contains("xterm-256color"));
         assert!(shell[4].contains("exec bash") && shell[4].contains("exec sh"));
         assert!(container_shell_args("vm-r", "a b").is_err());
         assert!(container_shell_args("vm-r", &"a".repeat(63)).is_err());
@@ -608,5 +687,137 @@ mod tests {
             args.last().unwrap(),
             "exec \"${SHELL:-/bin/sh}\" -lc 'echo '\\''a'\\'''"
         );
+    }
+
+    /// The terminal check run the way the far side runs it: `sh -c '<check>; printf …'`, with `path` naming the
+    /// terminfo tools it may find and `color` as the first argument (the terminal's own `COLORTERM`).
+    #[cfg(unix)]
+    fn run_term(
+        path: &std::path::Path,
+        envs: &[(&str, &str)],
+        term: &str,
+        color: Option<&str>,
+    ) -> String {
+        let script = format!("{TERM_FALLBACK}\nprintf '%s|%s' \"$TERM\" \"${{COLORTERM:-}}\"");
+        let mut cmd = std::process::Command::new("/bin/sh");
+        cmd.arg("-c").arg(script).arg("herdr");
+        if let Some(c) = color {
+            cmd.arg(c);
+        }
+        cmd.env_clear().env("PATH", path).env("TERM", term);
+        for (k, v) in envs {
+            cmd.env(k, v);
+        }
+        let out = cmd.output().unwrap();
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8_lossy(&out.stdout).to_string()
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn the_terminal_type_falls_back_to_one_the_far_side_has() {
+        let dir = tempfile::tempdir().unwrap();
+        let bin = dir.path().join("bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        // A shipyard as it is: no entry for the terminal's own type, one for xterm-256color. The colour of the
+        // terminal travels beside the type.
+        crate::testutil::write_exec(&bin.join("infocmp"), "#!/bin/sh\n[ \"$1\" = xterm-256color ]\n");
+        assert_eq!(
+            run_term(&bin, &[], "xterm-kitty", Some("truecolor")),
+            "xterm-256color|truecolor"
+        );
+        // The far side knows the terminal's type: nothing changes.
+        crate::testutil::write_exec(&bin.join("infocmp"), "#!/bin/sh\nexit 0\n");
+        assert_eq!(
+            run_term(&bin, &[], "xterm-kitty", Some("truecolor")),
+            "xterm-kitty|truecolor"
+        );
+        // Neither it nor xterm-256color: xterm.
+        crate::testutil::write_exec(&bin.join("infocmp"), "#!/bin/sh\nexit 1\n");
+        assert_eq!(run_term(&bin, &[], "xterm-kitty", None), "xterm|");
+        // A type that is no terminal at all takes the same road, although the far side "knows" it.
+        crate::testutil::write_exec(&bin.join("infocmp"), "#!/bin/sh\nexit 0\n");
+        assert_eq!(run_term(&bin, &[], "dumb", None), "xterm-256color|");
+        assert_eq!(run_term(&bin, &[], "", None), "xterm-256color|");
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn without_terminfo_tools_the_database_itself_is_looked_at() {
+        let dir = tempfile::tempdir().unwrap();
+        let empty = dir.path().join("bin"); // neither infocmp nor tput: a bare image
+        std::fs::create_dir_all(&empty).unwrap();
+        let ti = dir.path().join("terminfo");
+        std::fs::create_dir_all(ti.join("x")).unwrap();
+        std::fs::write(ti.join("x/xterm-kitty"), b"").unwrap();
+        let ti_s = ti.to_str().unwrap();
+        assert_eq!(
+            run_term(&empty, &[("TERMINFO", ti_s)], "xterm-kitty", None),
+            "xterm-kitty|"
+        );
+        // Some terminfo trees keep the entry under the hex code of its first letter.
+        let hex = dir.path().join("hex");
+        std::fs::create_dir_all(hex.join("78")).unwrap();
+        std::fs::write(hex.join("78/xterm-kitty"), b"").unwrap();
+        assert_eq!(
+            run_term(&empty, &[("TERMINFO", hex.to_str().unwrap())], "xterm-kitty", None),
+            "xterm-kitty|"
+        );
+        // A type no tree has: the fallback whose own chain the tools are asked along.
+        let none = dir.path().join("none");
+        std::fs::create_dir_all(&none).unwrap();
+        let got = run_term(&empty, &[("TERMINFO", none.to_str().unwrap())], "herdr-none", None);
+        assert!(got.starts_with("xterm"), "{got}");
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn the_terminal_colour_travels_with_the_ssh_call() {
+        let dir = tempfile::tempdir().unwrap();
+        let log = dir.path().join("args");
+        let ssh = dir.path().join("ssh");
+        crate::testutil::write_exec(
+            &ssh,
+            format!(
+                "#!/bin/sh\nfor a in \"$@\"; do printf '%s\\036' \"$a\"; done > {}\n",
+                log.display()
+            ),
+        );
+        let args = tty_args("me@192.0.2.29").unwrap();
+        let argv = terminal_argv(&ssh.display().to_string(), &args);
+        assert_eq!(argv[0], "sh");
+        assert_eq!(argv[1], "-c");
+        assert_eq!(argv[2], COLOR_AS_ARGUMENT);
+        assert_eq!(argv[3], "herdr");
+        assert_eq!(argv[4], ssh.display().to_string());
+        let run = |color: Option<&str>| {
+            let _ = std::fs::remove_file(&log);
+            let mut cmd = std::process::Command::new("/bin/sh");
+            cmd.args(&argv[1..]);
+            match color {
+                Some(c) => cmd.env("COLORTERM", c),
+                None => cmd.env_remove("COLORTERM"),
+            };
+            let out = cmd.output().unwrap();
+            assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+            std::fs::read_to_string(&log)
+                .unwrap()
+                .split('\x1e')
+                .filter(|a| !a.is_empty())
+                .map(str::to_string)
+                .collect::<Vec<_>>()
+        };
+        let seen = run(Some("truecolor"));
+        assert_eq!(seen[seen.len() - 2..], ["herdr", "truecolor"]);
+        // Without a colour, or with something that is not a plain word, nothing is added: a word of the far side's
+        // command line cannot be quoted through two shells safely.
+        let plain = run(None);
+        assert_eq!(plain.last().unwrap(), args.last().unwrap());
+        let odd = run(Some("true color; rm -rf /"));
+        assert_eq!(odd.last().unwrap(), args.last().unwrap());
     }
 }
