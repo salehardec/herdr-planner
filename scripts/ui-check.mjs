@@ -2046,6 +2046,8 @@ section('requests', async () => {
   const noticeLine = '[Действие в планировщике] ALP-3: план одобрен';
   const chatFolder = realpathSync(join(fixture, 'board', 'coordinator', 'default', 'chat')).replace(/[^A-Za-z0-9]/g, '-');
   const transcript = join(fixture, 'claude', 'projects', chatFolder, 'fixture.jsonl');
+  // The transcript is the fixture's for the sections after this one: the two records go away once the line is seen once.
+  const transcriptBefore = readFileSync(transcript, 'utf8');
   appendFileSync(transcript, JSON.stringify({ type: 'user', timestamp: new Date().toISOString(), message: { role: 'user', content: noticeLine } }) + '\n');
   appendFileSync(transcript, JSON.stringify({ type: 'assistant', timestamp: new Date().toISOString(), message: { role: 'assistant', model: 'claude-opus-5-5', stop_reason: 'end_turn', content: [{ type: 'text', text: 'Принято.' }] } }) + '\n');
   await navigate(base + '/?noauto&nocoach&bloom=0');
@@ -2056,6 +2058,9 @@ section('requests', async () => {
     await waitFor(`[...document.querySelectorAll('#clog .turn')].some((e) => e.innerText.includes(${JSON.stringify(noticeLine)}))`, 12000)
       && await evalJs(`(() => { const ts = [...document.querySelectorAll('#clog .turn')].filter((e) => e.innerText.includes(${JSON.stringify(noticeLine)})); return ts.length === 1 && ts[0].classList.contains('board') && !ts[0].classList.contains('notice'); })()`),
     await evalJs(`[...document.querySelectorAll('#clog .turn')].filter((e) => e.innerText.includes(${JSON.stringify(noticeLine)})).map((e) => e.className)`));
+  writeFileSync(transcript, transcriptBefore);
+  await navigate(base + '/?noauto&nocoach&bloom=0');
+  await waitFor('window.world && world.debug().planets > 0', 20000);
   await resetUi();
   // Both languages: the same cards in English.
   writeFileSync(join(fixture, 'state', 'dialog.txt'), permScreen);
