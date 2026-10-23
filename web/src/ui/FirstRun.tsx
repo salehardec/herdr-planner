@@ -112,9 +112,9 @@ export function Coach(): JSX.Element | null {
   const s = snap.value;
   if (coachDone.value || !s || s.projects.length === 0 || new URLSearchParams(location.search).has('nocoach')) return null;
   const steps = [
-    { n: 1, text: t('coach.1'), at: 'left' },
-    { n: 2, text: t('coach.2'), at: 'top' },
-    { n: 3, text: t('coach.3'), at: 'right' },
+    { n: 1, text: t('coach.1'), at: 'at-left' },
+    { n: 2, text: t('coach.2'), at: 'at-top' },
+    { n: 3, text: t('coach.3'), at: 'at-right' },
   ];
   const st = steps[coachStep.value];
   const finish = (): void => { coachDone.value = true; persist(SEEN_KEY, 'coach'); };
