@@ -11,3 +11,10 @@
 .q.resolved{opacity:.55;text-decoration:line-through;color:var(--pl-faint)}
 .wnote{padding:0.375rem 0.625rem;border-top:1px solid var(--pl-line)}
 :root.bp900 .waitlist{left:0.5rem;right:0.5rem;width:auto;top:auto;bottom:0.5rem;max-height:60vh;z-index:40}
+.q.mem{--s:var(--pl-accent)}
+.q.mem .gl{color:var(--pl-accent)}
+.q .qk{display:inline-block;margin-right:0.375rem;padding:0 0.375rem;border:1px solid color-mix(in srgb,var(--pl-accent) 45%,var(--pl-bg));border-radius:0.625rem;background:color-mix(in srgb,var(--pl-accent) 14%,var(--pl-bg));color:var(--pl-title);font-size:0.625rem;font-weight:700;line-height:1.125rem}
+.qw{display:flex;align-items:center;gap:0.25rem}
+.qw .mm-pick{margin:0 0 0 0.375rem}
+.qw .q{flex:1;min-width:0}
+.wbatch{border-top:1px solid var(--pl-line);padding:0.375rem;max-height:55%;overflow:auto;scrollbar-width:thin}

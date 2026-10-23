@@ -43,6 +43,13 @@ describe('requests to the human', () => {
     expect(list[2].text).toContain('8 %');
     expect(list[2].text).toContain('40.0');
   });
+  it('lists a «В память» proposal as a request of its own, after the board\'s and the alarms', () => {
+    const suggestions = [{ task: 'a/9', repo: 'a', tag: 'A-9', title: 'Тема', lines: [{ kind: 'decision', text: 'Тема хранится локально.' }], at: 1 }];
+    const list = collectRequests({ tasks: [task({ id: 'a/1', n: 1, status: 'ready' })], coordinator: null, suggestions });
+    expect(list.map((r) => r.type)).toEqual(['approval', 'memory']);
+    expect(list[1]).toMatchObject({ key: 'memory:a/9', id: 'a/9', tag: 'A-9', repo: 'a', text: 'Тема' });
+    expect(collectRequests({ tasks: [], coordinator: null, suggestions: [] })).toEqual([]);
+  });
   it('lists the urgent first and puts the Coordinator\'s dialog before them', () => {
     const list = collectRequests({
       tasks: [task({ id: 'a/2', n: 2, status: 'ready' }), task({ id: 'a/1', n: 1, status: 'failed', state: 'error' }), task({ id: 'a/3', n: 3, status: 'working', state: 'working' })],

@@ -79,7 +79,7 @@ export function QuasarFocus(): JSX.Element {
       <h3>{t('quasar.waits', { n: list.length })}</h3>
       {list.length === 0 ? <div class="hint">{t('wait.none')}</div> : list.map((r, i) => (
         <button class="qrow" type="button" key={r.key} onClick={() => void openRequest(i)}>
-          <Gl n={r.task?.status ?? 'waiting'} /><b>{r.tag}</b><span>{r.text || r.title}</span>
+          <Gl n={r.type === 'memory' ? 'memory' : r.task?.status ?? 'waiting'} /><b>{r.tag}</b><span>{r.type === 'memory' ? `${r.title}: ` : ''}{r.text || r.title}</span>
         </button>
       ))}
       <h3>{t('focus.subagents')} {moons.length > 0 && <span class="cnt">{moons.length}</span>}</h3>

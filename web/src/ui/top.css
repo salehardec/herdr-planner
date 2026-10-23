@@ -10,7 +10,11 @@
 .waitbtn .short{display:none}
 .mon{flex:none;min-width:0;display:flex;align-items:center;gap:0.5rem}
 .waitbtn{border-radius:1rem;height:1.875rem}
-.waitbtn.hot{border-color:color-mix(in srgb,var(--c-yellow) 60%,var(--pl-line));color:var(--c-yellow)}
+.waitbtn.hot{border-color:color-mix(in srgb,var(--c-yellow) 60%,var(--pl-line));color:var(--c-yellow);background:color-mix(in srgb,var(--c-yellow) 10%,var(--pl-panel-solid))}
+/* Something waits: the same slow breath as a working task's glyph (`beat`, 2.2 s), as a soft halo; calm at zero. */
+.waitbtn.hot{animation:waitpulse 2.2s ease-in-out infinite}
+@keyframes waitpulse{0%,100%{box-shadow:0 0 0 0 transparent}50%{box-shadow:0 0 0 0.25rem color-mix(in srgb,var(--c-yellow) 24%,transparent),0 0 0.875rem color-mix(in srgb,var(--c-yellow) 30%,transparent)}}
+@media (prefers-reduced-motion:reduce){.waitbtn.hot{animation:none}}
 .modeswitch{display:flex;border:1px solid var(--pl-line);border-radius:1rem;overflow:hidden;background:var(--pl-panel-solid);flex:none}
 .modeswitch button{border:0;background:none;padding:0.3125rem 0.75rem;height:1.75rem}
 .modeswitch button.on{background:var(--pl-accent);color:var(--pl-on-accent);font-weight:700}
