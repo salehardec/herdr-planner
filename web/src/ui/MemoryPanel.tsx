@@ -10,6 +10,8 @@ import { toast } from '../toast';
 import { dayTimeOf } from '../util/dates';
 import { Gl } from './Gl';
 import { AutoTextarea, fitText } from './AutoText';
+import { BatchBar } from './MemoryBatch';
+import { cardPick, linesOf, setLines, toggleCard, toggleLine, memPick, pickKey } from './memory-batch';
 import {
   deleteEntry, discardDraft, dismissSuggestion, keepSuggestion, KINDS, kindLabel, loadMemory, memoryOf, openMemory, previewSend, sendMemory, stateOf,
   previewDelete, previewDiscard, previewSave, previewSuggestion, rememberDlg, saveEntry, connectMemory, setSuggest,
@@ -165,7 +167,10 @@ function LineField(props: { value: string; disabled: boolean; onInput: (v: strin
 /** Lines the model proposed for a universe after a task was done: the human edits, keeps or drops them. */
 export function SuggestionCard(props: { s: MemSuggestion; compact?: boolean }): JSX.Element {
   const { s } = props;
-  const [lines, setLines] = useState(s.lines);
+  const lines = linesOf(s);
+  const picks = !props.compact;
+  void memPick.value;
+  const pickState = cardPick(s);
   const [busy, setBusy] = useState(false);
   const [card, setCard] = useState<MemPreview | null>(null);
   const [err, setErr] = useState('');
@@ -196,17 +201,32 @@ export function SuggestionCard(props: { s: MemSuggestion; compact?: boolean }): 
   const redact = (): void => {
     if (!card) return;
     const next = kept.map((l, i) => ({ ...l, text: card.redacted[i]?.body ?? l.text }));
-    setLines(next);
+    setLines(s.task, next);
     void ask(next);
   };
   return (
     <div class="mm-sug" data-sug={s.task}>
-      <div class="mm-sug-h"><Gl n="memory" />{t('mem.suggestFor', { tag: s.tag, repo: s.repo })}</div>
+      <div class="mm-sug-h">
+        {picks && (
+          <input
+            class="mm-pick" type="checkbox" data-pick-card={s.task} checked={pickState === 'all'} disabled={!!card}
+            ref={(el) => { if (el) el.indeterminate = pickState === 'some'; }}
+            aria-label={t('mem.batchPickCard', { tag: s.tag })} onChange={() => toggleCard(s)}
+          />
+        )}
+        <Gl n="memory" />{t('mem.suggestFor', { tag: s.tag, repo: s.repo })}
+      </div>
       {s.title && <div class="hint">{s.title}</div>}
       {lines.map((l, i) => (
         <div class="mm-sug-line" key={i}>
+          {picks && (
+            <input
+              class="mm-pick" type="checkbox" data-pick={pickKey(s.task, i)} checked={memPick.value.has(pickKey(s.task, i))} disabled={!!card || !l.text.trim()}
+              aria-label={t('mem.batchPickLine')} onChange={() => toggleLine(s, i)}
+            />
+          )}
           <span class={`mm-kind k-${l.kind}`}>{kindLabel(l.kind)}</span>
-          <LineField value={l.text} disabled={!!card} onInput={(text) => setLines(lines.map((x, j) => (j === i ? { ...x, text } : x)))} />
+          <LineField value={l.text} disabled={!!card} onInput={(text) => setLines(s.task, lines.map((x, j) => (j === i ? { ...x, text } : x)))} />
         </div>
       ))}
       {card ? (
@@ -412,6 +432,7 @@ export function MemoryPanel(props: { repo: string }): JSX.Element {
       {data?.note && <div class="hint">{data.note}</div>}
       {st.error && <div class="hint bad" id="mem-load-error">{st.error}</div>}
 
+      <BatchBar scope={repo} list={universeSug} />
       {universeSug.map((s) => <SuggestionCard key={s.task} s={s} />)}
 
       {!repo && data && <Connect data={data} />}

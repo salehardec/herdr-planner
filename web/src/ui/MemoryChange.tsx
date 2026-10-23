@@ -18,6 +18,8 @@ export function ChangeCard(props: {
   onToGalaxy?: () => void;
   /** The label of the confirm button when nothing was found. */
   confirmLabel?: string;
+  /** Only «было → стало» and what was found: the buttons are somebody else's (one confirmation for several cards). */
+  bare?: boolean;
 }): JSX.Element {
   const { p } = props;
   const where = p.level === 'galaxy' ? t('mem.chg.galaxy') : t('mem.chg.universe', { repo: p.repo });
@@ -33,11 +35,13 @@ export function ChangeCard(props: {
     ? (armedPublic ? t('mem.chg.publicGo2') : t('mem.chg.publicGo'))
     : p.risk === 'confirm' ? t('mem.chg.riskGo') : props.confirmLabel ?? t('mem.chg.go');
   return (
-    <div class={`chg mm-chg risk-${p.risk} ${props.error ? 'bad' : ''}`} id="mem-chg" data-risk={p.risk}>
-      <div class="chg-h">{t('mem.chg.title')} · <span id="mem-chg-where">{where}</span></div>
-      <div class="hint" id="mem-chg-dest">
-        {p.discard ? t('mem.chg.destDiscard') : p.send ? t('mem.chg.destSend') : p.level === 'galaxy' ? t('mem.chg.destGalaxy') : p.draft ? t('mem.chg.destDraft') : t('mem.chg.destFile')}
-      </div>
+    <div class={`chg mm-chg risk-${p.risk} ${props.error ? 'bad' : ''}`} id={props.bare ? undefined : 'mem-chg'} data-risk={p.risk}>
+      <div class="chg-h">{props.bare ? where : <>{t('mem.chg.title')} · <span id="mem-chg-where">{where}</span></>}</div>
+      {!props.bare && (
+        <div class="hint" id="mem-chg-dest">
+          {p.discard ? t('mem.chg.destDiscard') : p.send ? t('mem.chg.destSend') : p.level === 'galaxy' ? t('mem.chg.destGalaxy') : p.draft ? t('mem.chg.destDraft') : t('mem.chg.destFile')}
+        </div>
+      )}
       {p.changes.map((c) => (
         <div class="mm-chg-one" key={c.file} data-op={c.op}>
           <div class="ba">
@@ -51,7 +55,7 @@ export function ChangeCard(props: {
         </div>
       ))}
       {p.findings.length > 0 && (
-        <div class={`mm-found ${p.risk}`} id="mem-chg-found" role="alert">
+        <div class={`mm-found ${p.risk}`} id={props.bare ? undefined : 'mem-chg-found'} role="alert">
           <b>{p.risk === 'block' ? t('mem.chg.foundPublic') : t('mem.chg.found')}</b>
           <ul>
             {p.findings.map((f, i) => (
@@ -65,12 +69,12 @@ export function ChangeCard(props: {
         </div>
       )}
       {props.error && <div class="hint bad" id="mem-chg-error">{props.error}</div>}
-      <div class="row act">
+      {!props.bare && <div class="row act">
         <button class={`btn ${p.risk === 'block' ? 'danger' : 'primary'} ${armedPublic ? 'arm' : ''}`} type="button" id="mem-chg-confirm" disabled={props.busy} onClick={confirm}>{label}</button>
         {hasRedact && <button class="btn" type="button" id="mem-chg-redact" disabled={props.busy} onClick={props.onRedact}>{t('mem.chg.redact')}</button>}
         {props.onToGalaxy && p.findings.length > 0 && <button class="btn" type="button" id="mem-chg-galaxy" disabled={props.busy} onClick={props.onToGalaxy}>{t('mem.chg.toGalaxy')}</button>}
         <button class="btn" type="button" id="mem-chg-cancel" disabled={props.busy} onClick={props.onCancel}>{t('cancel')}</button>
-      </div>
+      </div>}
     </div>
   );
 }

@@ -1,14 +1,18 @@
 import type { JSX } from 'preact';
-import { answered, panels, requests } from '../store';
+import { answered, panels, requests, snap } from '../store';
 import { fromQueue, openRequest, queueCursor } from '../nav';
 import { t } from '../i18n';
 import { Gl } from './Gl';
+import { BatchBar } from './MemoryBatch';
+import { cardPick, memPick, toggleCard } from './memory-batch';
 import './wait.css';
 
 /** «Ждёт тебя» as a queue to work through: open one, answer, and come back to the list with the cursor on the next. */
 export function Wait(): JSX.Element {
   const open = panels.wait.value;
   const list = requests.value.filter((r) => r.type !== 'coordinator-options');
+  const suggestions = snap.value?.memory_suggestions ?? [];
+  void memPick.value;
   const cur = Math.min(queueCursor.value, Math.max(0, list.length - 1));
   const onKey = (e: KeyboardEvent): void => {
     if (e.key === 'ArrowDown') { e.preventDefault(); queueCursor.value = Math.min(list.length - 1, cur + 1); }
@@ -24,7 +28,9 @@ export function Wait(): JSX.Element {
           const alarm = r.type === 'runner-alert';
           const mem = r.type === 'memory';
           const done = !alarm && answered.value.has(r.id);
-          return (
+          const sug = mem ? suggestions.find((m) => m.task === r.id) : undefined;
+          const state = sug ? cardPick(sug) : 'none';
+          const row = (
             <button
               key={r.key} type="button" data-request={r.key} data-alert={r.alert?.kind} data-sel={r.id === 'coordinator' ? '' : r.id}
               class={`q s-${alarm ? 'failed' : mem ? 'done' : r.task?.status ?? 'waiting'} ${mem ? 'mem' : ''} ${i === cur ? 'cur' : ''} ${done ? 'resolved' : ''}`}
@@ -35,8 +41,19 @@ export function Wait(): JSX.Element {
               <span class="tx">{mem && <span class="qk">{r.title}</span>}{r.text || r.title}</span><span class="pj">{r.repo}</span>
             </button>
           );
+          if (!sug) return row;
+          return (
+            <div class="qw" key={r.key}>
+              <input
+                class="mm-pick" type="checkbox" data-pick-card={sug.task} checked={state === 'all'} ref={(el) => { if (el) el.indeterminate = state === 'some'; }}
+                aria-label={t('mem.batchPickCard', { tag: sug.tag })} onChange={() => toggleCard(sug)}
+              />
+              {row}
+            </div>
+          );
         })}
       </div>
+      {suggestions.length > 0 && <div class="wbatch"><BatchBar scope="wait" list={suggestions} /></div>}
       {fromQueue.value && <div class="hint wnote">{t('wait.back')}</div>}
     </section>
   );

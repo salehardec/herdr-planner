@@ -17,7 +17,7 @@
 //  - a section that fails is run once more from a fresh page, said out loud in the output and in the summary.
 
 import { spawn, execFileSync } from 'node:child_process';
-import { mkdtempSync, writeFileSync, readFileSync, existsSync, unlinkSync, utimesSync, rmSync, readdirSync, appendFileSync, realpathSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, writeFileSync, readFileSync, existsSync, unlinkSync, utimesSync, rmSync, readdirSync, appendFileSync, realpathSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -3240,6 +3240,7 @@ section('planet states', async () => {
     const w = await evalJs(`world.debug().fxAt('alpha/2', 0.2)`);
     check(`${what}: a working planet is a still, bright ring; the planet that waits has its ring and glow`, a.moving === false && a.glow === b.glow && a.aura === b.aura && a.aura > 0.5 && a.glow > 0.3 && w.halo === 1 && w.glow > 0.3, JSON.stringify([a, b, w]));
     check(`${what}: no animation is left in the page's own styles`, await evalJs(`[...document.querySelectorAll('#win .gl.spin, #win .gl.beat')].every((e) => getComputedStyle(e).animationName === 'none')`));
+    check(`${what}: «Ждёт тебя» does not pulse, and stays highlighted in colour while something waits`, await evalJs(`(() => { const b = document.querySelector('#wait-btn'); const st = getComputedStyle(b); const c = b.cloneNode(true); c.classList.remove('hot'); b.parentNode.appendChild(c); const calm = getComputedStyle(c).color; c.remove(); return b.classList.contains('hot') && st.animationName === 'none' && st.color !== calm; })()`));
   };
   await navigate(base + '/?calm&nocoach');
   await frozen('?calm');
@@ -3928,6 +3929,62 @@ section('memory suggestions', async () => {
   await click('#closing [data-act="mem-sug-dismiss"]');
   check('«Не нужно» drops it and writes nothing', await waitFor('fetch("/api/state").then((r) => r.json()).then((s) => !s.memory_suggestions.some((m) => m.task === "delta/1"))', 8000) && !existsSync(join(fixture, 'projects', 'herdr', 'delta', 'docs', 'memory')));
   check('dropped: the row leaves «Ждёт тебя» and the count goes down by one', await waitFor(`!document.querySelector('${memRow('delta/1')}')`, 6000) && await waitFor(`Number((document.querySelector("#wait-btn")?.innerText || "").replace(/\\D+/g, "")) === ${waitedMid - 1}`, 4000), `${await waitNum()} vs ${waitedMid}`);
+  // in bulk: tick cards or single lines, one button for all that are ticked. The fixture's board gets three more tasks to approve.
+  const boardFile = join(fixture, 'state', 'board.json');
+  const boardEdit = (f) => { const w = JSON.parse(readFileSync(boardFile, 'utf8')); f(w); writeFileSync(boardFile, JSON.stringify(w, null, 1)); };
+  const bulk = [[17, 'Первая пачка'], [18, 'Вторая пачка'], [19, 'Третья пачка']];
+  boardEdit((w) => { for (const [n, title] of bulk) if (!w.rows.some((r) => r.id === `alpha/${n}`)) w.rows.push({ id: `alpha/${n}`, app: 'claude', state: 'blocked', kind: 'permission', stage: 'approval', title, msg: 'Pass · 1 minor', reviewRound: 1 }); });
+  await post('/api/refresh', {});
+  check('three more tasks wait for approval', await waitFor('fetch("/api/state").then((r) => r.json()).then((s) => [17, 18, 19].every((n) => s.tasks.some((t) => t.id === "alpha/" + n)))', 15000));
+  for (const [n, title] of bulk) { const d = join(fixture, 'board', 'tasks', 'alpha', String(n)); mkdirSync(d, { recursive: true }); writeFileSync(join(d, 'closing.md'), `Сделано: ${title}. Тема больше не мигает при старте.\n`); }
+  const approved = [];
+  for (const [n] of bulk) approved.push(await post('/api/action', { action: 'approve', id: `alpha/${n}`, confirm: true }));
+  check('all three are proposed', await waitFor('fetch("/api/state").then((r) => r.json()).then((s) => [17, 18, 19].every((n) => s.memory_suggestions.some((m) => m.task === "alpha/" + n)))', 20000), JSON.stringify([await pending(), calls('claude.jsonl').filter((c) => c.suggest).map((c) => c.suggest), ]));
+  await resetUi();
+  await press('KeyB', 'b');
+  const bar = '#drawer-wait [data-batch="wait"]';
+  const barCount = () => evalJs(`Number(document.querySelector('${bar} [data-batch-count]')?.dataset.batchCount ?? -1)`);
+  const pickedBoxes = () => evalJs(`[...document.querySelectorAll('#drawer-wait [data-pick-card]')].filter((e) => e.checked).map((e) => e.dataset.pickCard)`);
+  check('each proposal in the list has its tick, and the bar is under the list', await waitFor(`[17, 18, 19].every((n) => !!document.querySelector('#drawer-wait [data-pick-card="alpha/' + n + '"]')) && !!document.querySelector('${bar}')`, 8000));
+  check('nothing is ticked at first: the bulk buttons wait', (await barCount()) === 0 && (await evalJs(`document.querySelector('${bar} [data-act="mem-batch-accept"]').disabled && document.querySelector('${bar} [data-act="mem-batch-dismiss"]').disabled`)));
+  const allLines = (await stateApi()).memory_suggestions.reduce((n, m) => n + m.lines.filter((l) => l.text.trim()).length, 0);
+  await click(`${bar} [data-act="mem-batch-all"]`);
+  check('«Выбрать все» ticks every card and every line', await waitFor(`Number(document.querySelector('${bar} [data-batch-count]')?.dataset.batchCount) === ${allLines}`, 4000) && (await pickedBoxes()).length === (await stateApi()).memory_suggestions.length, `${await barCount()} vs ${allLines}`);
+  await click(`${bar} [data-act="mem-batch-clear"]`);
+  check('«Снять выбор» clears them', await waitFor(`Number(document.querySelector('${bar} [data-batch-count]')?.dataset.batchCount) === 0`, 4000) && (await pickedBoxes()).length === 0);
+  // one ticked card dropped by «Не нужно»; the others stay, the count goes down by one
+  const n0 = await waitNum();
+  await click('#drawer-wait [data-pick-card="alpha/17"]');
+  check('a ticked card counts its two lines', await waitFor(`Number(document.querySelector('${bar} [data-batch-count]')?.dataset.batchCount) === 2`, 4000), `${await barCount()}`);
+  await click(`${bar} [data-act="mem-batch-dismiss"]`);
+  check('the bulk «Не нужно» drops the ticked card only and writes nothing', await waitFor('fetch("/api/state").then((r) => r.json()).then((s) => !s.memory_suggestions.some((m) => m.task === "alpha/17") && s.memory_suggestions.some((m) => m.task === "alpha/18") && s.memory_suggestions.some((m) => m.task === "alpha/19"))', 8000) && !filesIn(draftsOf('alpha')).some((f) => readFile(join(draftsOf('alpha'), f)).includes('source: task alpha/17')));
+  check('its row leaves «Ждёт тебя» at once and the count goes down by one', await waitFor(`!document.querySelector('${memRow('alpha/17')}')`, 6000) && await waitFor(`Number((document.querySelector("#wait-btn")?.innerText || "").replace(/\\D+/g, "")) === ${n0 - 1}`, 4000), `${await waitNum()} vs ${n0}`);
+  check('and the tick went with it', (await barCount()) === 0);
+  // a whole card and one line of another, in the universe's panel: one preview for both, one «да»
+  await universeOf('alpha');
+  await waitFor('!!document.querySelector(\'#mem-universe .mm-sug[data-sug="alpha/18"]\') && !!document.querySelector(\'#mem-universe .mm-sug[data-sug="alpha/19"]\')', 8000);
+  await click('#mem-universe [data-pick-card="alpha/18"]');
+  await click('#mem-universe [data-pick="alpha/19#1"]');
+  const ubar = '#mem-universe [data-batch="alpha"]';
+  check('the panel has the same bar, its count is the ticked lines (2 + 1)', await waitFor(`Number(document.querySelector('${ubar} [data-batch-count]')?.dataset.batchCount) === 3`, 4000), `${await barCount()}`);
+  check('a half-ticked card is shown half-ticked', await evalJs('document.querySelector(\'#mem-universe [data-pick-card="alpha/19"]\').indeterminate === true'));
+  check('the Waiting list shows the same ticks', await evalJs(`document.querySelector('#drawer-wait [data-pick-card="alpha/18"]').checked && document.querySelector('#drawer-wait [data-pick-card="alpha/19"]').indeterminate`));
+  await typeIn('#mem-universe .mm-sug[data-sug="alpha/19"] .mm-sug-line:has([data-pick="alpha/19#1"]) textarea', 'ALP-19: правка перед записью — тема не мигает.');
+  await click(`${ubar} [data-act="mem-batch-accept"]`);
+  check('keeping shows «было → стало» of both cards (3 changes) and writes nothing', await waitFor(`document.querySelectorAll('${ubar} .mm-batch-one').length === 2 && document.querySelectorAll('${ubar} .mm-chg-one').length === 3`, 10000) && filesIn(draftsOf('alpha')).every((f) => !/source: task alpha\/(18|19)/.test(readFile(join(draftsOf('alpha'), f)))), await text(ubar));
+  check('the edited line is in the preview', (await text(ubar)).includes('тема не мигает'));
+  await shot('memory-batch.png');
+  await click(`${ubar} [data-act="mem-batch-confirm"]`);
+  check('one «да» writes the ticked lines as drafts of their tasks (the unticked line of alpha/19 is not kept)', await waitLog(() => { const fs2 = filesIn(draftsOf('alpha')).map((f) => readFile(join(draftsOf('alpha'), f))); return fs2.filter((x) => x.includes('source: task alpha/18')).length === 2 && fs2.filter((x) => x.includes('source: task alpha/19')).length === 1; }, 10000), filesIn(draftsOf('alpha')).join(','));
+  check('both cards are taken off the list, and the rows leave «Ждёт тебя»', await waitFor('fetch("/api/state").then((r) => r.json()).then((s) => !s.memory_suggestions.some((m) => ["alpha/18", "alpha/19"].includes(m.task)))', 8000) && await waitFor(`!document.querySelector('${memRow('alpha/18')}') && !document.querySelector('${memRow('alpha/19')}')`, 6000));
+  check('the count went down by two more', await waitFor(`Number((document.querySelector("#wait-btn")?.innerText || "").replace(/\\D+/g, "")) === ${n0 - 3}`, 4000), `${await waitNum()} vs ${n0}`);
+  boardEdit((w) => { w.rows = w.rows.filter((r) => !bulk.some(([n]) => r.id === `alpha/${n}`)); });
+  await post('/api/refresh', {});
+  // «Ждёт тебя» in the top bar breathes while something waits and rests at zero
+  await resetUi();
+  const pulse = (sel) => evalJs(`getComputedStyle(document.querySelector(${JSON.stringify(sel)})).animationName`);
+  check('«Ждёт тебя» pulses while its count is above zero', (await waitNum()) > 0 && await evalJs('document.querySelector("#wait-btn").classList.contains("hot")') && (await pulse('#wait-btn')) !== 'none', await pulse('#wait-btn'));
+  check('and it is quiet at zero', await evalJs(`(() => { const b = document.querySelector('#wait-btn'); const c = b.cloneNode(true); c.classList.remove('hot'); c.id = 'wait-probe'; b.parentNode.appendChild(c); const n = getComputedStyle(c).animationName; c.remove(); return n === 'none'; })()`));
   // the switch: off, and a done task is not sent to the model
   await resetUi();
   await quasarOf();
