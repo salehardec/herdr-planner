@@ -346,11 +346,28 @@ section('panel widths', async () => {
   };
   // The edge takes the keyboard's focus, and the focus is shown: an outline, and the mark of the edge lit.
   const fromKeyboard = async (sel, key) => {
-    await evalJs(`document.querySelector(${JSON.stringify(sel)}).focus(); true`);
+    const selJs = JSON.stringify(sel);
+    const take = async () => {
+      await evalJs(`document.querySelector(${selJs})?.focus(); true`);
+      await beat();
+      return evalJs(`document.activeElement === document.querySelector(${selJs})`);
+    };
+    // A panel that has just opened may move the focus into its own field a tick later (a loaded machine makes the tick
+    // longer): the grip takes it back, and the key only goes once the grip really has it.
+    let has = await take();
+    for (let i = 0; i < 4 && !has; i++) { await sleep(100); has = await take(); }
     await press(key);
     await beat();
-    const lit = await waitFor(`getComputedStyle(document.querySelector(${JSON.stringify(sel)}), '::after').opacity === '1'`, 3000);
-    return { lit, ...await evalJs(`(() => { const g = document.querySelector(${JSON.stringify(sel)}); const c = getComputedStyle(g); return { active: document.activeElement === g, focusRing: c.outlineStyle !== 'none' && parseFloat(c.outlineWidth) > 0, mark: getComputedStyle(g, '::after').opacity, f: g.matches(':focus'), fv: g.matches(':focus-visible') }; })()`) };
+    let lit = await waitFor(`getComputedStyle(document.querySelector(${selJs}), '::after').opacity === '1'`, 3000);
+    if (!lit) {
+      // The focus was taken away between the two anyway: take it again and send the key once more. The width moves twice
+      // at most, in the direction the checks below expect.
+      has = await take();
+      await press(key);
+      await beat();
+      lit = await waitFor(`getComputedStyle(document.querySelector(${selJs}), '::after').opacity === '1'`, 3000);
+    }
+    return { lit, ...await evalJs(`(() => { const g = document.querySelector(${selJs}); const c = getComputedStyle(g); return { active: document.activeElement === g, focusRing: c.outlineStyle !== 'none' && parseFloat(c.outlineWidth) > 0, mark: getComputedStyle(g, '::after').opacity, f: g.matches(':focus'), fv: g.matches(':focus-visible') }; })()`) };
   };
   // The navigator and the focus card start open; the wait list and the chat are opened by their keys.
   const panels = [
