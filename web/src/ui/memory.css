@@ -51,7 +51,14 @@
 .mm-sug-h .gl{width:13px;height:13px;flex:none}
 .mm-sug-line{display:flex;gap:6px;align-items:flex-start;min-width:0}
 .mm-sug-line .mm-kind{margin-top:6px}
-.mm-sug-line textarea{resize:vertical;min-height:44px}
+.mm-pick{flex:none;width:0.875rem;height:0.875rem;margin:0.4375rem 0 0;accent-color:var(--pl-accent)}
+.mm-sug-h .mm-pick{margin:0}
+.mm-batch{display:grid;gap:6px;padding:7px 9px;border:1px dashed var(--pl-line);border-radius:7px;background:var(--pl-tile)}
+.mm-batch-bar{display:flex;flex-wrap:wrap;gap:6px;align-items:center}
+.mm-batch-n{flex:1 1 100%;font-size:11.5px;color:var(--pl-title);font-weight:600}
+.mm-batch-card{display:grid;gap:6px;padding:7px 8px;border:1px solid var(--pl-accent);border-radius:7px;background:color-mix(in srgb,var(--pl-accent) 8%,var(--pl-tile))}
+.mm-batch-one{display:grid;gap:4px;min-width:0}
+.mm-sug-line textarea{resize:none;overflow:hidden;min-height:1.75rem}
 .mm-sug-line .field{flex:1 1 0;min-width:0}
 .mm-foreign{display:grid;gap:4px;margin-top:6px}
 .mm-foreign h4{margin:0;font-size:10.5px;color:var(--pl-dim);text-transform:uppercase;letter-spacing:.06em;font-weight:500}
