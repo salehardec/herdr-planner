@@ -36,6 +36,8 @@ mod server;
 mod ship;
 mod ssh;
 mod station;
+mod strays;
+mod strays_api;
 mod subagents;
 mod taskmeta;
 mod translate;
@@ -286,6 +288,7 @@ fn spawn_loops(app: Shared) {
         }
     });
     tokio::spawn(load::run(app.clone()));
+    tokio::spawn(strays::run(app.clone()));
     let a = app.clone();
     tokio::spawn(async move {
         app::index_chat(&a).await;

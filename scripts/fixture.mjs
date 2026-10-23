@@ -1590,6 +1590,33 @@ for (const name of ['codex', 'omp']) {
 fs.mkdirSync(path.join(dir, 'load'), { recursive: true });
 fs.writeFileSync(path.join(dir, 'bin', 'nvidia-smi'), '#!/bin/sh\nf="$(dirname "$0")/../load/nvidia.csv"\n[ -f "$f" ] && exec cat "$f"\necho "NVIDIA-SMI has failed because it could not communicate with the NVIDIA driver." >&2\nexit 9\n');
 fs.chmodSync(path.join(dir, 'bin', 'nvidia-smi'), 0o755);
+// The planner's own look at this machine's processes (HERDR_PLANNER_PROC_FILE, PLN-53): a table of stand-ins, never real ones.
+// The leftovers of a done task (an agent, its MCP helper, and a broker that ignores SIGTERM), of an archived one, and of a
+// copy no task has; what must stay: a task in work, a folder outside the board's copies, another user's process, a shell
+// of a done task (listed, but the automatic cleaning leaves it). `FILE.signals` records what was «sent».
+{
+  const copy = (id) => W[id].worktree;
+  const P = (pid, ppid, cwd, cmd, extra = {}) => ({
+    pid, ppid, pgid: pid, comm: cmd.split(' ')[0].split('/').pop(), cmd, cwd, rss: 48 * 1024 * 1024, age_ms: 3 * 3600 * 1000, start: 5000 + pid, ...extra,
+  });
+  write(path.join(dir, 'load', 'procs.json'), JSON.stringify({
+    uid: 1000,
+    pid: 0,
+    procs: [
+      P(9101, 1, copy('alpha/13'), 'omp --resume=7f3a1c'),
+      P(9102, 9101, copy('alpha/13'), 'node /opt/omp/rea.mjs mcp', { pgid: 9102, rss: 120 * 1024 * 1024 }),
+      P(9103, 9101, path.join(copy('alpha/13'), 'src'), 'omp __omp_worker_daemon_broker', { ignore_term: true }),
+      P(9111, 1, copy('gamma/2'), 'node /opt/omp/rea.mjs mcp', { pgid: 9111 }),
+      P(9121, 1, copy('beta/1'), 'zsh -l', { rss: 6 * 1024 * 1024 }),
+      P(9151, 1, path.join(dir, 'worktrees', 'alpha', 'work-12'), 'node /opt/omp/rea.mjs mcp', { pgid: 9151 }),
+      P(9131, 1, copy('alpha/6'), 'omp --auto-approve'),
+      // a task started after the board was read: its number is above the newest the board knows
+      P(9171, 1, path.join(dir, 'worktrees', 'alpha', 'work-70'), 'omp --auto-approve'),
+      P(9141, 1, path.join(dir, 'projects', 'AI', 'alpha'), 'node dev-server.js'),
+      P(9161, 1, copy('alpha/13'), 'node other-users-process.js', { uid: 0 }),
+    ],
+  }, null, 1));
+}
 write(path.join(dir, 'theme.name'), 'Fixture Night');
 write(path.join(dir, 'herdr.sock'), '');
 fs.rmSync(path.join(dir, '.seed'), { recursive: true, force: true });
