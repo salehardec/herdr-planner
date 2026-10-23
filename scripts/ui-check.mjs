@@ -1968,6 +1968,15 @@ section('requests', async () => {
   check('the answered dialog reaches the Coordinator',
     await waitLog(() => calls('coordinator.jsonl').some((c) => c.text === '[Действие в планировщике] ALP-21: разрешено действие агента, больше не спрашивать'), 12000),
     JSON.stringify(calls('coordinator.jsonl').slice(-1)));
+  // The same dialog answered on the agent's own screen (its menu card) is the human's action too.
+  await click(dialogCard + ' [data-act="screen"][data-target="alpha/21"]');
+  check('the agent screen shows the dialog as a card', await waitFor('!!document.querySelector("#agent-screen [data-menu-card]")', 12000));
+  await click('#agent-screen [data-menu-opt="0"]');
+  check('a dialog answered on the agent screen also reaches the Coordinator',
+    await waitLog(() => calls('coordinator.jsonl').some((c) => c.text === '[Действие в планировщике] ALP-21: разрешено действие агента'), 12000),
+    JSON.stringify(calls('coordinator.jsonl').slice(-1)));
+  await press('Escape');
+  await waitFor('!document.querySelector("#agent-screen")', 4000);
   // No kind at all (herdr says the agent is blocked): still a permission when the screen has one.
   writeFileSync(join(fixture, 'state', 'dialog.txt'), fileScreen);
   await go('alpha/22');
