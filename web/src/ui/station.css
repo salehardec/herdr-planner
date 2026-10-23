@@ -77,3 +77,12 @@
 #st-yards .rf-block summary{cursor:pointer;color:var(--pl-dim);font-size:0.75rem}
 #st-yards .rf-block pre{margin:0.25rem 0;padding:0.375rem 0.5rem;max-height:12rem;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere;border:1px solid var(--pl-line);border-radius:0.3125rem;background:var(--pl-tile);color:var(--pl-dim);font:0.6875rem/1.45 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
 #st-yards .rf-block [data-setting]{min-width:0}
+/* Stray processes of finished tasks (PLN-53) */
+.rf-strays .rft-wrap{overflow-x:auto}
+.rf-strays .rf-strays-list{margin:0}
+.rf-strays .rft .st-cmd{padding-left:calc(0.3125rem + var(--depth,0) * 0.75rem)}
+.rf-strays .rft .st-cmd code{word-break:break-all}
+.rf-strays .st-strays-auto{margin:0}
+.rf-strays .st-strays-log ul{list-style:none;margin:0.375rem 0 0;padding:0;display:grid;gap:0.375rem;font-size:0.7188rem}
+.rf-strays .st-strays-log li.bad{color:var(--pl-danger)}
+.rf-strays .act .hint{align-self:center}
