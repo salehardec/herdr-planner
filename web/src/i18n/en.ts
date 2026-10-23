@@ -196,7 +196,7 @@ export const en: Record<string, string | string[]> = {
   'translate.button': 'Translate to English', 'translate.working': 'Translating…', 'translate.done': 'translated', 'translate.original': 'Original', 'translate.show': 'Show the translation',
   'translate.failed': 'Translation failed', 'translate.failedWhy': 'Translation failed: {why}',
   'addu.title': 'Add a universe to {g}', 'addu.tabFolder': 'Folder with git', 'addu.tabAddress': 'Repository address', 'addu.folderLabel': 'Folder', 'addu.addressLabel': 'Repository address',
-  'addu.check': 'Check', 'addu.checking': 'checking…', 'addu.onBoard': 'already on the board', 'addu.notGit': 'not git', 'addu.gitFolder': 'A folder with git', 'addu.notGitFolder': 'There is no git in this folder',
+  'addu.check': 'Check', 'addu.checking': 'checking…', 'addu.starting': 'starting…', 'addu.onBoard': 'already on the board', 'addu.notGit': 'not git', 'addu.gitFolder': 'A folder with git', 'addu.notGitFolder': 'There is no git in this folder',
   'addu.private': 'private', 'addu.loggedIn': 'signed in: {u}', 'addu.canWrite': 'you can write', 'addu.readOnly': 'read only', 'addu.isFork': 'fork of {p}',
   'addu.modeClone': 'Clone (mine)', 'addu.modeCloneHint': 'you can write: clone to the default folder', 'addu.modeFork': 'Fork (someone else’s, I want to change it)',
   'addu.modeForkHint': 'origin = my fork, upstream = the original', 'addu.modeStudy': 'Study only', 'addu.modeStudyHint': 'a clone without write access; tasks are research by default',

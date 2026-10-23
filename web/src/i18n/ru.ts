@@ -210,7 +210,7 @@ export const ru: Record<string, string | string[]> = {
   'translate.failed': 'Перевод не удался', 'translate.failedWhy': 'Перевод не удался: {why}',
   // добавить вселенную
   'addu.title': 'Добавить вселенную в {g}', 'addu.tabFolder': 'Папка с git', 'addu.tabAddress': 'Адрес репозитория', 'addu.folderLabel': 'Папка', 'addu.addressLabel': 'Адрес репозитория',
-  'addu.check': 'Проверить', 'addu.checking': 'проверяю…', 'addu.onBoard': 'уже на доске', 'addu.notGit': 'не git', 'addu.gitFolder': 'Папка с git', 'addu.notGitFolder': 'В этой папке нет git',
+  'addu.check': 'Проверить', 'addu.checking': 'проверяю…', 'addu.starting': 'начинаю…', 'addu.onBoard': 'уже на доске', 'addu.notGit': 'не git', 'addu.gitFolder': 'Папка с git', 'addu.notGitFolder': 'В этой папке нет git',
   'addu.private': 'закрытый', 'addu.loggedIn': 'вход: {u}', 'addu.canWrite': 'есть право записи', 'addu.readOnly': 'только чтение', 'addu.isFork': 'форк ← {p}',
   'addu.modeClone': 'Клонировать (своё)', 'addu.modeCloneHint': 'есть право записи: клон в папку по умолчанию', 'addu.modeFork': 'Форк (чужое, хочу менять)',
   'addu.modeForkHint': 'origin = мой форк, upstream = оригинал', 'addu.modeStudy': 'Только изучать', 'addu.modeStudyHint': 'клон без записи; задачи по умолчанию исследовательские',

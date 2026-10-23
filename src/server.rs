@@ -89,6 +89,7 @@ pub fn router(app: Shared) -> Router {
         .route("/api/hints/files", get(crate::hints::files_get))
         .route("/api/universe/inspect", post(api::universe_inspect))
         .route("/api/universe/add", post(api::universe_add))
+        .route("/api/universe/job", get(api::universe_job))
         .route("/api/universe/info", get(api::universe_info))
         .route("/api/universe/fork", post(api::universe_fork))
         .route("/api/memory", get(crate::memory_api::memory_get))
