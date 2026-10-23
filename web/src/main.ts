@@ -126,6 +126,7 @@ effect(() => {
   w?.classList.toggle('chat-wide', panels.chat.value && chatWide.value);
   w?.classList.toggle('nav-off', !panels.nav.value);
   w?.classList.toggle('focus-off', !panels.focus.value);
+  w?.classList.toggle('wait-open', panels.wait.value);
 });
 effect(() => { world.setSelection(selected.value); });
 

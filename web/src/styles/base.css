@@ -40,6 +40,7 @@
   /* the navigator and the focus card: wide enough for their content (names, cards, buttons); the operator's own widths
      (--nav-user, --focus-user, set by panel-width.ts) win */
   --nav-w:min(var(--nav-user,26rem),55vw); --focus-w:min(var(--focus-user,24.375rem),55vw);
+  --wait-w:min(var(--wait-user,21.25rem),55vw);
   --mid-l-nav:calc(var(--nav-w) + 1.5rem); --mid-r-focus:calc(var(--focus-w) + 1.5rem);
   --mid-l:var(--mid-l-nav); --mid-r:var(--mid-r-focus);
 }
@@ -57,6 +58,10 @@
 /* a closed navigator or focus card gives its column back */
 .win.nav-off{--mid-l:0.75rem}
 .win.focus-off{--mid-r:0.75rem}
+/* «Ждёт тебя» stands over the navigator: while it is open and wider, the middle — the chat and the todos — starts after it,
+   never under it (the same left edge the page works the widths out with, panel-width.ts) */
+.win.wait-open{--mid-l:max(var(--mid-l-nav),calc(var(--wait-w) + 1.5rem))}
+.win.nav-off.wait-open{--mid-l:calc(var(--wait-w) + 1.5rem)}
 .s-waiting{--s:var(--c-yellow)} .s-failed{--s:var(--c-red)} .s-ready{--s:var(--c-green)}
 .s-plan{--s:var(--c-cyan)} .s-review{--s:var(--c-magenta)} .s-working{--s:var(--c-blue)}
 .s-queued,.s-done{--s:var(--c-muted)}

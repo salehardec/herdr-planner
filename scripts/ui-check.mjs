@@ -385,8 +385,50 @@ section('panel widths', async () => {
   await fresh();
   await evalJs('(() => { const s = localStorage; s.setItem("herdr-planner.navW", "28"); s.setItem("herdr-planner.focusW", "28"); s.setItem("herdr-planner.waitW", "24"); s.setItem("herdr-planner.chatW", "34"); return true; })()');
   await fresh();
-  const own = await evalJs(`(() => { const r = parseFloat(getComputedStyle(document.documentElement).fontSize); const w = (s) => document.querySelector(s).getBoundingClientRect().width / r; return { nav: w('#nav'), focus: w('#focus'), wait: w('#drawer-wait'), chat: w('#chat') }; })()`);
+  const own = await evalJs(`(() => { const r = parseFloat(getComputedStyle(document.documentElement).fontSize); const w = (s) => document.querySelector(s).getBoundingClientRect().width / r; const st = getComputedStyle(document.querySelector('#win')); return { nav: w('#nav'), focus: w('#focus'), wait: w('#drawer-wait'), chat: w('#chat'), chatVar: st.getPropertyValue('--chat-user').trim(), midL: st.getPropertyValue('--mid-l').trim(), midR: st.getPropertyValue('--mid-r').trim(), cls: document.querySelector('#chat').className, maxW: getComputedStyle(document.querySelector('#chat')).maxWidth }; })()`);
   check('each panel has its own width (28, 28, 24 and 34 rem after a reload)', Math.abs(own.nav - 28) < 0.3 && Math.abs(own.focus - 28) < 0.3 && Math.abs(own.wait - 24) < 0.3 && Math.abs(own.chat - 34) < 0.3, JSON.stringify(own));
+  // «Ждёт тебя» stands over the navigator: when it is wider, the middle — the chat and the todos — starts after it, not under it.
+  await resetUi();
+  for (const c of panels) await forget(c.storage);
+  await fresh();
+  await press('KeyB', 'b'); await beat();
+  await press('Slash', '/'); await beat();
+  await settled({ w: '#drawer-wait', c: '#chat' }, (x) => !!x.w && x.w.l >= 0 && !!x.c && x.c.w > 100, 4000);
+  await drag('#drawer-wait .panel-grip.right', 600);
+  const beside = await evalJs(`(() => { const r = parseFloat(getComputedStyle(document.documentElement).fontSize); const w = document.querySelector('#drawer-wait').getBoundingClientRect(); const n = document.querySelector('#nav').getBoundingClientRect(); const c = document.querySelector('#chat').getBoundingClientRect(); const at = document.elementFromPoint(c.left + 12, (c.top + c.bottom) / 2); return { wait: w.width / r, nav: n.width / r, chat: c.width / r, gap: (c.left - w.right) / r, covered: !!at && !!at.closest('#drawer-wait'), max: Number(document.querySelector('#chat .panel-grip').getAttribute('aria-valuemax')) }; })()`);
+  check('a «Ждёт тебя» wider than the navigator pushes the chat aside instead of covering it', beside.wait > beside.nav + 2 && beside.gap >= -1 && !beside.covered, JSON.stringify(beside));
+  check('and the chat keeps the room it reads in, its own limit above the width it has', beside.chat >= 29.5 && beside.max >= beside.chat - 1, JSON.stringify(beside));
+
+  // Both side panels chosen wide, then a smaller window: they are cut together to what it leaves — not one of them against the
+  // other's stored figure, down to its minimum while the middle keeps more than the chat needs.
+  await resetUi();
+  for (const c of panels) await forget(c.storage);
+  await send('Emulation.setDeviceMetricsOverride', { width: 1920, height: 1080, deviceScaleFactor: 1, mobile: false });
+  await evalJs('(() => { const s = localStorage; s.setItem("herdr-planner.navW", "48"); s.setItem("herdr-planner.focusW", "30"); return true; })()');
+  await fresh();
+  await resized();
+  const big = await evalJs(`(() => { const r = parseFloat(getComputedStyle(document.documentElement).fontSize); const w = (s) => document.querySelector(s).getBoundingClientRect().width / r; return { nav: w('#nav'), focus: w('#focus') }; })()`);
+  await send('Emulation.setDeviceMetricsOverride', { width: 1500, height: 950, deviceScaleFactor: 1, mobile: false });
+  await resized();
+  await beat();
+  const cut = await evalJs(`(() => { const r = parseFloat(getComputedStyle(document.documentElement).fontSize); const n = document.querySelector('#nav').getBoundingClientRect(); const f = document.querySelector('#focus').getBoundingClientRect(); return { nav: n.width / r, focus: f.width / r, middle: (f.left - n.right) / r - 1.5 }; })()`);
+  check('a smaller window cuts both side panels together, neither to its minimum', Math.abs(big.nav - 48) < 1 && Math.abs(big.focus - 30) < 1 && cut.nav > 16.5 && cut.focus > 16.5, JSON.stringify({ big, cut }));
+  check('and they fill what the window leaves: the middle keeps the chat its 30 rem', Math.abs(cut.nav + cut.focus - (1500 / 16 - 33)) < 1.5 && cut.middle > 29.5, JSON.stringify(cut));
+
+  // The edge is in the tab order, and Tab walks on from it: no trap, no jump to another planet.
+  await resetUi();
+  for (const c of panels) await forget(c.storage);
+  await fresh();
+  await evalJs('document.querySelector("#focus .panel-grip").focus(); true');
+  const tabStart = await evalJs('({ grip: document.activeElement?.classList?.contains("panel-grip") === true, none: plannerDebug().selected === null })');
+  await press('Tab');
+  const tabOn = await evalJs('({ grip: document.activeElement?.classList?.contains("panel-grip") === true, none: plannerDebug().selected === null })');
+  await evalJs('document.querySelector("#focus .panel-grip").focus(); true');
+  await press('Tab', 'Tab', 8);
+  const tabBack = await evalJs('({ grip: document.activeElement?.classList?.contains("panel-grip") === true, none: plannerDebug().selected === null })');
+  check('Tab on the edge of a panel moves the focus on, not to another planet', tabStart.grip && tabStart.none && !tabOn.grip && tabOn.none, JSON.stringify({ tabStart, tabOn }));
+  check('and Shift+Tab does not stay on it either', !tabBack.grip && tabBack.none, JSON.stringify(tabBack));
+
   // The widest a panel goes still leaves the middle for the chat, and a smaller window squeezes the width it was given — the chosen
   // figure itself is not lost: the window is big again and the panel is as wide as it was.
   await resetUi();

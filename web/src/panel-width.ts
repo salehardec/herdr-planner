@@ -61,9 +61,9 @@ export const panelWidths = signal<Record<PanelId, number | null>>(
   Object.fromEntries(IDS.map((id) => [id, read(id)])) as Record<PanelId, number | null>,
 );
 
-/** What a panel takes of the window now, for the panels beside it: what the operator chose, or what the sheet gives it while
-    the choice is the sheet's own. A closed panel takes nothing. */
-function reserve(id: PanelId): number {
+/** The width a panel asks for, in rem: what the operator chose, or what the sheet gives it now (measured, while the choice
+    is the sheet's own). A closed panel takes nothing. */
+function wanted(id: PanelId): number {
   if (!OPEN[id]()) return 0;
   const chosen = panelWidths.value[id];
   if (chosen !== null) return Math.min(chosen, PANELS[id].cap);
@@ -71,26 +71,56 @@ function reserve(id: PanelId): number {
   return el ? el.getBoundingClientRect().width / rootPx() : PANELS[id].min;
 }
 
-/* The columns the side panels take, in rem (the same figures base.css takes for --mid-l and --mid-r). The wait list stands
-   over the navigator, so the left column is the wider of the two. */
-const leftColumn = (): number => {
-  const w = Math.max(reserve('nav'), reserve('wait'));
-  return w > 0 ? w + COLUMN : EDGE;
-};
-const rightColumn = (): number => {
-  const w = reserve('focus');
-  return w > 0 ? w + COLUMN : EDGE;
-};
+interface Columns {
+  /** the left and the right side columns with their gaps, and the middle between them, in rem */
+  left: number;
+  right: number;
+  middle: number;
+}
+
+/** The two side columns and the middle between them as they stand now — the figures base.css calls --mid-l and --mid-r, and what
+    the chat and the todos are given. A width the operator chose is cut to what the window leaves, the two columns together
+    keeping the chat's 30 rem: the left one first, then the right against the left as it stands. A panel still on the sheet's own
+    width is not cut here (the sheet's layout for narrow windows is the designer's). The left column is the wider of the navigator
+    and «Ждёт тебя»: the list stands over the navigator. */
+function columns(): Columns {
+  // the window's width in rem (effectiveWidth() is in design pixels, 16 to the rem); the columns leave a gap at each edge
+  const win = effectiveWidth() / 16;
+  const nav = wanted('nav');
+  const wait = wanted('wait');
+  const leftId: PanelId = wait > nav ? 'wait' : 'nav';
+  const focus = wanted('focus');
+  const room = win - 2 * COLUMN - MID_MIN;
+  let left = Math.max(nav, wait);
+  let right = focus;
+  if (left > 0 && panelWidths.value[leftId] !== null) left = Math.max(PANELS[leftId].min, Math.min(left, room - right));
+  if (right > 0 && panelWidths.value.focus !== null) right = Math.max(PANELS.focus.min, Math.min(right, room - left));
+  const l = left > 0 ? left + COLUMN : EDGE;
+  let r = right > 0 ? right + COLUMN : EDGE;
+  // the chat needs 30 rem and a gap; where the middle would be less, the focus card steps aside while the chat is open
+  // (the `chat-tight` class, chat-wide.ts), so its column is not counted here either
+  if (OPEN.chat() && win - l - r < MID_MIN + COLUMN) r = EDGE;
+  return { left: l, right: r, middle: win - l - r };
+}
+
+/** The width the panel is drawn at now, in rem; null: the sheet's own (no width has been chosen, or the sheet's width is not
+    cut here). The column is what the window leaves beside the other one. */
+function shown(id: PanelId, c: Columns): number | null {
+  const chosen = panelWidths.value[id];
+  if (chosen === null) return null;
+  const room = id === 'chat' ? c.middle : id === 'focus' ? c.right - COLUMN : c.left - COLUMN;
+  return Math.max(PANELS[id].min, Math.min(room, chosen));
+}
 
 /** The most a panel may take at the size of the window now: the middle keeps the room the chat needs to be read. */
 export function maxWidth(id: PanelId): number {
   const p = PANELS[id];
-  // the window's width in rem (effectiveWidth() is in design pixels, 16 to the rem)
+  const c = columns();
   const win = effectiveWidth() / 16;
   let room: number;
-  if (p.dock === 'left') room = win - COLUMN - rightColumn() - MID_MIN;
-  else if (p.dock === 'right') room = win - COLUMN - leftColumn() - MID_MIN;
-  else room = win - leftColumn() - rightColumn();
+  if (p.dock === 'left') room = win - c.right - COLUMN - MID_MIN;
+  else if (p.dock === 'right') room = win - c.left - COLUMN - MID_MIN;
+  else room = c.middle;
   return Math.max(p.min, Math.min(p.cap, room));
 }
 
@@ -159,10 +189,9 @@ export function installPanelWidths(): void {
   if (!win) return;
   effect(() => {
     void scaleTick.value;
-    const told = IDS.map((id) => {
-      const chosen = panelWidths.value[id];
-      return [PANELS[id].css, chosen === null ? null : fit(id, chosen)] as const;
-    });
+    // the columns are worked out once, from the choices and the sheet's widths, so the panels never read each other's fresh figures
+    const c = columns();
+    const told = IDS.map((id) => [PANELS[id].css, shown(id, c)] as const);
     for (const [css, rem] of told) {
       if (rem === null) win.style.removeProperty(css);
       else win.style.setProperty(css, `${rem}rem`);
