@@ -678,6 +678,8 @@ pub async fn rebuild_runners(app: &Shared) {
             st.alert_rules = r.alerts.clone();
             st.limits = r.effective_limits(Some(&st.host));
             st.busy_pct = r.busy_pct;
+            st.check_cpus = r.check_cpu();
+            st.check_slots = r.check_slot();
         }
         // The marks of the rule (PLN-43) come after the classes and the limits of the list file.
         crate::runners::apply_limits(st);
