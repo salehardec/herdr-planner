@@ -139,9 +139,11 @@ input.field:focus,textarea.field:focus,select.field:focus{border-color:var(--pl-
 .panel-grip.right{right:0}
 .panel-grip.left{left:0}
 .panel-grip::after{content:"";position:absolute;top:50%;left:50%;width:0.125rem;height:2.5rem;margin:-1.25rem 0 0 -0.0625rem;border-radius:0.0625rem;background:var(--pl-line);opacity:0;transition:opacity var(--m-fast),background var(--m-fast)}
-.panel:hover .panel-grip::after,.panel-grip:focus-visible::after,.panel-grip.drag::after{opacity:1}
-.panel-grip:hover::after,.panel-grip:focus-visible::after,.panel-grip.drag::after{background:var(--pl-accent)}
-.panel-grip:focus-visible{outline-offset:-2px}
+/* the handle is taken by the keyboard (or by the mouse that is on it), and it says so: the mark and the ring are the focus's.
+   Not :focus-visible alone: a headless window that has lost the system's focus still gets the keys, and its handle must show. */
+.panel:hover .panel-grip::after,.panel-grip:focus::after,.panel-grip.drag::after{opacity:1}
+.panel-grip:hover::after,.panel-grip:focus::after,.panel-grip.drag::after{background:var(--pl-accent)}
+.panel-grip:focus{outline:2px solid var(--pl-focus);outline-offset:-2px}
 :root.bp900 .panel-grip{display:none}
 
 /* ── метки над сценой ── */

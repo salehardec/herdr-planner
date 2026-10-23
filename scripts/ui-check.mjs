@@ -344,8 +344,8 @@ section('panel widths', async () => {
     await evalJs(`document.querySelector(${JSON.stringify(sel)}).focus(); true`);
     await press(key);
     await beat();
-    await sleep(250); // the mark of the edge fades in
-    return evalJs(`(() => { const g = document.querySelector(${JSON.stringify(sel)}); const c = getComputedStyle(g); return { active: document.activeElement === g, focusRing: c.outlineStyle !== 'none' && parseFloat(c.outlineWidth) > 0, mark: getComputedStyle(g, '::after').opacity }; })()`);
+    const lit = await waitFor(`getComputedStyle(document.querySelector(${JSON.stringify(sel)}), '::after').opacity === '1'`, 3000);
+    return { lit, ...await evalJs(`(() => { const g = document.querySelector(${JSON.stringify(sel)}); const c = getComputedStyle(g); return { active: document.activeElement === g, focusRing: c.outlineStyle !== 'none' && parseFloat(c.outlineWidth) > 0, mark: getComputedStyle(g, '::after').opacity, f: g.matches(':focus'), fv: g.matches(':focus-visible') }; })()`) };
   };
   // The navigator and the focus card start open; the wait list and the chat are opened by their keys.
   const panels = [
@@ -366,7 +366,7 @@ section('panel widths', async () => {
     const k0 = await edgeWidth(c.el);
     const keys = await fromKeyboard(c.grip, c.arrow);
     const k1 = await edgeWidth(c.el);
-    check(`the edge of the ${c.name} takes the keyboard's focus, and the focus is shown`, keys.active && keys.focusRing && Number(keys.mark) > 0.5, JSON.stringify(keys));
+    check(`the edge of the ${c.name} takes the keyboard's focus, and the focus is shown`, keys.lit && keys.active && keys.focusRing, JSON.stringify(keys));
     check(`the arrow keys on the edge of the ${c.name} change its width`, Math.abs(k1 - k0) >= 14 && (k1 - k0) * (c.way === 'wider' ? 1 : -1) > 0, `${k0} → ${k1}`);
     const before = await edgeWidth(c.el);
     await drag(c.grip, c.drag);
