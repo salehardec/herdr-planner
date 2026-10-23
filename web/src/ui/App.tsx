@@ -15,6 +15,7 @@ import { Kanban } from './Kanban';
 import { LimitsPop } from './Limits';
 import { Help } from './Help';
 import { Toasts } from './Toasts';
+import { Lightbox } from './Lightbox';
 import { Banner, FlightHud, HerdrPop, HintCard, LinkNotice, NoGl } from './Overlays';
 import { Dialogs } from './Dialogs';
 import { Cockpit } from './Cockpit';
@@ -79,6 +80,7 @@ export function App(): JSX.Element {
       <RememberDialog />
       <StationAuto />
       <Toasts />
+      <Lightbox />
     </>
   );
 }

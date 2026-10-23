@@ -661,11 +661,27 @@ const usage = (i) => (i === 9
 const cuser = (i, text) => JSON.stringify({ type: 'user', timestamp: new Date(1792389360000 + i * 60000).toISOString(), message: { role: 'user', content: text } });
 const csaid = (i, text) => JSON.stringify({ type: 'assistant', timestamp: new Date(1792389361000 + i * 60000).toISOString(), message: { role: 'assistant', model: 'claude-opus-5-5', content: [{ type: 'text', text }], usage: usage(i) } });
 const ctool = (i) => JSON.stringify({ type: 'user', timestamp: new Date(1792389360500 + i * 60000).toISOString(), message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 't', content: 'ok' }] } });
+// A tool call of the running turn: the page shows its description as what the Coordinator is doing.
+const ccall = (i, description, command) => JSON.stringify({ type: 'assistant', timestamp: new Date(1792389360300 + i * 60000).toISOString(), message: { role: 'assistant', model: 'claude-opus-5-5', stop_reason: 'tool_use', content: [{ type: 'tool_use', id: `tu${i}`, name: 'Bash', input: { command, description } }] } });
+// A message sent with a picture, the way Claude Code writes it (2.1.3xx): a text block that ends at the planner's header
+// (the path lines are dropped) and an image block with the bytes inside; the planner serves it from the transcript.
+const PNG_1PX = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAFgwJ/lK3Q6wAAAABJRU5ErkJggg==';
+const cimage = (i, text) => JSON.stringify({ type: 'user', timestamp: new Date(1792389360000 + i * 60000).toISOString(), message: { role: 'user', content: [{ type: 'text', text: `${text}\nКартинки (файлы на машине с доской):` }, { type: 'image', source: { type: 'base64', media_type: 'image/png', data: PNG_1PX } }] } });
+// The turns the page checks look at: 6 has an image, 7 is a board notice (its title quotes something of its own), 8 is Markdown,
+// 9 ends with a board event, 10 is running.
+const QUESTIONS = {
+  7: '[Уведомление доски] alpha/7 «Документация «API экспорта»: примеры»: ждёт тебя (needs you). Посмотри board details alpha/7 и коротко доложи итог.',
+};
+const ANSWERS = {
+  8: 'Ответ 8: **ALP-8** идёт по плану.\n\n## Что сделано\n\n- проверил `cargo test`\n  - сборка прошла\n- открыл PR\n\n```sh\nherdr-projects list --json\n```\n\n| Шаг | Статус |\n|---|---|\n| сборка | ok |\n| ревью | ждёт |\n\nПодробнее: https://example.com/alp-8',
+  9: 'Ответ 9: ALP-9 идёт по плану.\n\nStarted an agent on ALP-9',
+};
 const transcript = [];
 for (let i = 1; i <= 10; i++) {
-  transcript.push(cuser(i, `Вопрос ${i}: как дела по ALP-${i}?`));
+  transcript.push(i === 6 ? cimage(i, 'Вопрос 6: как дела по ALP-6? Вот снимок.') : cuser(i, QUESTIONS[i] ?? `Вопрос ${i}: как дела по ALP-${i}?`));
+  if (i === 10) transcript.push(ccall(i, 'Читаю board details ALP-10', 'herdr-projects details alpha/10'));
   transcript.push(ctool(i));
-  if (i < 10) transcript.push(csaid(i, `Ответ ${i}: ALP-${i} идёт по плану.`));
+  if (i < 10) transcript.push(csaid(i, ANSWERS[i] ?? `Ответ ${i}: ALP-${i} идёт по плану.`));
 }
 // The last assistant turn is the one with the big usage (i = 9 above).
 write(path.join(dir, 'claude', 'projects', chatFolder, 'fixture.jsonl'), transcript.join('\n') + '\n');

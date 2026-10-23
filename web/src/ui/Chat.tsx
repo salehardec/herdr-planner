@@ -1,8 +1,8 @@
 import { signal } from '@preact/signals';
-import type { JSX } from 'preact';
+import { Fragment, type JSX } from 'preact';
 import { useEffect, useLayoutEffect, useRef } from 'preact/hooks';
 import {
-  chat, panels, snap, screens,
+  chat, panels, persist, snap, screens,
 } from '../store';
 import {
   addFiles, draftRequest, draftTodos, hasOlder, loadLatest, loadOlder, notePending, openChatAt, optimistic, pendingFiles, pendingMessage, reconcile, removeFile, scrollTo,
@@ -15,13 +15,14 @@ import { fetchScreen, todoToDraft } from '../actions';
 import { t, tn } from '../i18n';
 import { sigOf } from '../chat-read';
 import { markRead, SEE_MS, unreadCount, unreadTurns, windowActive } from '../chat-unread';
-import { dayTimeOf, timeOf } from '../util/dates';
+import { dayKey, dayTimeOf, isToday, timeOf } from '../util/dates';
 import { Gl } from './Gl';
+import { Grip } from './Grip';
 import { RichText } from './RichText';
 import { Memory } from './FocusOther';
-import { openRemember } from './memory-api';
 import { dialogOpen } from '../dialogs';
 import { PendingFiles, SavedFiles } from './Attached';
+import { ChatTurn, PendingTurn } from './ChatTurn';
 import { AutoTextarea, fitText } from './AutoText';
 import { KeyButtons } from './Keys';
 import { MenuSlot } from './MenuCard';
@@ -31,11 +32,16 @@ import { dragTodo } from '../todo-drag';
 import type { MenuData, TurnData } from '../types';
 import './chat.css';
 
-const wide = signal<Set<number>>(new Set());
 const stuck = signal(true);
+/** The words typed and not sent yet survive a reload. */
+export const DRAFT_KEY = 'planner.chat.draft';
+const readDraft = (): string => { try { return localStorage.getItem(DRAFT_KEY) ?? ''; } catch { return ''; } };
+const clearDraft = (): void => { try { localStorage.removeItem(DRAFT_KEY); } catch { /* private mode */ } };
+/** A clock for the «working» line: ticks once a second while the chat shows it. */
+const now = signal(Date.now());
 
 function Shots(props: { list: { id: string; name: string; mime?: string }[] }): JSX.Element | null {
-  return <SavedFiles list={props.list} class="shots" />;
+  return <SavedFiles list={props.list} class="shots" zoom />;
 }
 
 const todoOver = signal(false);
@@ -79,44 +85,41 @@ function caretLines(ta: HTMLTextAreaElement): { first: boolean; last: boolean } 
   return { first, last };
 }
 
-function Turn(props: { turn: TurnData; hit: boolean; unread: boolean; onReuse: (q: string) => void }): JSX.Element {
-  const tn = props.turn;
-  const long = tn.a.length > 520 || tn.a.split('\n').length > 11;
-  const open = wide.value.has(tn.n);
+/** «1 мин 20 с» / «1 min 20 s» from milliseconds. */
+function elapsedText(ms: number): string {
+  const total = Math.max(0, Math.floor(ms / 1000));
+  const h = Math.floor(total / 3600);
+  const m = Math.floor(total / 60) % 60;
+  const sec = total % 60;
+  return h > 0 ? t('chat.elapsedHm', { h, m }) : m > 0 ? t('chat.elapsedMs', { m, s: sec }) : t('chat.elapsedS', { s: sec });
+}
+
+/** The Coordinator is working: for how long, what it does now (its last tool call), how many sub-agents run. */
+function Working(props: { since: number; doing: string; subagents: number }): JSX.Element {
+  useEffect(() => {
+    const id = window.setInterval(() => { now.value = Date.now(); }, 1000);
+    return () => window.clearInterval(id);
+  }, []);
+  // no turn to count from (the Coordinator is busy with something that is not a message of this chat): no time
+  const since = props.since;
   return (
-    <div class={`turn ${tn.from} ${props.hit ? 'hit' : ''}`} data-n={tn.n}>
-      <div class="q" data-reuse={tn.n} title={t('chat.reuse')} onClick={() => props.onReuse(tn.q)} data-unread={props.unread && !tn.a ? tn.n : undefined} data-sig={0}>
-        <span class="who">
-          {t('chat.you')}
-          {tn.from === 'board' && !tn.a && <i class={`udot ${props.unread ? 'on' : ''}`} role={props.unread ? 'img' : undefined} aria-label={props.unread ? t('chat.unreadDot') : undefined} title={props.unread ? t('chat.unreadDot') : undefined} />}
-        </span>
-        <span class="txt">{tn.q}</span>
-        <button class="btn sm mm-tomem" type="button" data-act="to-memory" data-who="q" title={t('mem.toMemoryTip')}
-          onClick={(e) => { e.stopPropagation(); openRemember({ text: tn.q, source: 'chat' }); }}><Gl n="memory" />{t('mem.toMemory')}</button>
-      </div>
-      <div class="meta"><span>{dayTimeOf(tn.at)}</span>{tn.from === 'board' && <span>· {t('chat.boardNotice')}</span>}</div>
-      {tn.a && (
-        <>
-          <div class="a" data-unread={props.unread ? tn.n : undefined} data-sig={sigOf(tn.a)}>
-            <span class="who">
-              {t('quasar.short')}
-              <i class={`udot ${props.unread ? 'on' : ''}`} role={props.unread ? 'img' : undefined} aria-label={props.unread ? t('chat.unreadDot') : undefined} title={props.unread ? t('chat.unreadDot') : undefined} />
-            </span>
-            <RichText class={`txt ${long && !open ? 'clamp' : ''}`} text={tn.a} />
-            <button class="btn sm mm-tomem" type="button" data-act="to-memory" data-who="a" title={t('mem.toMemoryTip')}
-              onClick={() => openRemember({ text: tn.a, source: 'chat' })}><Gl n="memory" />{t('mem.toMemory')}</button>
-          </div>
-          {long && (
-            <button class="more" type="button" data-chat="turn" onClick={() => {
-              const s = new Set(wide.value);
-              if (s.has(tn.n)) s.delete(tn.n); else s.add(tn.n);
-              wide.value = s;
-            }}>{open ? t('chat.less') : t('chat.more')}</button>
-          )}
-        </>
-      )}
+    <div class="working" id="cworking" role="status" aria-live="polite">
+      <span class="pulse" aria-hidden="true" />
+      <span class="who">{t('quasar.short')}</span>
+      <span>{since > 0 ? t('chat.working', { time: elapsedText(now.value - since) }) : t('chat.workingNow')}</span>
+      {props.doing && <><span class="sep">·</span><span class="doing" title={props.doing}>{props.doing}</span></>}
+      {props.subagents > 0 && <><span class="sep">·</span><span>{tn('chat.subagentsN', props.subagents)}</span></>}
+      <span class="dots"><i /><i /><i /></span>
     </div>
   );
+}
+
+/** A day rule between the turns of different days. */
+function DayRule(props: { at: number }): JSX.Element {
+  const key = dayKey(props.at);
+  const yesterday = dayKey(Date.now() - 86_400_000);
+  const label = isToday(props.at) ? t('chat.today') : key === yesterday ? `${t('chat.yesterday')} · ${key}` : key;
+  return <div class="day" role="separator">{label}</div>;
 }
 
 /** A visible share of the element that counts as «seen»: most of it, or, for a tall one, most of what the log can show. */
@@ -143,6 +146,10 @@ export function Chat(): JSX.Element {
   const dialog = !!coord?.dialog;
   // The Coordinator's last words: its transcript's, or (while that answer is not written yet) the tail of its window.
   const lastReply = (showTurns ? c.turns[c.turns.length - 1].a : '') || reply;
+  // The turn it is answering now: no answer yet, or an interim line and a tool call still going (`doing`). The
+  // working line counts from it and shows what it does.
+  const lastTurn = showTurns ? c.turns[c.turns.length - 1] : null;
+  const lastOpen = lastTurn && (!lastTurn.a || lastTurn.doing) ? lastTurn : null;
   const options = dialog || busy ? [] : parseOptions(lastReply);
   const scr = screens.value.coordinator;
   const unread = unreadTurns.value;
@@ -254,14 +261,28 @@ export function Chat(): JSX.Element {
     stuck.value = true;
     const text = ta.value;
     const ok = await send(text);
-    if (ok) { ta.value = ''; fitText(ta); }
+    if (ok) { ta.value = ''; fitText(ta); clearDraft(); }
+  };
+  // The draft: restored when the chat mounts, kept a moment after each keystroke, dropped once sent or on Esc.
+  const draftTimer = useRef(0);
+  useEffect(() => {
+    const ta = taRef.current;
+    const saved = readDraft();
+    if (ta && saved && !ta.value) { ta.value = saved; fitText(ta); }
+  }, []);
+  const keepDraft = (): void => {
+    window.clearTimeout(draftTimer.current);
+    draftTimer.current = window.setTimeout(() => {
+      const v = taRef.current?.value ?? '';
+      if (v.trim()) persist(DRAFT_KEY, v); else clearDraft();
+    }, 300);
   };
 
   const onKey = (e: KeyboardEvent): void => {
     const ta = e.target as HTMLTextAreaElement;
     // A dialog over the chat (the «В память» one) takes Esc: the page's own handler closes it.
     if (e.key === 'Escape' && dialogOpen()) return;
-    if (e.key === 'Escape') { ta.value = ''; fitText(ta); draftTodos.value = []; ta.blur(); chatBack(); e.stopPropagation(); return; }
+    if (e.key === 'Escape') { ta.value = ''; fitText(ta); clearDraft(); draftTodos.value = []; ta.blur(); chatBack(); e.stopPropagation(); return; }
     const log = logRef.current;
     if (!log || !showTurns) return;
     if (!['ArrowUp', 'ArrowDown', 'PageUp', 'PageDown'].includes(e.key)) return;
@@ -323,6 +344,7 @@ export function Chat(): JSX.Element {
 
   return (
     <section class={`panel chat ${chatWide.value ? 'wide' : ''} ${open ? '' : 'off'} ${todoOver.value ? 'drop' : ''}`} id="chat" aria-label={t('chat.aria')} aria-hidden={!open} {...dropProps}>
+      <Grip panel="chat" side="left" />
       <header>
         <b>{t('quasar.label')}</b>
         <span class={`st ${err ? 'bad' : busy ? 'busy' : ''}`} id="cstate">● {status}</span>
@@ -368,9 +390,18 @@ export function Chat(): JSX.Element {
                 {c.loading ? t('chat.loading') : t('chat.older')}
               </button>
             ) : <div class="meta start">{t('chat.start')}</div>}
-            {c.turns.map((x) => (
-              <Turn key={x.n} turn={x} hit={c.highlight === x.n} unread={unread.includes(x.n)} onReuse={(q) => { const ta = taRef.current; if (ta) { ta.value = q; fitText(ta); ta.focus(); ta.setSelectionRange(q.length, q.length); } }} />
-            ))}
+            {c.turns.map((x, i) => {
+              const prev = i > 0 ? c.turns[i - 1] : null;
+              const newDay = !prev || dayKey(prev.at) !== dayKey(x.at);
+              // a notice after another unanswered notice within five minutes: the label and the time are not repeated
+              const compact = !!prev && !newDay && prev.from === 'board' && !prev.a && x.from === 'board' && x.at - prev.at < 5 * 60_000;
+              return (
+                <Fragment key={x.n}>
+                  {newDay && x.at > 0 && <DayRule at={x.at} />}
+                  <ChatTurn turn={x} hit={c.highlight === x.n} unread={unread.includes(x.n)} compact={compact} onReuse={(q) => { const ta = taRef.current; if (ta) { ta.value = q; fitText(ta); ta.focus(); ta.setSelectionRange(q.length, q.length); keepDraft(); } }} />
+                </Fragment>
+              );
+            })}
           </>
         ) : (
           <Fallback
@@ -378,27 +409,19 @@ export function Chat(): JSX.Element {
             sentAt={coord?.sent_at ?? 0} sent={coord?.last_sent ?? ''}
           />
         )}
-        {pending && (
-          <div class="turn pending">
-            <div class="q"><span class="who">{t('chat.you')}</span><span class="txt">{pending.text}</span></div>
-            <Shots list={pending.attachments} />
-            <div class="meta"><span>{t('chat.sentWaiting')}</span></div>
-          </div>
-        )}
+        {pending && <PendingTurn text={pending.text} attachments={pending.attachments} />}
         {err && (
-          <div class="a err"><span class="who">{t('quasar.short')}</span><span class="txt">{err}</span></div>
+          <div class="msg a err"><span class="who"><Gl n="quasar" />{t('quasar.short')}</span><span class="txt">{err}</span></div>
         )}
-        {busy && !err && (
-          <div class="a"><span class="who">{t('quasar.short')}</span><span class="txt">{t('chat.reading')}<span class="dots"><i /><i /><i /></span></span></div>
-        )}
+        {busy && !err && <Working since={lastOpen?.at ?? 0} doing={lastOpen?.doing ?? ''} subagents={(coord?.subagents ?? []).filter((x) => x.state === 'running').length} />}
       </div>
       {!stuck.value && showTurns && (
-        <button class="btn sm tolast" id="tolast" type="button" onClick={() => {
+        <button class={`btn sm tolast ${unread.length ? 'news' : ''}`} id="tolast" type="button" aria-live="polite" onClick={() => {
           stuck.value = true;
           const el = logRef.current;
           if (el) el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' });
           void loadLatest();
-        }}>{t('chat.toLast')}</button>
+        }}>{unread.length ? <>↓ <span class="n">{unread.length}</span>{tn('chat.toLastN', unread.length)}</> : t('chat.toLast')}</button>
       )}
       <MenuSlot
         target="coordinator" menu={menu} place="chat"
@@ -412,7 +435,7 @@ export function Chat(): JSX.Element {
         fallback={dialog ? (
           <div class="dialog" id="cdialog">
             <div class="h">{t('chat.dialogTitle')}</div>
-            {scr?.error ? <div class="hint">{scr.error}</div> : <pre>{scr?.text || (scr?.busy ? t('chat.reading') : '')}</pre>}
+            {scr?.error ? <div class="hint">{scr.error}</div> : <pre>{scr?.text || (scr?.busy ? t('chat.loading') : '')}</pre>}
             <KeyButtons target="coordinator" />
             {!s?.herdr.running && <div class="hint">{t('chat.dialogNoHerdr')}</div>}
           </div>
@@ -435,7 +458,7 @@ export function Chat(): JSX.Element {
           id="ask-in" elRef={taRef} placeholder={t('chat.placeholder')} aria-label={t('chat.aria')}
           aria-controls="ask-complete" aria-expanded={!!comp.view.value}
           onSend={() => void submit()}
-          onInput={() => { const ta = taRef.current; if (ta) comp.update(ta); }}
+          onInput={() => { const ta = taRef.current; if (ta) comp.update(ta); keepDraft(); }}
           onClick={() => { const ta = taRef.current; if (ta) comp.update(ta); }}
           onKeyDown={(e) => { const ta = taRef.current; if (ta && comp.key(e, ta)) return; onKey(e); }}
           onPaste={onPaste} onFocus={() => { panels.chat.value = true; }}
@@ -458,23 +481,27 @@ function Fallback(props: {
   return (
     <>
       {!props.history.length && props.sent && (
-        <div class="q"><span class="who">{t('chat.you')}</span><span class="txt">{props.sent}</span></div>
+        <div class="msg q"><span class="who"><Gl n="user" />{t('chat.you')}</span><span class="txt">{props.sent}</span></div>
       )}
       {props.history.map((m) => (
         <div class="turn" key={m.at}>
-          <div class="q"><span class="who">{t('chat.you')}</span><span class="txt">{m.text || t('chat.images')}</span></div>
-          <Shots list={m.attachments} />
-          <div class="meta"><span>{timeOf(m.at)}</span><span>· {t('chat.sentToQuasar')}</span></div>
+          <div class="msg q">
+            <span class="who"><Gl n="user" />{t('chat.you')}</span>
+            <span class="time">{timeOf(m.at)} · {t('chat.sentToQuasar')}</span>
+            <span class="txt">{m.text || t('chat.images')}</span>
+            <Shots list={m.attachments} />
+          </div>
         </div>
       ))}
       {props.reply && (
-        <>
-          <div class="a"><span class="who">{t('quasar.short')}</span><RichText class="txt" text={props.reply} /></div>
-          <div class="meta"><span>{t('chat.lastFromWindow')}</span><span>· {props.status}</span></div>
-        </>
+        <div class="msg a">
+          <span class="who"><Gl n="quasar" />{t('quasar.short')}</span>
+          <span class="time">{t('chat.lastFromWindow')} · {props.status}</span>
+          <RichText class="txt" text={props.reply} />
+        </div>
       )}
       {!props.reply && !props.history.length && !props.sent && (
-        <div class="a empty"><span class="who">{t('quasar.short')}</span><span class="txt">{t('chat.empty')}</span></div>
+        <div class="msg a empty"><span class="who"><Gl n="quasar" />{t('quasar.short')}</span><span class="txt">{t('chat.empty')}</span></div>
       )}
     </>
   );

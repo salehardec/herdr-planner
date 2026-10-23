@@ -1,0 +1,13 @@
+/* A picture of a message over the page (Lightbox.tsx). */
+.lightbox{position:fixed;inset:0;z-index:80;display:grid;place-items:center;background:color-mix(in srgb,var(--c-bg-darker) 85%,transparent);backdrop-filter:blur(4px);animation:lb-in var(--m-fast)}
+.lightbox img{max-width:min(92vw,80rem);max-height:82vh;border-radius:0.5rem;border:1px solid var(--pl-line);box-shadow:0 1.5rem 4rem rgba(0,0,0,.5);background:var(--pl-bg)}
+.lightbox .lbbar{position:absolute;top:0.75rem;left:50%;transform:translateX(-50%);display:flex;gap:0.375rem;align-items:center;padding:0.25rem;border-radius:0.5rem;background:var(--pl-panel-solid);border:1px solid var(--pl-line);max-width:calc(100vw - 1rem)}
+.lightbox .lbbar .nm{color:var(--pl-dim);font-size:0.75rem;padding:0 0.5rem;max-width:30ch;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.lightbox .lbbar a.btn{text-decoration:none}
+.lightbox .nav{position:absolute;top:50%;transform:translateY(-50%);width:2.5rem;height:2.5rem;border-radius:50%;border:1px solid var(--pl-line);background:var(--pl-panel-solid);color:var(--pl-title);display:grid;place-items:center;padding:0}
+.lightbox .nav.prev{left:1.25rem}.lightbox .nav.prev .gl{transform:rotate(90deg)}
+.lightbox .nav.next{right:1.25rem}.lightbox .nav.next .gl{transform:rotate(-90deg)}
+.lightbox .nav .gl{width:1rem;height:1rem}
+.lightbox .cnt{position:absolute;bottom:1rem;left:50%;transform:translateX(-50%);color:var(--pl-faint);font-size:0.75rem}
+@keyframes lb-in{from{opacity:0}}
+@media (prefers-reduced-motion:reduce){.lightbox{animation:none}}

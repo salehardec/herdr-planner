@@ -36,6 +36,25 @@ pub struct Turn {
     pub q: String,
     /// The Coordinator's last words of the turn; empty while it works.
     pub a: String,
+    /// What it is doing now (its last tool call, in a few words): only on the turn it is still in.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub doing: String,
+    /// When the answer was written (the assistant record's time); 0 while there is none.
+    #[serde(skip_serializing_if = "is_zero")]
+    pub at_a: u64,
+    /// The media types of the images in the human's message (Claude Code keeps them as blocks of the
+    /// record, base64 inside, and drops the file paths the planner wrote): `image(cfg, n, i)` serves them.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub images: Vec<String>,
+    /// Where the record that opened the turn is: the transcript file and the line in it.
+    #[serde(skip)]
+    pub file: PathBuf,
+    #[serde(skip)]
+    pub line: usize,
+}
+
+fn is_zero(n: &u64) -> bool {
+    *n == 0
 }
 
 #[derive(Debug, Serialize)]
@@ -53,7 +72,7 @@ pub fn parse(text: &str) -> Vec<Turn> {
     // The Coordinator is in the middle of a run: it began with a message and has not
     // ended its turn yet. What is queued meanwhile reaches the same run.
     let mut running = false;
-    for line in text.lines() {
+    for (line_no, line) in text.lines().enumerate() {
         // Skip the big records (requests, snapshots) without parsing them.
         let wanted = line.contains("\"type\":\"user\"")
             || line.contains("\"type\":\"assistant\"")
@@ -74,8 +93,8 @@ pub fn parse(text: &str) -> Vec<Turn> {
                 if v.get("isMeta").and_then(Value::as_bool) == Some(true) {
                     continue;
                 }
-                if let Some(q) = human_text(v.pointer("/message/content")) {
-                    open_turn(&mut turns, q, at, false, &mut running);
+                if let Some((q, images)) = human_text(v.pointer("/message/content")) {
+                    open_turn(&mut turns, q, images, line_no, at, false, &mut running);
                 }
             }
             // A message sent while the Coordinator was busy waits in a queue and
@@ -83,8 +102,8 @@ pub fn parse(text: &str) -> Vec<Turn> {
             Some("attachment") => {
                 let a = v.get("attachment");
                 if a.and_then(|a| a.get("type")).and_then(Value::as_str) == Some("queued_command") {
-                    if let Some(q) = human_text(a.and_then(|a| a.get("prompt"))) {
-                        open_turn(&mut turns, q, at, true, &mut running);
+                    if let Some((q, images)) = human_text(a.and_then(|a| a.get("prompt"))) {
+                        open_turn(&mut turns, q, images, line_no, at, true, &mut running);
                     }
                 }
             }
@@ -99,13 +118,19 @@ pub fn parse(text: &str) -> Vec<Turn> {
                         .any(|b| b.get("type").and_then(Value::as_str) == Some("tool_use"));
                     if stop == Some("end_turn") || (stop.is_none() && !calls) {
                         running = false;
+                        turn.doing.clear();
                     }
                     for b in blocks {
-                        if b.get("type").and_then(Value::as_str) == Some("text") {
-                            let t = b.get("text").and_then(Value::as_str).unwrap_or("").trim();
-                            if !t.is_empty() {
-                                turn.a = clip(t, MAX_ANSWER);
+                        match b.get("type").and_then(Value::as_str) {
+                            Some("text") => {
+                                let t = b.get("text").and_then(Value::as_str).unwrap_or("").trim();
+                                if !t.is_empty() {
+                                    turn.a = clip(t, MAX_ANSWER);
+                                    turn.at_a = at;
+                                }
                             }
+                            Some("tool_use") => turn.doing = doing_of(b),
+                            _ => {}
                         }
                     }
                 }
@@ -119,7 +144,7 @@ pub fn parse(text: &str) -> Vec<Turn> {
 /// A message that reaches a Coordinator in the middle of a run is queued and read
 /// together with the one that started it; one final answer covers them all. So
 /// a notice is dropped and a human's words are added to the turn of the run.
-fn open_turn(turns: &mut Vec<Turn>, q: String, at: u64, queued: bool, running: &mut bool) {
+fn open_turn(turns: &mut Vec<Turn>, q: String, images: Vec<String>, line: usize, at: u64, queued: bool, running: &mut bool) {
     let from = if q.starts_with(BOARD_PREFIX) {
         "board"
     } else {
@@ -135,18 +160,60 @@ fn open_turn(turns: &mut Vec<Turn>, q: String, at: u64, queued: bool, running: &
         return;
     }
     *running = true;
+    // the turn before is over: what it was doing is no longer news
+    if let Some(prev) = turns.last_mut() {
+        prev.doing.clear();
+    }
     turns.push(Turn {
         n: 0,
         at,
         from,
         q: clip(&q, MAX_QUESTION),
         a: String::new(),
+        doing: String::new(),
+        at_a: 0,
+        images,
+        file: PathBuf::new(),
+        line,
     });
 }
 
-/// The words of a human message: a plain string, or the text parts of a list.
-/// `None` for tool results and for the harness's own wrappers.
-fn human_text(content: Option<&Value>) -> Option<String> {
+/// A tool call in a few words, for the «working» line: Bash by its description or the first line of its
+/// command, another tool by its name and the file, pattern or prompt it was given.
+fn doing_of(block: &Value) -> String {
+    const MAX_DOING: usize = 80;
+    let name = block.get("name").and_then(Value::as_str).unwrap_or("");
+    let input = block.get("input");
+    let field = |k: &str| {
+        input
+            .and_then(|i| i.get(k))
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(|s| s.lines().next().unwrap_or("").to_string())
+    };
+    let text = if name == "Bash" {
+        field("description").or_else(|| field("command")).unwrap_or_default()
+    } else {
+        let what = field("file_path")
+            .or_else(|| field("pattern"))
+            .or_else(|| field("prompt"))
+            .or_else(|| field("description"))
+            .or_else(|| field("command"))
+            .or_else(|| field("query"))
+            .or_else(|| field("url"));
+        match what {
+            Some(w) => format!("{name} {w}"),
+            None => name.to_string(),
+        }
+    };
+    clip(text.trim(), MAX_DOING)
+}
+
+/// The words of a human message (a plain string, or the text parts of a list) and the media types of
+/// its image blocks. `None` for tool results and for the harness's own wrappers.
+fn human_text(content: Option<&Value>) -> Option<(String, Vec<String>)> {
+    let mut images = Vec::new();
     let text = match content? {
         Value::String(s) => s.clone(),
         Value::Array(blocks) => {
@@ -155,6 +222,15 @@ fn human_text(content: Option<&Value>) -> Option<String> {
                 .any(|b| b.get("type").and_then(Value::as_str) == Some("tool_result"))
             {
                 return None;
+            }
+            for b in blocks {
+                if b.get("type").and_then(Value::as_str) == Some("image") {
+                    let mime = b
+                        .pointer("/source/media_type")
+                        .and_then(Value::as_str)
+                        .unwrap_or("image/png");
+                    images.push(mime.to_string());
+                }
             }
             blocks
                 .iter()
@@ -169,7 +245,46 @@ fn human_text(content: Option<&Value>) -> Option<String> {
     if text.is_empty() || text.starts_with('<') {
         return None;
     }
-    Some(text.to_string())
+    Some((text.to_string(), images))
+}
+
+/// The `i`-th image block of a transcript record (a `user` record's content or a queued command's prompt):
+/// its media type and bytes.
+fn image_block(record: &str, i: usize) -> Option<(String, Vec<u8>)> {
+    use base64::Engine;
+    let v: Value = serde_json::from_str(record).ok()?;
+    let blocks = v
+        .pointer("/message/content")
+        .or_else(|| v.pointer("/attachment/prompt"))?
+        .as_array()?;
+    let block = blocks
+        .iter()
+        .filter(|b| b.get("type").and_then(Value::as_str) == Some("image"))
+        .nth(i)?;
+    let mime = block
+        .pointer("/source/media_type")
+        .and_then(Value::as_str)
+        .unwrap_or("image/png")
+        .to_string();
+    let data = block.pointer("/source/data").and_then(Value::as_str)?;
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(data.trim())
+        .ok()?;
+    Some((mime, bytes))
+}
+
+/// The `i`-th image of turn `n` (the numbering of [`page`]), read from the transcript on demand.
+pub fn image(cfg: &AppConfig, n: usize, i: usize) -> Option<(String, Vec<u8>)> {
+    use std::io::BufRead;
+    let files = transcripts(cfg);
+    let all: Vec<Turn> = files.iter().flat_map(|p| turns_of(p)).collect();
+    let turn = all.get(n)?;
+    if i >= turn.images.len() {
+        return None;
+    }
+    let f = std::fs::File::open(&turn.file).ok()?;
+    let record = std::io::BufReader::new(f).lines().nth(turn.line)?.ok()?;
+    image_block(&record, i)
 }
 
 fn clip(s: &str, max: usize) -> String {
@@ -270,9 +385,12 @@ fn turns_of(path: &Path) -> Vec<Turn> {
             return turns;
         }
     }
-    let turns = std::fs::read_to_string(path)
+    let mut turns = std::fs::read_to_string(path)
         .map(|t| parse(&t))
         .unwrap_or_default();
+    for t in &mut turns {
+        t.file = path.to_path_buf();
+    }
     if let Ok(mut c) = cache().lock() {
         c.insert(path.to_path_buf(), (stamp.0, stamp.1, turns.clone()));
     }
@@ -490,6 +608,74 @@ mod tests {
         assert_eq!(t.len(), 1);
         assert_eq!(t[0].q, "давай 1\nещё и таймаут 600");
         assert_eq!(t[0].a, "Готово обе.", "the final answer, not the line between the calls");
+    }
+
+    #[test]
+    fn the_running_turn_says_what_it_does() {
+        let text = [
+            r#"{"type":"user","timestamp":"2026-10-19T09:00:00.000Z","message":{"content":"проверь очередь"}}"#,
+            r#"{"type":"assistant","timestamp":"2026-10-19T09:00:05.000Z","message":{"stop_reason":"tool_use","content":[{"type":"tool_use","name":"Bash","input":{"command":"herdr-projects list --json","description":"List the board's tasks"}}]}}"#,
+        ]
+        .join("\n");
+        let t = parse(&text);
+        assert_eq!(t[0].doing, "List the board's tasks", "Bash by its description");
+        let more = format!(
+            "{text}\n{}\n{}",
+            r#"{"type":"user","timestamp":"2026-10-19T09:00:06.000Z","message":{"content":[{"type":"tool_result","tool_use_id":"t","content":"ok"}]}}"#,
+            r#"{"type":"assistant","timestamp":"2026-10-19T09:00:10.000Z","message":{"stop_reason":"tool_use","content":[{"type":"tool_use","name":"Read","input":{"file_path":"/x/task.json"}}]}}"#,
+        );
+        let t = parse(&more);
+        assert_eq!(t[0].doing, "Read /x/task.json", "the latest call wins; another tool by its name and file");
+        let bash_cmd = text.replace(r#","description":"List the board's tasks""#, "");
+        assert_eq!(parse(&bash_cmd)[0].doing, "herdr-projects list --json", "without a description, the command's first line");
+        let done = format!(
+            "{more}\n{}",
+            r#"{"type":"assistant","timestamp":"2026-10-19T09:00:20.000Z","message":{"stop_reason":"end_turn","content":[{"type":"text","text":"Очередь пуста."}]}}"#,
+        );
+        let t = parse(&done);
+        assert_eq!((t[0].doing.as_str(), t[0].a.as_str()), ("", "Очередь пуста."), "end_turn clears it");
+        let long = format!(
+            r#"{{"type":"user","timestamp":"2026-10-19T09:00:00.000Z","message":{{"content":"x"}}}}
+{{"type":"assistant","timestamp":"2026-10-19T09:00:05.000Z","message":{{"stop_reason":"tool_use","content":[{{"type":"tool_use","name":"Bash","input":{{"command":"{}"}}}}]}}}}"#,
+            "y".repeat(200)
+        );
+        assert_eq!(parse(&long)[0].doing.chars().count(), 81, "cut to 80 and an ellipsis");
+        let json = serde_json::to_value(&parse(&done)[0]).unwrap();
+        assert!(json.get("doing").is_none(), "an empty `doing` is not sent to the page");
+    }
+
+    #[test]
+    fn a_message_with_images_keeps_them_as_blocks() {
+        // Claude Code writes a message sent with pictures as a text block (ending at the planner's header,
+        // the path lines dropped) and an image block with the bytes inside.
+        let png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAFgwJ/lK3Q6wAAAABJRU5ErkJggg==";
+        let rec = format!(
+            r#"{{"type":"user","timestamp":"2026-10-21T04:16:03.468Z","message":{{"role":"user","content":[{{"type":"text","text":"вот снимок\nКартинки (файлы на машине с доской):"}},{{"type":"image","source":{{"type":"base64","media_type":"image/png","data":"{png}"}}}}]}}}}"#
+        );
+        let text = format!("{}\n{rec}\n", r#"{"type":"user","timestamp":"2026-10-21T04:00:00.000Z","message":{"content":"первый"}}"#);
+        let t = parse(&text);
+        assert_eq!(t.len(), 2);
+        assert_eq!(t[1].q, "вот снимок\nКартинки (файлы на машине с доской):");
+        assert_eq!(t[1].images, vec!["image/png".to_string()]);
+        assert_eq!(t[1].line, 1, "the record's line, for the image to be read back");
+        assert!(t[0].images.is_empty());
+        let (mime, bytes) = image_block(&rec, 0).expect("the image block");
+        assert_eq!(mime, "image/png");
+        assert_eq!(&bytes[..8], &[0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+        assert!(image_block(&rec, 1).is_none());
+        let json = serde_json::to_value(&t[1]).unwrap();
+        assert_eq!(json["images"], serde_json::json!(["image/png"]));
+        assert!(json.get("file").is_none() && json.get("line").is_none(), "where the record is stays inside");
+        assert!(serde_json::to_value(&t[0]).unwrap().get("images").is_none());
+    }
+
+    #[test]
+    fn the_answer_has_its_own_time() {
+        let t = parse(SAMPLE);
+        assert_eq!(t[0].at, 1_792_389_365_628);
+        assert_eq!(t[0].at_a, parse_time("2026-10-19T05:56:16.998Z"), "the time of the assistant record");
+        assert_eq!(t[2].at_a, 0, "no answer yet");
+        assert!(serde_json::to_value(&t[2]).unwrap().get("at_a").is_none());
     }
 
     #[test]

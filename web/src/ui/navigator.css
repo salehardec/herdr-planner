@@ -30,11 +30,4 @@
 .ti.addUniverse .gl{color:var(--pl-accent-ink)}
 .win.calm .ti{min-height:2rem;font-size:0.8125rem}
 :root.bp900 .nav{left:0.5rem;right:0.5rem;width:auto;top:auto;bottom:0.5rem;max-height:62vh;z-index:40}:root.bp900 .nav.off{transform:translateY(110%)}
-
-/* the right edge of the panel: drag it to change the width (double click: back to the default) */
-.nav-grip{position:absolute;top:0;bottom:0;right:0;width:0.5rem;cursor:col-resize;z-index:2;touch-action:none;border-radius:0.3125rem}
-.nav-grip::after{content:"";position:absolute;top:50%;left:0.25rem;width:0.125rem;height:2.5rem;margin-top:-1.25rem;border-radius:0.0625rem;background:var(--pl-line);opacity:0;transition:opacity var(--m-fast),background var(--m-fast)}
-.nav:hover .nav-grip::after,.nav-grip:focus-visible::after,.nav-grip.drag::after{opacity:1}
-.nav-grip:hover::after,.nav-grip.drag::after{background:var(--pl-accent)}
-:root.bp900 .nav-grip{display:none}
 :root.bp900 .tree{margin-right:0}
