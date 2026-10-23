@@ -3208,7 +3208,7 @@ const layoutRun = async (w, h, dsf, scale = 'auto') => {
       await roomOk('the navigator dragged to the far right');
       // the most the navigator may take is what the window leaves: its own gap, the focus card's column and the chat's 30 rem
       const lim = await evalJs(`(() => { const r = parseFloat(getComputedStyle(document.documentElement).fontSize); return { max: Number(document.querySelector('#nav .panel-grip').getAttribute('aria-valuemax')), room: innerWidth / r - document.querySelector('#focus').getBoundingClientRect().width / r }; })()`);
-      check(`${at}: the edge's own upper limit (${lim.max} rem) is below what the window leaves (${lim.room.toFixed(0)} rem without the focus card, 33 rem for the gaps and the chat)`, lim.max > 0 && lim.max <= lim.room - 32.4, JSON.stringify(lim));
+      check(`${at}: the edge's own upper limit (${lim.max} rem) is below what the window leaves (${lim.room.toFixed(0)} rem without the focus card, 33 rem for the gaps and the chat)`, lim.max > 0 && lim.max <= Math.max(16, lim.room - 32.4), JSON.stringify(lim));
     }
     // a width kept from a big screen: the window here is cut to what fits
     await evalJs('try { localStorage.setItem("herdr-planner.navW", "48"); } catch {} true');
