@@ -3865,9 +3865,32 @@ section('memory suggestions', async () => {
   check('its suggestion waits in the snapshot for the human', await waitFor('fetch("/api/state").then((r) => r.json()).then((s) => s.memory_suggestions.some((m) => m.task === "alpha/4" && m.lines.length === 2))', 15000), JSON.stringify(await pending()));
   check('and nothing is written without the human', filesIn(alphaMem).every((f) => !readFile(join(alphaMem, f)).includes('source: task alpha/4')) && filesIn(draftsOf('alpha')).every((f) => !readFile(join(draftsOf('alpha'), f)).includes('source: task alpha/4')));
   if (!doneAlready) check('the page tells about it', await waitFor('(document.querySelector("#toasts")?.innerText || "").includes("Есть что запомнить")', 8000), await text('#toasts'));
+  // «Ждёт тебя»: the proposal is a request of its own, counted, marked «В память», with the task and the universe in the row
+  const waitNum = () => evalJs('Number((document.querySelector("#wait-btn")?.innerText || "").replace(/\\D+/g, "")) || 0');
+  const memRow = (task) => `#drawer-wait .q.mem[data-request="memory:${task}"]`;
+  await resetUi();
+  await press('KeyB', 'b');
+  check('the proposal stands in «Ждёт тебя» with the mark «В память», its task and its universe', await waitFor(`!!document.querySelector('${memRow('alpha/4')}')`, 8000) && (await text(`${memRow('alpha/4')} .qk`)) === 'В память' && (await text(memRow('alpha/4'))).includes('ALP-4') && (await text(`${memRow('alpha/4')} .pj`)) === 'alpha', await text('#drawer-wait'));
+  await shot('memory-in-wait.png');
+  const waitedBefore = await waitNum();
+  check('and the count of «Ждёт тебя» includes it: the header, the button and the list agree', waitedBefore === await evalJs('document.querySelectorAll("#drawer-wait .q").length') && Number(await text('#drawer-wait header span:nth-child(2)')) === waitedBefore && (await evalJs('document.querySelectorAll("#drawer-wait .q.mem").length')) >= 1, `${waitedBefore}`);
+  check('no badge of its own beside «Ждёт тебя»', (await evalJs('[...document.querySelector("#right").children].map((e) => e.id).join()')) === 'wait-btn,mode');
+  await evalJs(`document.querySelector('${memRow('alpha/4')}').click()`);
+  check('a click opens the task\'s card in the Focus, with the proposal', await waitFor('plannerDebug().selected?.id === "alpha/4" && !!document.querySelector(\'#closing .mm-sug[data-sug="alpha/4"]\')', 15000), JSON.stringify(await pd()));
+  // the fields are as tall as their text, in the Focus too, and follow the text while it is edited
+  const fits = () => evalJs('[...document.querySelectorAll(".mm-sug textarea")].map((e) => ({ h: e.clientHeight, s: e.scrollHeight, v: e.value.length }))');
+  const fit0 = await fits();
+  check('the Focus shows each line whole: no scroll inside the field', fit0.length === 2 && fit0.every((f) => f.s <= f.h + 1), JSON.stringify(fit0));
+  await typeIn('#closing .mm-sug[data-sug="alpha/4"] textarea', Array.from({ length: 9 }, (_, i) => `Строка ${i + 1}: длинное рассуждение о том, почему тему держат только в localStorage.`).join('\n'));
+  await sleep(300);
+  const fit1 = await fits();
+  check('a long edit makes the field taller, still without a scroll', fit1[0].h > fit0[0].h * 2 && fit1[0].s <= fit1[0].h + 1, JSON.stringify({ fit0, fit1 }));
+  await shot('memory-suggestion-focus.png');
+  await typeIn('#closing .mm-sug[data-sug="alpha/4"] textarea', 'ALP-4: тема не хранится в базе — только localStorage и системная настройка.');
   await universeOf('alpha');
   // Other done tasks of this shard may carry a suggestion too (alpha/5 is approved by `requests`): this is about alpha/4's.
   check('the universe panel shows it with the lines editable', await waitFor('!!document.querySelector(\'#mem-universe .mm-sug[data-sug="alpha/4"]\')', 8000) && (await evalJs('document.querySelectorAll(\'#mem-universe .mm-sug[data-sug="alpha/4"] textarea\').length')) === 2);
+  check('the fields of the universe panel are whole too', (await evalJs('[...document.querySelectorAll("#mem-universe .mm-sug textarea")].every((e) => e.scrollHeight <= e.clientHeight + 1)')));
   await shot('memory-suggestion.png');
   await typeIn('#mem-universe .mm-sug[data-sug="alpha/4"] textarea', 'ALP-4: тема не хранится в базе — только localStorage и системная настройка.');
   const alphaStatus = gitStatus(alphaRoot);
@@ -3878,6 +3901,8 @@ section('memory suggestions', async () => {
   check('the edited lines become drafts with the task as the source', await waitLog(() => filesIn(draftsOf('alpha')).some((f) => { const t = readFile(join(draftsOf('alpha'), f)); return t.includes('source: task alpha/4') && t.includes('только localStorage'); }) && filesIn(draftsOf('alpha')).filter((f) => readFile(join(draftsOf('alpha'), f)).includes('source: task alpha/4')).length === 2, 10000), filesIn(draftsOf('alpha')).join(','));
   check('and the checkout of the universe is as it was: nothing written into docs/memory', gitStatus(alphaRoot) === alphaStatus && !filesIn(alphaMem).some((f) => readFile(join(alphaMem, f)).includes('source: task alpha/4')), gitStatus(alphaRoot));
   check('and the suggestion is gone', await waitFor('fetch("/api/state").then((r) => r.json()).then((s) => !s.memory_suggestions.some((m) => m.task === "alpha/4"))', 8000) && await waitFor('!document.querySelector(\'.mm-sug[data-sug="alpha/4"]\')', 8000));
+  await press('KeyB', 'b');
+  check('kept: the row leaves «Ждёт тебя» and the count goes down by one', await waitFor(`!document.querySelector('${memRow('alpha/4')}')`, 6000) && await waitFor(`document.querySelectorAll("#drawer-wait .q").length === ${waitedBefore - 1}`, 6000) && await waitFor(`Number((document.querySelector("#wait-btn")?.innerText || "").replace(/\\D+/g, "")) === ${waitedBefore - 1}`, 4000), `${await waitNum()} vs ${waitedBefore}`);
   await post('/api/refresh', {});
   await sleep(1500);
   check('it is not asked again for the same task', asked('ALP-4') === 1);
@@ -3897,8 +3922,12 @@ section('memory suggestions', async () => {
   check('and the suggestion still waits', await waitFor('fetch("/api/state").then((r) => r.json()).then((s) => s.memory_suggestions.some((m) => m.task === "delta/1"))', 4000));
   await go('delta/1');
   check('the task\'s own panel carries the suggestion beside its closing note', await waitFor('!!document.querySelector(\'#closing .mm-sug[data-sug="delta/1"]\')', 8000));
+  if (!(await evalJs('document.querySelector("#drawer-wait").classList.contains("open")'))) await press('KeyB', 'b');
+  const waitedMid = await waitNum();
+  check('the other proposal is in the list as well', !!(await evalJs(`!!document.querySelector('${memRow('delta/1')}')`)));
   await click('#closing [data-act="mem-sug-dismiss"]');
   check('«Не нужно» drops it and writes nothing', await waitFor('fetch("/api/state").then((r) => r.json()).then((s) => !s.memory_suggestions.some((m) => m.task === "delta/1"))', 8000) && !existsSync(join(fixture, 'projects', 'herdr', 'delta', 'docs', 'memory')));
+  check('dropped: the row leaves «Ждёт тебя» and the count goes down by one', await waitFor(`!document.querySelector('${memRow('delta/1')}')`, 6000) && await waitFor(`Number((document.querySelector("#wait-btn")?.innerText || "").replace(/\\D+/g, "")) === ${waitedMid - 1}`, 4000), `${await waitNum()} vs ${waitedMid}`);
   // the switch: off, and a done task is not sent to the model
   await resetUi();
   await quasarOf();

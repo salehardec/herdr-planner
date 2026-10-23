@@ -51,7 +51,7 @@
 .mm-sug-h .gl{width:13px;height:13px;flex:none}
 .mm-sug-line{display:flex;gap:6px;align-items:flex-start;min-width:0}
 .mm-sug-line .mm-kind{margin-top:6px}
-.mm-sug-line textarea{resize:vertical;min-height:44px}
+.mm-sug-line textarea{resize:none;overflow:hidden;min-height:1.75rem}
 .mm-sug-line .field{flex:1 1 0;min-width:0}
 .mm-foreign{display:grid;gap:4px;margin-top:6px}
 .mm-foreign h4{margin:0;font-size:10.5px;color:var(--pl-dim);text-transform:uppercase;letter-spacing:.06em;font-weight:500}

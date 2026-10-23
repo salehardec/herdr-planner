@@ -66,7 +66,7 @@ export const en: Record<string, string | string[]> = {
   'act.finish': 'Finish as is', 'act.undo': 'Undo',
   'req.pick': 'Pick {l}', 'req.limit': 'Stopped at a limit', 'req.reviewneeds': 'The reviewer needs you', 'req.plan': 'Plan ready', 'req.approval': 'To approve',
   'req.failed': 'Failed: what now', 'req.permission': 'Permission request', 'req.auth': 'Login needed', 'req.question': 'Agent’s question',
-  'req.coordinator.dialog': 'The Coordinator asks', 'req.coordinator.options': 'A question from the Coordinator', 'req.other': 'Request',
+  'req.coordinator.dialog': 'The Coordinator asks', 'req.coordinator.options': 'A question from the Coordinator', 'req.other': 'Request', 'req.memory': 'To memory', 'req.memoryTip': 'Task {tag} is done: what universe {repo} should remember',
   'req.allow': 'Allow', 'req.deny': 'Deny', 'req.textBelow': 'The text goes into the field below — you can edit it.', 'req.writeAgent': 'Write to the agent',
   'req.authHint': 'Log in on the board’s machine: the planner stores no logins.', 'req.continue': 'Continue',
   'req.limitHint': 'The agent stopped at a subscription limit: continuing starts a new attempt.', 'req.approvePlan': 'Approve the plan',

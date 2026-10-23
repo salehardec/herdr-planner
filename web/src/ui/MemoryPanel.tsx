@@ -4,11 +4,12 @@ import { useEffect, useRef, useState } from 'preact/hooks';
 import { armed, currentView, snap } from '../store';
 import { confirmStep } from '../actions';
 import { send } from '../chat';
-import { navigateTo } from '../nav';
+import { afterAnswered, navigateTo } from '../nav';
 import { t, tn } from '../i18n';
 import { toast } from '../toast';
 import { dayTimeOf } from '../util/dates';
 import { Gl } from './Gl';
+import { AutoTextarea, fitText } from './AutoText';
 import {
   deleteEntry, discardDraft, dismissSuggestion, keepSuggestion, KINDS, kindLabel, loadMemory, memoryOf, openMemory, previewSend, sendMemory, stateOf,
   previewDelete, previewDiscard, previewSave, previewSuggestion, rememberDlg, saveEntry, connectMemory, setSuggest,
@@ -142,6 +143,25 @@ export function Form(props: { repo: string; draft: Draft; onDone: () => void }):
   );
 }
 
+/** One proposed line: the field is as tall as its text (and follows the width of its panel), so nothing hides under a scroll. */
+function LineField(props: { value: string; disabled: boolean; onInput: (v: string) => void }): JSX.Element {
+  const el = useRef<HTMLTextAreaElement | null>(null);
+  useEffect(() => {
+    const node = el.current;
+    if (!node || typeof ResizeObserver === 'undefined') return undefined;
+    let w = node.clientWidth;
+    const ro = new ResizeObserver(() => { if (node.clientWidth !== w) { w = node.clientWidth; fitText(node); } });
+    ro.observe(node);
+    return () => ro.disconnect();
+  }, []);
+  return (
+    <AutoTextarea
+      elRef={el} class="field" value={props.value} aria-label={t('mem.suggestLine')} disabled={props.disabled}
+      onInput={(e) => props.onInput((e.target as HTMLTextAreaElement).value)}
+    />
+  );
+}
+
 /** Lines the model proposed for a universe after a task was done: the human edits, keeps or drops them. */
 export function SuggestionCard(props: { s: MemSuggestion; compact?: boolean }): JSX.Element {
   const { s } = props;
@@ -165,11 +185,12 @@ export function SuggestionCard(props: { s: MemSuggestion; compact?: boolean }): 
       await keepSuggestion(s.task, kept, card.token, a);
       toast(t(card.draft ? 'mem.suggestKeptDraft' : 'mem.suggestKept', { repo: s.repo }));
       void loadMemory(s.repo);
+      void afterAnswered(s.task);
     } catch (e) { setErr(failWords(e)); setBusy(false); }
   };
   const dismiss = async (): Promise<void> => {
     setBusy(true);
-    try { await dismissSuggestion(s.task); void loadMemory(s.repo); } catch (e) { toast(failWords(e), { icon: 'failed' }); setBusy(false); }
+    try { await dismissSuggestion(s.task); void loadMemory(s.repo); void afterAnswered(s.task); } catch (e) { toast(failWords(e), { icon: 'failed' }); setBusy(false); }
   };
   // The lines without what was found; a new preview follows.
   const redact = (): void => {
@@ -185,10 +206,7 @@ export function SuggestionCard(props: { s: MemSuggestion; compact?: boolean }): 
       {lines.map((l, i) => (
         <div class="mm-sug-line" key={i}>
           <span class={`mm-kind k-${l.kind}`}>{kindLabel(l.kind)}</span>
-          <textarea
-            class="field" rows={2} value={l.text} aria-label={t('mem.suggestLine')} disabled={!!card}
-            onInput={(e) => setLines(lines.map((x, j) => (j === i ? { ...x, text: (e.target as HTMLTextAreaElement).value } : x)))}
-          />
+          <LineField value={l.text} disabled={!!card} onInput={(text) => setLines(lines.map((x, j) => (j === i ? { ...x, text } : x)))} />
         </div>
       ))}
       {card ? (

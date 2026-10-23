@@ -22,14 +22,17 @@ export function Wait(): JSX.Element {
         {list.length === 0 && <div class="none">{t('wait.none')}</div>}
         {list.map((r, i) => {
           const alarm = r.type === 'runner-alert';
+          const mem = r.type === 'memory';
           const done = !alarm && answered.value.has(r.id);
           return (
             <button
               key={r.key} type="button" data-request={r.key} data-alert={r.alert?.kind} data-sel={r.id === 'coordinator' ? '' : r.id}
-              class={`q s-${alarm ? 'failed' : r.task?.status ?? 'waiting'} ${i === cur ? 'cur' : ''} ${done ? 'resolved' : ''}`}
+              class={`q s-${alarm ? 'failed' : mem ? 'done' : r.task?.status ?? 'waiting'} ${mem ? 'mem' : ''} ${i === cur ? 'cur' : ''} ${done ? 'resolved' : ''}`}
+              title={mem ? t('req.memoryTip', { tag: r.tag, repo: r.repo }) : undefined}
               aria-selected={i === cur} onClick={() => void openRequest(i)}
             >
-              <Gl n={alarm ? 'yard' : r.task?.status ?? 'waiting'} /><b>{r.tag}</b><span class="tx">{r.text || r.title}</span><span class="pj">{r.repo}</span>
+              <Gl n={alarm ? 'yard' : mem ? 'memory' : r.task?.status ?? 'waiting'} /><b>{r.tag}</b>
+              <span class="tx">{mem && <span class="qk">{r.title}</span>}{r.text || r.title}</span><span class="pj">{r.repo}</span>
             </button>
           );
         })}

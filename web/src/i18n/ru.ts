@@ -71,7 +71,7 @@ export const ru: Record<string, string | string[]> = {
   'act.finish': 'Завершить как есть', 'act.undo': 'Отменить',
   'req.pick': 'Выбрать {l}', 'req.limit': 'Остановилась на лимите', 'req.reviewneeds': 'Ревьюеру нужен ты', 'req.plan': 'План готов', 'req.approval': 'К одобрению',
   'req.failed': 'Упала: что делать', 'req.permission': 'Запрос разрешения', 'req.auth': 'Нужен вход', 'req.question': 'Вопрос агента',
-  'req.coordinator.dialog': 'Координатор спрашивает', 'req.coordinator.options': 'Вопрос Координатора', 'req.other': 'Запрос',
+  'req.coordinator.dialog': 'Координатор спрашивает', 'req.coordinator.options': 'Вопрос Координатора', 'req.other': 'Запрос', 'req.memory': 'В память', 'req.memoryTip': 'Задача {tag} сделана: что запомнить вселенной {repo}',
   'req.allow': 'Разрешить', 'req.deny': 'Запретить', 'req.textBelow': 'Текст подставится в поле ниже — его можно поправить.', 'req.writeAgent': 'Написать агенту',
   'req.authHint': 'Войти можно на машине с доской: планировщик не хранит твоих логинов.', 'req.continue': 'Продолжить',
   'req.limitHint': 'Агент остановился на лимите подписки: продолжение начнёт новую попытку.', 'req.approvePlan': 'Одобрить план',
