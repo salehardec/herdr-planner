@@ -12,6 +12,7 @@ import { toast } from '../toast';
 import { api, post } from '../api';
 import { dialogOpen } from '../dialogs';
 import { Gl } from './Gl';
+import { Strays } from './Strays';
 import { coachShown, firstRunShown } from './FirstRun';
 import {
   callError, CallError, closeStation, crewSeen, fromLabel, isBool, openStation, PROGRAM_ORDER, programOf,
@@ -596,6 +597,7 @@ function StationBody(props: { wizard: boolean }): JSX.Element {
             </div>
           )}
           {!wizard && <Shipyards />}
+          {!wizard && <Strays />}
           {!wizard && <Board repo={level === 'repo' ? repo : ''} data={data} reload={reload} />}
         </>
       )}

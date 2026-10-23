@@ -152,6 +152,17 @@ The planner works with its own board only. The stand-ins still answer as a board
   replaces the planner's reading of `/proc`: a JSON `Load` (`{ok, cpu:{percent,cores}, mem:{used,total,percent},
   gpus:[…], at}`); `{"ok": false}` is a machine that cannot be read; no file means the real machine.
 
+## The processes of finished tasks (PLN-53)
+
+`HERDR_PLANNER_PROC_FILE=DIR/load/procs.json` (set by `run-checks.sh`, with `HERDR_PLANNER_WORKTREES=DIR/worktrees` and short
+`HERDR_PLANNER_STRAY_*` times) replaces the planner's read of `/proc`: `{uid, pid, procs: [{pid, ppid, pgid, uid?, comm, cmd, cwd,
+rss, age_ms, start, ignore_term?}]}`. Nothing is ever signalled: a «SIGTERM»/«SIGKILL» deletes the process from the file (an
+`ignore_term` one goes only on SIGKILL) and appends `TERM <pid>` / `KILL <pid>` to `procs.json.signals`. The fixture's table has the
+leftovers of ALP-13 (done: agent 9101, helper 9102, broker 9103 that ignores SIGTERM), of GAM-2 (archived: 9111), of a copy no
+task has (`worktrees/alpha/work-90`: 9151), a shell of BET-1 (9121, listed but never taken by the automatic cleaning), and
+what must stay: ALP-6 in work (9131), a folder outside the board (9141), another user's process (9161). The section `strays`
+of `ui-check.mjs` reads and edits that file.
+
 ## The shipyard vm-r (`me@192.0.2.29`)
 
 `192.0.2.0/24` is a documentation address: no real host. The ssh stand-in answers for it with one fixed probe
