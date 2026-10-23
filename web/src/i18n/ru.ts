@@ -696,7 +696,7 @@ export const ru: Record<string, string | string[]> = {
   'ctl.alreadyStopped': 'Контейнер уже остановлен.', 'ctl.stopFirst': 'Контейнер запущен: сначала остановите его.',
   'ctl.logsTitle': 'Логи контейнера', 'ctl.logsSearch': 'Поиск по логам', 'ctl.logsTail': 'Строк', 'ctl.logsLive': 'Автообновление',
   'ctl.logsRefresh': 'Обновить', 'ctl.logsFound': 'Найдено строк: {n} из {total}', 'ctl.logsLines': 'Строк: {n}',
-  'ctl.logsCut': 'Показан только конец журнала: начало не поместилось.', 'ctl.logsEmpty': 'Журнал пуст. Сюда попадает вывод команд scripts/yard.sh (build, test, check…): заголовок, вывод и код возврата.', 'ctl.logsNoMatch': 'Ничего не найдено.',
+  'ctl.logsCut': 'Показан только конец журнала: начало не поместилось.', 'ctl.logsEmpty': 'Журнал пуст.', 'ctl.logsEmptyYard': 'Журнал пуст. Сюда попадает вывод команд scripts/yard.sh (build, test, check…): заголовок, вывод и код возврата.', 'ctl.logsNoMatch': 'Ничего не найдено.',
   'ctl.logsStopped': 'Контейнер не работает — журнал не обновляется.', 'ctl.logsOff': 'Автообновление выключено.',
   'ctl.state.running': 'работает', 'ctl.state.exited': 'остановлен', 'ctl.state.paused': 'на паузе', 'ctl.state.restarting': 'перезапускается',
   'ctl.state.created': 'создан', 'ctl.state.dead': 'сломан', 'ctl.state.gone': 'удалён',

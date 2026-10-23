@@ -228,7 +228,7 @@ export function ContainerLogs(): JSX.Element | null {
           }}>
             {shown?.err && !shown.a ? <div class="hint bad" id="ctl-error">{shown.err}</div> : (
               <pre class="term" id="ctl-term">
-                {!shown ? t('req.reading') : found.lines.length === 0 ? (found.total === 0 ? t('ctl.logsEmpty') : t('ctl.logsNoMatch'))
+                {!shown ? t('req.reading') : found.lines.length === 0 ? (found.total === 0 ? t(c?.name.startsWith('yard-') ? 'ctl.logsEmptyYard' : 'ctl.logsEmpty') : t('ctl.logsNoMatch'))
                   : found.lines.map((l, i) => <div key={i} class={`ll${yardLine(l)}`}>{marked(l, q)}</div>)}
               </pre>
             )}

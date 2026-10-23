@@ -465,7 +465,8 @@ fi
 # gets the output as it was: the journal is a copy, and the exit code is the command's own.
 J=/proc/1/fd/1
 [ -w "$J" ] || J=/dev/null
-stamp() { date '+%Y-%m-%d %H:%M:%S'; }
+# The host's clock offset comes with the command (YARD_TZ): the run id beside it is in the host's time.
+stamp() { TZ=${YARD_TZ:-UTC} date '+%Y-%m-%d %H:%M:%S'; }
 span() {
   s=$1
   if [ "$s" -ge 3600 ]; then printf '%sh %sm %ss' $((s / 3600)) $((s % 3600 / 60)) $((s % 60))
@@ -487,7 +488,11 @@ begun=$(date +%s)
 printf '[yard] ▶ %s · yard.sh %s · run %s\n' "$(stamp)" "$label" "${YARD_RUN:-—}" >>"$J"
 rcf=/work/.rc.$$
 rm -f "$rcf"
-{ ( set -eu; body "$@" ); printf '%s' "$?" >"$rcf"; } 2>&1 | tee --output-error=warn-nopipe -a "$J" || true
+# `set -e` stays on inside the subshell only while the pipeline is not on the left of `||` or `&&`: the status is read from
+# the file, so the pipeline's own is not needed (a failed sync or page build must stop the command, as it always did).
+set +e
+{ ( set -eu; body "$@" ); printf '%s' "$?" >"$rcf"; } 2>&1 | tee --output-error=warn-nopipe -a "$J"
+set -e
 rc=$(cat "$rcf" 2>/dev/null || true)
 rm -f "$rcf"
 rc=${rc:-1}
@@ -575,10 +580,10 @@ run_here() {
     # The result folder is copied while the run still holds the lock; the run's own exit code comes from its .rc file.
     if [ "$slot" = 1 ]; then
       start_logged "$log" "$D" exec -i -w /work/src -e "HERDR_PROJECTS_PROGRESS=$prog" \
-        -e "YARD_SLOTS=$SLOTS" -e YARD_SLOT_USE="$SLOT_USE" -e "UI_GPU=${UI_GPU:-}" -e "YARD_LABEL=$LABEL" -e "YARD_RUN=$RUN_ID" "$NAME" \
+        -e "YARD_SLOTS=$SLOTS" -e YARD_SLOT_USE="$SLOT_USE" -e "UI_GPU=${UI_GPU:-}" -e "YARD_LABEL=$LABEL" -e "YARD_RUN=$RUN_ID" -e "YARD_TZ=$HOST_TZ" "$NAME" \
         flock /work/.lock sh -c "$INNER" yard "$@"
     else
-      start_logged "$log" "$D" exec -i -w /work/src -e "HERDR_PROJECTS_PROGRESS=$prog" -e YARD_SLOT_USE=0 -e "UI_GPU=${UI_GPU:-}" -e "YARD_LABEL=$LABEL" -e "YARD_RUN=$RUN_ID" "$NAME" \
+      start_logged "$log" "$D" exec -i -w /work/src -e "HERDR_PROJECTS_PROGRESS=$prog" -e YARD_SLOT_USE=0 -e "UI_GPU=${UI_GPU:-}" -e "YARD_LABEL=$LABEL" -e "YARD_RUN=$RUN_ID" -e "YARD_TZ=$HOST_TZ" "$NAME" \
         flock /work/.lock sh -c "$INNER" yard "$@"
     fi
     execpid=$STREAM_PID
@@ -589,10 +594,10 @@ run_here() {
   else
     if [ "$slot" = 1 ]; then
       run_logged "$log" "$D" exec -i -w /work/src -e "HERDR_PROJECTS_PROGRESS=$prog" \
-        -e "YARD_SLOTS=$SLOTS" -e YARD_SLOT_USE="$SLOT_USE" -e "UI_GPU=${UI_GPU:-}" -e "YARD_LABEL=$LABEL" -e "YARD_RUN=$RUN_ID" "$NAME" \
+        -e "YARD_SLOTS=$SLOTS" -e YARD_SLOT_USE="$SLOT_USE" -e "UI_GPU=${UI_GPU:-}" -e "YARD_LABEL=$LABEL" -e "YARD_RUN=$RUN_ID" -e "YARD_TZ=$HOST_TZ" "$NAME" \
         flock /work/.lock sh -c "$INNER" yard "$@"
     else
-      run_logged "$log" "$D" exec -i -w /work/src -e "HERDR_PROJECTS_PROGRESS=$prog" -e YARD_SLOT_USE=0 -e "UI_GPU=${UI_GPU:-}" -e "YARD_LABEL=$LABEL" -e "YARD_RUN=$RUN_ID" "$NAME" \
+      run_logged "$log" "$D" exec -i -w /work/src -e "HERDR_PROJECTS_PROGRESS=$prog" -e YARD_SLOT_USE=0 -e "UI_GPU=${UI_GPU:-}" -e "YARD_LABEL=$LABEL" -e "YARD_RUN=$RUN_ID" -e "YARD_TZ=$HOST_TZ" "$NAME" \
         flock /work/.lock sh -c "$INNER" yard "$@"
     fi
     rc=$?
@@ -724,6 +729,16 @@ local_work() {
 
 cmd=${1:-help}
 if [ $# -gt 0 ]; then shift; fi
+# The host's UTC offset as a POSIX TZ (the sign is the other way round there): the journal's times match the run id's.
+off=$(date +%z)
+case "$off" in
+  [+-][0-9][0-9][0-9][0-9])
+    sign=-
+    [ "${off%${off#?}}" = - ] && sign=+
+    rest=${off#?}
+    HOST_TZ="UTC$sign${rest%??}:${rest#??}" ;;
+  *) HOST_TZ=UTC ;;
+esac
 # What the container's journal calls the command (PLN-56): the wrapper's own word and its arguments.
 LABEL=$cmd
 if [ $# -gt 0 ]; then LABEL="$cmd $*"; fi

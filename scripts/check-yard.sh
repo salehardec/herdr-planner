@@ -105,6 +105,7 @@ EOF
 cat >"$BIN/rsync" <<'EOF'
 #!/bin/sh
 printf '%s\n' "$*" >>"$ST/rsync.log"
+if [ -e "$ST/rsync-fail" ]; then echo "rsync: change_dir failed" >&2; exit 23; fi
 exit 0
 EOF
 cat >"$BIN/cargo" <<'EOF'
@@ -276,6 +277,26 @@ inner_rc=$?
 set -e
 [ "$inner_rc" = 3 ] || bad "без журнала код команды тот же (получено $inner_rc)"
 expect "без журнала вывод агенту всё равно приходит" "^still-here$" "$T/inner-out"
+
+# A failed sync of the sources stops the command, as before the journal: the exit code is rsync's, the command never runs.
+: >"$T/journal"
+: >"$ST/rsync-fail"
+set +e
+env PATH="$BIN:$PATH" YARD_SLOT_USE=0 YARD_LABEL=test sh "$T/inner-journal.sh" sh -c 'echo RAN-ON-STALE-SOURCES' >"$T/inner-out" 2>&1
+inner_rc=$?
+set -e
+rm -f "$ST/rsync-fail"
+[ "$inner_rc" = 23 ] || bad "сбой rsync останавливает команду, код 23 (получено $inner_rc)"
+refuse "после сбоя rsync команда не запускается" "RAN-ON-STALE-SOURCES" "$T/inner-out"
+expect "журнал: итог сбоя rsync — exit 23" "yard.sh test · exit 23 · " "$T/journal"
+
+# the journal's clock is the host's: the offset travels with the command
+: >"$T/journal"
+env PATH="$BIN:$PATH" YARD_SLOT_USE=0 YARD_LABEL=tz YARD_TZ="UTC-05:00" sh "$T/inner-journal.sh" true >/dev/null 2>&1
+want=$(TZ="UTC-05:00" date '+%Y-%m-%d %H')
+expect "время журнала — по часам хоста (YARD_TZ)" "▶ $want:" "$T/journal"
+yard "$T/pln/PLN-7" test memory
+expect "смещение часов хоста уходит в контейнер" "-e YARD_TZ=UTC" "$ST/docker.log"
 
 # the container's log is bounded and a journal-less container is made again once it is idle
 fresh
