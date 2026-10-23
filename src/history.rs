@@ -36,6 +36,9 @@ pub struct Turn {
     pub q: String,
     /// The Coordinator's last words of the turn; empty while it works.
     pub a: String,
+    /// What it is doing now (its last tool call, in a few words): only on the turn it is still in.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub doing: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -99,13 +102,18 @@ pub fn parse(text: &str) -> Vec<Turn> {
                         .any(|b| b.get("type").and_then(Value::as_str) == Some("tool_use"));
                     if stop == Some("end_turn") || (stop.is_none() && !calls) {
                         running = false;
+                        turn.doing.clear();
                     }
                     for b in blocks {
-                        if b.get("type").and_then(Value::as_str) == Some("text") {
-                            let t = b.get("text").and_then(Value::as_str).unwrap_or("").trim();
-                            if !t.is_empty() {
-                                turn.a = clip(t, MAX_ANSWER);
+                        match b.get("type").and_then(Value::as_str) {
+                            Some("text") => {
+                                let t = b.get("text").and_then(Value::as_str).unwrap_or("").trim();
+                                if !t.is_empty() {
+                                    turn.a = clip(t, MAX_ANSWER);
+                                }
                             }
+                            Some("tool_use") => turn.doing = doing_of(b),
+                            _ => {}
                         }
                     }
                 }
@@ -135,13 +143,50 @@ fn open_turn(turns: &mut Vec<Turn>, q: String, at: u64, queued: bool, running: &
         return;
     }
     *running = true;
+    // the turn before is over: what it was doing is no longer news
+    if let Some(prev) = turns.last_mut() {
+        prev.doing.clear();
+    }
     turns.push(Turn {
         n: 0,
         at,
         from,
         q: clip(&q, MAX_QUESTION),
         a: String::new(),
+        doing: String::new(),
     });
+}
+
+/// A tool call in a few words, for the «working» line: Bash by its description or the first line of its
+/// command, another tool by its name and the file, pattern or prompt it was given.
+fn doing_of(block: &Value) -> String {
+    const MAX_DOING: usize = 80;
+    let name = block.get("name").and_then(Value::as_str).unwrap_or("");
+    let input = block.get("input");
+    let field = |k: &str| {
+        input
+            .and_then(|i| i.get(k))
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(|s| s.lines().next().unwrap_or("").to_string())
+    };
+    let text = if name == "Bash" {
+        field("description").or_else(|| field("command")).unwrap_or_default()
+    } else {
+        let what = field("file_path")
+            .or_else(|| field("pattern"))
+            .or_else(|| field("prompt"))
+            .or_else(|| field("description"))
+            .or_else(|| field("command"))
+            .or_else(|| field("query"))
+            .or_else(|| field("url"));
+        match what {
+            Some(w) => format!("{name} {w}"),
+            None => name.to_string(),
+        }
+    };
+    clip(text.trim(), MAX_DOING)
 }
 
 /// The words of a human message: a plain string, or the text parts of a list.
@@ -490,6 +535,40 @@ mod tests {
         assert_eq!(t.len(), 1);
         assert_eq!(t[0].q, "давай 1\nещё и таймаут 600");
         assert_eq!(t[0].a, "Готово обе.", "the final answer, not the line between the calls");
+    }
+
+    #[test]
+    fn the_running_turn_says_what_it_does() {
+        let text = [
+            r#"{"type":"user","timestamp":"2026-10-19T09:00:00.000Z","message":{"content":"проверь очередь"}}"#,
+            r#"{"type":"assistant","timestamp":"2026-10-19T09:00:05.000Z","message":{"stop_reason":"tool_use","content":[{"type":"tool_use","name":"Bash","input":{"command":"herdr-projects list --json","description":"List the board's tasks"}}]}}"#,
+        ]
+        .join("\n");
+        let t = parse(&text);
+        assert_eq!(t[0].doing, "List the board's tasks", "Bash by its description");
+        let more = format!(
+            "{text}\n{}\n{}",
+            r#"{"type":"user","timestamp":"2026-10-19T09:00:06.000Z","message":{"content":[{"type":"tool_result","tool_use_id":"t","content":"ok"}]}}"#,
+            r#"{"type":"assistant","timestamp":"2026-10-19T09:00:10.000Z","message":{"stop_reason":"tool_use","content":[{"type":"tool_use","name":"Read","input":{"file_path":"/x/task.json"}}]}}"#,
+        );
+        let t = parse(&more);
+        assert_eq!(t[0].doing, "Read /x/task.json", "the latest call wins; another tool by its name and file");
+        let bash_cmd = text.replace(r#","description":"List the board's tasks""#, "");
+        assert_eq!(parse(&bash_cmd)[0].doing, "herdr-projects list --json", "without a description, the command's first line");
+        let done = format!(
+            "{more}\n{}",
+            r#"{"type":"assistant","timestamp":"2026-10-19T09:00:20.000Z","message":{"stop_reason":"end_turn","content":[{"type":"text","text":"Очередь пуста."}]}}"#,
+        );
+        let t = parse(&done);
+        assert_eq!((t[0].doing.as_str(), t[0].a.as_str()), ("", "Очередь пуста."), "end_turn clears it");
+        let long = format!(
+            r#"{{"type":"user","timestamp":"2026-10-19T09:00:00.000Z","message":{{"content":"x"}}}}
+{{"type":"assistant","timestamp":"2026-10-19T09:00:05.000Z","message":{{"stop_reason":"tool_use","content":[{{"type":"tool_use","name":"Bash","input":{{"command":"{}"}}}}]}}}}"#,
+            "y".repeat(200)
+        );
+        assert_eq!(parse(&long)[0].doing.chars().count(), 81, "cut to 80 and an ellipsis");
+        let json = serde_json::to_value(&parse(&done)[0]).unwrap();
+        assert!(json.get("doing").is_none(), "an empty `doing` is not sent to the page");
     }
 
     #[test]

@@ -495,6 +495,8 @@ export interface TurnData {
   from: 'human' | 'board';
   q: string;
   a: string;
+  /** What the Coordinator is doing now (its last tool call), only on a turn that is still running. */
+  doing?: string;
 }
 
 export interface Request {
