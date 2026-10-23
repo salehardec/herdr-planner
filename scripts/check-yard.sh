@@ -62,6 +62,7 @@ case "$1" in
     case "$fmt" in
       '{{.Image}}') echo "sha256:aaaaaaaaaaaaaaaa" ;;
       '{{.State.Running}}') echo true ;;
+      *'HostConfig.LogConfig'*) if [ -e "$ST/log-unbounded" ]; then echo "json-file "; else echo "json-file 8m"; fi ;;
       *'HostConfig.NanoCpus'*) cat "$ST/nano" 2>/dev/null || echo 0 ;;
       *'HostConfig.DeviceRequests'*) if [ -e "$ST/gpu-req" ]; then echo '[{"Capabilities":[["gpu"]],"Count":-1}]'; else echo null; fi ;;
       *'herdr.yard.cpus'*) cat "$ST/label-cpus" 2>/dev/null || true ;;
@@ -88,7 +89,7 @@ case "$1" in
     if [ "$2" = "--cpus" ] && [ "${3:-0}" != 0 ]; then printf '%s' "$((3 * 1000000000))" >"$ST/nano"; fi
     exit 0 ;;
   start) : >"$ST/container"; exit 0 ;;
-  rm) rm -f "$ST/container"; exit 0 ;;
+  rm) rm -f "$ST/container" "$ST/log-unbounded"; exit 0 ;;
   exec)
     case "$*" in
       *"nvidia-smi -L"*) [ -e "$ST/card-dead" ] && exit 1; exit 0 ;;
@@ -104,6 +105,7 @@ EOF
 cat >"$BIN/rsync" <<'EOF'
 #!/bin/sh
 printf '%s\n' "$*" >>"$ST/rsync.log"
+if [ -e "$ST/rsync-fail" ]; then echo "rsync: change_dir failed" >&2; exit 23; fi
 exit 0
 EOF
 cat >"$BIN/cargo" <<'EOF'
@@ -115,7 +117,7 @@ chmod +x "$BIN/docker" "$BIN/rsync" "$BIN/cargo"
 
 fresh() {
   rm -f "$ST"/docker.log "$ST"/rsync.log "$ST"/cargo.log "$ST"/container "$ST"/image "$ST"/volume \
-    "$ST"/down "$ST"/progress "$ST"/stale-image "$ST"/label-cpus "$ST"/label-gpu "$ST"/nano "$ST"/gpu-req "$ST"/card-dead
+    "$ST"/down "$ST"/log-unbounded "$ST"/progress "$ST"/stale-image "$ST"/label-cpus "$ST"/label-gpu "$ST"/nano "$ST"/gpu-req "$ST"/card-dead
   rm -rf "$ST/out"
   : >"$ST/docker.log"; : >"$ST/rsync.log"; : >"$ST/cargo.log"
 }
@@ -144,7 +146,7 @@ expect "образ собран из Dockerfile, тег — его хеш" "buil
 expect "образ помечен herdr.shared=herdr-planner" "build --label herdr.shared=herdr-planner" "$ST/docker.log"
 expect "том кэша создан с той же меткой" "volume create --label herdr.shared=herdr-planner hp-yard-cache" "$ST/docker.log"
 expect "контейнер задачи назван по TMPDIR и помечен herdr.task" "run -d --name yard-PLN-7 --label herdr.task=PLN-7" "$ST/docker.log"
-expect "лимиты контейнера: 6 ЦП, 12 ГБ, 4096 процессов, no-new-privileges" "--cpus 6 --memory 12g --pids-limit 4096 --security-opt no-new-privileges" "$ST/docker.log"
+expect "лимиты контейнера: 6 ЦП, 12 ГБ, 4096 процессов, no-new-privileges" "--cpus 6 --memory 12g --pids-limit 4096 --log-driver json-file --log-opt max-size=8m --log-opt max-file=3 --security-opt no-new-privileges" "$ST/docker.log"
 expect "настройки верфи записаны в метки контейнера" "--label herdr.yard.cpus=6 --label herdr.yard.gpu=0" "$ST/docker.log"
 expect "том кэша смонтирован в /cache" "-v hp-yard-cache:/cache" "$ST/docker.log"
 expect "target сборки — внутри /work, не в общем кэше" "-e CARGO_TARGET_DIR=/work/target" "$ST/docker.log"
@@ -243,6 +245,74 @@ set -e
 kill "$HOLD" 2>/dev/null || true
 wait "$HOLD" 2>/dev/null || true
 expect "ожидающий слот пишет состояние ожидания" '"state":"waiting"' "$T/inner-progress"
+
+# ── the container's journal: header, the command's output, a line with the exit code and the duration (PLN-56) ──
+fresh
+mkdir -p "$ROOT/work/src/web/dist"
+: >"$ROOT/work/src/web/dist/index.html"
+: >"$T/journal"
+sed "s|/proc/1/fd/1|$T/journal|g" "$T/inner.sh" >"$T/inner-journal.sh"
+set +e
+env PATH="$BIN:$PATH" YARD_SLOT_USE=0 YARD_LABEL="check ui2" YARD_RUN=20260101-000000-1 \
+  sh "$T/inner-journal.sh" sh -c 'echo to-stdout; echo to-stderr >&2; exit 7' >"$T/inner-out" 2>"$T/inner-err"
+inner_rc=$?
+set -e
+[ "$inner_rc" = 7 ] || bad "журнал: код команды не меняется (получено $inner_rc, ждали 7)"
+expect "агент получает вывод как был (stdout)" "^to-stdout$" "$T/inner-out"
+expect "агент получает вывод как был (stderr тоже)" "^to-stderr$" "$T/inner-out"
+refuse "заголовок и итог — только в журнале, не в выводе агента" "\\[yard\\]" "$T/inner-out"
+expect "журнал: заголовок с временем, командой yard.sh и прогоном" "^\\[yard\\] ▶ [0-9]{4}-[0-9]{2}-[0-9]{2} [0-9:]{8} · yard.sh check ui2 · run 20260101-000000-1$" "$T/journal"
+expect "журнал: stdout и stderr команды" "^to-stdout$" "$T/journal"
+expect "журнал: stderr команды" "^to-stderr$" "$T/journal"
+expect "журнал: итог с кодом возврата и длительностью" "^\\[yard\\] ■ .* · yard.sh check ui2 · exit 7 · [0-9]+s$" "$T/journal"
+after "журнал: вывод идёт после заголовка и до итога" "▶" "to-stdout" "$T/journal"
+after "журнал: итог — после вывода" "to-stderr" "■" "$T/journal"
+: >"$T/journal"
+env PATH="$BIN:$PATH" YARD_SLOT_USE=0 YARD_LABEL="build" sh "$T/inner-journal.sh" true >/dev/null 2>&1
+expect "журнал: успешная команда — exit 0" "yard.sh build · exit 0 · " "$T/journal"
+sed "s|/proc/1/fd/1|$T/no-such-dir/journal|g" "$T/inner.sh" >"$T/inner-nojournal.sh"
+set +e
+env PATH="$BIN:$PATH" YARD_SLOT_USE=0 sh "$T/inner-nojournal.sh" sh -c 'echo still-here; exit 3' >"$T/inner-out" 2>&1
+inner_rc=$?
+set -e
+[ "$inner_rc" = 3 ] || bad "без журнала код команды тот же (получено $inner_rc)"
+expect "без журнала вывод агенту всё равно приходит" "^still-here$" "$T/inner-out"
+
+# A failed sync of the sources stops the command, as before the journal: the exit code is rsync's, the command never runs.
+: >"$T/journal"
+: >"$ST/rsync-fail"
+set +e
+env PATH="$BIN:$PATH" YARD_SLOT_USE=0 YARD_LABEL=test sh "$T/inner-journal.sh" sh -c 'echo RAN-ON-STALE-SOURCES' >"$T/inner-out" 2>&1
+inner_rc=$?
+set -e
+rm -f "$ST/rsync-fail"
+[ "$inner_rc" = 23 ] || bad "сбой rsync останавливает команду, код 23 (получено $inner_rc)"
+refuse "после сбоя rsync команда не запускается" "RAN-ON-STALE-SOURCES" "$T/inner-out"
+expect "журнал: итог сбоя rsync — exit 23" "yard.sh test · exit 23 · " "$T/journal"
+
+# the journal's clock is the host's: the offset travels with the command
+: >"$T/journal"
+env PATH="$BIN:$PATH" YARD_SLOT_USE=0 YARD_LABEL=tz YARD_TZ="UTC-05:00" sh "$T/inner-journal.sh" true >/dev/null 2>&1
+want=$(TZ="UTC-05:00" date '+%Y-%m-%d %H')
+expect "время журнала — по часам хоста (YARD_TZ)" "▶ $want:" "$T/journal"
+yard "$T/pln/PLN-7" test memory
+expect "смещение часов хоста уходит в контейнер" "-e YARD_TZ=UTC" "$ST/docker.log"
+
+# the container's log is bounded and a journal-less container is made again once it is idle
+fresh
+yard "$T/pln/PLN-7" up
+expect "лог контейнера ограничен: json-file, 8m, 3 файла" "--log-driver json-file --log-opt max-size=8m --log-opt max-file=3" "$ST/docker.log"
+fresh
+: >"$ST/container"
+: >"$ST/image"
+: >"$ST/volume"
+: >"$ST/log-unbounded"
+yard "$T/pln/PLN-7" up
+expect "контейнер со старым логом без границы пересоздаётся, когда свободен" "rm -f yard-PLN-7" "$ST/docker.log"
+expect "и поднимается с границей лога" "run -d --name yard-PLN-7 .*--log-opt max-size=8m" "$ST/docker.log"
+
+yard "$T/pln/PLN-7" test memory
+expect "команда в контейнере знает своё имя для журнала" "-e YARD_LABEL=test memory" "$ST/docker.log"
 
 # ── down keeps the cache ──
 fresh

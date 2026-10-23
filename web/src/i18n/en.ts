@@ -682,7 +682,7 @@ export const en: Record<string, string | string[]> = {
   'ctl.alreadyStopped': 'The container is already stopped.', 'ctl.stopFirst': 'The container is running: stop it first.',
   'ctl.logsTitle': 'Container logs', 'ctl.logsSearch': 'Search the logs', 'ctl.logsTail': 'Lines', 'ctl.logsLive': 'Auto-refresh',
   'ctl.logsRefresh': 'Refresh', 'ctl.logsFound': 'Lines found: {n} of {total}', 'ctl.logsLines': 'Lines: {n}',
-  'ctl.logsCut': 'Only the end of the log is shown: the beginning did not fit.', 'ctl.logsEmpty': 'The log is empty.', 'ctl.logsNoMatch': 'Nothing found.',
+  'ctl.logsCut': 'Only the end of the log is shown: the beginning did not fit.', 'ctl.logsEmpty': 'The log is empty.', 'ctl.logsEmptyYard': 'The log is empty. The output of scripts/yard.sh commands (build, test, check…) lands here: a header, the output and the exit code.', 'ctl.logsNoMatch': 'Nothing found.',
   'ctl.logsStopped': 'The container is not running — the log is not refreshed.', 'ctl.logsOff': 'Auto-refresh is off.',
   'ctl.state.running': 'running', 'ctl.state.exited': 'stopped', 'ctl.state.paused': 'paused', 'ctl.state.restarting': 'restarting',
   'ctl.state.created': 'created', 'ctl.state.dead': 'dead', 'ctl.state.gone': 'removed',

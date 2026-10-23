@@ -1352,7 +1352,13 @@ function sshMain(C, DATA) {
     st.logCalls = (st.logCalls || 0) + 1; saveSt();
     const total = 40 + st.logCalls;
     const lines = [];
-    for (let i = 1; i <= total; i++) lines.push((i % 17 === 0 ? 'ERROR ' : i % 5 === 0 ? 'WARN  ' : 'INFO  ') + c.name + ' line ' + i + (i % 9 === 0 ? ' \u001b[31mred\u001b[0m' : ''));
+    // The journal of a yard command (PLN-56): a header before the output, a line with the exit code and the time after it.
+    for (let i = 1; i <= total; i++) {
+      if (i === 1) lines.push('[yard] \u25b6 2026-01-01 10:00:00 \u00b7 yard.sh check \u00b7 run 20260101-100000-1');
+      lines.push((i % 17 === 0 ? 'ERROR ' : i % 5 === 0 ? 'WARN  ' : 'INFO  ') + c.name + ' line ' + i + (i % 9 === 0 ? ' \u001b[31mred\u001b[0m' : ''));
+      if (i === 12) lines.push('[yard] \u25a0 2026-01-01 10:00:09 \u00b7 yard.sh check \u00b7 exit 0 \u00b7 9s');
+      if (i === 24) lines.push('[yard] \u25a0 2026-01-01 10:01:09 \u00b7 yard.sh test \u00b7 exit 101 \u00b7 1m 9s');
+    }
     console.log(lines.slice(-Number(logsRe[1])).join('\n'));
     return;
   }
