@@ -733,8 +733,7 @@ if [ $# -gt 0 ]; then shift; fi
 off=$(date +%z)
 case "$off" in
   [+-][0-9][0-9][0-9][0-9])
-    sign=-
-    [ "${off%${off#?}}" = - ] && sign=+
+    case "$off" in -*) sign=+ ;; *) sign=- ;; esac
     rest=${off#?}
     HOST_TZ="UTC$sign${rest%??}:${rest#??}" ;;
   *) HOST_TZ=UTC ;;
