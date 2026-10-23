@@ -3,6 +3,7 @@ import { answered, panels, requests } from '../store';
 import { fromQueue, openRequest, queueCursor } from '../nav';
 import { t } from '../i18n';
 import { Gl } from './Gl';
+import { Grip } from './Grip';
 import './wait.css';
 
 /** «Ждёт тебя» as a queue to work through: open one, answer, and come back to the list with the cursor on the next. */
@@ -35,6 +36,7 @@ export function Wait(): JSX.Element {
         })}
       </div>
       {fromQueue.value && <div class="hint wnote">{t('wait.back')}</div>}
+      <Grip panel="wait" side="right" />
     </section>
   );
 }

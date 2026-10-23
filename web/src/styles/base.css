@@ -37,8 +37,9 @@
   --pl-panel-solid:color-mix(in srgb,var(--pl-bg) 97%,transparent);
   --pl-r:0.4375rem;
   /* the free middle of the screen between the navigator (left) and the focus card (right): the drawer of todos and the chat live there */
-  /* the navigator: wide enough for the names of the tasks (the status is only a glyph and a short word); the operator's own width (--nav-user, set by nav-width.ts) wins */
-  --nav-w:min(var(--nav-user,26rem),55vw); --focus-w:24.375rem;
+  /* the navigator and the focus card: wide enough for their content (names, cards, buttons); the operator's own widths
+     (--nav-user, --focus-user, set by panel-width.ts) win */
+  --nav-w:min(var(--nav-user,26rem),55vw); --focus-w:min(var(--focus-user,24.375rem),55vw);
   --mid-l-nav:calc(var(--nav-w) + 1.5rem); --mid-r-focus:calc(var(--focus-w) + 1.5rem);
   --mid-l:var(--mid-l-nav); --mid-r:var(--mid-r-focus);
 }
@@ -52,7 +53,7 @@
   --pl-panel:color-mix(in srgb,var(--pl-bg) 90%,transparent);
 }
 :root.bp1400 .win{--nav-w:min(var(--nav-user,22rem),55vw)}
-:root.bp1100 .win{--nav-w:min(var(--nav-user,21rem),55vw);--focus-w:20.625rem}
+:root.bp1100 .win{--nav-w:min(var(--nav-user,21rem),55vw);--focus-w:min(var(--focus-user,20.625rem),55vw)}
 /* a closed navigator or focus card gives its column back */
 .win.nav-off{--mid-l:0.75rem}
 .win.focus-off{--mid-r:0.75rem}
@@ -131,6 +132,17 @@ input.field:focus,textarea.field:focus,select.field:focus{border-color:var(--pl-
 .win.calm .panel,.win.calm .top-search input{backdrop-filter:none;background:var(--pl-panel-solid)}
 .panel>header{display:flex;justify-content:space-between;align-items:center;gap:0.5rem;padding:0.5rem 0.625rem;border-bottom:1px solid var(--pl-line);font-size:0.6875rem;letter-spacing:.06em;text-transform:uppercase;color:var(--pl-faint)}
 .panel>header b{color:var(--pl-title);font-weight:600}
+/* the edge of a panel that can be resized (ui/Grip.tsx): drag it to change the width, double click for the default. One rule for
+   every panel — the navigator, the focus card, «Ждёт тебя», the chat. The mark shows on the panel under the pointer and while the
+   edge has the keyboard's focus. */
+.panel-grip{position:absolute;top:0;bottom:0;width:0.5rem;cursor:col-resize;z-index:3;touch-action:none;border-radius:0.3125rem}
+.panel-grip.right{right:0}
+.panel-grip.left{left:0}
+.panel-grip::after{content:"";position:absolute;top:50%;left:50%;width:0.125rem;height:2.5rem;margin:-1.25rem 0 0 -0.0625rem;border-radius:0.0625rem;background:var(--pl-line);opacity:0;transition:opacity var(--m-fast),background var(--m-fast)}
+.panel:hover .panel-grip::after,.panel-grip:focus-visible::after,.panel-grip.drag::after{opacity:1}
+.panel-grip:hover::after,.panel-grip:focus-visible::after,.panel-grip.drag::after{background:var(--pl-accent)}
+.panel-grip:focus-visible{outline-offset:-2px}
+:root.bp900 .panel-grip{display:none}
 
 /* ── метки над сценой ── */
 .labels{position:absolute;inset:0;overflow:hidden;pointer-events:none;z-index:2}

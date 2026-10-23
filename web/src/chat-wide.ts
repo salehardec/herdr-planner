@@ -3,7 +3,7 @@
 import { effect, signal } from '@preact/signals';
 import { panels, persist } from './store';
 import { rootPx, scaleTick } from './scale';
-import { navWidth } from './nav-width';
+import { panelWidths } from './panel-width';
 
 export const WIDE_KEY = 'herdr-planner.chatWide';
 export const WIDE_TODO_KEY = 'herdr-planner.chatWideTodo';
@@ -57,7 +57,7 @@ export function installWideRoom(): void {
   win.appendChild(probe);
   const measure = (): void => {
     void scaleTick.value;
-    void navWidth.value;
+    void panelWidths.value;
     probe.style.left = panels.nav.value ? 'var(--mid-l-nav)' : '0.75rem';
     probe.style.right = panels.focus.value ? 'var(--mid-r-focus)' : '0.75rem';
     const room = probe.getBoundingClientRect().width;

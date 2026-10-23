@@ -160,7 +160,7 @@ if [ -n "${SECTIONS:-}" ]; then
   ) &
   JOBS="$JOBS $!:sections"
 else
-  for only in "boot,live,navigator,buttons,autopilot,manual,stack,queue,search" \
+  for only in "boot,live,navigator,panel widths,buttons,autopilot,manual,stack,queue,search" \
               "chat,todo,hints" \
               "lag,universes,framing,remote,scale,runners,menu card" \
               "station,crew,ship,theme,simple,planet states,narrow,top cards" \
