@@ -645,10 +645,11 @@ Rust 1.99, Node 22, закреплённый Chrome for Testing) с меткой
 месте (`docker update`), а карта, однажды попав в контейнер, остаётся: сорвавшаяся проба `nvidia-smi` её не отнимает и
 контейнер не трогает (`down` и `up` добавят карту, если она появилась позже). Верфь с меткой `gpu`, у которой
 отвечает `nvidia-smi`, даёт контейнеру карту
-(`--gpus all`, `NVIDIA_DRIVER_CAPABILITIES=compute,utility,graphics` и `/dev/dri`, если он есть), и проверки страницы
-рисуют на ней: `scripts/ui-check.mjs` печатает одну строку `renderer: …` — `ANGLE (NVIDIA, Vulkan … L4)` на верфи и
-`ANGLE (Google, Vulkan … SwiftShader)` в CI (`UI_GPU=vulkan|egl|gl|swiftshader` выбирает режим руками). Карта, которая
-отвечает `nvidia-smi`, но не поднимает WebGL (контейнер пережил перезагрузку драйвера), проверку не валит:
+`--gpus all`, `NVIDIA_DRIVER_CAPABILITIES=compute,utility,graphics` и `/dev/dri`, если он есть). Тогда все части
+страницы — и `ui-check.mjs`, и `big` (`perf-check.mjs`) — рисуют на ней и печатают одну строку `renderer: …`:
+`ANGLE (NVIDIA, Vulkan … L4)` на верфи и `ANGLE (Google, Vulkan … SwiftShader)` в CI (`UI_GPU=vulkan|egl|gl|swiftshader`
+выбирает режим руками). Карта, которая отвечает `nvidia-smi`, но не поднимает WebGL
+(контейнер пережил перезагрузку драйвера), проверку не валит:
 `chrome-gpu.mjs` пробует режим одноразовым браузером и откатывается на SwiftShader с объяснением, а `yard.sh` говорит,
 что карту вернут `down` и `up`. Образ несёт библиотеки GL/EGL/Vulkan и записи драйвера в
 `/usr/share/vulkan/icd.d` и `/usr/share/glvnd/egl_vendor.d`: toolkit
