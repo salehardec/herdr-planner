@@ -17,7 +17,7 @@
 //  - a section that fails is run once more from a fresh page, said out loud in the output and in the summary.
 
 import { spawn, execFileSync } from 'node:child_process';
-import { mkdtempSync, writeFileSync, readFileSync, existsSync, unlinkSync, utimesSync, rmSync, readdirSync, appendFileSync, realpathSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, writeFileSync, readFileSync, existsSync, unlinkSync, utimesSync, rmSync, readdirSync, appendFileSync, realpathSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -2751,6 +2751,80 @@ section('station', async () => {
   await resetUi();
 });
 
+section('strays', async () => {
+  // PLN-53: the processes finished tasks left running. The planner reads a table of stand-ins (load/procs.json); a «signal»
+  // only edits that file and is written to procs.json.signals, so nothing real is ever stopped.
+  await resetUi();
+  const procsFile = join(fixture, 'load', 'procs.json');
+  const sigFile = procsFile + '.signals';
+  const signals = () => (existsSync(sigFile) ? readFileSync(sigFile, 'utf8').split('\n').filter(Boolean) : []);
+  const rows = () => evalJs('[...document.querySelectorAll("#st-strays-table tbody tr")].map((r) => Number(r.dataset.pid))');
+  await evalJs('planner.goHome()');
+  await menuPick('Станция');
+  check('the station has the card of stray processes', await waitFor('!!document.querySelector("#st-strays")', 30000));
+  check('it lists the leftovers of done and archived tasks and of a copy no task has, by folder, whatever the program is',
+    await waitFor('document.querySelectorAll("#st-strays-table tbody tr").length === 6', 15000)
+    && (await rows()).slice().sort().join() === [9101, 9102, 9103, 9111, 9121, 9151].join(), JSON.stringify(await rows()));
+  check('a task in work, a task the board has not read yet, a folder outside the board and another user are not listed',
+    !(await exists('[data-pid="9131"]')) && !(await exists('[data-pid="9141"]')) && !(await exists('[data-pid="9161"]')) && !(await exists('[data-pid="9171"]')), JSON.stringify(await rows()));
+  check('each row says why: the task is done, archived, or has no such copy',
+    (await evalJs('document.querySelector("[data-pid=\\"9101\\"]").dataset.why')) === 'done' && (await evalJs('document.querySelector("[data-pid=\\"9111\\"]").dataset.why')) === 'archived'
+    && (await evalJs('document.querySelector("[data-pid=\\"9151\\"]").dataset.why')) === 'gone');
+  check('a helper sits under its agent (one step in), the agent is at the top',
+    (await evalJs('getComputedStyle(document.querySelector("[data-pid=\\"9102\\"] .st-cmd")).getPropertyValue("--depth")')).trim() === '1'
+    && (await evalJs('getComputedStyle(document.querySelector("[data-pid=\\"9101\\"] .st-cmd")).getPropertyValue("--depth")')).trim() === '0');
+  check('a row shows the task, the pid, the command, how long it runs and its memory',
+    await hasText('[data-pid="9102"]', 'ALP-13') && await hasText('[data-pid="9102"]', 'rea.mjs mcp') && await hasText('[data-pid="9102"]', '120 МиБ') && await hasText('[data-pid="9102"]', '3 ч'), await text('[data-pid="9102"]'));
+  check('a shell is shown but not ticked; the others are',
+    (await evalJs('document.querySelector("[data-pid=\\"9121\\"] input").checked')) === false && (await evalJs('document.querySelector("[data-pid=\\"9101\\"] input").checked')) === true);
+  check('«было → стало» counts the ticked ones', await hasText('#st-strays-was', 'Было процессов: 6 → станет: 1'), await text('#st-strays-was'));
+  check('the automatic cleaning is off by default', (await evalJs('document.querySelector("#st-strays-auto").dataset.auto')) === 'off');
+  check('the buttons start with a capital letter', (await evalJs('["#st-strays-stop","#st-strays-check","#st-strays-auto-btn"].every((b) => /^\\p{Lu}/u.test(document.querySelector(b).innerText))')));
+  await evalJs('document.querySelector("#st-strays").scrollIntoView({ block: "start" }); true');
+  await shot('station-strays.png');
+
+  // Stop: the first press changes nothing; the second sends SIGTERM parents first, SIGKILL only for the one that ignores it.
+  await click('#st-strays-stop');
+  check('the first press only asks again and nothing is signalled', await hasText('#st-strays-stop', 'Точно остановить') && signals().length === 0, await text('#st-strays-stop'));
+  await secondPress('#st-strays-stop');
+  check('the second press stops the ticked ones', await waitFor('document.querySelectorAll("#st-strays-table tbody tr").length === 1', 15000), JSON.stringify(await rows()));
+  const sig = signals();
+  check('the agent got SIGTERM before its helpers', sig.indexOf('TERM 9101') >= 0 && sig.indexOf('TERM 9101') < sig.indexOf('TERM 9102') && sig.indexOf('TERM 9101') < sig.indexOf('TERM 9103'), JSON.stringify(sig));
+  check('the one that ignores SIGTERM got SIGKILL after it, the others did not', sig.indexOf('TERM 9103') >= 0 && sig.indexOf('KILL 9103') > sig.indexOf('TERM 9103') && !sig.includes('KILL 9101') && !sig.includes('KILL 9102'), JSON.stringify(sig));
+  check('nothing of a task in work, outside the board, another user or the unticked shell was signalled', !sig.some((l) => /9131|9141|9161|9171|9121/.test(l)), JSON.stringify(sig));
+  check('the answer says what happened', await waitApi('/api/strays', (r) => r.journal.some((e) => e.who === 'human' && e.data.action === 'stop' && e.data.term === 4 && e.data.kill === 1 && e.data.count === 5)), await evalJs('fetch("/api/strays").then((x) => x.json()).then((r) => JSON.stringify(r.journal))'));
+  await click('#st-strays-log summary');
+  check('the journal of the card shows it, with the tasks', await hasText('#st-strays-log', 'Остановлено процессов: 5 из 5, из них SIGKILL: 1') && await hasText('#st-strays-log', 'ALP-13'), await text('#st-strays-log'));
+  check('the planner keeps a line about it in its own journal', await waitFor('plannerSnap().journal.some((j) => j.s === "runner" && j.text.includes("остановлено процессов завершённых задач"))', 8000));
+
+  // A new leftover is found by the loop and by «Проверить»; the server refuses a pid that is not a leftover.
+  const table = JSON.parse(readFileSync(procsFile, 'utf8'));
+  const copy13 = table.procs.find((p) => p.pid === 9161).cwd;
+  table.procs.push({ pid: 9201, ppid: 1, pgid: 9201, comm: 'omp', cmd: 'omp --auto-approve work', cwd: copy13, rss: 1 << 26, age_ms: 600000, start: 7001 });
+  table.procs.push({ pid: 9202, ppid: 1, pgid: 9202, comm: 'zsh', cmd: 'zsh', cwd: copy13, rss: 1 << 22, age_ms: 600000, start: 7002 });
+  writeFileSync(procsFile, JSON.stringify(table));
+  await click('#st-strays-check');
+  check('«Проверить» finds the new ones', await waitFor('document.querySelectorAll("#st-strays-table tbody tr").length === 3', 15000), JSON.stringify(await rows()));
+  const refused = await evalJs(`fetch("/api/strays/stop", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ targets: [{ pid: 9131, start: 5000 + 9131 }, { pid: 9161, start: 5000 + 9161 }], confirm: true }) }).then((x) => x.json())`);
+  check('a task in work and another user\'s process are refused even when asked by pid', refused.report?.items?.every((o) => o.result === 'refused') && refused.stopped === 0, JSON.stringify(refused.report));
+  check('and an unconfirmed stop is refused as a whole', (await evalJs(`fetch("/api/strays/stop", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ targets: [{ pid: 9201, start: 7001 }] }) }).then((x) => x.status)`)) === 400);
+  check('nothing was signalled for those', !signals().some((l) => /9131|9161|9201|9202/.test(l)), JSON.stringify(signals()));
+
+  // The automatic cleaning: the switch asks twice, then stops what has been seen long enough, never a shell.
+  await click('#st-strays-auto-btn');
+  check('switching on asks again and says what will go', await hasText('#st-strays-auto-btn', 'Точно включить') && await exists('#st-strays-auto-now') && (await evalJs('document.querySelector("#st-strays-auto").dataset.auto')) === 'off', await text('#st-strays-auto'));
+  await secondPress('#st-strays-auto-btn');
+  check('it is on', await waitFor('document.querySelector("#st-strays-auto")?.dataset.auto === "on"', 8000));
+  check('it stops the leftover by itself after the grace time', await waitFor('document.querySelectorAll("#st-strays-table tbody tr").length === 2', 20000) && signals().includes('TERM 9201'), JSON.stringify(signals()));
+  check('and leaves the shells', !signals().some((l) => /9202|9121/.test(l)) && JSON.parse(readFileSync(procsFile, 'utf8')).procs.some((p) => p.pid === 9202), JSON.stringify(signals()));
+  check('the journal tells the automatic cleaning from the human', await waitApi('/api/strays', (r) => r.auto === true && r.journal.some((e) => e.who === 'auto' && e.data.action === 'stop' && e.data.term === 1) && r.journal.some((e) => e.who === 'human' && e.data.action === 'switch' && e.data.on === true)), await evalJs('fetch("/api/strays").then((x) => x.json()).then((r) => JSON.stringify(r.journal))'));
+  await click('#st-strays-auto-btn');
+  check('switching off needs no second press', await waitFor('document.querySelector("#st-strays-auto")?.dataset.auto === "off"', 8000));
+  await evalJs('document.querySelector("#st-strays").scrollIntoView({ block: "start" }); true');
+  await shot('station-strays-after.png');
+  await resetUi();
+});
+
 section('crew wizard', async () => {
   // First run: the coach tour first, then the wizard «Экипаж корабля», once. ?nocoach and ?calm leave it out.
   await evalJs('localStorage.removeItem("herdr-planner.crew-seen"); localStorage.removeItem("herdr-planner.seen"); true');
@@ -3240,6 +3314,7 @@ section('planet states', async () => {
     const w = await evalJs(`world.debug().fxAt('alpha/2', 0.2)`);
     check(`${what}: a working planet is a still, bright ring; the planet that waits has its ring and glow`, a.moving === false && a.glow === b.glow && a.aura === b.aura && a.aura > 0.5 && a.glow > 0.3 && w.halo === 1 && w.glow > 0.3, JSON.stringify([a, b, w]));
     check(`${what}: no animation is left in the page's own styles`, await evalJs(`[...document.querySelectorAll('#win .gl.spin, #win .gl.beat')].every((e) => getComputedStyle(e).animationName === 'none')`));
+    check(`${what}: «Ждёт тебя» does not pulse, and stays highlighted in colour while something waits`, await evalJs(`(() => { const b = document.querySelector('#wait-btn'); const st = getComputedStyle(b); const c = b.cloneNode(true); c.classList.remove('hot'); b.parentNode.appendChild(c); const calm = getComputedStyle(c).color; c.remove(); return b.classList.contains('hot') && st.animationName === 'none' && st.color !== calm; })()`));
   };
   await navigate(base + '/?calm&nocoach');
   await frozen('?calm');
@@ -3865,9 +3940,32 @@ section('memory suggestions', async () => {
   check('its suggestion waits in the snapshot for the human', await waitFor('fetch("/api/state").then((r) => r.json()).then((s) => s.memory_suggestions.some((m) => m.task === "alpha/4" && m.lines.length === 2))', 15000), JSON.stringify(await pending()));
   check('and nothing is written without the human', filesIn(alphaMem).every((f) => !readFile(join(alphaMem, f)).includes('source: task alpha/4')) && filesIn(draftsOf('alpha')).every((f) => !readFile(join(draftsOf('alpha'), f)).includes('source: task alpha/4')));
   if (!doneAlready) check('the page tells about it', await waitFor('(document.querySelector("#toasts")?.innerText || "").includes("Есть что запомнить")', 8000), await text('#toasts'));
+  // «Ждёт тебя»: the proposal is a request of its own, counted, marked «В память», with the task and the universe in the row
+  const waitNum = () => evalJs('Number((document.querySelector("#wait-btn")?.innerText || "").replace(/\\D+/g, "")) || 0');
+  const memRow = (task) => `#drawer-wait .q.mem[data-request="memory:${task}"]`;
+  await resetUi();
+  await press('KeyB', 'b');
+  check('the proposal stands in «Ждёт тебя» with the mark «В память», its task and its universe', await waitFor(`!!document.querySelector('${memRow('alpha/4')}')`, 8000) && (await text(`${memRow('alpha/4')} .qk`)) === 'В память' && (await text(memRow('alpha/4'))).includes('ALP-4') && (await text(`${memRow('alpha/4')} .pj`)) === 'alpha', await text('#drawer-wait'));
+  await shot('memory-in-wait.png');
+  const waitedBefore = await waitNum();
+  check('and the count of «Ждёт тебя» includes it: the header, the button and the list agree', waitedBefore === await evalJs('document.querySelectorAll("#drawer-wait .q").length') && Number(await text('#drawer-wait header span:nth-child(2)')) === waitedBefore && (await evalJs('document.querySelectorAll("#drawer-wait .q.mem").length')) >= 1, `${waitedBefore}`);
+  check('no badge of its own beside «Ждёт тебя»', (await evalJs('[...document.querySelector("#right").children].map((e) => e.id).join()')) === 'wait-btn,mode');
+  await evalJs(`document.querySelector('${memRow('alpha/4')}').click()`);
+  check('a click opens the task\'s card in the Focus, with the proposal', await waitFor('plannerDebug().selected?.id === "alpha/4" && !!document.querySelector(\'#closing .mm-sug[data-sug="alpha/4"]\')', 15000), JSON.stringify(await pd()));
+  // the fields are as tall as their text, in the Focus too, and follow the text while it is edited
+  const fits = () => evalJs('[...document.querySelectorAll(".mm-sug textarea")].map((e) => ({ h: e.clientHeight, s: e.scrollHeight, v: e.value.length }))');
+  const fit0 = await fits();
+  check('the Focus shows each line whole: no scroll inside the field', fit0.length === 2 && fit0.every((f) => f.s <= f.h + 1), JSON.stringify(fit0));
+  await typeIn('#closing .mm-sug[data-sug="alpha/4"] textarea', Array.from({ length: 9 }, (_, i) => `Строка ${i + 1}: длинное рассуждение о том, почему тему держат только в localStorage.`).join('\n'));
+  await sleep(300);
+  const fit1 = await fits();
+  check('a long edit makes the field taller, still without a scroll', fit1[0].h > fit0[0].h * 2 && fit1[0].s <= fit1[0].h + 1, JSON.stringify({ fit0, fit1 }));
+  await shot('memory-suggestion-focus.png');
+  await typeIn('#closing .mm-sug[data-sug="alpha/4"] textarea', 'ALP-4: тема не хранится в базе — только localStorage и системная настройка.');
   await universeOf('alpha');
   // Other done tasks of this shard may carry a suggestion too (alpha/5 is approved by `requests`): this is about alpha/4's.
   check('the universe panel shows it with the lines editable', await waitFor('!!document.querySelector(\'#mem-universe .mm-sug[data-sug="alpha/4"]\')', 8000) && (await evalJs('document.querySelectorAll(\'#mem-universe .mm-sug[data-sug="alpha/4"] textarea\').length')) === 2);
+  check('the fields of the universe panel are whole too', (await evalJs('[...document.querySelectorAll("#mem-universe .mm-sug textarea")].every((e) => e.scrollHeight <= e.clientHeight + 1)')));
   await shot('memory-suggestion.png');
   await typeIn('#mem-universe .mm-sug[data-sug="alpha/4"] textarea', 'ALP-4: тема не хранится в базе — только localStorage и системная настройка.');
   const alphaStatus = gitStatus(alphaRoot);
@@ -3878,6 +3976,8 @@ section('memory suggestions', async () => {
   check('the edited lines become drafts with the task as the source', await waitLog(() => filesIn(draftsOf('alpha')).some((f) => { const t = readFile(join(draftsOf('alpha'), f)); return t.includes('source: task alpha/4') && t.includes('только localStorage'); }) && filesIn(draftsOf('alpha')).filter((f) => readFile(join(draftsOf('alpha'), f)).includes('source: task alpha/4')).length === 2, 10000), filesIn(draftsOf('alpha')).join(','));
   check('and the checkout of the universe is as it was: nothing written into docs/memory', gitStatus(alphaRoot) === alphaStatus && !filesIn(alphaMem).some((f) => readFile(join(alphaMem, f)).includes('source: task alpha/4')), gitStatus(alphaRoot));
   check('and the suggestion is gone', await waitFor('fetch("/api/state").then((r) => r.json()).then((s) => !s.memory_suggestions.some((m) => m.task === "alpha/4"))', 8000) && await waitFor('!document.querySelector(\'.mm-sug[data-sug="alpha/4"]\')', 8000));
+  await press('KeyB', 'b');
+  check('kept: the row leaves «Ждёт тебя» and the count goes down by one', await waitFor(`!document.querySelector('${memRow('alpha/4')}')`, 6000) && await waitFor(`document.querySelectorAll("#drawer-wait .q").length === ${waitedBefore - 1}`, 6000) && await waitFor(`Number((document.querySelector("#wait-btn")?.innerText || "").replace(/\\D+/g, "")) === ${waitedBefore - 1}`, 4000), `${await waitNum()} vs ${waitedBefore}`);
   await post('/api/refresh', {});
   await sleep(1500);
   check('it is not asked again for the same task', asked('ALP-4') === 1);
@@ -3897,8 +3997,68 @@ section('memory suggestions', async () => {
   check('and the suggestion still waits', await waitFor('fetch("/api/state").then((r) => r.json()).then((s) => s.memory_suggestions.some((m) => m.task === "delta/1"))', 4000));
   await go('delta/1');
   check('the task\'s own panel carries the suggestion beside its closing note', await waitFor('!!document.querySelector(\'#closing .mm-sug[data-sug="delta/1"]\')', 8000));
+  if (!(await evalJs('document.querySelector("#drawer-wait").classList.contains("open")'))) await press('KeyB', 'b');
+  const waitedMid = await waitNum();
+  check('the other proposal is in the list as well', !!(await evalJs(`!!document.querySelector('${memRow('delta/1')}')`)));
   await click('#closing [data-act="mem-sug-dismiss"]');
   check('«Не нужно» drops it and writes nothing', await waitFor('fetch("/api/state").then((r) => r.json()).then((s) => !s.memory_suggestions.some((m) => m.task === "delta/1"))', 8000) && !existsSync(join(fixture, 'projects', 'herdr', 'delta', 'docs', 'memory')));
+  check('dropped: the row leaves «Ждёт тебя» and the count goes down by one', await waitFor(`!document.querySelector('${memRow('delta/1')}')`, 6000) && await waitFor(`Number((document.querySelector("#wait-btn")?.innerText || "").replace(/\\D+/g, "")) === ${waitedMid - 1}`, 4000), `${await waitNum()} vs ${waitedMid}`);
+  // in bulk: tick cards or single lines, one button for all that are ticked. The fixture's board gets three more tasks to approve.
+  const boardFile = join(fixture, 'state', 'board.json');
+  const boardEdit = (f) => { const w = JSON.parse(readFileSync(boardFile, 'utf8')); f(w); writeFileSync(boardFile, JSON.stringify(w, null, 1)); };
+  const bulk = [[17, 'Первая пачка'], [18, 'Вторая пачка'], [19, 'Третья пачка']];
+  boardEdit((w) => { for (const [n, title] of bulk) if (!w.rows.some((r) => r.id === `alpha/${n}`)) w.rows.push({ id: `alpha/${n}`, app: 'claude', state: 'blocked', kind: 'permission', stage: 'approval', title, msg: 'Pass · 1 minor', reviewRound: 1 }); });
+  await post('/api/refresh', {});
+  check('three more tasks wait for approval', await waitFor('fetch("/api/state").then((r) => r.json()).then((s) => [17, 18, 19].every((n) => s.tasks.some((t) => t.id === "alpha/" + n)))', 15000));
+  for (const [n, title] of bulk) { const d = join(fixture, 'board', 'tasks', 'alpha', String(n)); mkdirSync(d, { recursive: true }); writeFileSync(join(d, 'closing.md'), `Сделано: ${title}. Тема больше не мигает при старте.\n`); }
+  const approved = [];
+  for (const [n] of bulk) approved.push(await post('/api/action', { action: 'approve', id: `alpha/${n}`, confirm: true }));
+  check('all three are proposed', await waitFor('fetch("/api/state").then((r) => r.json()).then((s) => [17, 18, 19].every((n) => s.memory_suggestions.some((m) => m.task === "alpha/" + n)))', 20000), JSON.stringify([await pending(), calls('claude.jsonl').filter((c) => c.suggest).map((c) => c.suggest), ]));
+  await resetUi();
+  await press('KeyB', 'b');
+  const bar = '#drawer-wait [data-batch="wait"]';
+  const barCount = () => evalJs(`Number(document.querySelector('${bar} [data-batch-count]')?.dataset.batchCount ?? -1)`);
+  const pickedBoxes = () => evalJs(`[...document.querySelectorAll('#drawer-wait [data-pick-card]')].filter((e) => e.checked).map((e) => e.dataset.pickCard)`);
+  check('each proposal in the list has its tick, and the bar is under the list', await waitFor(`[17, 18, 19].every((n) => !!document.querySelector('#drawer-wait [data-pick-card="alpha/' + n + '"]')) && !!document.querySelector('${bar}')`, 8000));
+  check('nothing is ticked at first: the bulk buttons wait', (await barCount()) === 0 && (await evalJs(`document.querySelector('${bar} [data-act="mem-batch-accept"]').disabled && document.querySelector('${bar} [data-act="mem-batch-dismiss"]').disabled`)));
+  const allLines = (await stateApi()).memory_suggestions.reduce((n, m) => n + m.lines.filter((l) => l.text.trim()).length, 0);
+  await click(`${bar} [data-act="mem-batch-all"]`);
+  check('«Выбрать все» ticks every card and every line', await waitFor(`Number(document.querySelector('${bar} [data-batch-count]')?.dataset.batchCount) === ${allLines}`, 4000) && (await pickedBoxes()).length === (await stateApi()).memory_suggestions.length, `${await barCount()} vs ${allLines}`);
+  await click(`${bar} [data-act="mem-batch-clear"]`);
+  check('«Снять выбор» clears them', await waitFor(`Number(document.querySelector('${bar} [data-batch-count]')?.dataset.batchCount) === 0`, 4000) && (await pickedBoxes()).length === 0);
+  // one ticked card dropped by «Не нужно»; the others stay, the count goes down by one
+  const n0 = await waitNum();
+  await click('#drawer-wait [data-pick-card="alpha/17"]');
+  check('a ticked card counts its two lines', await waitFor(`Number(document.querySelector('${bar} [data-batch-count]')?.dataset.batchCount) === 2`, 4000), `${await barCount()}`);
+  await click(`${bar} [data-act="mem-batch-dismiss"]`);
+  check('the bulk «Не нужно» drops the ticked card only and writes nothing', await waitFor('fetch("/api/state").then((r) => r.json()).then((s) => !s.memory_suggestions.some((m) => m.task === "alpha/17") && s.memory_suggestions.some((m) => m.task === "alpha/18") && s.memory_suggestions.some((m) => m.task === "alpha/19"))', 8000) && !filesIn(draftsOf('alpha')).some((f) => readFile(join(draftsOf('alpha'), f)).includes('source: task alpha/17')));
+  check('its row leaves «Ждёт тебя» at once and the count goes down by one', await waitFor(`!document.querySelector('${memRow('alpha/17')}')`, 6000) && await waitFor(`Number((document.querySelector("#wait-btn")?.innerText || "").replace(/\\D+/g, "")) === ${n0 - 1}`, 4000), `${await waitNum()} vs ${n0}`);
+  check('and the tick went with it', (await barCount()) === 0);
+  // a whole card and one line of another, in the universe's panel: one preview for both, one «да»
+  await universeOf('alpha');
+  await waitFor('!!document.querySelector(\'#mem-universe .mm-sug[data-sug="alpha/18"]\') && !!document.querySelector(\'#mem-universe .mm-sug[data-sug="alpha/19"]\')', 8000);
+  await click('#mem-universe [data-pick-card="alpha/18"]');
+  await click('#mem-universe [data-pick="alpha/19#1"]');
+  const ubar = '#mem-universe [data-batch="alpha"]';
+  check('the panel has the same bar, its count is the ticked lines (2 + 1)', await waitFor(`Number(document.querySelector('${ubar} [data-batch-count]')?.dataset.batchCount) === 3`, 4000), `${await barCount()}`);
+  check('a half-ticked card is shown half-ticked', await evalJs('document.querySelector(\'#mem-universe [data-pick-card="alpha/19"]\').indeterminate === true'));
+  check('the Waiting list shows the same ticks', await evalJs(`document.querySelector('#drawer-wait [data-pick-card="alpha/18"]').checked && document.querySelector('#drawer-wait [data-pick-card="alpha/19"]').indeterminate`));
+  await typeIn('#mem-universe .mm-sug[data-sug="alpha/19"] .mm-sug-line:has([data-pick="alpha/19#1"]) textarea', 'ALP-19: правка перед записью — тема не мигает.');
+  await click(`${ubar} [data-act="mem-batch-accept"]`);
+  check('keeping shows «было → стало» of both cards (3 changes) and writes nothing', await waitFor(`document.querySelectorAll('${ubar} .mm-batch-one').length === 2 && document.querySelectorAll('${ubar} .mm-chg-one').length === 3`, 10000) && filesIn(draftsOf('alpha')).every((f) => !/source: task alpha\/(18|19)/.test(readFile(join(draftsOf('alpha'), f)))), await text(ubar));
+  check('the edited line is in the preview', (await text(ubar)).includes('тема не мигает'));
+  await shot('memory-batch.png');
+  await click(`${ubar} [data-act="mem-batch-confirm"]`);
+  check('one «да» writes the ticked lines as drafts of their tasks (the unticked line of alpha/19 is not kept)', await waitLog(() => { const fs2 = filesIn(draftsOf('alpha')).map((f) => readFile(join(draftsOf('alpha'), f))); return fs2.filter((x) => x.includes('source: task alpha/18')).length === 2 && fs2.filter((x) => x.includes('source: task alpha/19')).length === 1; }, 10000), filesIn(draftsOf('alpha')).join(','));
+  check('both cards are taken off the list, and the rows leave «Ждёт тебя»', await waitFor('fetch("/api/state").then((r) => r.json()).then((s) => !s.memory_suggestions.some((m) => ["alpha/18", "alpha/19"].includes(m.task)))', 8000) && await waitFor(`!document.querySelector('${memRow('alpha/18')}') && !document.querySelector('${memRow('alpha/19')}')`, 6000));
+  check('the count went down by two more', await waitFor(`Number((document.querySelector("#wait-btn")?.innerText || "").replace(/\\D+/g, "")) === ${n0 - 3}`, 4000), `${await waitNum()} vs ${n0}`);
+  boardEdit((w) => { w.rows = w.rows.filter((r) => !bulk.some(([n]) => r.id === `alpha/${n}`)); });
+  await post('/api/refresh', {});
+  // «Ждёт тебя» in the top bar breathes while something waits and rests at zero
+  await resetUi();
+  const pulse = (sel) => evalJs(`getComputedStyle(document.querySelector(${JSON.stringify(sel)})).animationName`);
+  check('«Ждёт тебя» pulses while its count is above zero', (await waitNum()) > 0 && await evalJs('document.querySelector("#wait-btn").classList.contains("hot")') && (await pulse('#wait-btn')) !== 'none', await pulse('#wait-btn'));
+  check('and it is quiet at zero', await evalJs(`(() => { const b = document.querySelector('#wait-btn'); const c = b.cloneNode(true); c.classList.remove('hot'); c.id = 'wait-probe'; b.parentNode.appendChild(c); const n = getComputedStyle(c).animationName; c.remove(); return n === 'none'; })()`));
   // the switch: off, and a done task is not sent to the model
   await resetUi();
   await quasarOf();

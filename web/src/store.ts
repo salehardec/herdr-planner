@@ -119,7 +119,7 @@ export const taskOf = (id: string): Task | undefined => tasksIndex.value.get(id)
 export const requests = computed<Request[]>(() => {
   const s = snap.value;
   if (!s) return [];
-  return collectRequests({ tasks: currentView.value.tasks, coordinator: s.coordinator, runners: s.runners });
+  return collectRequests({ tasks: currentView.value.tasks, coordinator: s.coordinator, runners: s.runners, suggestions: s.memory_suggestions });
 });
 
 export const attention = computed(() => requests.value.filter((r) => r.type !== 'coordinator-options').length);
