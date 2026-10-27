@@ -13,6 +13,10 @@ import { api, post } from '../api';
 import { dialogOpen } from '../dialogs';
 import { Gl } from './Gl';
 import { Strays } from './Strays';
+import { AgentPick, ChainEditor, programMark, useModels } from './CrewPick';
+import { CrewSummary, Programs } from './CrewPrograms';
+import { Presets } from './CrewPresets';
+import { chainOf, chainValue } from './crew-view';
 import { coachShown, firstRunShown } from './FirstRun';
 import {
   callError, CallError, closeStation, crewSeen, fromLabel, isBool, openStation, PROGRAM_ORDER, programOf,
@@ -148,64 +152,35 @@ function ChangeCard(props: { reload: () => void }): JSX.Element | null {
 
 /* ───────── the forms that start a change ───────── */
 
-/** A program and a model («codex/gpt-5-codex»): the programs installed there, and the names its models answer with. */
+/** A program and one of its models («codex/gpt-5-codex»), both picked from what the program takes. */
 function AgentForm(props: {
   programs: StationProgram[]; current: string; clear?: { label: string; value: string };
   dlid: string; onPick: (value: string) => void; onCancel: () => void;
 }): JSX.Element {
-  const installed = props.programs.filter((p) => p.installed);
-  const cur = programOf(props.current);
-  const [prog, setProg] = useState(cur || installed[0]?.name || '');
   const [agent, setAgent] = useState(props.current);
-  const [names, setNames] = useState<string[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [mErr, setMErr] = useState('');
-  useEffect(() => {
-    let alive = true;
-    setLoading(true);
-    setMErr('');
-    if (!prog) { setLoading(false); return () => { alive = false; }; }
-    stationModels(prog)
-      .then((m) => {
-        if (!alive) return;
-        setNames(m.names);
-        setLoading(false);
-        if (!m.names.length) setMErr(t('st.noModels', { p: prog }));
-        setAgent((a) => (a.startsWith(`${prog}/`) ? a : m.names[0] ?? ''));
-      })
-      .catch((e) => {
-        if (!alive) return;
-        setNames([]);
-        setLoading(false);
-        setMErr(callError(e).message);
-      });
-    return () => { alive = false; };
-  }, [prog]);
-  const programsToShow = [...installed.map((p) => p.name), ...(cur && !installed.some((p) => p.name === cur) ? [cur] : [])];
-  const valid = agent.includes('/');
   return (
     <div class="fform">
-      <div class="prog" role="group" aria-label={t('st.program')}>
-        {programsToShow.map((name) => {
-          const p = props.programs.find((x) => x.name === name);
-          const mark = !p?.installed ? t('st.notInstalledMark') : p.signed_in === false ? t('st.notSignedMark') : '';
-          return (
-            <button type="button" key={name} class={`btn sm ${prog === name ? 'on' : ''}`} data-prog={name} aria-pressed={prog === name}
-              title={mark || t('st.signedMark')} onClick={() => { setProg(name); setAgent(''); }}>
-              {name}{mark && <span class="m"> {mark}</span>}
-            </button>
-          );
-        })}
-      </div>
-      <label class="fl2">{t('st.model')}
-        <input class="field" id={`st-model-${props.dlid}`} list={`st-models-${props.dlid}`} value={agent} placeholder={prog ? `${prog}/…` : ''}
-          onInput={(e) => setAgent((e.target as HTMLInputElement).value.trim())} />
-        <datalist id={`st-models-${props.dlid}`}>{names.map((n) => <option key={n} value={n} />)}</datalist>
-      </label>
-      <div class="hint">{loading ? t('st.modelsLoading') : mErr || (names.length ? t('st.modelsCount', { n: names.length }) : '')}</div>
+      <AgentPick programs={props.programs} value={agent} onChange={setAgent} id={props.dlid} />
       <div class="act">
-        <button class="btn primary sm" type="button" id={`st-next-${props.dlid}`} disabled={!valid || agent === props.current} onClick={() => props.onPick(agent)}>{t('st.next')}</button>
+        <button class="btn primary sm" type="button" id={`st-next-${props.dlid}`} disabled={!agent || agent === props.current} onClick={() => props.onPick(agent)}>{t('st.next')}</button>
         {props.clear && <button class="btn sm" type="button" onClick={() => props.onPick(props.clear?.value ?? '')}>{props.clear.label}</button>}
+        <button class="btn sm" type="button" onClick={props.onCancel}>{t('cancel')}</button>
+      </div>
+    </div>
+  );
+}
+
+/** A fallback chain: the subscriptions that take over, in order, when the role's agent cannot go on. */
+function ChainForm(props: { programs: StationProgram[]; current: string; agent: string; dlid: string; onPick: (value: string) => void; onCancel: () => void }): JSX.Element {
+  const start = chainValue(chainOf(props.current));
+  const [value, setValue] = useState(start);
+  const off = props.programs.filter((p) => p.installed && p.state.avail.state === 'limited');
+  return (
+    <div class="fform">
+      <ChainEditor programs={props.programs} value={value} onChange={setValue} id={props.dlid} agent={props.agent} />
+      {off.length > 0 && <div class="hint">{t('st.chainLimitedHint', { list: off.map((p) => `${p.name} ${programMark(p)}`).join(', ') })}</div>}
+      <div class="act">
+        <button class="btn primary sm" type="button" id={`st-next-${props.dlid}`} disabled={value === start} onClick={() => props.onPick(value)}>{t('st.next')}</button>
         <button class="btn sm" type="button" onClick={props.onCancel}>{t('cancel')}</button>
       </div>
     </div>
@@ -214,19 +189,10 @@ function AgentForm(props: {
 
 /** The reasoning effort a role's program takes (its models answer lists the levels). */
 function EffortForm(props: { agent: string; current: string; dlid: string; onPick: (value: string) => void; onCancel: () => void }): JSX.Element {
-  const [levels, setLevels] = useState<string[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [pick, setPick] = useState(props.current);
   const prog = programOf(props.agent);
-  useEffect(() => {
-    let alive = true;
-    setLoading(true);
-    if (!prog) { setLoading(false); return () => { alive = false; }; }
-    stationModels(prog)
-      .then((m) => { if (alive) { setLevels(m.effort); setLoading(false); } })
-      .catch(() => { if (alive) { setLevels([]); setLoading(false); } });
-    return () => { alive = false; };
-  }, [prog]);
+  const { data, loading } = useModels(prog);
+  const levels = data?.effort ?? [];
+  const [pick, setPick] = useState(props.current);
   const all = levels.includes(props.current) || !props.current ? levels : [props.current, ...levels];
   return (
     <div class="fform">
@@ -273,10 +239,13 @@ function Field(props: {
       {open && props.kind === 'effort' && (
         <EffortForm agent={props.agent} current={props.value} dlid={props.name} onPick={start} onCancel={() => setOpen(false)} />
       )}
-      {open && props.kind !== 'effort' && (
+      {open && props.kind === 'fallback' && (
+        <ChainForm programs={props.programs} current={props.value} agent={props.agent} dlid={props.name} onPick={start} onCancel={() => setOpen(false)} />
+      )}
+      {open && props.kind !== 'effort' && props.kind !== 'fallback' && (
         <AgentForm
           programs={props.programs} current={props.value} dlid={props.name}
-          clear={props.kind === 'fallback' ? { label: t('st.noFallback'), value: 'none' } : light ? { label: t('st.clearLight'), value: '' } : undefined}
+          clear={light ? { label: t('st.clearLight'), value: '' } : undefined}
           onPick={start} onCancel={() => setOpen(false)}
         />
       )}
@@ -297,7 +266,7 @@ const ROLES: { id: string; title: string; hint: string; agent?: string; effort?:
 
 /** The first program of the order that is installed and signed in (or needs no sign-in), and a model of it for each role. */
 async function suggestCrew(data: StationData): Promise<Record<string, string>> {
-  const prog = PROGRAM_ORDER.find((p) => data.programs.some((x) => x.name === p && x.installed && x.signed_in !== false));
+  const prog = PROGRAM_ORDER.find((p) => data.programs.some((x) => x.name === p && x.installed && ['ok', 'unknown'].includes(x.state.avail.state)));
   if (!prog) return {};
   const m = await stationModels(prog);
   if (!m.names.length) return {};
@@ -416,28 +385,6 @@ function Board(props: { repo: string; data: StationData; reload: () => void }): 
           {g.rows.map((s) => <SettingRow key={s.name} repo={props.repo} s={s} reload={props.reload} />)}
         </div>
       ))}
-    </section>
-  );
-}
-
-function Programs({ programs }: { programs: StationProgram[] }): JSX.Element {
-  const inst = programs.filter((p) => p.installed);
-  const missing = programs.filter((p) => !p.installed).map((p) => p.name);
-  return (
-    <section class="st-sec" id="st-programs">
-      <h3>{t('st.programs')}</h3>
-      {inst.length === 0 ? <div class="hint">{t('st.noPrograms')}</div> : (
-        <ul class="progs">
-          {inst.map((p) => (
-            <li key={p.name} class={p.signed_in === false ? 'no' : p.signed_in === true ? 'ok' : ''} data-program={p.name}>
-              <b>{p.name}</b> <span class="m">{p.version}</span>
-              <span class="sig">{p.signed_in === true ? t('st.signedIn') : p.signed_in === false ? t('st.notSignedIn') : t('st.noSignIn')}</span>
-              {p.signed_in === false && p.line && <span class="hint">{p.line}</span>}
-            </li>
-          ))}
-        </ul>
-      )}
-      {missing.length > 0 && <div class="hint">{t('st.notInstalled', { list: missing.join(', ') })}</div>}
     </section>
   );
 }
@@ -586,7 +533,9 @@ function StationBody(props: { wizard: boolean }): JSX.Element {
       {err && <ErrorBlock err={err} onRetry={reload} />}
       {data && (
         <>
+          <CrewSummary data={data} />
           <Programs programs={data.programs} />
+          {!wizard && <Presets data={data} repo={level === 'repo' ? repo : ''} reload={reload} />}
           <Crew repo={level === 'repo' ? repo : ''} data={data} reload={reload} wizard={wizard} suggest={suggest} />
           {wizard && sugDone && Object.keys(suggest).length === 0 && <div class="hint bad">{t('st.wizNone')}</div>}
           {wizard && (

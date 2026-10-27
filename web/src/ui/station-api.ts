@@ -35,12 +35,77 @@ export interface StationSetting {
   note: string;
 }
 
+/** Whether a program can be given work now: `missing` (not installed), `signed_out`, `limited` (out of allowance), `ok`, `unknown`. */
+export type AvailKind = 'missing' | 'signed_out' | 'limited' | 'ok' | 'unknown';
+
+export interface ProgramAvail {
+  state: AvailKind;
+  /** When the allowance comes back (ms) when Omarchy's windows say it; 0 otherwise. */
+  until_ms: number;
+  /** The board's own words for when («17:00»); empty when it does not say. */
+  until: string;
+  reason: string;
+  source: '' | 'board' | 'omarchy' | 'doctor';
+}
+
+export interface ProgramWindow { label: string; percent: number; resets_at_ms: number; severity: string }
+
+export interface ProgramState {
+  signed_in: boolean | null;
+  account: string;
+  unknown_why: string;
+  avail: ProgramAvail;
+  windows: ProgramWindow[];
+  limit_why: string;
+  stale: boolean;
+}
+
+export interface ProviderInfo { name: string; source: 'list' | 'usage' }
+export interface RoleUse { role: string; field: 'agent' | 'fallback'; value: string }
+export interface TaskUse { id: string; title: string; status: string }
+
 export interface StationProgram {
   name: string;
   installed: boolean;
   version: string;
   signed_in: boolean | null;
   line: string;
+  state: ProgramState;
+  providers: ProviderInfo[];
+  roles: RoleUse[];
+  tasks: TaskUse[];
+  models: { count: number; loading: boolean; listed: boolean; suggested: number };
+}
+
+/** What a preset says for one role; an empty field is «not set». */
+export interface PresetRole { agent: string; effort: string; fallback: string }
+export interface PresetItem { id: string; name: string; roles: Record<string, PresetRole>; diff: number }
+export interface PresetActive { id: string; name: string; state: 'matches' | 'differs'; diff: number }
+export interface PresetsData { list: PresetItem[]; active: PresetActive | null }
+
+export interface PresetStep {
+  role: string;
+  field: 'agent' | 'effort' | 'fallback';
+  /** The board's setting (`worker.agent`), or `light` (the planner's own preset). */
+  setting: string;
+  was: string;
+  was_from: string;
+  /** `null`: the board's `unset`. */
+  now: string | null;
+  error: string;
+  command: string;
+}
+
+export interface PresetPreview {
+  ok: true;
+  preset: { id: string; name: string };
+  repo: string;
+  steps: PresetStep[];
+  valid: boolean;
+  /** Programs whose models are still being read: their steps are not checked yet. */
+  loading: string[];
+  light_skipped: boolean;
+  affects: { running: Affect[]; waiting: Affect[] };
 }
 
 export interface StationData {
@@ -52,6 +117,7 @@ export interface StationData {
   settings: StationSetting[];
   programs: StationProgram[];
   light: string;
+  presets: PresetsData;
 }
 
 export interface ModelsData {
@@ -61,9 +127,13 @@ export interface ModelsData {
   effort: string[];
   note: string;
   loading: boolean;
+  /** The program lists its models itself (else `suggested` are the ones it was used with). */
+  listed: boolean;
+  suggested: string[];
+  providers: ProviderInfo[];
 }
 
-export interface Affect { id: string; title: string; status: string }
+export interface Affect { id: string; title: string; status: string; tag?: string; app?: string }
 
 export interface Preview {
   ok: true;
@@ -125,6 +195,24 @@ export const stationSet = (b: ChangeBody): Promise<SetResult> => post<SetResult>
 export const stationLight = (agent: string): Promise<{ ok: true; light: string }> =>
   post('/api/station/light', { agent, confirm: true });
 
+export interface PresetOp {
+  op: 'create' | 'capture' | 'template' | 'update' | 'rename' | 'delete';
+  id?: string;
+  name?: string;
+  roles?: Record<string, PresetRole>;
+  kind?: string;
+  repo?: string;
+}
+
+/** Create, capture, rename, update or delete a preset. The planner keeps them; the board is not asked. */
+export const presetsPost = (b: PresetOp): Promise<{ ok: true; id: string }> => post('/api/station/presets', b);
+
+export const presetPreview = (id: string, repo = ''): Promise<PresetPreview> =>
+  post<PresetPreview>('/api/station/preset/preview', { id, repo: repo || undefined });
+
+export const presetApply = (id: string, repo = ''): Promise<{ ok: true; preset: string; repo: string; ran: string[] }> =>
+  post('/api/station/preset/apply', { id, repo: repo || undefined, confirm: true });
+
 let lightCache: { value: string; at: number } | null = null;
 
 /**
@@ -172,7 +260,10 @@ export function fromLabel(from: string): string {
 }
 
 /** The programs the crew may name, in the order the page offers them. */
-export const PROGRAM_ORDER = ['claude', 'codex', 'omp', 'pi', 'opencode', 'agy', 'copilot', 'cursor-agent', 'droid', 'grok', 'devin', 'gemini'];
+export const PROGRAM_ORDER = [
+  'claude', 'codex', 'omp', 'pi', 'opencode', 'agy', 'copilot', 'cursor-agent', 'droid', 'grok', 'devin', 'gemini',
+  'kimi', 'qwen', 'kilo', 'hermes', 'letta', 'mastracode', 'qodercli',
+];
 
 /** The program of an agent value («codex/gpt-5» → «codex»). */
 export const programOf = (agent: string): string => (agent.includes('/') ? agent.slice(0, agent.indexOf('/')) : agent);

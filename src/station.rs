@@ -4,10 +4,12 @@
 
 use crate::app::{self, run_board, Shared};
 use crate::board::{Status, Task};
-use crate::config::AppConfig;
+use crate::config::{now_ms, AppConfig};
+use crate::crew;
 use crate::models;
-use crate::server::{clip, error, same_origin, valid_agent};
+use crate::server::{clip, error, same_origin};
 use crate::taskmeta;
+use crate::usage;
 use axum::extract::{Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
@@ -32,6 +34,13 @@ pub const PROGRAMS: &[&str] = &[
     "grok",
     "devin",
     "gemini",
+    "kimi",
+    "qwen",
+    "kilo",
+    "hermes",
+    "letta",
+    "mastracode",
+    "qodercli",
 ];
 pub(crate) const BOARD_WAIT: Duration = Duration::from_secs(30);
 const DOCTOR_WAIT: Duration = Duration::from_secs(60);
@@ -293,22 +302,26 @@ pub fn valid_value(value: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// `program/model` as a `*.agent` value takes it: returns the program, or says what shape is wrong.
+/// A `*.agent` value as the board takes it: `program/model`, or a bare `program` (the program's own default model).
+/// Returns the program, or says what shape is wrong.
 pub fn agent_program(value: &str) -> Result<String, String> {
-    match value.split_once('/') {
-        Some((program, model)) if models::valid_program(program) && !model.is_empty() => {
-            Ok(program.to_string())
-        }
-        _ => Err(format!(
-            "«{value}»: нужно «программа/модель», например claude/claude-opus-5-5"
-        )),
+    let (program, model) = match value.split_once('/') {
+        Some((p, m)) => (p, Some(m)),
+        None => (value, None),
+    };
+    if models::valid_program(program) && model.map_or(true, |m| !m.is_empty() && !m.starts_with('-')) {
+        Ok(program.to_string())
+    } else {
+        Err(format!(
+            "«{value}»: нужно «программа/модель», например claude/claude-opus-5-5, или одна программа"
+        ))
     }
 }
 
 /// A `*.agent` value against the models its program lists. An empty list (not read yet, or a program with no
 /// list) checks nothing: the board decides on apply.
 pub fn check_agent(value: &str, names: &[String]) -> Result<(), String> {
-    if names.is_empty() || names.iter().any(|n| n == value) {
+    if names.is_empty() || !value.contains('/') || names.iter().any(|n| n == value) {
         return Ok(());
     }
     let shown: Vec<&str> = names.iter().take(SHOWN_NAMES).map(String::as_str).collect();
@@ -325,7 +338,7 @@ pub fn check_agent(value: &str, names: &[String]) -> Result<(), String> {
 
 /// A `*.effort` value against the levels its program takes; an empty list checks nothing.
 pub fn check_effort(value: &str, levels: &[String], program: &str) -> Result<(), String> {
-    if levels.is_empty() || levels.iter().any(|l| l == value) {
+    if levels.is_empty() || value == "default" || levels.iter().any(|l| l == value) {
         return Ok(());
     }
     Err(format!(
@@ -493,7 +506,106 @@ pub struct StationQuery {
     repo: Option<String>,
 }
 
-async fn station_read(app: &Shared, q: StationQuery) -> Result<Value, Fail> {
+/// What the page knows about one program of the crew: its install, the sign-in, the state, the models, the providers
+/// inside, and who uses it.
+struct Gathered {
+    program: Program,
+    state: crew::State,
+    names: Vec<String>,
+    effort: Vec<String>,
+    loading: bool,
+    /// The names offered when the program lists none: the models it was used with.
+    suggested: Vec<String>,
+    providers: Vec<crew::Provider>,
+}
+
+/// Every program of the crew with its state. Reads Omarchy's records and the cached models answers; asks the board
+/// nothing that waits (a program's models are read in the background the first time).
+async fn gather(app: &Shared, doctor: &str, installed: &[String]) -> Vec<Gathered> {
+    let tasks: Vec<Task> = app.snapshot.read().await.tasks.clone();
+    let hits = crew::hits_of(&tasks);
+    let mut out = Vec::new();
+    for program in programs_of(doctor, installed) {
+        let usage = if program.installed {
+            usage::agent_by_id(&program.name)
+        } else {
+            usage::AgentUsage::default()
+        };
+        let listed = if program.installed {
+            models::get(&app.cfg, &program.name).await
+        } else {
+            models::Models::default()
+        };
+        let state = crew::judge(&crew::Facts {
+            program: &program.name,
+            installed: program.installed,
+            doctor_signed_in: program.signed_in,
+            doctor_line: &program.line,
+            models_account: &listed.note,
+            usage: &usage,
+            hits: &hits,
+            now: now_ms(),
+        });
+        let seen = if program.installed { usage::seen_models(&program.name) } else { Vec::new() };
+        let providers = crew::providers_of(&program.name, &listed.names, &seen);
+        let suggested = if listed.names.is_empty() { crew::seen_names(&program.name, &seen) } else { Vec::new() };
+        out.push(Gathered {
+            program,
+            state,
+            names: listed.names,
+            effort: listed.effort,
+            loading: listed.loading,
+            suggested,
+            providers,
+        });
+    }
+    out
+}
+
+/// The programs for the page: the doctor's reading plus everything `gather` found.
+fn programs_json(gathered: &[Gathered], settings: &[Setting], light: &str, tasks: &[Task]) -> Vec<Value> {
+    gathered
+        .iter()
+        .map(|g| {
+            let mut v = serde_json::to_value(&g.program).unwrap_or(Value::Null);
+            if let Some(o) = v.as_object_mut() {
+                o.insert("state".into(), json!(g.state));
+                o.insert("providers".into(), json!(g.providers));
+                o.insert("roles".into(), json!(crew::roles_using(&g.program.name, settings, light)));
+                o.insert("tasks".into(), json!(crew::tasks_using(&g.program.name, tasks)));
+                o.insert(
+                    "models".into(),
+                    json!({
+                        "count": g.names.len(),
+                        "loading": g.loading,
+                        "listed": !g.names.is_empty(),
+                        "suggested": g.suggested.len(),
+                    }),
+                );
+            }
+            v
+        })
+        .collect()
+}
+
+/// The presets with how far each is from the crew now, and which is active.
+fn presets_json(cfg: &AppConfig, settings: &[Setting], light: &str, repo: &str) -> Value {
+    let store = crew::read_store(cfg);
+    let diffs: Vec<(String, usize)> = store
+        .presets
+        .iter()
+        .map(|p| (p.id.clone(), crew::plan(p, settings, light, repo).len()))
+        .collect();
+    let list: Vec<Value> = store
+        .presets
+        .iter()
+        .zip(&diffs)
+        .map(|(p, (_, diff))| json!({"id": p.id, "name": p.name, "roles": p.roles, "diff": diff}))
+        .collect();
+    json!({"list": list, "active": crew::active_of(&store, &diffs, repo)})
+}
+
+async fn station_read(app: &Shared, q: StationQuery, installed: &[String]) -> Result<Value, Fail> {
     let repo = q.repo.unwrap_or_default();
     if !repo.is_empty() && !taskmeta::valid_repo(&repo) {
         return Err(Fail::new(400, "bad universe name"));
@@ -501,6 +613,9 @@ async fn station_read(app: &Shared, q: StationQuery) -> Result<Value, Fail> {
     let (settings, doctor) = tokio::join!(read_settings(&app.cfg, &repo), read_doctor(&app.cfg));
     let settings = settings?;
     let doctor = doctor?;
+    let light = read_light(&app.cfg);
+    let gathered = gather(app, &doctor, installed).await;
+    let tasks: Vec<Task> = app.snapshot.read().await.tasks.clone();
     Ok(json!({
         "ok": true,
         "level": if repo.is_empty() { "you" } else { "repo" },
@@ -508,14 +623,15 @@ async fn station_read(app: &Shared, q: StationQuery) -> Result<Value, Fail> {
         "repos": repos_of(app),
         "version": doctor_version(&doctor),
         "settings": settings,
-        "programs": programs_of(&doctor, &available()),
-        "light": read_light(&app.cfg),
+        "programs": programs_json(&gathered, &settings, &light, &tasks),
+        "light": light,
+        "presets": presets_json(&app.cfg, &settings, &light, &repo),
     }))
 }
 
 /// `GET /api/station?repo=R`: the crew, the board's settings and the light preset.
 pub async fn station_get(State(app): State<Shared>, Query(q): Query<StationQuery>) -> Response {
-    match station_read(&app, q).await {
+    match station_read(&app, q, &available()).await {
         Ok(v) => Json(v).into_response(),
         Err(f) => f.into_response(),
     }
@@ -531,6 +647,7 @@ async fn models_read(app: &Shared, q: ModelsQuery) -> Result<Value, Fail> {
         return Err(Fail::new(400, "такой программы нет"));
     }
     let listed = models_of(app, &q.program).await;
+    let seen = usage::seen_models(&q.program);
     Ok(json!({
         "ok": true,
         "program": q.program,
@@ -538,6 +655,9 @@ async fn models_read(app: &Shared, q: ModelsQuery) -> Result<Value, Fail> {
         "effort": listed.effort,
         "note": listed.note,
         "loading": listed.loading,
+        "listed": !listed.names.is_empty(),
+        "suggested": if listed.names.is_empty() { crew::seen_names(&q.program, &seen) } else { Vec::new() },
+        "providers": crew::providers_of(&q.program, &listed.names, &seen),
     }))
 }
 
@@ -610,11 +730,32 @@ async fn check(
         let Some(agent) = find(settings, &format!("{role}.agent")).map(|s| s.value.clone()) else {
             return Ok(());
         };
-        let Some((program, _)) = agent.split_once('/') else {
+        let program = crew::program_of(&agent).to_string();
+        if program.is_empty() || program == "none" {
             return Ok(());
-        };
-        let program = program.to_string();
+        }
         return check_effort(value, &models_of(app, &program).await.effort, &program);
+    }
+    if name.ends_with(".fallback") {
+        let mut cache: Map<String, Value> = Map::new();
+        let mut programs: Vec<String> = Vec::new();
+        for item in value.split(',') {
+            if let Ok(p) = agent_program(item.trim()) {
+                if !programs.contains(&p) {
+                    programs.push(p);
+                }
+            }
+        }
+        for p in programs {
+            cache.insert(p.clone(), json!(models_of(app, &p).await.names));
+        }
+        return crew::check_fallback(value, &|p: &str| {
+            cache
+                .get(p)
+                .and_then(Value::as_array)
+                .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+                .unwrap_or_default()
+        });
     }
     Ok(())
 }
@@ -738,15 +879,261 @@ pub async fn station_light(
     if body.confirm != Some(true) {
         return error(StatusCode::BAD_REQUEST, "нужно подтверждение: было → стало");
     }
-    if !body.agent.is_empty() && !valid_agent(&body.agent) {
-        return error(
-            StatusCode::BAD_REQUEST,
-            "нужно «программа/модель», например codex/gpt-5.5",
-        );
+    if !body.agent.is_empty() {
+        if let Err(e) = agent_program(&body.agent) {
+            return error(StatusCode::BAD_REQUEST, e);
+        }
     }
     match write_light(&app.cfg, &body.agent) {
         Ok(()) => Json(json!({"ok": true, "light": body.agent})).into_response(),
         Err(e) => error(StatusCode::INTERNAL_SERVER_ERROR, e),
+    }
+}
+
+/* ───────── the crew presets ───────── */
+
+/// One apply at a time: two sets of `set` commands would interleave.
+static APPLY: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+fn level_of(repo: Option<String>) -> Result<String, Fail> {
+    let repo = repo.unwrap_or_default().trim().to_string();
+    if !repo.is_empty() && !taskmeta::valid_repo(&repo) {
+        return Err(Fail::new(400, "недопустимое имя вселенной"));
+    }
+    Ok(repo)
+}
+
+#[derive(Deserialize)]
+pub struct PresetBody {
+    /// `create`, `capture`, `template`, `update`, `rename` or `delete`.
+    op: String,
+    id: Option<String>,
+    name: Option<String>,
+    roles: Option<std::collections::BTreeMap<String, crew::RoleSet>>,
+    /// `max`, `claude`, `economy` or `noclaude` for `template`.
+    kind: Option<String>,
+    repo: Option<String>,
+}
+
+fn store_fail(e: String) -> Fail {
+    Fail::new(422, e)
+}
+
+async fn presets_change(app: &Shared, body: PresetBody) -> Result<Value, Fail> {
+    let name = body.name.clone().unwrap_or_default();
+    let id_of = || body.id.clone().ok_or_else(|| Fail::new(400, "нет набора: дайте id"));
+    let id = match body.op.as_str() {
+        "create" => {
+            let roles = body.roles.clone().unwrap_or_default();
+            crew::edit_store(&app.cfg, |s| crew::add_preset(s, &name, &roles)).map_err(store_fail)?
+        }
+        "capture" => {
+            let repo = level_of(body.repo.clone())?;
+            let settings = read_settings(&app.cfg, &repo).await.map_err(Fail::refused)?;
+            let roles = crew::capture(&settings, &read_light(&app.cfg));
+            crew::edit_store(&app.cfg, |s| crew::add_preset(s, &name, &roles)).map_err(store_fail)?
+        }
+        "template" => {
+            let kind = body.kind.clone().unwrap_or_default();
+            let doctor = read_doctor(&app.cfg).await?;
+            let gathered = gather(app, &doctor, &available()).await;
+            let cats: Vec<crew::Cat> = gathered
+                .iter()
+                .map(|g| crew::Cat {
+                    program: g.program.name.clone(),
+                    usable: g.program.installed && matches!(g.state.avail.state, "ok" | "unknown"),
+                    names: if g.names.is_empty() { g.suggested.clone() } else { g.names.clone() },
+                    effort: g.effort.clone(),
+                })
+                .collect();
+            let (default_name, roles) = crew::template(&kind, &cats).map_err(|e| {
+                let wait = if gathered.iter().any(|g| g.loading) { " Модели ещё читаются — повторите через минуту." } else { "" };
+                Fail::new(422, format!("{e}.{wait}"))
+            })?;
+            let name = if name.trim().is_empty() { default_name } else { name };
+            crew::edit_store(&app.cfg, |s| crew::add_preset(s, &name, &roles)).map_err(store_fail)?
+        }
+        "update" => {
+            let id = id_of()?;
+            let roles = body.roles.clone().unwrap_or_default();
+            crew::edit_store(&app.cfg, |s| crew::update_preset(s, &id, &roles)).map_err(store_fail)?;
+            id
+        }
+        "rename" => {
+            let id = id_of()?;
+            crew::edit_store(&app.cfg, |s| crew::rename_preset(s, &id, &name)).map_err(store_fail)?;
+            id
+        }
+        "delete" => {
+            let id = id_of()?;
+            crew::edit_store(&app.cfg, |s| crew::delete_preset(s, &id)).map_err(store_fail)?;
+            id
+        }
+        _ => return Err(Fail::new(400, "неизвестное действие с набором")),
+    };
+    Ok(json!({"ok": true, "id": id}))
+}
+
+/// `POST /api/station/presets`: create, capture, rename, update and delete the planner's crew presets. The board is
+/// not asked: a preset only holds values; applying it is `station_preset_apply`.
+pub async fn station_presets(
+    State(app): State<Shared>,
+    headers: HeaderMap,
+    Json(body): Json<PresetBody>,
+) -> Response {
+    if !same_origin(&headers) {
+        return error(StatusCode::FORBIDDEN, "cross-origin request refused");
+    }
+    match presets_change(&app, body).await {
+        Ok(v) => Json(v).into_response(),
+        Err(f) => f.into_response(),
+    }
+}
+
+#[derive(Deserialize)]
+pub struct ApplyBody {
+    id: String,
+    repo: Option<String>,
+    confirm: Option<bool>,
+}
+
+/// The preset, and the steps that bring the board to it, each checked against the models and efforts the programs list.
+/// Programs whose models are still being read are named, since their steps are not checked yet.
+async fn prepared(app: &Shared, id: &str, repo: &str) -> Result<(crew::Preset, Vec<crew::Step>, Vec<String>), Fail> {
+    let preset = crew::read_store(&app.cfg)
+        .presets
+        .into_iter()
+        .find(|p| p.id == id)
+        .ok_or_else(|| Fail::new(404, "такого набора нет"))?;
+    let settings = read_settings(&app.cfg, repo).await.map_err(Fail::refused)?;
+    let light = read_light(&app.cfg);
+    let mut steps = crew::plan(&preset, &settings, &light, repo);
+    let mut programs: Vec<String> = Vec::new();
+    for set in preset.roles.values() {
+        for p in std::iter::once(crew::program_of(&set.agent).to_string()).chain(crew::chain_programs(&set.fallback)) {
+            if models::valid_program(&p) && !programs.contains(&p) {
+                programs.push(p);
+            }
+        }
+    }
+    for st in &steps {
+        if st.field == "effort" && st.now.is_some() {
+            let current = find(&settings, &st.setting.replace("effort", "agent")).map(|s| crew::program_of(&s.value).to_string());
+            if let Some(p) = current.filter(|p| models::valid_program(p) && !programs.contains(p)) {
+                programs.push(p);
+            }
+        }
+    }
+    let mut lists: std::collections::BTreeMap<String, (Vec<String>, Vec<String>)> = std::collections::BTreeMap::new();
+    let mut loading: Vec<String> = Vec::new();
+    for p in &programs {
+        let m = models_of(app, p).await;
+        if m.loading {
+            loading.push(p.clone());
+        }
+        lists.insert(p.clone(), (m.names, m.effort));
+    }
+    crew::check_steps(&mut steps, &preset, &settings, &|p: &str| lists.get(p).cloned().unwrap_or_default());
+    Ok((preset, steps, loading))
+}
+
+fn command_text(step: &crew::Step, repo: &str) -> String {
+    match crew::command_of(step, repo) {
+        Some(args) => format!("herdr-projects {}", args.join(" ")),
+        None => String::new(),
+    }
+}
+
+/// `POST /api/station/preset/preview`: the full «было → стало» of a preset over every role, and the tasks it touches.
+pub async fn station_preset_preview(
+    State(app): State<Shared>,
+    headers: HeaderMap,
+    Json(body): Json<ApplyBody>,
+) -> Response {
+    if !same_origin(&headers) {
+        return error(StatusCode::FORBIDDEN, "cross-origin request refused");
+    }
+    let result = async {
+        let repo = level_of(body.repo.clone())?;
+        let (preset, steps, loading) = prepared(&app, &body.id, &repo).await?;
+        let tasks: Vec<Task> = app.snapshot.read().await.tasks.clone();
+        let light_skipped = !repo.is_empty() && preset.roles.get("light").is_some_and(|r| !r.agent.is_empty());
+        let rows: Vec<Value> = steps
+            .iter()
+            .map(|s| {
+                let mut v = serde_json::to_value(s).unwrap_or(Value::Null);
+                if let Some(o) = v.as_object_mut() {
+                    o.insert("command".into(), json!(command_text(s, &repo)));
+                }
+                v
+            })
+            .collect();
+        Ok::<Value, Fail>(json!({
+            "ok": true,
+            "preset": {"id": preset.id, "name": preset.name},
+            "repo": repo,
+            "steps": rows,
+            "valid": steps.iter().all(|s| s.error.is_empty()),
+            "loading": loading,
+            "light_skipped": light_skipped,
+            "affects": crew::affected(&tasks, &repo),
+        }))
+    }
+    .await;
+    match result {
+        Ok(v) => Json(v).into_response(),
+        Err(f) => f.into_response(),
+    }
+}
+
+/// `POST /api/station/preset/apply`: the steps of the preview, one board command after the other in the preview's
+/// order, after the same checks. A refusal stops the run and says what was done and where it stopped.
+pub async fn station_preset_apply(
+    State(app): State<Shared>,
+    headers: HeaderMap,
+    Json(body): Json<ApplyBody>,
+) -> Response {
+    if !same_origin(&headers) {
+        return error(StatusCode::FORBIDDEN, "cross-origin request refused");
+    }
+    let result = async {
+        if body.confirm != Some(true) {
+            return Err(Fail::new(400, "нужно подтверждение: было → стало"));
+        }
+        let repo = level_of(body.repo.clone())?;
+        let _one_at_a_time = APPLY.lock().await;
+        let (preset, steps, _) = prepared(&app, &body.id, &repo).await?;
+        if let Some(bad) = steps.iter().find(|s| !s.error.is_empty()) {
+            return Err(Fail::new(422, format!("{}: {}", bad.setting, bad.error)));
+        }
+        let mut ran: Vec<String> = Vec::new();
+        for step in &steps {
+            let done = if step.light() {
+                write_light(&app.cfg, step.now.as_deref().unwrap_or(""))
+            } else {
+                let args = crew::command_of(step, &repo).unwrap_or_default();
+                let out = board_run(&app.cfg, &args, BOARD_WAIT).await;
+                if out.ok() { Ok(()) } else { Err(out.words()) }
+            };
+            if let Err(why) = done {
+                app::refresh(&app).await;
+                let before = if ran.is_empty() { "Ничего не изменилось.".to_string() } else { format!("Уже выполнено: {}.", ran.join(", ")) };
+                return Err(Fail::new(422, format!("{} остановилась: {why}. {before} Остальное не тронуто.", step.setting)));
+            }
+            ran.push(step.setting.clone());
+        }
+        crew::edit_store(&app.cfg, |s| {
+            s.active.insert(repo.clone(), preset.id.clone());
+            Ok(())
+        })
+        .map_err(|e| Fail::new(500, e))?;
+        app::refresh(&app).await;
+        Ok::<Value, Fail>(json!({"ok": true, "preset": preset.name, "repo": repo, "ran": ran}))
+    }
+    .await;
+    match result {
+        Ok(v) => Json(v).into_response(),
+        Err(f) => f.into_response(),
     }
 }
 
@@ -872,8 +1259,9 @@ mod tests {
             agent_program("omp/deepseek/deepseek-v4-flash").unwrap(),
             "omp"
         );
-        assert!(agent_program("claude").is_err());
+        assert_eq!(agent_program("kimi").unwrap(), "kimi", "a program alone takes its own default model");
         assert!(agent_program("claude/").is_err());
+        assert!(agent_program("claude/-x").is_err());
         assert!(agent_program("Claude/x").is_err());
         let names = vec![
             "claude/claude-opus-5-5".to_string(),
@@ -886,6 +1274,7 @@ mod tests {
             check_agent("claude/nope", &[]).is_ok(),
             "no list checks nothing"
         );
+        assert!(check_agent("claude", &names).is_ok(), "a program alone is not a model");
     }
 
     #[test]
@@ -895,6 +1284,7 @@ mod tests {
         let err = check_effort("ultra", &levels, "codex").unwrap_err();
         assert!(err.contains("codex") && err.contains("low, high"), "{err}");
         assert!(check_effort("ultra", &[], "omp").is_ok());
+        assert!(check_effort("default", &levels, "codex").is_ok(), "default is the program's own");
     }
 
     #[test]
@@ -926,5 +1316,269 @@ mod tests {
         let (names, _) = models::parse("codex", "codex takes ...\n\ncodex/gpt-5.5\n");
         assert_eq!(names, vec!["codex/gpt-5.5"]);
         assert!(models::parse_effort("nothing here").is_empty());
+    }
+
+    /* ───────── the endpoints, against a stand-in board ───────── */
+
+    use axum::body::to_bytes;
+    use std::path::Path as FsPath;
+
+    fn show_json(extra: &[(&str, &str, &str)]) -> String {
+        let mut rows: Vec<String> = Vec::new();
+        let mut all = vec![
+            ("coordinator.agent", "claude/claude-opus-5-5", "you"),
+            ("coordinator.effort", "medium", "you"),
+            ("plan.agent", "claude/claude-opus-5-5", "you"),
+            ("reviewer.agent", "claude/claude-opus-5-5", "you"),
+            ("reviewer.effort", "high", "you"),
+            ("reviewer.fallback", "none", "built in"),
+            ("worker.agent", "claude/claude-sonnet-5-5", "you"),
+            ("worker.effort", "high", "you"),
+            ("worker.fallback", "none", "built in"),
+        ];
+        all.extend_from_slice(extra);
+        for (n, v, from) in all {
+            let place = if from == "built in" { "builtin" } else { "you" };
+            rows.push(format!(
+                r#"{{"name":"{n}","kind":"work","value":"{v}","from":"{from}","place":"{place}","own":{},"note":""}}"#,
+                from != "built in"
+            ));
+        }
+        format!(r#"{{"settings":[{}],"problems":[]}}"#, rows.join(","))
+    }
+
+    /// A board that logs every call, answers `show --json` and `models`, and refuses the setting named in `refuse`.
+    fn stand_in_board(dir: &FsPath, refuse: &str) -> (String, PathBuf) {
+        let log = dir.join("board.log");
+        let show = dir.join("show.json");
+        std::fs::write(&show, show_json(&[])).unwrap();
+        let body = format!(
+            r#"echo "$@" >> {log}
+case "$1" in
+  show) cat {show};;
+  doctor) echo "✓ claude 2.1.303, signed in (worker.agent)"; echo "✗ codex 0.9.2, not signed in: codex login"; echo "✓ omp 1.5.0, API keys: no sign-in needed";;
+  models)
+    case "$2" in
+      claude) printf 'claude takes a short name.\n\nclaude/claude-opus-5-5\nclaude/claude-sonnet-5-5\nclaude/claude-haiku-5-5\n\nEffort (worker.effort and the like): low, medium, high, xhigh, max (from `claude --help`).\n';;
+      codex) printf 'codex takes the names codex lists for the account it is signed in with (here: your ChatGPT sign-in (go plan)). Write one:\n\ncodex/gpt-6-luna\n\nEffort (worker.effort and the like): low, high, ultra (from `codex debug models`).\n';;
+      omp) printf 'omp: any name omp takes (not checked: omp has no list of them).\n\nEffort (worker.effort and the like): off, low, high (from `omp --help`).\n';;
+      *) echo "models: unknown program $2" >&2; exit 2;;
+    esac;;
+  set|unset) if [ "$2" = "{refuse}" ]; then echo "$2: refused by the stand-in" >&2; exit 3; fi;;
+  list|coordinator) echo "[]";;
+  *) exit 1;;
+esac"#,
+            log = log.display(),
+            show = show.display(),
+            refuse = refuse
+        );
+        let script = dir.join("board.sh");
+        crate::testutil::write_exec(&script, format!("#!/bin/sh\n{body}\n"));
+        (script.display().to_string(), log)
+    }
+
+    async fn json_of(resp: Response) -> (StatusCode, Value) {
+        let status = resp.status();
+        let bytes = to_bytes(resp.into_body(), 1 << 20).await.unwrap();
+        (status, serde_json::from_slice(&bytes).unwrap_or(Value::Null))
+    }
+
+    fn app_with_board(dir: &FsPath, refuse: &str) -> (Shared, PathBuf) {
+        let (board, log) = stand_in_board(dir, refuse);
+        let cfg = AppConfig { herdr_projects: board, ..crate::testutil::test_cfg(dir) };
+        (app::App::new(cfg), log)
+    }
+
+    fn board_commands(log: &FsPath) -> Vec<String> {
+        std::fs::read_to_string(log)
+            .unwrap_or_default()
+            .lines()
+            .filter(|l| l.starts_with("set ") || l.starts_with("unset "))
+            .map(String::from)
+            .collect()
+    }
+
+    fn economy(app: &Shared) -> String {
+        let roles = crew_roles(&[
+            ("coordinator", "claude/claude-opus-5-5", "medium", ""),
+            ("worker", "codex/gpt-6-luna", "ultra", "claude/claude-sonnet-5-5, omp"),
+            ("reviewer", "claude/claude-opus-5-5", "high", "codex/gpt-6-luna"),
+            ("light", "omp/deepseek/deepseek-v4-flash", "", ""),
+        ]);
+        crew::edit_store(&app.cfg, |s| crew::add_preset(s, "Экономный", &roles)).unwrap()
+    }
+
+    fn crew_roles(rows: &[(&str, &str, &str, &str)]) -> std::collections::BTreeMap<String, crew::RoleSet> {
+        rows.iter()
+            .map(|(r, a, e, f)| (r.to_string(), crew::RoleSet { agent: a.to_string(), effort: e.to_string(), fallback: f.to_string() }))
+            .collect()
+    }
+
+    /// Waits until the programs' models answers are read. The answers are cached for the whole test run: a test that
+    /// ends (and removes its stand-in board) while one is being read would leave a failed answer for the others.
+    async fn wait_models(app: &Shared, programs: &[&str]) {
+        for p in programs {
+            for _ in 0..200 {
+                if !models::get(&app.cfg, p).await.loading {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        }
+    }
+
+    fn headers() -> HeaderMap {
+        HeaderMap::new()
+    }
+
+    #[tokio::test]
+    async fn applying_a_preset_runs_the_boards_set_commands_in_the_order_of_the_preview() {
+        let dir = tempfile::tempdir().unwrap();
+        let (app, log) = app_with_board(dir.path(), "");
+        let id = economy(&app);
+        // warm the models answers so the checks have lists
+        wait_models(&app, &["claude", "codex", "omp"]).await;
+        let body = || ApplyBody { id: id.clone(), repo: None, confirm: Some(true) };
+        let (code, prev) = json_of(station_preset_preview(State(app.clone()), headers(), Json(ApplyBody { confirm: None, ..body() })).await).await;
+        assert_eq!(code, StatusCode::OK, "{prev}");
+        assert_eq!(prev["valid"], true, "{prev}");
+        let steps: Vec<String> = prev["steps"].as_array().unwrap().iter().map(|s| format!("{} {} → {}", s["setting"].as_str().unwrap(), s["was"].as_str().unwrap(), s["now"].as_str().unwrap_or("unset"))).collect();
+        assert_eq!(
+            steps,
+            vec![
+                "reviewer.fallback none → codex/gpt-6-luna",
+                "worker.agent claude/claude-sonnet-5-5 → codex/gpt-6-luna",
+                "worker.effort high → ultra",
+                "worker.fallback none → claude/claude-sonnet-5-5, omp",
+                "light  → omp/deepseek/deepseek-v4-flash",
+            ],
+            "the preview lists every field that changes, the roles in order, the agent before its effort and fallback"
+        );
+        assert!(prev["steps"][1]["command"].as_str().unwrap().ends_with("set worker.agent codex/gpt-6-luna"));
+        assert_eq!(prev["steps"][4]["command"], "", "the light preset is the planner's, not a board command");
+        assert!(board_commands(&log).is_empty(), "the preview changes nothing");
+
+        // not without the confirmation
+        let (code, _) = json_of(station_preset_apply(State(app.clone()), headers(), Json(ApplyBody { confirm: None, ..body() })).await).await;
+        assert_eq!(code, StatusCode::BAD_REQUEST);
+        assert!(board_commands(&log).is_empty());
+
+        let (code, done) = json_of(station_preset_apply(State(app.clone()), headers(), Json(body())).await).await;
+        assert_eq!(code, StatusCode::OK, "{done}");
+        // the roles in order: coordinator, plan, reviewer, worker; for each the agent, the effort, the fallback
+        assert_eq!(
+            board_commands(&log),
+            vec![
+                "set reviewer.fallback codex/gpt-6-luna",
+                "set worker.agent codex/gpt-6-luna",
+                "set worker.effort ultra",
+                "set worker.fallback claude/claude-sonnet-5-5, omp",
+            ]
+        );
+        assert_eq!(read_light(&app.cfg), "omp/deepseek/deepseek-v4-flash", "the light preset is kept by the planner");
+        assert_eq!(crew::read_store(&app.cfg).active[""], id, "the planner remembers which preset it applied");
+    }
+
+    #[tokio::test]
+    async fn a_refusal_stops_the_run_and_says_what_was_done() {
+        let dir = tempfile::tempdir().unwrap();
+        let (app, log) = app_with_board(dir.path(), "worker.effort");
+        let id = economy(&app);
+        wait_models(&app, &["claude", "codex", "omp"]).await;
+        let (code, err) = json_of(
+            station_preset_apply(State(app.clone()), headers(), Json(ApplyBody { id: id.clone(), repo: None, confirm: Some(true) })).await,
+        )
+        .await;
+        assert_eq!(code, StatusCode::UNPROCESSABLE_ENTITY, "{err}");
+        let msg = err["error"].as_str().unwrap();
+        assert!(msg.contains("worker.effort") && msg.contains("refused by the stand-in"), "{msg}");
+        assert!(msg.contains("Уже выполнено: reviewer.fallback, worker.agent"), "{msg}");
+        let cmds = board_commands(&log);
+        assert_eq!(cmds.len(), 3, "stops at the refused one: {cmds:?}");
+        assert!(crew::read_store(&app.cfg).active.is_empty(), "a run that stopped makes nothing active");
+        assert_eq!(read_light(&app.cfg), "", "and the planner's own part has not run yet");
+    }
+
+    #[tokio::test]
+    async fn a_preset_with_a_bad_model_is_refused_before_anything_runs() {
+        let dir = tempfile::tempdir().unwrap();
+        let (app, log) = app_with_board(dir.path(), "");
+        let roles = crew_roles(&[("reviewer", "claude/claude-nope", "", ""), ("worker", "codex/gpt-6-luna", "", "")]);
+        let id = crew::edit_store(&app.cfg, |s| crew::add_preset(s, "Кривой", &roles)).unwrap();
+        wait_models(&app, &["claude", "codex"]).await;
+        let (code, err) = json_of(station_preset_apply(State(app.clone()), headers(), Json(ApplyBody { id, repo: None, confirm: Some(true) })).await).await;
+        assert_eq!(code, StatusCode::UNPROCESSABLE_ENTITY);
+        assert!(err["error"].as_str().unwrap().contains("такой модели нет"), "{err}");
+        assert!(board_commands(&log).is_empty(), "nothing is sent when one step is wrong");
+    }
+
+    #[tokio::test]
+    async fn the_station_shows_a_subscription_the_board_says_is_out_of_allowance() {
+        let dir = tempfile::tempdir().unwrap();
+        let (app, _log) = app_with_board(dir.path(), "");
+        {
+            let mut snap = app.snapshot.write().await;
+            let mut t = crate::board::Task::default();
+            t.id = "planner/7".into();
+            t.repo = "planner".into();
+            t.tag = "PLN-7".into();
+            t.app = "codex".into();
+            t.status = Status::Working;
+            t.msg = "codex took over from claude: out of allowance until 17:00".into();
+            snap.tasks = vec![t];
+        }
+        let installed: Vec<String> = ["claude", "codex", "omp"].map(String::from).to_vec();
+        let q = StationQuery { repo: None };
+        let v = station_read(&app, q, &installed).await.unwrap();
+        wait_models(&app, &["claude", "codex", "omp"]).await;
+        let prog = |name: &str| v["programs"].as_array().unwrap().iter().find(|p| p["name"] == name).unwrap().clone();
+        let claude = prog("claude");
+        assert_eq!(claude["state"]["avail"]["state"], "limited", "{claude}");
+        assert_eq!(claude["state"]["avail"]["until"], "17:00");
+        assert_eq!(claude["state"]["avail"]["source"], "board");
+        let tags: Vec<&str> = claude["roles"].as_array().unwrap().iter().map(|r| r["role"].as_str().unwrap()).collect();
+        assert_eq!(tags, vec!["coordinator", "plan", "reviewer", "worker"], "who uses it");
+        let codex = prog("codex");
+        assert_eq!(codex["state"]["avail"]["state"], "signed_out", "codex is not signed in: {codex}");
+        assert_eq!(codex["tasks"][0]["id"], "PLN-7", "the task that runs on codex now");
+        let omp = prog("omp");
+        assert_eq!(omp["state"]["signed_in"], Value::Null);
+        assert!(omp["state"]["unknown_why"].as_str().unwrap().contains("ключам API"), "{omp}");
+        assert_eq!(prog("pi")["state"]["avail"]["state"], "missing");
+        // the stand-in board lists three models for claude only after the first read: the program says it is loading or not
+        assert!(claude["models"]["loading"].is_boolean());
+    }
+
+    #[tokio::test]
+    async fn presets_are_saved_from_the_current_crew_and_the_station_says_which_is_active() {
+        let dir = tempfile::tempdir().unwrap();
+        let (app, _log) = app_with_board(dir.path(), "");
+        let make = |op: &str, name: &str| PresetBody {
+            op: op.into(),
+            id: None,
+            name: Some(name.into()),
+            roles: None,
+            kind: None,
+            repo: None,
+        };
+        let (code, saved) = json_of(station_presets(State(app.clone()), headers(), Json(make("capture", "Сейчас"))).await).await;
+        assert_eq!(code, StatusCode::OK, "{saved}");
+        let id = saved["id"].as_str().unwrap().to_string();
+        let installed: Vec<String> = vec!["claude".into()];
+        let v = station_read(&app, StationQuery { repo: None }, &installed).await.unwrap();
+        wait_models(&app, &["claude"]).await;
+        assert_eq!(v["presets"]["list"][0]["name"], "Сейчас");
+        assert_eq!(v["presets"]["list"][0]["diff"], 0, "the captured crew is the crew");
+        assert_eq!(v["presets"]["active"]["state"], "matches");
+        // a second preset is not active until it is applied; renaming and deleting
+        let (code, _) = json_of(station_presets(State(app.clone()), headers(), Json(PresetBody { id: Some(id.clone()), ..make("rename", "Рабочий") })).await).await;
+        assert_eq!(code, StatusCode::OK);
+        let (code, dup) = json_of(station_presets(State(app.clone()), headers(), Json(make("create", "рабочий"))).await).await;
+        assert_eq!(code, StatusCode::UNPROCESSABLE_ENTITY, "{dup}");
+        let (code, _) = json_of(station_presets(State(app.clone()), headers(), Json(PresetBody { id: Some(id), ..make("delete", "") })).await).await;
+        assert_eq!(code, StatusCode::OK);
+        let v = station_read(&app, StationQuery { repo: None }, &installed).await.unwrap();
+        assert!(v["presets"]["list"].as_array().unwrap().is_empty());
+        assert!(v["presets"]["active"].is_null());
     }
 }

@@ -11,6 +11,7 @@ mod blocks;
 mod board;
 mod config;
 mod coordinator;
+mod crew;
 mod db;
 mod events;
 mod gitlag;

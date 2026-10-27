@@ -131,6 +131,9 @@ pub fn router(app: Shared) -> Router {
         .route("/api/station/preview", post(station::station_preview))
         .route("/api/station/set", post(station::station_set))
         .route("/api/station/light", post(station::station_light))
+        .route("/api/station/presets", post(station::station_presets))
+        .route("/api/station/preset/preview", post(station::station_preset_preview))
+        .route("/api/station/preset/apply", post(station::station_preset_apply))
         .route("/api/ship", get(ship::ship_get).post(ship::ship_post))
         .route("/api/logout", post(api_logout))
         .route_layer(middleware::from_fn_with_state(

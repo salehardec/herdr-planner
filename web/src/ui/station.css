@@ -7,12 +7,72 @@
 .lvl{display:flex;flex-wrap:wrap;gap:0.375rem;align-items:center;margin-top:0.25rem}
 .lvl .kl{font-size:0.6562rem;color:var(--pl-faint);text-transform:uppercase;letter-spacing:.06em}
 .lvl .field{width:auto;min-width:8.75rem}
-.progs{list-style:none;margin:0;padding:0;display:grid;gap:0.25rem;font-size:0.75rem}
-.progs li{display:flex;flex-wrap:wrap;gap:2px 0.5rem;align-items:baseline;min-width:0}
+/* The summary line: who leads each role, which subscriptions are down. */
+.st-sum{display:flex;flex-wrap:wrap;gap:0.25rem 1rem;align-items:baseline;margin-top:0.5rem;padding:0.4375rem 0.625rem;border:1px solid var(--pl-line);border-radius:0.4375rem;background:var(--pl-tile);font-size:0.7188rem;min-width:0}
+.st-sum .sum-leads{display:flex;flex-wrap:wrap;gap:0.125rem 0.75rem;min-width:0}
+.st-sum .lead{white-space:nowrap}
+.st-sum .lead b{color:var(--pl-title);font-weight:600;white-space:normal;word-break:break-all}
+.st-sum .kl{color:var(--pl-faint);font-size:0.6562rem;text-transform:uppercase;letter-spacing:.05em}
+.st-sum .sum-down{font-weight:600}
+.st-sum .sum-down.ok{color:var(--c-green)}
+.st-sum .sum-down.bad{color:var(--c-yellow)}
+/* The programs: one card each */
+.progs{list-style:none;margin:0;padding:0;display:grid;gap:0.375rem;font-size:0.75rem}
+.progs .prog{display:grid;gap:0.25rem;padding:0.5rem 0.625rem;border:1px solid var(--pl-line);border-radius:0.4375rem;background:var(--pl-tile);min-width:0}
+.progs .prog.limited{border-color:var(--c-yellow)}
+.progs .prog.signed_out{border-color:var(--c-red)}
+.progs .pr-head{display:flex;flex-wrap:wrap;gap:2px 0.5rem;align-items:baseline;min-width:0}
 .progs .m{color:var(--pl-faint);font-size:0.6875rem}
 .progs .sig{color:var(--pl-dim);font-size:0.7188rem}
-.progs li.ok .sig{color:var(--c-green)}
-.progs li.no .sig{color:var(--c-yellow)}
+.progs .prog.ok .sig{color:var(--c-green)}
+.progs .prog.signed_out .sig{color:var(--c-red)}
+.chip{font-size:0.6562rem;border:1px solid var(--pl-line);border-radius:0.5625rem;padding:0 0.4375rem;white-space:nowrap;color:var(--pl-dim)}
+.chip.ok{color:var(--c-green);border-color:var(--c-green)}
+.chip.limited,.chip.warn{color:var(--c-yellow);border-color:var(--c-yellow)}
+.chip.signed_out{color:var(--c-red);border-color:var(--c-red)}
+.progs .pr-line{display:flex;flex-wrap:wrap;gap:2px 0.5rem;align-items:baseline;font-size:0.7188rem;min-width:0}
+.progs .pr-line .kl{color:var(--pl-faint);font-size:0.6562rem;text-transform:uppercase;letter-spacing:.05em;min-width:5.5rem}
+.progs .unk{color:var(--pl-dim);font-style:italic}
+.progs .warn,.station .warn{color:var(--c-yellow)}
+.progs .wins{list-style:none;margin:0;padding:0;display:grid;gap:1px}
+.progs .wins li.warn{color:var(--c-yellow)}
+.progs .wins li.crit{color:var(--c-red)}
+.progs .chips,.pr-models .chips{list-style:none;margin:0;padding:0;display:flex;flex-wrap:wrap;gap:0.25rem}
+.progs .chips li,.pr-models .chips li{border:1px solid var(--pl-line);border-radius:0.5625rem;padding:0 0.4375rem;font-size:0.6875rem;color:var(--pl-text);word-break:break-all}
+.progs .tg{color:var(--pl-accent-ink);font-weight:600}
+.pr-m summary{cursor:pointer;color:var(--pl-dim);font-size:0.7188rem}
+.pr-models{display:grid;gap:0.25rem;margin-top:0.25rem}
+/* Presets */
+.pr-active{font-size:0.75rem;padding:0.375rem 0.625rem;border-radius:0.4375rem;border:1px solid var(--pl-line);background:var(--pl-tile);color:var(--pl-dim)}
+.pr-active.matches{border-color:var(--c-green);color:var(--c-green)}
+.pr-active.differs{border-color:var(--c-yellow);color:var(--c-yellow)}
+.presets{list-style:none;margin:0;padding:0;display:grid;gap:0.375rem}
+.presets>li{display:grid;gap:0.375rem;padding:0.5rem 0.625rem;border:1px solid var(--pl-line);border-radius:0.4375rem;background:var(--pl-tile);min-width:0}
+.presets>li.active{border-color:var(--pl-accent)}
+.pr-row{display:flex;flex-wrap:wrap;gap:0.25rem 0.5rem;align-items:center;min-width:0}
+.pr-row .nm{color:var(--pl-title);font-size:0.7812rem;overflow-wrap:anywhere}
+.pr-row .grow{flex:1 1 0.5rem}
+.pr-brief{overflow-wrap:anywhere;margin:0}
+.pr-new{display:grid;gap:0.375rem;padding:0.5rem;border:1px dashed var(--pl-line);border-radius:0.4375rem}
+.pe{display:grid;gap:0.5rem;padding:0.5rem;border:1px dashed var(--pl-line);border-radius:0.375rem}
+.pe-role{display:grid;gap:0.375rem;padding:0.4375rem 0.5rem;border:1px solid var(--pl-line);border-radius:0.375rem;min-width:0}
+.pe-fb{display:grid;gap:0.25rem}
+.pe-fb>.kl{color:var(--pl-faint);font-size:0.6562rem;text-transform:uppercase;letter-spacing:.05em}
+.pick{display:grid;gap:0.25rem;min-width:0}
+.chain{display:grid;gap:0.375rem;min-width:0}
+.chain-list{margin:0;padding:0;list-style:none;display:grid;gap:0.25rem}
+.chain-list li{display:flex;flex-wrap:wrap;gap:0.25rem 0.5rem;align-items:center;min-width:0;font-size:0.75rem}
+.chain-list .n{color:var(--pl-faint);min-width:1rem}
+.chain-list code{word-break:break-all;color:var(--pl-text)}
+.chain-add{display:grid;gap:0.25rem;padding:0.375rem;border:1px dashed var(--pl-line);border-radius:0.375rem}
+/* The apply card of a preset: every step as «было → стало» */
+.pv-steps{margin:0;padding:0;list-style:none;display:grid;gap:0.375rem}
+.pv-steps li{display:grid;gap:2px;padding:0.3125rem 0.4375rem;border:1px solid var(--pl-line);border-radius:0.3125rem;min-width:0}
+.pv-steps li.bad{border-color:var(--c-red)}
+.pv-name{font-size:0.7188rem;color:var(--pl-title);font-weight:600}
+.pv-cmd{margin:0;overflow-wrap:anywhere}
+.pv-cmd code{font-size:0.6562rem}
+.pv-affects{display:grid;gap:0.25rem}
 .role{display:grid;gap:0.375rem;padding:0.5625rem 0.6875rem;border:1px solid var(--pl-line);border-radius:0.4375rem;background:var(--pl-tile);min-width:0}
 .rh{display:flex;flex-wrap:wrap;gap:2px 0.625rem;align-items:baseline}
 .rh>b{color:var(--pl-title);font-size:0.7812rem}
