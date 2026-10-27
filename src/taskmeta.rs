@@ -88,6 +88,18 @@ pub fn read_task(data_dir: &Path, repo: &str, n: u64) -> Option<TaskMeta> {
     Some(parse_task(&v))
 }
 
+/// The hand-overs the board kept on task `repo/n` (`handovers`, oldest first: `{at, role, from, to, why}`): the lasting
+/// record of «codex took over from claude: out of allowance until 17:00», which the row's own line loses at the
+/// next report of the agent. Empty when there is no record or none was kept.
+pub fn read_handovers(data_dir: &Path, repo: &str, n: u64) -> Vec<Value> {
+    let Some(dir) = task_dir(data_dir, repo, n) else { return Vec::new() };
+    let Ok(text) = std::fs::read_to_string(dir.join("task.json")) else { return Vec::new() };
+    serde_json::from_str::<Value>(&text)
+        .ok()
+        .and_then(|v| v.get("handovers").and_then(Value::as_array).cloned())
+        .unwrap_or_default()
+}
+
 fn parse_task(v: &Value) -> TaskMeta {
     let text = |key: &str| v.get(key).and_then(Value::as_str).unwrap_or("").to_string();
     let millis = |key: &str| {

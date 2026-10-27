@@ -523,7 +523,14 @@ struct Gathered {
 /// nothing that waits (a program's models are read in the background the first time).
 async fn gather(app: &Shared, doctor: &str, installed: &[String]) -> Vec<Gathered> {
     let tasks: Vec<Task> = app.snapshot.read().await.tasks.clone();
-    let hits = crew::hits_of(&tasks);
+    // The row's own line is gone at the next report of the agent; the hand-overs the board kept are the lasting record.
+    let mut hits = crew::hits_of(&tasks);
+    let (kept_tasks, data_dir) = (tasks.clone(), app.cfg.data_dir.clone());
+    hits.extend(
+        tokio::task::spawn_blocking(move || crew::handover_hits_of(&kept_tasks, &data_dir, now_ms()))
+            .await
+            .unwrap_or_default(),
+    );
     let mut out = Vec::new();
     for program in programs_of(doctor, installed) {
         let usage = if program.installed {
@@ -1586,5 +1593,34 @@ esac"#,
         let v = station_read(&app, StationQuery { repo: None }, &installed).await.unwrap();
         assert!(v["presets"]["list"].as_array().unwrap().is_empty());
         assert!(v["presets"]["active"].is_null());
+    }
+
+    #[tokio::test]
+    async fn the_kept_hand_over_of_a_task_marks_omp_out_of_allowance_when_the_row_line_is_gone() {
+        let dir = tempfile::tempdir().unwrap();
+        let (app, _log) = app_with_board(dir.path(), "");
+        let task_dir = dir.path().join("data/tasks/planner/7");
+        std::fs::create_dir_all(&task_dir).unwrap();
+        let rec = json!({"handovers": [{"at": now_ms() - 60_000, "role": "worker", "from": "omp", "to": "claude", "why": "out of allowance"}]});
+        std::fs::write(task_dir.join("task.json"), rec.to_string()).unwrap();
+        {
+            let mut snap = app.snapshot.write().await;
+            let mut t = crate::board::Task::default();
+            t.id = "planner/7".into();
+            t.repo = "planner".into();
+            t.n = 7;
+            t.tag = "PLN-7".into();
+            t.app = "claude".into();
+            t.status = Status::Working;
+            t.msg = "Writing the tests".into();
+            snap.tasks = vec![t];
+        }
+        let installed: Vec<String> = ["claude", "omp"].map(String::from).to_vec();
+        let v = station_read(&app, StationQuery { repo: None }, &installed).await.unwrap();
+        wait_models(&app, &["claude", "omp"]).await;
+        let omp = v["programs"].as_array().unwrap().iter().find(|p| p["name"] == "omp").unwrap().clone();
+        assert_eq!(omp["state"]["avail"]["state"], "limited", "{omp}");
+        assert_eq!(omp["state"]["avail"]["source"], "board");
+        assert!(omp["state"]["avail"]["until_ms"].as_u64().unwrap() > now_ms());
     }
 }

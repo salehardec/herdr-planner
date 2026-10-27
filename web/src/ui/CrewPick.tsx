@@ -159,8 +159,7 @@ export function ChainEditor(props: { programs: StationProgram[]; value: string; 
     next.splice(i + d, 0, x);
     set(next);
   };
-  const taken = items.map(programName);
-  const canAdd = !!add && !items.includes(add) && !taken.includes(programName(add));
+  const canAdd = !!add && !items.includes(add);
   return (
     <div class="chain" data-chain={props.id}>
       {items.length === 0 && <div class="hint">{t('st.chainEmpty')}</div>}
@@ -174,7 +173,7 @@ export function ChainEditor(props: { programs: StationProgram[]; value: string; 
                 <span class="n">{i + 1}</span>
                 <code>{it}</code>
                 {mark && <span class="m warn">{mark}</span>}
-                {programName(it) === programName(props.agent) && <span class="m warn">{t('st.chainSame')}</span>}
+                {it === props.agent && <span class="m warn">{t('st.chainSame')}</span>}
                 <button class="btn sm" type="button" data-chain-up={it} disabled={i === 0} aria-label={t('st.chainUp')} onClick={() => move(i, -1)}>↑</button>
                 <button class="btn sm" type="button" data-chain-down={it} disabled={i === items.length - 1} aria-label={t('st.chainDown')} onClick={() => move(i, 1)}>↓</button>
                 <button class="btn sm danger" type="button" data-chain-del={it} aria-label={t('st.chainDel')} onClick={() => set(items.filter((x) => x !== it))}>✕</button>
@@ -184,7 +183,7 @@ export function ChainEditor(props: { programs: StationProgram[]; value: string; 
         </ol>
       )}
       <div class="chain-add">
-        <AgentPick key={items.join('|')} programs={props.programs.filter(offerable)} value={add} onChange={setAdd} id={`${props.id}-add`} emptyLabel={t('st.chainAddFrom')} bare skip={taken} />
+        <AgentPick key={items.join('|')} programs={props.programs.filter(offerable)} value={add} onChange={setAdd} id={`${props.id}-add`} emptyLabel={t('st.chainAddFrom')} bare />
         <button class="btn sm primary" type="button" data-chain-add={props.id} disabled={!canAdd} onClick={() => { set([...items, add]); setAdd(''); }}>{t('st.chainAdd')}</button>
       </div>
     </div>

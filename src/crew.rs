@@ -54,6 +54,13 @@ pub struct Hit {
     pub until: String,
     pub logged_out: bool,
     pub task: String,
+    /// When the allowance is back (ms), worked out from the board's clock time; 0 when it names none (live line).
+    #[serde(skip_serializing_if = "is_zero")]
+    pub until_ms: u64,
+}
+
+fn is_zero(n: &u64) -> bool {
+    *n == 0
 }
 
 fn hit_of(t: &Task) -> Option<Hit> {
@@ -83,7 +90,7 @@ fn hit_of(t: &Task) -> Option<Hit> {
             rest[..end].trim().to_string()
         })
         .unwrap_or_default();
-    Some(Hit { program, until, logged_out, task: t.tag.clone() })
+    Some(Hit { program, until, logged_out, task: t.tag.clone(), until_ms: 0 })
 }
 
 /// The hits among the live tasks (not done, not archived).
@@ -92,6 +99,86 @@ pub fn hits_of(tasks: &[Task]) -> Vec<Hit> {
         .iter()
         .filter(|t| !t.archived && t.status != Status::Done)
         .filter_map(hit_of)
+        .collect()
+}
+
+/* ───────── the lasting record: hand-overs kept on the task ───────── */
+
+/// Without a time in the board's words the allowance is taken as gone for this long (the usual window of a subscription).
+pub const ASSUME_MS: u64 = 5 * 3600 * 1000;
+/// Hand-overs older than this say nothing about the allowance now, whatever their words.
+const HANDOVER_KEEP_MS: u64 = 24 * 3600 * 1000;
+
+/// The minute of the local day (0..1440) of a moment, by the machine's own time zone.
+pub fn local_minute(ms: u64) -> u32 {
+    let t = (ms / 1000) as libc::time_t;
+    // SAFETY: `localtime_r` writes only into the zeroed `tm` we give it.
+    unsafe {
+        let mut tm: libc::tm = std::mem::zeroed();
+        if libc::localtime_r(&t, &mut tm).is_null() {
+            return 0;
+        }
+        (tm.tm_hour as u32) * 60 + tm.tm_min as u32
+    }
+}
+
+/// When `until` (`17:00`, the board's clock words) comes after `at`: the next such time of day, by `minute_of`.
+pub fn reset_ms(at_ms: u64, until: &str, minute_of: &dyn Fn(u64) -> u32) -> Option<u64> {
+    let (h, m) = until.trim().split_once(':')?;
+    let (h, m): (u32, u32) = (h.trim().parse().ok()?, m.trim().get(..2)?.parse().ok()?);
+    if h > 23 || m > 59 {
+        return None;
+    }
+    let ahead = (h * 60 + m + 1440 - minute_of(at_ms)) % 1440;
+    Some((at_ms / 60_000 + ahead as u64) * 60_000)
+}
+
+/// The hits a task's kept hand-overs make: its program is out of allowance (or logged out) until the time the board
+/// named, or for `ASSUME_MS` when it named none. Hand-overs whose time has passed are not hits. `at` is the hand-over's
+/// own moment, so the mark outlives the row's line.
+pub fn handover_hits(tag: &str, handovers: &[Value], now: u64, minute_of: &dyn Fn(u64) -> u32) -> Vec<Hit> {
+    handovers
+        .iter()
+        .filter_map(|h| {
+            let why = h.get("why").and_then(Value::as_str)?.to_lowercase();
+            let allowance = why.contains("out of allowance");
+            let logged_out = !allowance && why.contains("logged out");
+            if !allowance && !logged_out {
+                return None;
+            }
+            let at = h.get("at").and_then(Value::as_u64).filter(|a| *a > 0)?;
+            if now.saturating_sub(at) > HANDOVER_KEEP_MS {
+                return None;
+            }
+            let program = program_of(h.get("from").and_then(Value::as_str)?).to_string();
+            if !models::valid_program(&program) {
+                return None;
+            }
+            let until = text_after(&why, "out of allowance until ")
+                .map(|rest| rest[..rest.find(['.', ';', '\n', '(']).unwrap_or(rest.len())].trim().to_string())
+                .unwrap_or_default();
+            let until_ms = if logged_out {
+                // a login is back when the human signs in: held while the hand-over is fresh
+                at + ASSUME_MS
+            } else if until.is_empty() {
+                at + ASSUME_MS
+            } else {
+                reset_ms(at, &until, minute_of).unwrap_or(at + ASSUME_MS)
+            };
+            (until_ms > now).then(|| Hit { program, until, logged_out, task: tag.to_string(), until_ms })
+        })
+        .collect()
+}
+
+/// Every hit the live tasks' kept hand-overs make now (reads each task's own record).
+pub fn handover_hits_of(tasks: &[Task], data_dir: &Path, now: u64) -> Vec<Hit> {
+    tasks
+        .iter()
+        .filter(|t| !t.archived)
+        .flat_map(|t| {
+            let kept = crate::taskmeta::read_handovers(data_dir, &t.repo, t.n);
+            handover_hits(&t.tag, &kept, now, &local_minute)
+        })
         .collect()
 }
 
@@ -238,7 +325,7 @@ pub fn judge(f: &Facts) -> State {
     } else if let Some(h) = mine.iter().find(|h| !h.logged_out) {
         Avail {
             state: "limited",
-            until_ms: 0,
+            until_ms: h.until_ms,
             until: h.until.clone(),
             reason: format!("задача {}: out of allowance{}", h.task, if h.until.is_empty() { String::new() } else { format!(" until {}", h.until) }),
             source: "board",
@@ -1062,7 +1149,7 @@ mod tests {
     #[test]
     fn a_program_the_board_says_is_out_of_allowance_is_limited_until_its_time() {
         let u = usage(vec![win("Session (5-hour)", 0.30, 5_000)], true, "Max 5x");
-        let hits = vec![Hit { program: "claude".into(), until: "17:00".into(), logged_out: false, task: "PLN-9".into() }];
+        let hits = vec![Hit { program: "claude".into(), until: "17:00".into(), logged_out: false, task: "PLN-9".into(), until_ms: 0 }];
         let mut f = facts("claude", &u, &hits);
         f.doctor_signed_in = Some(true);
         let s = judge(&f);
@@ -1071,7 +1158,7 @@ mod tests {
         assert_eq!(s.avail.source, "board");
         assert!(s.avail.reason.contains("PLN-9") && s.avail.reason.contains("17:00"), "{}", s.avail.reason);
         // another program's hit does not touch this one
-        let other = vec![Hit { program: "codex".into(), until: String::new(), logged_out: false, task: "PLN-9".into() }];
+        let other = vec![Hit { program: "codex".into(), until: String::new(), logged_out: false, task: "PLN-9".into(), until_ms: 0 }];
         let mut f = facts("claude", &u, &other);
         f.doctor_signed_in = Some(true);
         assert_eq!(judge(&f).avail.state, "ok");
@@ -1395,5 +1482,60 @@ mod tests {
                 assert!(n.is_empty() || crate::station::valid_name(n), "{n}");
             }
         }
+    }
+
+    fn utc_minute(ms: u64) -> u32 {
+        ((ms / 60_000) % 1440) as u32
+    }
+
+    #[test]
+    fn the_boards_clock_words_become_the_next_such_time_after_the_hand_over() {
+        let at = 10 * 3_600_000u64; // 10:00 UTC on day 0
+        assert_eq!(reset_ms(at, "17:00", &utc_minute), Some(17 * 3_600_000));
+        assert_eq!(reset_ms(at, "09:30", &utc_minute), Some(24 * 3_600_000 + 9 * 3_600_000 + 30 * 60_000), "tomorrow");
+        assert_eq!(reset_ms(at, "5pm", &utc_minute), None);
+        assert_eq!(reset_ms(at, "25:00", &utc_minute), None);
+    }
+
+    #[test]
+    fn a_kept_hand_over_marks_the_program_after_the_row_line_is_gone() {
+        let at = 10 * 3_600_000u64;
+        let kept = vec![
+            json!({"at": at, "role": "worker", "from": "claude/claude-opus-5-5", "to": "omp/x", "why": "out of allowance until 17:00"}),
+            json!({"at": at, "role": "worker", "from": "pi", "to": "omp", "why": "out of allowance"}),
+            json!({"at": at, "role": "worker", "from": "codex", "to": "omp", "why": "logged out"}),
+            json!({"at": at, "role": "worker", "from": "kimi", "to": "omp", "why": "its provider is overloaded, still after 5 tries"}),
+        ];
+        let now = 12 * 3_600_000u64;
+        let hits = handover_hits("PLN-9", &kept, now, &utc_minute);
+        let by: Vec<(&str, &str, u64, bool)> = hits.iter().map(|h| (h.program.as_str(), h.until.as_str(), h.until_ms, h.logged_out)).collect();
+        assert_eq!(
+            by,
+            vec![
+                ("claude", "17:00", 17 * 3_600_000, false),
+                ("pi", "", at + ASSUME_MS, false),
+                ("codex", "", at + ASSUME_MS, true),
+            ],
+            "a provider that failed is not an allowance"
+        );
+        // later: the named time has passed; the unnamed one is held five hours
+        let later = handover_hits("PLN-9", &kept, 18 * 3_600_000, &utc_minute);
+        assert_eq!(later.iter().map(|h| h.program.as_str()).collect::<Vec<_>>(), Vec::<&str>::new());
+        let mid = handover_hits("PLN-9", &kept, at + ASSUME_MS - 1, &utc_minute);
+        assert_eq!(mid.iter().filter(|h| h.program == "pi").count(), 1);
+        // a day later none of it says anything
+        assert!(handover_hits("PLN-9", &kept, at + 25 * 3_600_000, &utc_minute).is_empty());
+    }
+
+    #[test]
+    fn a_program_with_a_kept_hand_over_is_limited_until_its_time() {
+        let none = AgentUsage::default();
+        let kept = vec![json!({"at": 10 * 3_600_000u64, "from": "pi", "why": "out of allowance until 17:00"})];
+        let hits = handover_hits("PLN-9", &kept, 12 * 3_600_000, &utc_minute);
+        let mut f = facts("pi", &none, &hits);
+        f.doctor_line = "✓ pi 1.0, API keys: no sign-in needed";
+        f.now = 12 * 3_600_000;
+        let s = judge(&f);
+        assert_eq!((s.avail.state, s.avail.until_ms, s.avail.source), ("limited", 17 * 3_600_000, "board"));
     }
 }
