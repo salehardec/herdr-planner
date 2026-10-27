@@ -53,6 +53,8 @@ pub struct AgentUsage {
     pub balance: Option<Balance>,
     /// Why there is nothing to show, when `limits` and `balance` are empty.
     pub note: String,
+    /// What the collector says to do to sign in (`authHelpText`), when the agent is not ready.
+    pub auth_help: String,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -101,6 +103,52 @@ pub fn read() -> Usage {
         &state_home().join("omarchy/agents/usage"),
         &cache_home().join("omarchy/agent-usage"),
     )
+}
+
+/// One program's record by its id, for any program Omarchy writes one for (the crew screen): the same reading as
+/// the dashboard's, with the program's own name when the record has none.
+pub fn agent_by_id(id: &str) -> AgentUsage {
+    agent_at(
+        now_ms(),
+        id,
+        &state_home().join("omarchy/agents/usage"),
+        &cache_home().join("omarchy/agent-usage"),
+    )
+}
+
+pub fn agent_at(now: u64, id: &str, state_dir: &Path, cache_dir: &Path) -> AgentUsage {
+    let path = state_dir.join(format!("{id}.json"));
+    let record = read_json(&path);
+    let cache = if id == "claude" {
+        read_json(&cache_dir.join("claude-limits.json"))
+    } else {
+        None
+    };
+    agent_usage(id, id, record.as_ref(), file_mtime_ms(&path), cache.as_ref(), now)
+}
+
+/// The model names a program's record says it was used with (`modelUsage`, `todayTokensByModel`), as the program
+/// wrote them: `deepseek-v4-flash`, `anthropic/claude-opus-5`. Empty without a record.
+pub fn seen_models(id: &str) -> Vec<String> {
+    seen_models_at(&state_home().join("omarchy/agents/usage"), id)
+}
+
+pub fn seen_models_at(state_dir: &Path, id: &str) -> Vec<String> {
+    let Some(record) = read_json(&state_dir.join(format!("{id}.json"))) else {
+        return Vec::new();
+    };
+    let mut out: Vec<String> = Vec::new();
+    for key in ["todayTokensByModel", "modelUsage"] {
+        if let Some(map) = record.get(key).and_then(Value::as_object) {
+            for name in map.keys() {
+                let name = name.trim();
+                if !name.is_empty() && name.len() <= 80 && !name.contains(char::is_whitespace) && !out.iter().any(|n| n == name) {
+                    out.push(name.to_string());
+                }
+            }
+        }
+    }
+    out
 }
 
 fn cache_home() -> PathBuf {
@@ -206,6 +254,7 @@ fn agent_usage(
         limits,
         balance,
         note,
+        auth_help: text(record.get("authHelpText")).unwrap_or_default(),
     }
 }
 

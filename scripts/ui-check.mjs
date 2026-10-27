@@ -3146,7 +3146,7 @@ section('station', async () => {
   await waitFor('!!document.querySelector(\'[data-act="st-edit-plan.agent"]\')', 15000);
   await click('[data-act="st-edit-plan.agent"]');
   await waitFor('!!document.querySelector(\'[id="st-model-plan.agent"]\')', 5000);
-  check('the model field offers the names the program takes', await waitFor('document.querySelectorAll(\'[id="st-models-plan.agent"] option\').length >= 3', 30000), String(await evalJs('document.querySelectorAll(\'[id="st-models-plan.agent"] option\').length')));
+  check('the model is chosen from the names the program takes: a list, not a text field', await waitFor('document.querySelectorAll(\'select[id="st-model-plan.agent"] option\').length >= 3', 30000) && !(await exists('input[id="st-model-plan.agent"]')), String(await evalJs('document.querySelectorAll(\'[id="st-model-plan.agent"] option\').length')));
   await typeIn('[id="st-model-plan.agent"]', 'claude/claude-haiku-5-5');
   await click('[id="st-next-plan.agent"]');
   await readyCard();
@@ -3163,15 +3163,11 @@ section('station', async () => {
   check('the board answers the new value; the card is gone', await waitFor('fetch("/api/station").then((r) => r.json()).then((d) => d.settings.some((s) => s.name === "plan.agent" && s.value === "claude/claude-haiku-5-5") && !document.querySelector("#st-change"))', 15000));
   await shot('station-home.png');
 
-  // an invalid model is refused on the card, with the board's words, and cannot be confirmed
-  await click('[data-act="st-edit-plan.agent"]');
-  await waitFor('!!document.querySelector(\'[id="st-model-plan.agent"]\')', 5000);
-  await waitFor('document.querySelectorAll(\'[id="st-models-plan.agent"] option\').length >= 3', 8000);
-  await typeIn('[id="st-model-plan.agent"]', 'claude/claude-nope');
-  await click('[id="st-next-plan.agent"]');
-  check('an invalid model is refused before confirming, in the board\'s words', await waitFor('!!document.querySelector("#st-invalid")', 6000) && await hasText('#st-invalid', 'такой модели нет') && (await evalJs('document.querySelector("#st-confirm").disabled')), await text('#st-change'));
-  await click('#st-cancel');
-  await waitFor('!document.querySelector("#st-change")', 5000);   // the card is gone before the next one is looked for
+  // a model the program does not take is refused with the board's words, whoever asks (the page offers only listed ones)
+  const [badStatus, bad] = await post('/api/station/preview', { name: 'plan.agent', value: 'claude/claude-nope' });
+  check('an invalid model is refused before confirming, in the board\'s words', badStatus === 200 && bad.valid === false && String(bad.error).includes('такой модели нет'), JSON.stringify(bad));
+  const [setStatus] = await post('/api/station/set', { name: 'plan.agent', value: 'claude/claude-nope', confirm: true });
+  check('and a set of it is refused too', setStatus === 422, String(setStatus));
 
   // reset: unset, with what the value becomes
   await waitFor('!!document.querySelector(\'[data-unset="watcher.agent"]\')', 6000);
@@ -3199,8 +3195,9 @@ section('station', async () => {
   // the light tasks preset: the planner's own, kept in its crew file, not on the board
   await waitFor('!!document.querySelector(\'[data-act="st-edit-light"]\')', 8000);
   await click('[data-act="st-edit-light"]');
-  await waitFor('!!document.querySelector(\'[id="st-model-light"]\')', 5000);
-  await waitFor('document.querySelectorAll(\'[id="st-models-light"] option\').length >= 3', 8000);
+  await waitFor('!!document.querySelector(\'[id="st-prog-light"]\')', 5000);
+  await typeIn('[id="st-prog-light"]', 'claude');
+  await waitFor('document.querySelectorAll(\'select[id="st-model-light"] option\').length >= 3', 15000);
   await typeIn('[id="st-model-light"]', 'claude/claude-haiku-5-5');
   await click('[id="st-next-light"]');
   await readyCard();
@@ -3208,6 +3205,115 @@ section('station', async () => {
   await twoPresses('#st-confirm');
   check('the planner keeps the preset', await waitFor('fetch("/api/station").then((r) => r.json()).then((d) => d.light === "claude/claude-haiku-5-5")', 8000));
   check('and the board is not asked to change anything for it', !calls().some((c) => c.argv?.[0] === 'set' && c.argv.some((a) => String(a).includes('light'))));
+  await resetUi();
+});
+
+section('crew', async () => {
+  // PLN-63: the state of each subscription, the models, the presets (saved, edited, applied in the order shown) and the
+  // fallback chains. The fixture's codex is signed out, omp works by API keys, claude has Omarchy's windows.
+  await resetUi();
+  await evalJs('planner.goHome()');
+  check('the station opens', await menuPick('Станция') && await waitFor('!!document.querySelector("#station")', 4000));
+  check('the summary line names every role and says what is down', await waitFor('!!document.querySelector("#st-summary [data-lead=\\"worker\\"]")', 40000)
+    && await exists('#st-summary [data-lead="coordinator"]') && await exists('#st-summary [data-lead="light"]') && await exists('#st-summary-down'), await text('#st-summary'));
+  const st0 = await stationOf();
+  check('the lead of the heavy tasks in the summary is the board\'s worker.agent', await hasText('#st-summary [data-lead="worker"]', st0.settings.find((x) => x.name === 'worker.agent').value), await text('#st-summary'));
+  check('codex is signed out, so the summary lists it as down', await exists('#st-summary [data-down-program="codex"]') && await hasText('#st-summary-down', 'нет входа'), await text('#st-summary-down'));
+  check('the codex card says it is signed out, and why', (await evalJs('document.querySelector(\'[data-program="codex"]\')?.dataset.state')) === 'signed_out' && await hasText('[data-program="codex"] [data-reason]', 'codex login'), await text('[data-program="codex"]'));
+  check('claude shows its plan and its windows from Omarchy', await hasText('[data-program="claude"] [data-account]', 'Max 5x') && await exists('[data-program="claude"] [data-limits] li'), await text('[data-program="claude"]'));
+  check('omp, which works by API keys, is honestly unknown, with the reason', (await evalJs('document.querySelector(\'[data-program="omp"]\')?.dataset.state')) === 'unknown' && await hasText('[data-program="omp"] [data-account]', 'ключам API'), await text('[data-program="omp"]'));
+  check('a task that runs on omp shows under it', await exists('[data-program="omp"] [data-used-tasks]'), await text('[data-program="omp"] [data-used]'));
+  check('claude lists the roles it leads', await hasText('[data-program="claude"] [data-used-roles]', 'Координатор'), await text('[data-program="claude"] [data-used]'));
+
+  // the models of a program come from `herdr-projects models <program>`
+  await click('[data-models-for="claude"] summary');
+  check('a program\'s models are listed on its card', await waitFor('document.querySelectorAll(\'[data-models-list="claude"] code\').length >= 3', 40000), await text('[data-models-for="claude"]'));
+  await click('[data-models-for="claude"] summary');
+
+  // a subscription that is out of allowance, from Omarchy's window: it is down, with when it comes back
+  const usageFile = join(fixture, 'state', 'omarchy', 'agents', 'usage', 'claude.json');
+  const usageWas = readFileSync(usageFile, 'utf8');
+  const spent = JSON.parse(usageWas);
+  spent.limits = [{ label: 'Session (5-hour)', percent: 1, resetsAt: new Date(Date.now() + 3 * 3600 * 1000).toISOString() }];
+  writeFileSync(usageFile, JSON.stringify(spent));
+  await click('#station header button');
+  await waitFor('!document.querySelector("#station")', 4000);
+  await menuPick('Станция');
+  check('with the Session window spent, claude is out of allowance until its reset', await waitFor('document.querySelector(\'[data-down-program="claude"]\')?.innerText.includes("лимит до")', 40000)
+    && (await evalJs('document.querySelector(\'[data-program="claude"]\')?.dataset.state')) === 'limited', await text('#st-summary-down'));
+  await shot('crew-summary.png');
+  writeFileSync(usageFile, usageWas);
+
+  // presets: save the current crew, edit it, apply it
+  const before = (await stationOf()).presets.list.length;
+  await click('#station header button');
+  await waitFor('!document.querySelector("#station")', 4000);
+  await menuPick('Станция');
+  await waitFor('!!document.querySelector("#st-pr-name")', 40000);
+  check('no preset matches the crew before one is saved, and it says so', await hasText('#st-pr-active', 'Ни один набор не совпадает') || before > 0, await text('#st-pr-active'));
+  await typeIn('#st-pr-name', 'Базовый');
+  await click('#st-pr-capture');
+  check('«Сохранить текущий экипаж» makes a preset that matches the crew', await waitFor('!!document.querySelector(\'[data-preset][data-name="Базовый"][data-diff="0"]\')', 15000)
+    && await waitFor('document.querySelector("#st-pr-active")?.dataset.state === "matches"', 8000), await text('#st-presets'));
+  const saved = (await stationOf()).presets.list.find((x) => x.name === 'Базовый');
+  check('the planner keeps it in its own file, not on the board', existsSync(join(fixture, 'state', 'herdr-planner', 'crew-presets.json')) && !!saved && !calls().some((c) => c.argv?.[0] === 'set' && c.argv.some((a) => String(a).includes('Базовый'))), JSON.stringify(saved));
+  check('a second preset cannot take the same name', (await post('/api/station/presets', { op: 'create', name: 'базовый' }))[0] === 422);
+
+  // edit: another worker model, a lower effort, a fallback chain of subscriptions
+  await click(`[data-preset-edit="${saved.id}"]`);
+  await waitFor('!!document.querySelector("#st-prog-pe-worker")', 5000);
+  await typeIn('#st-prog-pe-worker', 'claude');
+  await waitFor('document.querySelectorAll(\'select[id="st-model-pe-worker"] option\').length >= 3', 40000);
+  await typeIn('#st-model-pe-worker', 'claude/claude-haiku-5-5');
+  await waitFor('document.querySelectorAll(\'select[id="st-effort-pe-worker"] option\').length >= 3', 40000);
+  await typeIn('#st-effort-pe-worker', 'low');
+  await click('[data-pe-fb-set="worker"]');
+  await waitFor('!!document.querySelector("#st-prog-pe-worker-fb-add")', 5000);
+  check('a signed-out subscription cannot be put into a chain', !(await evalJs('[...document.querySelectorAll("#st-prog-pe-worker-fb-add option")].some((o) => o.value === "codex")')));
+  await typeIn('#st-prog-pe-worker-fb-add', 'omp');
+  await waitFor('document.querySelectorAll(\'select[id="st-model-pe-worker-fb-add"] option\').length >= 2', 40000);
+  await waitFor('!document.querySelector("[data-chain-add]").disabled', 5000);
+  await click('[data-chain-add]');
+  check('the chain shows what was added, in order', await waitFor('!!document.querySelector("[data-chain-item=\\"omp\\"]")', 4000), await text('[data-chain]'));
+  await evalJs('document.querySelector("[data-preset-editor]").scrollIntoView({ block: "start" }); true');
+  await shot('crew-editor.png');
+  await click('#st-pe-save');
+  check('the saved preset holds the three fields', await waitFor(`fetch("/api/station").then((r) => r.json()).then((d) => { const p = d.presets.list.find((x) => x.id === ${JSON.stringify(saved.id)}); return p && p.roles.worker.agent === "claude/claude-haiku-5-5" && p.roles.worker.effort === "low" && p.roles.worker.fallback === "omp"; })`, 15000));
+  check('the crew now differs from the active preset, and the page says by how much', await waitFor('document.querySelector("#st-pr-active")?.dataset.state === "differs" && /3/.test(document.querySelector("#st-pr-active").innerText)', 10000), await text('#st-pr-active'));
+
+  // apply: the whole list first, nothing sent; then two presses; the board's commands in the order shown
+  const cmdsBefore = calls().length;
+  await click(`[data-preset-apply="${saved.id}"]`);
+  check('the card lists every step as «было → стало», in the order of the roles', await waitFor('document.querySelectorAll("#st-pv-steps li").length === 3', 15000)
+    && JSON.stringify(await evalJs('[...document.querySelectorAll("#st-pv-steps li")].map((x) => x.dataset.step)')) === JSON.stringify(['worker.agent', 'worker.effort', 'worker.fallback']), await text('#st-preset-card'));
+  check('and the tasks it touches, the running and the waiting, are warned about', await exists('#st-pv-affects') && (await text('#st-pv-affects')).length > 20, await text('#st-pv-affects'));
+  await evalJs('document.querySelector("#st-preset-card").scrollIntoView({ block: "center" }); true');
+  await shot('crew-apply.png');
+  check('nothing has gone to the board yet', calls().length === cmdsBefore);
+  await click('#st-pv-confirm');
+  await quiet();
+  check('the first press only asks again', await hasText('#st-pv-confirm', 'Подтвердить') && calls().slice(cmdsBefore).filter((c) => c.argv?.[0] === 'set').length === 0);
+  await secondPress('#st-pv-confirm');
+  check('the board gets its own set commands, one after the other, in the order of the card', await waitLog(() => calls().slice(cmdsBefore).filter((c) => c.argv?.[0] === 'set').length >= 3, 15000)
+    && JSON.stringify(calls().slice(cmdsBefore).filter((c) => c.argv?.[0] === 'set').map((c) => c.argv.slice(0, 3).join(' '))) === JSON.stringify(['set worker.agent claude/claude-haiku-5-5', 'set worker.effort low', 'set worker.fallback omp']),
+  JSON.stringify(calls().slice(cmdsBefore).map((c) => c.argv)));
+  check('the preset is active and matches the crew again', await waitFor(`fetch("/api/station").then((r) => r.json()).then((d) => d.presets.active && d.presets.active.id === ${JSON.stringify(saved.id)} && d.presets.active.state === "matches")`, 15000), await text('#st-pr-active'));
+  await evalJs('document.querySelector("#st-presets").scrollIntoView({ block: "start" }); true');
+  await shot('crew-presets.png');
+
+  // a template is built from what is on the machine; rename and delete
+  await typeIn('#st-pr-name', 'Свой максимум');
+  await typeIn('#st-pr-kind', 'max');
+  await click('#st-pr-template');
+  check('«Максимум» is made from the models claude lists', await waitFor('!!document.querySelector(\'[data-preset][data-name="Свой максимум"]\')', 60000), await text('#st-pr-err'));
+  const maxp = (await stationOf()).presets.list.find((x) => x.name === 'Свой максимум');
+  check('Opus on every role, none for the light tasks to differ', !!maxp && ['coordinator', 'plan', 'reviewer', 'worker', 'light'].every((r) => maxp.roles[r].agent.includes('opus')), JSON.stringify(maxp));
+  await click(`[data-preset-rename="${maxp.id}"]`);
+  await typeIn(`[id="st-pr-rename-${maxp.id}"]`, 'Максимум Opus');
+  await evalJs(`(() => { const f = document.querySelector('[id="st-pr-rename-${maxp.id}"]')?.closest('form'); if (f) f.requestSubmit(); return !!f; })()`);
+  check('a preset is renamed', await waitFor('!!document.querySelector(\'[data-preset][data-name="Максимум Opus"]\')', 8000));
+  await twoPresses(`[data-preset-del="${maxp.id}"]`);
+  check('and deleted after two presses', await waitFor(`!document.querySelector('[data-preset="${maxp.id}"]')`, 8000));
   await resetUi();
 });
 
