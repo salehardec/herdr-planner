@@ -85,7 +85,7 @@ export function AgentPick(props: AgentPickProps): JSX.Element {
     if (!p) onChange('');
   };
   return (
-    <div class="pick">
+    <div class="cpick">
       <label class="fl2">{t('st.program')}
         <select class="field" id={`st-prog-${id}`} value={prog} onChange={(e) => pick((e.target as HTMLSelectElement).value)}>
           {props.emptyLabel !== undefined && <option value="">{props.emptyLabel}</option>}
@@ -132,7 +132,7 @@ export function EffortPick(props: { agent: string; value: string; onChange: (v: 
   const all = !props.value || levels.includes(props.value) ? levels : [props.value, ...levels];
   const none = !prog ? t('st.effortNeedsAgent') : loading ? t('st.modelsLoadingShort') : levels.length ? '' : t('st.noEffort', { p: prog });
   return (
-    <div class="pick">
+    <div class="cpick">
       <label class="fl2">{prog ? t('st.effortLevel', { p: prog }) : t('st.f.effort')}
         <select class="field" id={`st-effort-${props.id}`} value={props.value} disabled={!prog || loading} onChange={(e) => props.onChange((e.target as HTMLSelectElement).value)}>
           <option value="">{props.emptyLabel}</option>

@@ -931,7 +931,13 @@ async fn presets_change(app: &Shared, body: PresetBody) -> Result<Value, Fail> {
             let repo = level_of(body.repo.clone())?;
             let settings = read_settings(&app.cfg, &repo).await.map_err(Fail::refused)?;
             let roles = crew::capture(&settings, &read_light(&app.cfg));
-            crew::edit_store(&app.cfg, |s| crew::add_preset(s, &name, &roles)).map_err(store_fail)?
+            // A preset made from the crew as it is, is the active one: later edits of the crew show as a difference from it.
+            crew::edit_store(&app.cfg, |s| {
+                let id = crew::add_preset(s, &name, &roles)?;
+                s.active.insert(repo.clone(), id.clone());
+                Ok(id)
+            })
+            .map_err(store_fail)?
         }
         "template" => {
             let kind = body.kind.clone().unwrap_or_default();

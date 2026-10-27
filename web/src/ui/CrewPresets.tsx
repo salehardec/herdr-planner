@@ -104,13 +104,13 @@ function ApplyCard(props: { repo: string; reload: () => void }): JSX.Element | n
             {running.length > 0 && (
               <div class="hint warn" data-affects="running">
                 <b>{tn('st.pv.running', running.length)}</b> {t('st.pv.runningWhy')}
-                <ul class="aff">{running.slice(0, 6).map((a) => <li key={a.id}><span class="tg">{a.tag ?? a.id}</span> {a.title} <span class="m">{a.app}</span></li>)}</ul>
+                <ul class="aff">{running.slice(0, 6).map((a) => <li key={a.id}><span class="tg">{a.tag ?? a.id}</span> {a.title} <span class="m">{a.app}</span></li>)}{running.length > 6 && <li class="m">{t('st.andMore', { n: running.length - 6 })}</li>}</ul>
               </div>
             )}
             {waiting.length > 0 && (
               <div class="hint" data-affects="waiting">
                 <b>{tn('st.pv.waiting', waiting.length)}</b> {t('st.pv.waitingWhy')}
-                <ul class="aff">{waiting.slice(0, 6).map((a) => <li key={a.id}><span class="tg">{a.tag ?? a.id}</span> {a.title}</li>)}</ul>
+                <ul class="aff">{waiting.slice(0, 6).map((a) => <li key={a.id}><span class="tg">{a.tag ?? a.id}</span> {a.title}</li>)}{waiting.length > 6 && <li class="m">{t('st.andMore', { n: waiting.length - 6 })}</li>}</ul>
               </div>
             )}
             {running.length + waiting.length > 0 && <div class="hint">{t('st.pv.own')}</div>}

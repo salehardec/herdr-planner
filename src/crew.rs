@@ -208,11 +208,11 @@ pub fn judge(f: &Facts) -> State {
     };
     let limit_why = if windows.is_empty() {
         if api_keys {
-            "ключи API: у подписки нет окон лимита; об исчерпании скажет доска в строке задачи («out of allowance»)".to_string()
+            "у ключей API нет окон лимита; об исчерпании скажет доска («out of allowance»)".to_string()
         } else if u.present {
             u.note.clone()
         } else {
-            format!("Omarchy не пишет запись для {}; об исчерпании скажет доска в строке задачи («out of allowance»)", f.program)
+            format!("Omarchy не пишет запись для {}; об исчерпании скажет доска («out of allowance»)", f.program)
         }
     } else {
         String::new()

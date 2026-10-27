@@ -106,7 +106,7 @@ function ProgramCard({ p }: { p: StationProgram }): JSX.Element {
   const m = p.models;
   const modelsLabel = m.listed ? tn('st.modelsOf', m.count) : m.loading ? t('st.modelsLoadingShort') : m.suggested > 0 ? tn('st.modelsUsed', m.suggested) : t('st.modelsNoList');
   return (
-    <li class={`prog ${kind}`} data-program={p.name} data-state={kind}>
+    <li class={`pcard ${kind}`} data-program={p.name} data-state={kind}>
       <div class="pr-head">
         <b>{p.name}</b> <span class="m">{p.version}</span>
         <span class="sig" data-sign={st.signed_in === null ? 'unknown' : st.signed_in ? 'in' : 'out'}>{sign}</span>
@@ -116,7 +116,6 @@ function ProgramCard({ p }: { p: StationProgram }): JSX.Element {
         <div class="hint" data-reason>{st.avail.reason}{st.avail.source ? ` — ${t(SOURCE[st.avail.source])}` : ''}</div>
       )}
       {kind === 'ok' && st.avail.reason && <div class="hint warn" data-reason>{st.avail.reason}</div>}
-      {kind === 'unknown' && <div class="hint" data-reason>{t('st.unknownBecause', { why: st.avail.reason || t('st.noReason') })}</div>}
       <Account s={st} />
       <Windows s={st} />
       {p.providers.length > 0 && (

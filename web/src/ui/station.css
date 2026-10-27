@@ -18,14 +18,14 @@
 .st-sum .sum-down.bad{color:var(--c-yellow)}
 /* The programs: one card each */
 .progs{list-style:none;margin:0;padding:0;display:grid;gap:0.375rem;font-size:0.75rem}
-.progs .prog{display:grid;gap:0.25rem;padding:0.5rem 0.625rem;border:1px solid var(--pl-line);border-radius:0.4375rem;background:var(--pl-tile);min-width:0}
-.progs .prog.limited{border-color:var(--c-yellow)}
-.progs .prog.signed_out{border-color:var(--c-red)}
+.progs .pcard{display:grid;gap:0.25rem;padding:0.5rem 0.625rem;border:1px solid var(--pl-line);border-radius:0.4375rem;background:var(--pl-tile);min-width:0}
+.progs .pcard.limited{border-color:var(--c-yellow)}
+.progs .pcard.signed_out{border-color:var(--c-red)}
 .progs .pr-head{display:flex;flex-wrap:wrap;gap:2px 0.5rem;align-items:baseline;min-width:0}
 .progs .m{color:var(--pl-faint);font-size:0.6875rem}
 .progs .sig{color:var(--pl-dim);font-size:0.7188rem}
-.progs .prog.ok .sig{color:var(--c-green)}
-.progs .prog.signed_out .sig{color:var(--c-red)}
+.progs .pcard.ok .sig{color:var(--c-green)}
+.progs .pcard.signed_out .sig{color:var(--c-red)}
 .chip{font-size:0.6562rem;border:1px solid var(--pl-line);border-radius:0.5625rem;padding:0 0.4375rem;white-space:nowrap;color:var(--pl-dim)}
 .chip.ok{color:var(--c-green);border-color:var(--c-green)}
 .chip.limited,.chip.warn{color:var(--c-yellow);border-color:var(--c-yellow)}
@@ -58,7 +58,7 @@
 .pe-role{display:grid;gap:0.375rem;padding:0.4375rem 0.5rem;border:1px solid var(--pl-line);border-radius:0.375rem;min-width:0}
 .pe-fb{display:grid;gap:0.25rem}
 .pe-fb>.kl{color:var(--pl-faint);font-size:0.6562rem;text-transform:uppercase;letter-spacing:.05em}
-.pick{display:grid;gap:0.25rem;min-width:0}
+.cpick{display:grid;gap:0.25rem;min-width:0}
 .chain{display:grid;gap:0.375rem;min-width:0}
 .chain-list{margin:0;padding:0;list-style:none;display:grid;gap:0.25rem}
 .chain-list li{display:flex;flex-wrap:wrap;gap:0.25rem 0.5rem;align-items:center;min-width:0;font-size:0.75rem}
