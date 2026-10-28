@@ -108,7 +108,7 @@ pub fn slugify(title: &str) -> String {
 }
 
 /// An entry id is a safe file stem. `memory` and `readme` are the index's names (and `MEMORY.md` would clash with
-/// `memory.md` on a case-insensitive disk).
+/// `memory.md` on a case-insensitive disk), `how-to-remember` the procedure file's.
 pub fn valid_id(id: &str) -> bool {
     let first = id.chars().next();
     !id.is_empty()
@@ -119,6 +119,7 @@ pub fn valid_id(id: &str) -> bool {
             .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '_')
         && id != "memory"
         && id != "readme"
+        && !id.eq_ignore_ascii_case(HOW_TO_STEM)
 }
 
 /// The stem of an entry file that is already there: any name that is one safe path segment. Files put in by hand or
@@ -130,6 +131,7 @@ pub fn valid_stem(id: &str) -> bool {
         && !id.starts_with('.')
         && !id.eq_ignore_ascii_case("memory")
         && !id.eq_ignore_ascii_case("readme")
+        && !id.eq_ignore_ascii_case(HOW_TO_STEM)
         && !id.chars().any(|c| c.is_control() || matches!(c, '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|'))
 }
 
@@ -750,6 +752,8 @@ pub const BLOCK_END: &str = "<!-- /herdr-planner:memory -->";
 /// The file beside the Galaxy's index that holds the whole procedure of writing to the memory. The Coordinator opens
 /// it when it is asked to remember something, not on every wake.
 pub const HOW_TO: &str = "HOW-TO-REMEMBER.md";
+/// `HOW_TO` without the extension: no entry takes this id, or the file would hide it (or overwrite it).
+const HOW_TO_STEM: &str = "HOW-TO-REMEMBER";
 
 /// The standing lines about memory that are added to the Coordinator's instructions (the board's setting
 /// `coordinator.instructions`, which the board puts into the file its program reads): a pointer, not the procedure.
@@ -1874,6 +1878,14 @@ mod tests {
         std::fs::write(&path, "чужое").unwrap();
         assert!(st.ensure_how_to(false));
         assert_eq!(std::fs::read_to_string(&path).unwrap(), how_to_text());
+        // an entry titled like the file does not clash with it: it gets another id and stays in the list and the index
+        let same = st.save(Entry { title: "How to remember".into(), body: "тело".into(), kind: "rule".into(), ..Entry::default() }).unwrap();
+        assert_ne!(same.id, "how-to-remember");
+        assert!(st.list().iter().any(|e| e.id == same.id), "{same:?}");
+        assert!(std::fs::read_to_string(st.dir.join(INDEX)).unwrap().contains(&format!("({}.md)", same.id)));
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), how_to_text());
+        assert!(!valid_id("how-to-remember") && !valid_stem("How-To-Remember"));
+        st.delete(&same.id).unwrap();
         // it is not a memory entry: not in the list, not in the table of contents
         let saved = st.save(Entry { title: "Порты".into(), body: "тело".into(), kind: "rule".into(), ..Entry::default() }).unwrap();
         let ids: Vec<String> = st.list().into_iter().map(|e| e.id).collect();
