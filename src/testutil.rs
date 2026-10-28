@@ -30,6 +30,9 @@ pub(crate) fn test_cfg(dir: &Path) -> AppConfig {
         projects_dir: dir.join("Projects"),
         trusted_hosts: Vec::new(),
         tunnel_hostname: None,
+        tunnel_mode: Default::default(),
+        tunnel_config: None,
+        tunnel_bin: None,
     }
 }
 

@@ -1,0 +1,1017 @@
+//! The gate's tunnel: the planner starts and stops its own `cloudflared`, and nothing else of Cloudflare's.
+//!
+//! Two modes (`tunnel.mode` in `config.toml`):
+//!
+//! - **quick**: `cloudflared --config <empty> tunnel --url http://127.0.0.1:<port>`. No domain; the address is a random
+//!   `*.trycloudflare.com` at every start, read from the metrics endpoint `/quicktunnel` (the frame in the log is the
+//!   second source). Quick tunnels have no SSE.
+//! - **named**: `cloudflared --config <the owner's file> tunnel run`. The owner made the tunnel and the DNS record
+//!   themselves (`cloudflared tunnel create`, `tunnel route dns`); the planner neither creates nor deletes them, it
+//!   only starts and stops its own process. The address is fixed: `tunnel.hostname`, checked against the `ingress`
+//!   host names of that file. If a tunnel with that config is already running (the owner started it by hand), it is
+//!   shown as `external` and a second one is not started.
+//!
+//! The state machine: `closed → starting → open ⇄ reconnecting`, `open → closing → closed`, `failed` after a start
+//! that did not work or a process that left, `external` for a tunnel somebody else runs. `open` means the metrics
+//! endpoint `/ready` says there is a connection to Cloudflare. The address is told to the gate (`Gate::set_tunnel`)
+//! when the tunnel opens and taken back before anything else when it closes. There is no restart on a failure: a new
+//! start is a new address (quick), and nobody could tell the phone.
+//!
+//! The owner's `credentials-file` and `cert.pem` are never read here, and a log line of `cloudflared` that names
+//! them is dropped before it is kept.
+//!
+//! The process dies with the planner: `kill_on_drop`, a stop from `shutdown_signal` (HTTP and TLS alike), and a pid
+//! file (`cloudflared.pid`: the pid and its start time) that the next start uses to stop what a crash left behind.
+
+use crate::app::Shared;
+use crate::config::{now_ms, AppConfig, TunnelMode};
+use crate::server::{error, refuse_remote, same_origin};
+use axum::extract::{ConnectInfo, State};
+use axum::http::{HeaderMap, StatusCode};
+use axum::response::{IntoResponse, Response};
+use axum::Json;
+use serde::{Deserialize, Serialize};
+use serde_json::json;
+use std::collections::VecDeque;
+use std::net::SocketAddr;
+use std::path::{Path, PathBuf};
+use std::process::Stdio;
+use std::sync::Mutex;
+use std::time::{Duration, Instant};
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
+use tokio::process::{Child, Command};
+use tokio::sync::watch;
+
+/// How many lines of `cloudflared`'s output are kept.
+const LOG_LINES: usize = 200;
+/// How many of them go into an error.
+const TAIL_LINES: usize = 20;
+/// The usual places of the program, after `$PATH` (a service's `$PATH` is short).
+const BIN_DIRS: [&str; 4] = ["~/.local/bin", "/usr/local/bin", "/opt/homebrew/bin", "/usr/bin"];
+/// A config of `cloudflared` is a few lines; a file much bigger than that is not one.
+const CONFIG_MAX: u64 = 256 * 1024;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Phase {
+    Closed,
+    Starting,
+    Open,
+    /// The process is alive, but has no connection to Cloudflare (it reconnects to the same address).
+    Reconnecting,
+    Closing,
+    Failed,
+    /// A tunnel with the configured file is running, started by somebody else. Not ours, not opened for the gate.
+    External,
+}
+
+impl Phase {
+    fn running(self) -> bool {
+        matches!(self, Phase::Starting | Phase::Open | Phase::Reconnecting | Phase::Closing)
+    }
+}
+
+/// Why a tunnel is not up. `kind` is for the page (it has the words); `message` says it in English with the details.
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+pub struct Problem {
+    /// `not-installed`, `config-missing`, `no-hostname`, `hostname-mismatch`, `spawn`, `timeout`, `exited`, `lost`.
+    pub kind: &'static str,
+    pub message: String,
+    pub log_tail: Vec<String>,
+}
+
+impl Problem {
+    fn new(kind: &'static str, message: impl Into<String>) -> Self {
+        Self { kind, message: message.into(), log_tail: Vec::new() }
+    }
+}
+
+/// The settings the page changes while the planner runs (`[tunnel]` of `config.toml` at the start).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Settings {
+    pub mode: TunnelMode,
+    /// The `cloudflared` config of a named tunnel.
+    pub config: Option<PathBuf>,
+    /// The address of a named tunnel; empty: the first host name in the config.
+    pub hostname: Option<String>,
+}
+
+/// How long things take. The tests make them short.
+#[derive(Clone, Debug)]
+pub struct Timing {
+    /// Nothing ready after this long: the start failed.
+    pub start: Duration,
+    pub poll_start: Duration,
+    pub poll_open: Duration,
+    /// No connection this long: the tunnel is closed (it is not coming back).
+    pub lost: Duration,
+    /// SIGTERM, then SIGKILL after this long, when the owner closes the tunnel.
+    pub term_grace: Duration,
+    /// The same when the planner itself is stopping: its own exit is two seconds away.
+    pub shutdown_grace: Duration,
+    /// A quick tunnel that Cloudflare refused is asked for once more after this.
+    pub retry_pause: Duration,
+}
+
+impl Default for Timing {
+    fn default() -> Self {
+        Self {
+            start: Duration::from_secs(45),
+            poll_start: Duration::from_secs(1),
+            poll_open: Duration::from_secs(5),
+            lost: Duration::from_secs(120),
+            term_grace: Duration::from_secs(5),
+            shutdown_grace: Duration::from_millis(1500),
+            retry_pause: Duration::from_secs(3),
+        }
+    }
+}
+
+struct Inner {
+    state: Phase,
+    since: u64,
+    /// The address, once known. Told to the page only through the local API.
+    host: Option<String>,
+    problem: Option<Problem>,
+    log: VecDeque<String>,
+    /// A supervisor task is alive (it owns the process).
+    active: bool,
+    external: Option<u32>,
+    /// `--version` of the program, with the path it was asked of.
+    version: Option<(PathBuf, String)>,
+}
+
+pub struct Tunnel {
+    inner: Mutex<Inner>,
+    settings: Mutex<Settings>,
+    timing: Mutex<Timing>,
+    /// Sent to: the supervisor stops its process. The value is the grace, in milliseconds.
+    stop: watch::Sender<u64>,
+}
+
+impl Tunnel {
+    pub fn new(cfg: &AppConfig) -> Self {
+        let settings = Settings { mode: cfg.tunnel_mode, config: cfg.tunnel_config.clone(), hostname: cfg.tunnel_hostname.clone() };
+        Self {
+            inner: Mutex::new(Inner {
+                state: Phase::Closed,
+                since: now_ms(),
+                host: None,
+                problem: None,
+                log: VecDeque::new(),
+                active: false,
+                external: None,
+                version: None,
+            }),
+            settings: Mutex::new(settings),
+            timing: Mutex::new(Timing::default()),
+            stop: watch::channel(0).0,
+        }
+    }
+
+    pub fn state(&self) -> Phase {
+        self.inner.lock().unwrap().state
+    }
+
+    pub fn settings(&self) -> Settings {
+        self.settings.lock().unwrap().clone()
+    }
+
+    fn timing(&self) -> Timing {
+        self.timing.lock().unwrap().clone()
+    }
+
+    #[cfg(test)]
+    pub fn set_timing(&self, timing: Timing) {
+        *self.timing.lock().unwrap() = timing;
+    }
+
+    fn push_log(&self, line: &str) {
+        let Some(line) = clean_line(line) else { return };
+        let mut g = self.inner.lock().unwrap();
+        if g.log.len() >= LOG_LINES {
+            g.log.pop_front();
+        }
+        g.log.push_back(line);
+    }
+
+    /// The lines that say what went wrong: errors and warnings (the empty-config line of a quick tunnel is none).
+    fn tail(&self) -> Vec<String> {
+        let g = self.inner.lock().unwrap();
+        let bad: Vec<&String> = g.log.iter().filter(|l| (l.contains(" ERR ") || l.contains(" WRN ")) && !l.contains("was empty")).collect();
+        let pick: Vec<&String> = if bad.is_empty() { g.log.iter().rev().take(5).rev().collect() } else { bad };
+        pick.iter().rev().take(TAIL_LINES).rev().map(|s| s.to_string()).collect()
+    }
+}
+
+/* ───────── what the page may know ───────── */
+
+/// What `GET /api/tunnel` says. Only for this machine: `host` is the tunnel's address.
+#[derive(Serialize)]
+pub struct View {
+    pub installed: bool,
+    pub bin: Option<String>,
+    pub version: Option<String>,
+    pub mode: &'static str,
+    /// The settings as they stand (the `cloudflared` config and the address of a named tunnel).
+    pub config: Option<String>,
+    pub hostname: Option<String>,
+    /// For a named tunnel: what the config file says. `ok: false` carries the problem a start would hit.
+    pub config_check: Option<ConfigCheck>,
+    pub state: Phase,
+    pub since_ms: u64,
+    pub host: Option<String>,
+    /// `https://<host>` while the tunnel is up. T3 adds the key after a `#`.
+    pub link: Option<String>,
+    pub error: Option<Problem>,
+    /// The pid of a tunnel somebody else runs (`state` is `external`).
+    pub external_pid: Option<u32>,
+    /// Whether the server-sent events work through this tunnel (a quick tunnel has none).
+    pub sse: bool,
+}
+
+#[derive(Serialize)]
+pub struct ConfigCheck {
+    pub ok: bool,
+    pub problem: Option<Problem>,
+    /// The host names under `ingress` (wildcards included), the address that would be used.
+    pub hosts: Vec<String>,
+    pub host: Option<String>,
+}
+
+pub async fn view(app: &Shared) -> View {
+    let settings = app.tunnel.settings();
+    let bin = find_bin(&app.cfg);
+    if app.tunnel.state() == Phase::External {
+        // Somebody else's tunnel may be gone by now.
+        recheck_external(app);
+    }
+    let version = match &bin {
+        Some(b) => version_of(app, b).await,
+        None => None,
+    };
+    let config_check = (settings.mode == TunnelMode::Named).then(|| match check_named(&settings) {
+        Ok(n) => ConfigCheck { ok: true, problem: None, hosts: n.hosts, host: Some(n.host) },
+        Err((p, hosts)) => ConfigCheck { ok: false, problem: Some(p), hosts, host: None },
+    });
+    let g = app.tunnel.inner.lock().unwrap();
+    let up = matches!(g.state, Phase::Open | Phase::Reconnecting);
+    View {
+        installed: bin.is_some(),
+        bin: bin.map(|b| b.display().to_string()),
+        version,
+        mode: settings.mode.as_str(),
+        config: settings.config.map(|p| p.display().to_string()),
+        hostname: settings.hostname,
+        config_check,
+        state: g.state,
+        since_ms: g.since,
+        host: g.host.clone(),
+        link: g.host.as_ref().filter(|_| up).map(|h| format!("https://{h}")),
+        error: g.problem.clone(),
+        external_pid: g.external,
+        sse: settings.mode == TunnelMode::Named,
+    }
+}
+
+/* ───────── the program ───────── */
+
+fn is_executable(p: &Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    p.metadata().is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
+}
+
+/// Where `cloudflared` is: `HERDR_PLANNER_CLOUDFLARED` (the checks use it), `tunnel.bin`, then `$PATH` and the usual
+/// folders.
+pub fn find_bin(cfg: &AppConfig) -> Option<PathBuf> {
+    let named = std::env::var("HERDR_PLANNER_CLOUDFLARED").ok().filter(|v| !v.trim().is_empty()).or_else(|| cfg.tunnel_bin.clone());
+    let name = named.as_deref().map(str::trim).unwrap_or("cloudflared");
+    if name.contains('/') {
+        let p = crate::config::expand_home(name);
+        return is_executable(&p).then_some(p);
+    }
+    let path = std::env::var_os("PATH").unwrap_or_default();
+    let mut dirs: Vec<PathBuf> = std::env::split_paths(&path).collect();
+    dirs.extend(BIN_DIRS.iter().map(|d| crate::config::expand_home(d)));
+    dirs.into_iter().map(|d| d.join(name)).find(|p| is_executable(p))
+}
+
+async fn version_of(app: &Shared, bin: &Path) -> Option<String> {
+    if let Some((p, v)) = &app.tunnel.inner.lock().unwrap().version {
+        if p == bin {
+            return Some(v.clone());
+        }
+    }
+    let out = tokio::time::timeout(Duration::from_secs(3), Command::new(bin).arg("--version").stdin(Stdio::null()).kill_on_drop(true).output()).await.ok()?.ok()?;
+    let text = String::from_utf8_lossy(&out.stdout);
+    let line: String = text.lines().next()?.trim().chars().take(120).collect();
+    if line.is_empty() {
+        return None;
+    }
+    app.tunnel.inner.lock().unwrap().version = Some((bin.to_path_buf(), line.clone()));
+    Some(line)
+}
+
+/* ───────── the owner's config of a named tunnel ───────── */
+
+/// The `hostname` values under `ingress:` of a `cloudflared` config. Nothing else is taken from the file: its
+/// `credentials-file` is a path the planner does not follow, and `cert.pem` is not mentioned there at all.
+pub fn ingress_hosts(text: &str) -> Vec<String> {
+    let mut in_ingress = false;
+    let mut hosts: Vec<String> = Vec::new();
+    for raw in text.lines() {
+        let line = match raw.find('#') {
+            Some(0) => "",
+            Some(i) if raw[..i].ends_with(char::is_whitespace) => &raw[..i],
+            _ => raw,
+        };
+        let body = line.trim();
+        if body.is_empty() {
+            continue;
+        }
+        let indent = line.len() - line.trim_start().len();
+        if indent == 0 && !body.starts_with('-') {
+            in_ingress = body.strip_prefix("ingress:").is_some();
+            continue;
+        }
+        if !in_ingress {
+            continue;
+        }
+        let body = body.trim_start_matches('-').trim_start();
+        if let Some(value) = body.strip_prefix("hostname:") {
+            let value = value.trim().trim_matches(|c| c == '"' || c == '\'');
+            if let Some(h) = crate::config::tunnel_host(value).filter(|h| valid_host(h)) {
+                if !hosts.contains(&h) {
+                    hosts.push(h);
+                }
+            }
+        }
+    }
+    hosts
+}
+
+/// A DNS name, with a leading `*.` allowed (an ingress rule for a whole zone).
+fn valid_host(h: &str) -> bool {
+    let name = h.strip_prefix("*.").unwrap_or(h);
+    !name.is_empty()
+        && name.len() <= 253
+        && !name.starts_with(['.', '-'])
+        && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '.')
+}
+
+/// Whether an ingress rule (`planner.example.org`, `*.example.org`) covers a host.
+fn covers(rule: &str, host: &str) -> bool {
+    match rule.strip_prefix("*.") {
+        Some(zone) => host.len() > zone.len() + 1 && host.ends_with(zone) && host[..host.len() - zone.len()].ends_with('.'),
+        None => rule == host,
+    }
+}
+
+struct Named {
+    /// All the host names of the config.
+    hosts: Vec<String>,
+    /// The tunnel's address.
+    host: String,
+}
+
+/// Reads the config of a named tunnel and finds the address. The errors a start would hit, said before it starts:
+/// the file is not there, it has no `hostname`, the address in the settings is not one of its host names.
+fn check_named(settings: &Settings) -> Result<Named, (Problem, Vec<String>)> {
+    let none = |p: Problem| (p, Vec::new());
+    let Some(path) = &settings.config else {
+        return Err(none(Problem::new("config-missing", "tunnel.config is not set: the path of the cloudflared config of the tunnel")));
+    };
+    let meta = std::fs::metadata(path).map_err(|e| none(Problem::new("config-missing", format!("cloudflared config not found: {} ({})", path.display(), e.kind()))))?;
+    if !meta.is_file() || meta.len() > CONFIG_MAX {
+        return Err(none(Problem::new("config-missing", format!("{} is not a cloudflared config", path.display()))));
+    }
+    let text = std::fs::read_to_string(path).map_err(|e| none(Problem::new("config-missing", format!("cloudflared config cannot be read: {} ({})", path.display(), e.kind()))))?;
+    let hosts = ingress_hosts(&text);
+    if hosts.is_empty() {
+        let p = Problem::new("no-hostname", format!("{} has no `hostname` under `ingress`: the tunnel has no address", path.display()));
+        return Err((p, hosts));
+    }
+    match &settings.hostname {
+        Some(want) if hosts.iter().any(|r| covers(r, want)) => Ok(Named { host: want.clone(), hosts }),
+        Some(want) => {
+            let p = Problem::new("hostname-mismatch", format!("{want} is not among the `ingress` host names of {}: {}", path.display(), hosts.join(", ")));
+            Err((p, hosts))
+        }
+        None => match hosts.iter().find(|h| !h.starts_with("*.")).cloned() {
+            Some(host) => Ok(Named { host, hosts }),
+            None => {
+                let p = Problem::new("no-hostname", format!("{} names only wildcard hosts: set tunnel.hostname", path.display()));
+                Err((p, hosts))
+            }
+        },
+    }
+}
+
+/* ───────── a tunnel somebody else started ───────── */
+
+/// The pid of a running `cloudflared … run` that uses this config file, if it is not ours.
+fn find_external(config: &Path, own: Option<u32>) -> Option<u32> {
+    let want = std::fs::canonicalize(config).unwrap_or_else(|_| config.to_path_buf());
+    let same = |t: &str| {
+        let p = crate::config::expand_home(t);
+        p == want || std::fs::canonicalize(&p).is_ok_and(|c| c == want)
+    };
+    let me = std::process::id();
+    for e in std::fs::read_dir("/proc").ok()?.flatten() {
+        let Some(pid) = e.file_name().to_str().and_then(|n| n.parse::<u32>().ok()) else { continue };
+        if pid == me || Some(pid) == own {
+            continue;
+        }
+        let Ok(raw) = std::fs::read(e.path().join("cmdline")) else { continue };
+        let args: Vec<String> = raw.split(|b| *b == 0).filter(|a| !a.is_empty()).map(|a| String::from_utf8_lossy(a).into_owned()).collect();
+        let program = args.iter().take(2).any(|a| a.rsplit('/').next().is_some_and(|n| n.contains("cloudflared")));
+        if !program || !args.iter().any(|a| a == "run") {
+            continue;
+        }
+        let uses = args.iter().enumerate().any(|(i, a)| match a.strip_prefix("--config=") {
+            Some(v) => same(v),
+            None => (a == "--config" || a == "-c") && args.get(i + 1).is_some_and(|v| same(v)),
+        });
+        if uses && proc_alive(pid) {
+            return Some(pid);
+        }
+    }
+    None
+}
+
+fn recheck_external(app: &Shared) {
+    let settings = app.tunnel.settings();
+    let still = settings.config.as_deref().and_then(|c| find_external(c, None));
+    let mut g = app.tunnel.inner.lock().unwrap();
+    if g.state == Phase::External && still.is_none() {
+        g.state = Phase::Closed;
+        g.since = now_ms();
+        g.external = None;
+        g.host = None;
+    }
+}
+
+/* ───────── the processes ───────── */
+
+#[cfg(unix)]
+fn signal(pid: u32, sig: i32) {
+    // SAFETY: kill(2) takes two integers and touches no memory; a pid that has gone is an error we ignore.
+    unsafe {
+        libc::kill(pid as i32, sig);
+    }
+}
+
+#[cfg(not(unix))]
+fn signal(_: u32, _: i32) {}
+
+/// The start time of a process in clock ticks since boot: with the pid it names one process, not a later one that
+/// got the same number.
+fn proc_start(pid: u32) -> Option<u64> {
+    let text = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    crate::strays::parse_stat(&text).map(|s| s.4)
+}
+
+fn proc_alive(pid: u32) -> bool {
+    // A zombie is gone for our purposes.
+    std::fs::read_to_string(format!("/proc/{pid}/stat")).ok().and_then(|t| crate::strays::parse_stat(&t)).is_some_and(|s| s.1 != 'Z')
+}
+
+fn pid_file(cfg: &AppConfig) -> PathBuf {
+    cfg.state_dir.join("cloudflared.pid")
+}
+
+fn write_pid_file(cfg: &AppConfig, pid: u32) {
+    let _ = std::fs::create_dir_all(&cfg.state_dir);
+    let _ = std::fs::write(pid_file(cfg), format!("{pid} {}\n", proc_start(pid).unwrap_or(0)));
+}
+
+/// At the planner's start: a `cloudflared` it started before and a crash left running is stopped. It is stopped only
+/// when the pid and the start time are the recorded ones and the process is still a `cloudflared`; a pid that was
+/// reused by something else is left alone.
+pub async fn reap_orphan(cfg: &AppConfig) -> Option<u32> {
+    let file = pid_file(cfg);
+    let text = std::fs::read_to_string(&file).ok()?;
+    let _ = std::fs::remove_file(&file);
+    let mut it = text.split_whitespace();
+    let pid: u32 = it.next()?.parse().ok()?;
+    let start: u64 = it.next()?.parse().ok()?;
+    if start == 0 || proc_start(pid) != Some(start) || !proc_alive(pid) {
+        return None;
+    }
+    let cmd = std::fs::read(format!("/proc/{pid}/cmdline")).unwrap_or_default();
+    if !String::from_utf8_lossy(&cmd).contains("cloudflared") {
+        return None;
+    }
+    signal(pid, libc::SIGTERM);
+    let end = Instant::now() + Duration::from_secs(3);
+    while proc_alive(pid) && Instant::now() < end {
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    if proc_alive(pid) {
+        signal(pid, libc::SIGKILL);
+    }
+    Some(pid)
+}
+
+/// SIGTERM, then SIGKILL when the process has not left within `grace`.
+async fn terminate(child: &mut Child, grace: Duration) {
+    if let Some(pid) = child.id() {
+        signal(pid, libc::SIGTERM);
+    }
+    if tokio::time::timeout(grace, child.wait()).await.is_err() {
+        let _ = child.kill().await;
+    }
+}
+
+/* ───────── metrics ───────── */
+
+/// `GET` on the metrics port of `cloudflared`: the status and the body, or `None` when nobody answers.
+async fn metrics_get(port: u16, path: &str) -> Option<(u16, String)> {
+    let work = async {
+        let mut s = tokio::net::TcpStream::connect(("127.0.0.1", port)).await.ok()?;
+        s.write_all(format!("GET {path} HTTP/1.0\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n").as_bytes()).await.ok()?;
+        let mut raw = Vec::new();
+        s.take(64 * 1024).read_to_end(&mut raw).await.ok()?;
+        let text = String::from_utf8_lossy(&raw).into_owned();
+        let status = text.split(' ').nth(1)?.parse().ok()?;
+        Some((status, text.split_once("\r\n\r\n").map(|(_, b)| b.to_string()).unwrap_or_default()))
+    };
+    tokio::time::timeout(Duration::from_secs(2), work).await.ok().flatten()
+}
+
+/// `/ready` is 200 with `readyConnections` ≥ 1 once the tunnel is connected.
+async fn is_ready(port: u16) -> bool {
+    match metrics_get(port, "/ready").await {
+        Some((200, body)) => serde_json::from_str::<serde_json::Value>(&body).ok().and_then(|v| v.get("readyConnections").and_then(|n| n.as_u64())).map_or(true, |n| n >= 1),
+        _ => false,
+    }
+}
+
+async fn quick_host_from_metrics(port: u16) -> Option<String> {
+    let (200, body) = metrics_get(port, "/quicktunnel").await? else { return None };
+    let host = serde_json::from_str::<serde_json::Value>(&body).ok()?.get("hostname")?.as_str()?.to_lowercase();
+    quick_name(&host).then_some(host)
+}
+
+/// `abc-def.trycloudflare.com`, but not the service's own `api.trycloudflare.com`.
+fn quick_name(host: &str) -> bool {
+    host.strip_suffix(".trycloudflare.com").is_some_and(|label| !label.is_empty() && label != "api" && label.chars().all(|c| c.is_ascii_alphanumeric() || c == '-'))
+}
+
+/// The address in a line of `cloudflared`'s frame («Your quick Tunnel has been created!»).
+pub fn quick_host_in_line(line: &str) -> Option<String> {
+    let rest = &line[line.find("https://")? + "https://".len()..];
+    let end = rest.find(|c: char| !(c.is_ascii_alphanumeric() || c == '-' || c == '.')).unwrap_or(rest.len());
+    let host = rest[..end].to_lowercase();
+    quick_name(&host).then_some(host)
+}
+
+/// A line of the program's output as it is kept: control characters out, short, and nothing that names the owner's
+/// credentials.
+fn clean_line(line: &str) -> Option<String> {
+    let line: String = line.chars().filter(|c| !c.is_control()).collect();
+    let line = line.trim();
+    if line.is_empty() {
+        return None;
+    }
+    let low = line.to_lowercase();
+    if ["credentials", "cert.pem", "tunnelsecret", "origincert", "token"].iter().any(|w| low.contains(w)) {
+        return Some("(a line about credentials is not kept)".to_string());
+    }
+    Some(line.chars().take(300).collect())
+}
+
+/* ───────── changing state ───────── */
+
+/// Moves to `to`, lets `edit` change the rest, and tells the gate, the page and the journal. The gate hears about the
+/// address only while the tunnel is up, and first of all when it is not.
+async fn change(app: &Shared, to: Phase, edit: impl FnOnce(&mut Inner)) {
+    let (host, text) = {
+        let mut g = app.tunnel.inner.lock().unwrap();
+        let from = g.state;
+        g.state = to;
+        g.since = now_ms();
+        edit(&mut g);
+        let text = match to {
+            Phase::Open if from != Phase::Reconnecting => Some(format!("шлюз открыт ({})", if app.tunnel.settings().mode == TunnelMode::Named { "именованный туннель" } else { "быстрый туннель" })),
+            Phase::Closed if from == Phase::Closing => Some("шлюз закрыт".to_string()),
+            Phase::Failed => Some(format!("шлюз не работает: {}", g.problem.as_ref().map(|p| p.message.as_str()).unwrap_or("?"))),
+            _ => None,
+        };
+        (g.host.clone().filter(|_| matches!(to, Phase::Open | Phase::Reconnecting)), text)
+    };
+    app.gate.set_tunnel(host.as_deref());
+    // The bus reaches every subscriber, so it carries the state and nothing else.
+    app.bus.send("tunnel", json!({"state": to}).to_string());
+    if let Some(text) = text {
+        crate::app::journal_note(app, "tunnel", "tunnel", &text).await;
+    }
+}
+
+/* ───────── opening ───────── */
+
+struct Launch {
+    bin: PathBuf,
+    args: Vec<String>,
+    metrics: u16,
+    /// A named tunnel's address; a quick tunnel's is found while it starts.
+    host: Option<String>,
+    quick: bool,
+}
+
+enum Prepared {
+    Run(Launch),
+    External(u32, String),
+}
+
+fn free_port() -> Option<u16> {
+    std::net::TcpListener::bind(("127.0.0.1", 0)).ok()?.local_addr().ok().map(|a| a.port())
+}
+
+/// The empty config that keeps `cloudflared` from reading `config.yml` (which may be the owner's named tunnel): the
+/// owner's `~/.cloudflared/quick-empty.yml`, else one in the planner's state folder.
+fn quick_config(cfg: &AppConfig) -> Result<PathBuf, Problem> {
+    let theirs = crate::config::home().join(".cloudflared/quick-empty.yml");
+    if theirs.is_file() {
+        return Ok(theirs);
+    }
+    let ours = cfg.state_dir.join("quick-empty.yml");
+    if !ours.is_file() {
+        std::fs::create_dir_all(&cfg.state_dir).and_then(|_| std::fs::write(&ours, "")).map_err(|e| Problem::new("spawn", format!("cannot write {}: {e}", ours.display())))?;
+    }
+    Ok(ours)
+}
+
+fn prepare(app: &Shared) -> Result<Prepared, Problem> {
+    let settings = app.tunnel.settings();
+    let Some(bin) = find_bin(&app.cfg) else {
+        return Err(Problem::new("not-installed", "cloudflared is not installed (or not where the planner looks: $PATH, ~/.local/bin, /usr/local/bin, /opt/homebrew/bin, /usr/bin; tunnel.bin in config.toml)"));
+    };
+    let metrics = free_port().ok_or_else(|| Problem::new("spawn", "no free port for the metrics of cloudflared"))?;
+    let metrics_arg = format!("127.0.0.1:{metrics}");
+    match settings.mode {
+        TunnelMode::Quick => {
+            let config = quick_config(&app.cfg)?;
+            // The target is this planner on this machine, whatever it listens on; with TLS the certificate is for
+            // another name.
+            let (scheme, extra) = if app.cfg.tls().is_some() { ("https", Some("--no-tls-verify")) } else { ("http", None) };
+            let mut args = vec!["--config".to_string(), config.display().to_string(), "tunnel".into(), "--no-autoupdate".into(), "--metrics".into(), metrics_arg];
+            args.extend(extra.map(String::from));
+            args.extend(["--url".to_string(), format!("{scheme}://127.0.0.1:{}", app.cfg.port)]);
+            Ok(Prepared::Run(Launch { bin, args, metrics, host: None, quick: true }))
+        }
+        TunnelMode::Named => {
+            let named = check_named(&settings).map_err(|(p, _)| p)?;
+            let config = settings.config.unwrap_or_default();
+            if let Some(pid) = find_external(&config, None) {
+                return Ok(Prepared::External(pid, named.host));
+            }
+            let args = vec!["--config".to_string(), config.display().to_string(), "tunnel".into(), "--no-autoupdate".into(), "--metrics".into(), metrics_arg, "run".into()];
+            Ok(Prepared::Run(Launch { bin, args, metrics, host: Some(named.host), quick: false }))
+        }
+    }
+}
+
+/// Starts the tunnel (a no-op when one is up or starting). Returns at once: the state changes as the process comes up.
+pub async fn open(app: &Shared) {
+    let rx = {
+        let mut g = app.tunnel.inner.lock().unwrap();
+        if g.state.running() {
+            return;
+        }
+        g.state = Phase::Starting;
+        g.since = now_ms();
+        g.host = None;
+        g.problem = None;
+        g.external = None;
+        g.log.clear();
+        g.active = true;
+        app.tunnel.stop.subscribe()
+    };
+    app.bus.send("tunnel", json!({"state": Phase::Starting}).to_string());
+    let launch = match prepare(app) {
+        Ok(Prepared::Run(l)) => l,
+        Ok(Prepared::External(pid, host)) => {
+            app.tunnel.inner.lock().unwrap().active = false;
+            change(app, Phase::External, |g| {
+                g.external = Some(pid);
+                g.host = Some(host);
+            })
+            .await;
+            return;
+        }
+        Err(p) => {
+            app.tunnel.inner.lock().unwrap().active = false;
+            change(app, Phase::Failed, |g| g.problem = Some(p)).await;
+            return;
+        }
+    };
+    if app.tunnel.state() != Phase::Starting {
+        // Closed while it was being prepared: there is no process to wait for.
+        finish(app, Phase::Closed, None).await;
+        return;
+    }
+    app.tunnel.inner.lock().unwrap().host = launch.host.clone();
+    let app = app.clone();
+    tokio::spawn(async move { supervise(app, launch, rx).await });
+}
+
+/// The lines the program writes, into the ring of the log.
+fn pump<R: tokio::io::AsyncRead + Send + Unpin + 'static>(app: &Shared, stream: R) {
+    let app = app.clone();
+    tokio::spawn(async move {
+        let mut lines = BufReader::new(stream).lines();
+        while let Ok(Some(line)) = lines.next_line().await {
+            app.tunnel.push_log(&line);
+        }
+    });
+}
+
+enum End {
+    Stopped(Duration),
+    Exited(Option<i32>),
+    Timeout,
+    Lost,
+}
+
+async fn supervise(app: Shared, launch: Launch, mut stop: watch::Receiver<u64>) {
+    let t = app.tunnel.timing();
+    let mut attempt = 0;
+    let end = loop {
+        let mut cmd = Command::new(&launch.bin);
+        cmd.args(&launch.args).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).kill_on_drop(true);
+        let mut child = match cmd.spawn() {
+            Ok(c) => c,
+            Err(e) => {
+                let p = Problem::new("spawn", format!("cannot start {}: {e}", launch.bin.display()));
+                finish(&app, Phase::Failed, Some(p)).await;
+                return;
+            }
+        };
+        if let Some(pid) = child.id() {
+            write_pid_file(&app.cfg, pid);
+        }
+        if let Some(out) = child.stdout.take() {
+            pump(&app, out);
+        }
+        if let Some(err) = child.stderr.take() {
+            pump(&app, err);
+        }
+        let end = watch_child(&app, &launch, &mut child, &mut stop, &t).await;
+        match end {
+            End::Stopped(grace) => {
+                terminate(&mut child, grace).await;
+            }
+            End::Timeout | End::Lost => terminate(&mut child, t.term_grace).await,
+            End::Exited(_) => {
+                let _ = child.wait().await;
+            }
+        }
+        // Cloudflare refuses a quick tunnel now and then; asking again once is what a person would do.
+        if let End::Exited(_) = end {
+            if attempt == 0 && launch.quick && app.tunnel.state() == Phase::Starting && retry_worthy(&app) {
+                attempt += 1;
+                app.tunnel.inner.lock().unwrap().host = None;
+                tokio::select! {
+                    _ = tokio::time::sleep(t.retry_pause) => continue,
+                    _ = stop.changed() => break End::Stopped(Duration::ZERO),
+                }
+            }
+        }
+        break end;
+    };
+    let _ = std::fs::remove_file(pid_file(&app.cfg));
+    match end {
+        End::Stopped(_) => finish(&app, Phase::Closed, None).await,
+        End::Exited(code) => {
+            let how = code.map_or("a signal".to_string(), |c| format!("code {c}"));
+            let mut p = Problem::new("exited", format!("cloudflared exited ({how})"));
+            p.log_tail = app.tunnel.tail();
+            finish(&app, Phase::Failed, Some(p)).await;
+        }
+        End::Timeout => {
+            let mut p = Problem::new("timeout", format!("no connection to Cloudflare within {} s", t.start.as_secs().max(1)));
+            p.log_tail = app.tunnel.tail();
+            finish(&app, Phase::Failed, Some(p)).await;
+        }
+        End::Lost => {
+            let mut p = Problem::new("lost", format!("no connection to Cloudflare for {} s: the tunnel was closed", t.lost.as_secs().max(1)));
+            p.log_tail = app.tunnel.tail();
+            finish(&app, Phase::Failed, Some(p)).await;
+        }
+    }
+}
+
+fn retry_worthy(app: &Shared) -> bool {
+    let g = app.tunnel.inner.lock().unwrap();
+    g.log.iter().any(|l| l.contains("failed to request quick Tunnel") || l.contains("address already in use"))
+}
+
+async fn finish(app: &Shared, to: Phase, problem: Option<Problem>) {
+    change(app, to, |g| {
+        g.problem = problem;
+        g.host = None;
+        g.active = false;
+    })
+    .await;
+}
+
+async fn watch_child(app: &Shared, launch: &Launch, child: &mut Child, stop: &mut watch::Receiver<u64>, t: &Timing) -> End {
+    let started = Instant::now();
+    loop {
+        let poll = if app.tunnel.state() == Phase::Starting { t.poll_start } else { t.poll_open };
+        tokio::select! {
+            status = child.wait() => return End::Exited(status.ok().and_then(|s| s.code())),
+            _ = stop.changed() => return End::Stopped(Duration::from_millis(*stop.borrow())),
+            _ = tokio::time::sleep(poll) => {}
+        }
+        match app.tunnel.state() {
+            Phase::Starting => {
+                let host = app.tunnel.inner.lock().unwrap().host.clone();
+                let host = match host {
+                    Some(h) => Some(h),
+                    None if launch.quick => {
+                        let found = match quick_host_from_metrics(launch.metrics).await {
+                            Some(h) => Some(h),
+                            None => app.tunnel.inner.lock().unwrap().log.iter().find_map(|l| quick_host_in_line(l)),
+                        };
+                        if let Some(h) = &found {
+                            app.tunnel.inner.lock().unwrap().host = Some(h.clone());
+                        }
+                        found
+                    }
+                    None => None,
+                };
+                if host.is_some() && is_ready(launch.metrics).await {
+                    change(app, Phase::Open, |_| {}).await;
+                } else if started.elapsed() >= t.start {
+                    return End::Timeout;
+                }
+            }
+            Phase::Open => {
+                if !is_ready(launch.metrics).await {
+                    change(app, Phase::Reconnecting, |_| {}).await;
+                }
+            }
+            Phase::Reconnecting => {
+                if is_ready(launch.metrics).await {
+                    change(app, Phase::Open, |_| {}).await;
+                } else if app.tunnel.inner.lock().unwrap().since + t.lost.as_millis() as u64 <= now_ms() {
+                    return End::Lost;
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+/* ───────── closing ───────── */
+
+/// Closes the tunnel: the gate first (a request through the tunnel gets its 503 at once), then SIGTERM to the
+/// process, SIGKILL after `grace`. Returns when it is closed. A tunnel somebody else runs is not touched, only
+/// forgotten.
+pub async fn close(app: &Shared, grace: Duration) {
+    let supervised = {
+        let mut g = app.tunnel.inner.lock().unwrap();
+        match g.state {
+            Phase::Closed | Phase::Closing => g.state == Phase::Closing,
+            Phase::Starting | Phase::Open | Phase::Reconnecting if g.active => {
+                g.state = Phase::Closing;
+                g.since = now_ms();
+                true
+            }
+            _ => {
+                // Failed, External, or Starting with no process yet.
+                g.state = Phase::Closed;
+                g.since = now_ms();
+                g.host = None;
+                g.problem = None;
+                g.external = None;
+                g.active = false;
+                false
+            }
+        }
+    };
+    app.gate.set_tunnel(None);
+    app.bus.send("tunnel", json!({"state": app.tunnel.state()}).to_string());
+    if !supervised {
+        return;
+    }
+    app.tunnel.stop.send_replace(grace.as_millis() as u64);
+    let end = Instant::now() + grace + Duration::from_secs(2);
+    while app.tunnel.state() == Phase::Closing && Instant::now() < end {
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
+/// The planner is stopping (SIGTERM or Ctrl-C): the tunnel goes first, before the process's own exit.
+pub async fn shutdown(app: &Shared) {
+    if app.tunnel.state().running() {
+        close(app, app.tunnel.timing().shutdown_grace).await;
+    }
+}
+
+/* ───────── the page's API (this machine only) ───────── */
+
+/// `GET /api/tunnel`
+pub async fn tunnel_get(State(app): State<Shared>, ConnectInfo(addr): ConnectInfo<SocketAddr>, headers: HeaderMap) -> Response {
+    if let Some(r) = refuse_remote(addr, &headers) {
+        return r;
+    }
+    Json(view(&app).await).into_response()
+}
+
+/// A POST of the tunnel: from this machine, from this page.
+fn guard(addr: SocketAddr, headers: &HeaderMap) -> Option<Response> {
+    if !same_origin(headers) {
+        return Some(error(StatusCode::FORBIDDEN, "cross-origin request refused"));
+    }
+    refuse_remote(addr, headers)
+}
+
+/// `POST /api/tunnel/open`
+pub async fn tunnel_open(State(app): State<Shared>, ConnectInfo(addr): ConnectInfo<SocketAddr>, headers: HeaderMap) -> Response {
+    if let Some(r) = guard(addr, &headers) {
+        return r;
+    }
+    open(&app).await;
+    Json(view(&app).await).into_response()
+}
+
+/// `POST /api/tunnel/close`
+pub async fn tunnel_close(State(app): State<Shared>, ConnectInfo(addr): ConnectInfo<SocketAddr>, headers: HeaderMap) -> Response {
+    if let Some(r) = guard(addr, &headers) {
+        return r;
+    }
+    close(&app, app.tunnel.timing().term_grace).await;
+    Json(view(&app).await).into_response()
+}
+
+#[derive(Deserialize)]
+pub struct ConfigBody {
+    mode: Option<String>,
+    config: Option<String>,
+    hostname: Option<String>,
+}
+
+/// `POST /api/tunnel/config`: the mode, the `cloudflared` config and the address of a named tunnel. Written to
+/// `config.toml`; changed only while no tunnel is up. Fields that are left out stay as they are; an empty `config` or
+/// `hostname` removes the setting.
+pub async fn tunnel_config(State(app): State<Shared>, ConnectInfo(addr): ConnectInfo<SocketAddr>, headers: HeaderMap, Json(body): Json<ConfigBody>) -> Response {
+    if let Some(r) = guard(addr, &headers) {
+        return r;
+    }
+    if app.tunnel.state().running() {
+        return error(StatusCode::CONFLICT, "close the tunnel first");
+    }
+    let mut next = app.tunnel.settings();
+    if let Some(m) = &body.mode {
+        match TunnelMode::parse(m) {
+            Some(m) => next.mode = m,
+            None => return error(StatusCode::BAD_REQUEST, "mode is `quick` or `named`"),
+        }
+    }
+    if let Some(c) = &body.config {
+        let c = c.trim();
+        next.config = (!c.is_empty()).then(|| crate::config::expand_home(c));
+        if next.config.as_ref().is_some_and(|p| !p.is_absolute()) {
+            return error(StatusCode::BAD_REQUEST, "the config path must be absolute (or start with ~/)");
+        }
+    }
+    if let Some(h) = &body.hostname {
+        next.hostname = match h.trim() {
+            "" => None,
+            t => match crate::config::tunnel_host(t).filter(|h| valid_host(h) && !h.starts_with("*.") && !h.contains(':')) {
+                Some(h) => Some(h),
+                None => return error(StatusCode::BAD_REQUEST, "hostname is a DNS name, like planner.example.org"),
+            },
+        };
+    }
+    let saved = crate::config::set_tunnel(
+        &app.cfg.config_file,
+        next.mode,
+        &next.config.as_ref().map(|p| p.display().to_string()).unwrap_or_default(),
+        next.hostname.as_deref().unwrap_or_default(),
+    );
+    if let Err(e) = saved {
+        return error(StatusCode::INTERNAL_SERVER_ERROR, format!("config.toml was not written: {e}"));
+    }
+    app.gate.set_tunnel_name(next.hostname.as_deref());
+    *app.tunnel.settings.lock().unwrap() = next;
+    {
+        // A failure or a forgotten external tunnel belonged to the old settings.
+        let mut g = app.tunnel.inner.lock().unwrap();
+        if matches!(g.state, Phase::Failed | Phase::External) {
+            g.state = Phase::Closed;
+            g.since = now_ms();
+            g.problem = None;
+            g.external = None;
+            g.host = None;
+        }
+    }
+    Json(view(&app).await).into_response()
+}
+
+#[cfg(test)]
+#[path = "tunnel_tests.rs"]
+mod tests;

@@ -129,6 +129,11 @@ pub const POLICY: &[(&str, Access)] = &[
     ("/api/station/preset/preview", Local),
     ("/api/station/preset/apply", Local),
     ("/api/ship", Local),
+    // The tunnel itself: its address, opening and closing it.
+    ("/api/tunnel", Local),
+    ("/api/tunnel/open", Local),
+    ("/api/tunnel/close", Local),
+    ("/api/tunnel/config", Local),
 ];
 
 /// The access a path has in `POLICY`, if it is there.
@@ -197,28 +202,30 @@ const PROXY_HEADERS: [&str; 6] = [
 ];
 
 pub struct Gate {
-    /// Hosts allowed besides our own: `trusted_hosts` and the named tunnel's address (a rule without a port takes any).
+    /// Hosts allowed besides our own: `trusted_hosts` (a rule without a port takes any).
     trusted: Vec<(String, Option<u16>)>,
     /// The named tunnel's address, if one is set up; a request for it is a tunnel request.
-    tunnel_name: Option<String>,
+    tunnel_name: RwLock<Option<String>>,
     /// The address of the tunnel that is open now (set by whoever runs the tunnel).
     open: RwLock<Option<String>>,
 }
 
 impl Gate {
     pub fn new(cfg: &AppConfig) -> Self {
-        let mut trusted: Vec<(String, Option<u16>)> =
-            cfg.trusted_hosts.iter().filter_map(|h| split_host(h)).collect();
+        let trusted: Vec<(String, Option<u16>)> = cfg.trusted_hosts.iter().filter_map(|h| split_host(h)).collect();
+        // The tunnel's address is not a trusted name: a request for it is a tunnel request, whatever else it says.
         let tunnel_name = cfg.tunnel_hostname.as_deref().and_then(split_host).map(|(n, _)| n);
-        if let Some(name) = &tunnel_name {
-            trusted.push((name.clone(), None));
-        }
-        Self { trusted, tunnel_name, open: RwLock::new(None) }
+        Self { trusted, tunnel_name: RwLock::new(tunnel_name), open: RwLock::new(None) }
+    }
+
+    /// The named tunnel's address was changed in the settings (`None`: removed). The names `trusted_hosts` lists are
+    /// not touched.
+    pub fn set_tunnel_name(&self, host: Option<&str>) {
+        *self.tunnel_name.write().unwrap() = host.and_then(split_host).map(|(n, _)| n);
     }
 
     /// The tunnel was opened at this address (`None`: it was closed). Closed is the state of a planner that has just
     /// started; the tunnel's launcher calls this.
-    #[allow(dead_code)]
     pub fn set_tunnel(&self, host: Option<&str>) {
         *self.open.write().unwrap() = host.and_then(split_host).map(|(n, _)| n);
     }
@@ -228,12 +235,14 @@ impl Gate {
     }
 
     fn is_trusted(&self, name: &str, port: Option<u16>) -> bool {
-        OWN_HOSTS.contains(&name) || self.trusted.iter().any(|(n, p)| n == name && (p.is_none() || *p == port))
+        OWN_HOSTS.contains(&name)
+            || self.trusted.iter().any(|(n, p)| n == name && (p.is_none() || *p == port))
+            || self.tunnel_name.read().unwrap().as_deref() == Some(name)
     }
 
     fn names_the_tunnel(&self, name: &str) -> bool {
         name.ends_with(".trycloudflare.com")
-            || self.tunnel_name.as_deref() == Some(name)
+            || self.tunnel_name.read().unwrap().as_deref() == Some(name)
             || self.open.read().unwrap().as_deref() == Some(name)
     }
 
