@@ -1,0 +1,59 @@
+/* ───────────────────────────────────────────────────────────────
+   Tokens of the page: shared by the Galaxy (base.css) and the phone's light page (mobile/mobile.css).
+   Слой 1 · --c-*  : цвета текущей темы Omarchy (подставляются из снимка).
+   Слой 2 · --pl-* : токены окна, выведенные из слоя 1. Живут на `.win` (Галактика) и `.mob` (лёгкая страница).
+   Слой 3 · --m-*  : движение.
+   ─────────────────────────────────────────────────────────────── */
+:root{
+  --c-bg:#1a120c; --c-bg-dark:#140e09; --c-bg-darker:#0d0906; --c-bg-light:#2a201a;
+  --c-fg:#ecded6; --c-fg-dim:#9c9089; --c-fg-bright:#fcf5f1; --c-muted:#806f64;
+  --c-accent:#dfa360; --c-sel:#513b24;
+  --c-red:#e48682; --c-yellow:#f6bb6f; --c-green:#98bf7a; --c-cyan:#5bcbcb; --c-blue:#77b0e9; --c-magenta:#da8fbf;
+  --c-border-a:#dfa360; --c-border-b:#7ea9d5;
+  --font:"JetBrainsMono Nerd Font","JetBrains Mono","JetBrainsMono NF",ui-monospace,"DejaVu Sans Mono",monospace;
+  --m-fast:.14s; --m-med:.26s; --m-slow:.7s; --m-ease:cubic-bezier(.2,.7,.2,1);
+  color-scheme:dark;
+}
+:root[data-mode="light"]{color-scheme:light}
+
+.win,.mob{
+  --pl-bg:var(--c-bg);
+  --pl-text:var(--c-fg);
+  --pl-title:var(--c-fg-bright);
+  --pl-dim:color-mix(in srgb,var(--c-fg) 90%,var(--c-bg));
+  --pl-faint:color-mix(in srgb,var(--c-fg) 76%,var(--c-bg));
+  --pl-tile:color-mix(in srgb,var(--c-fg) 5%,var(--c-bg));
+  --pl-raised:color-mix(in srgb,var(--c-fg) 9%,var(--c-bg));
+  --pl-line:color-mix(in srgb,var(--c-fg) 16%,var(--c-bg));
+  --pl-hover:color-mix(in srgb,var(--c-fg) 9%,transparent);
+  --pl-accent:var(--c-accent);
+  --pl-accent-ink:var(--c-accent);
+  --pl-ok:var(--c-green);
+  --pl-danger:color-mix(in srgb,var(--c-red) 70%,var(--c-fg));
+  --pl-on-accent:var(--c-bg);
+  --pl-focus:color-mix(in srgb,var(--c-accent) 70%,var(--c-bg));
+  --pl-panel:color-mix(in srgb,var(--pl-bg) 92%,transparent);
+  --pl-panel-solid:color-mix(in srgb,var(--pl-bg) 97%,transparent);
+  --pl-r:0.4375rem;
+}
+:root[data-mode="light"] .win,:root[data-mode="light"] .mob{
+  --pl-dim:color-mix(in srgb,var(--c-fg) 96%,var(--c-bg));
+  --pl-faint:color-mix(in srgb,var(--c-fg) 88%,var(--c-bg));
+  --pl-accent-ink:color-mix(in srgb,var(--c-accent) 55%,var(--c-fg));
+  --pl-danger:color-mix(in srgb,var(--c-red) 35%,var(--c-fg));
+  --pl-ok:color-mix(in srgb,var(--c-green) 40%,var(--c-fg));
+  --pl-on-accent:color-mix(in srgb,var(--c-bg) 25%,#fff);
+  --pl-panel:color-mix(in srgb,var(--pl-bg) 90%,transparent);
+}
+.s-waiting{--s:var(--c-yellow)} .s-failed{--s:var(--c-red)} .s-ready{--s:var(--c-green)}
+.s-plan{--s:var(--c-cyan)} .s-review{--s:var(--c-magenta)} .s-working{--s:var(--c-blue)}
+.s-queued,.s-done{--s:var(--c-muted)}
+.s-running{--s:var(--c-green)} .s-quiet{--s:var(--c-muted)}
+[class*="s-"]{
+  --s-fill:color-mix(in srgb,var(--s) 15%,var(--pl-bg));
+  --s-line:color-mix(in srgb,var(--s) 38%,var(--pl-bg));
+  --s-ink:color-mix(in srgb,var(--s) 72%,var(--c-fg));
+}
+:root[data-mode="light"] [class*="s-"]{--s-ink:color-mix(in srgb,var(--s) 22%,var(--c-fg))}
+.s-queued,.s-done{--s-ink:var(--pl-dim)!important}
+
