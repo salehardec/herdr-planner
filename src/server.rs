@@ -103,6 +103,7 @@ pub fn router(app: Shared) -> Router {
         .route("/api/memory/settings", post(crate::memory_api::memory_settings))
         .route("/api/memory/connect", post(crate::memory_api::memory_connect))
         .route("/api/memory/suggestion", post(crate::memory_api::memory_suggestion))
+        .route("/api/memory/digest", post(crate::memory_api::memory_digest))
         .route("/api/runners", get(crate::runners_api::runners_get))
         .route("/api/runners/history", get(crate::runners_api::runners_history))
         .route("/api/runner/log", get(crate::runners_api::runner_log))
