@@ -28,6 +28,8 @@ pub(crate) fn test_cfg(dir: &Path) -> AppConfig {
         translator: "claude/claude-haiku-5-5".into(),
         ssh_bin: "ssh".into(),
         projects_dir: dir.join("Projects"),
+        trusted_hosts: Vec::new(),
+        tunnel_hostname: None,
     }
 }
 
