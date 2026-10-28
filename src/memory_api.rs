@@ -99,7 +99,9 @@ pub async fn keep_indexes(app: &Shared) {
 pub async fn reindex_stores(app: &Shared) {
     let cfg = app.cfg.clone();
     let _ = tokio::task::spawn_blocking(move || {
-        memory::galaxy_store(&cfg).reindex();
+        let galaxy = memory::galaxy_store(&cfg);
+        galaxy.reindex();
+        galaxy.ensure_how_to(false);
         // A universe's index is not rewritten here: that would make the human's checkout «dirty» for the board's merges.
         // The task that sends the memory to the repository brings its lines.
     })
@@ -1022,6 +1024,10 @@ pub async fn memory_connect(State(app): State<Shared>, headers: HeaderMap, Json(
                 409,
                 "Инструкции Координатора изменились после того, как вы открыли карточку. Ничего не отправлено: откройте карточку заново.",
             ));
+        }
+        if body.on {
+            // the pointer in the instructions names this file: it is there before the Coordinator reads the pointer
+            memory::galaxy_store(&app.cfg).ensure_how_to(true);
         }
         let args: Vec<String> = match &value {
             Some(v) => vec!["set".into(), INSTRUCTIONS.into(), v.clone()],
