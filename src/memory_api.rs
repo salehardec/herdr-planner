@@ -322,6 +322,8 @@ struct Plan {
     draft: bool,
     /// The same entries with what was found taken out, to offer instead.
     redacted: Vec<Value>,
+    /// What the human should know before they confirm, and may confirm anyway (an entry too long for the Galaxy).
+    warnings: Vec<String>,
 }
 
 /// `none`: nothing found. `confirm`: something found, a «да» is needed. `block`: public repository, forbidden unless
@@ -350,7 +352,7 @@ impl Plan {
         json!({
             "ok": true, "preview": true, "token": self.token(), "level": level, "repo": self.repo,
             "draft": self.draft, "changes": self.changes, "findings": self.findings, "risk": self.risk(),
-            "visibility": self.visibility, "redacted": self.redacted,
+            "visibility": self.visibility, "redacted": self.redacted, "warnings": self.warnings,
         })
     }
 }
@@ -478,6 +480,14 @@ enum Req {
     Lines { repo: String, task: String, lines: Vec<Line> },
 }
 
+/// What to warn about before the human confirms: a Galaxy entry that is too long (every agent reads the Galaxy's memory).
+fn warnings_of(repo: &str, changes: &[Change]) -> Vec<String> {
+    if !repo.is_empty() {
+        return Vec::new();
+    }
+    changes.iter().filter_map(|c| c.entry.as_ref().and_then(memory::size_warning)).collect()
+}
+
 /// Works out what a request would change, without writing anything.
 async fn plan(app: &Shared, req: &Req) -> Result<Plan, Fail> {
     let repo = match req {
@@ -540,7 +550,8 @@ async fn plan(app: &Shared, req: &Req) -> Result<Plan, Fail> {
         };
         (findings, redacted, vis)
     };
-    Ok(Plan { repo, changes, findings, visibility, draft, redacted })
+    let warnings = warnings_of(&repo, &changes);
+    Ok(Plan { repo, changes, findings, visibility, draft, redacted, warnings })
 }
 
 fn req_clone(r: &Req) -> Req {
@@ -1095,6 +1106,31 @@ pub async fn sync_snapshot(app: &Shared) {
     app::publish(app).await;
 }
 
+#[derive(Deserialize)]
+pub struct DigestBody {
+    text: String,
+}
+
+/// `POST /api/memory/digest`: a message from the chat boiled down by the cheap model into a short title, a description, a
+/// kind and a body, for the dialog to show as a draft. Nothing is written. `digest: null`: nothing worth keeping, or
+/// the model did not answer in the form; the dialog then keeps the message as it is.
+pub async fn memory_digest(State(app): State<Shared>, headers: HeaderMap, Json(body): Json<DigestBody>) -> Response {
+    if !same_origin(&headers) {
+        return error(StatusCode::FORBIDDEN, "cross-origin request refused");
+    }
+    let text: String = body.text.trim().chars().take(translate::MAX_CHARS).collect();
+    if text.is_empty() {
+        return error(StatusCode::BAD_REQUEST, "empty text");
+    }
+    match translate::ask(&app.cfg, memory::DIGEST_PROMPT, &text).await {
+        Ok(reply) => Json(json!({ "ok": true, "digest": memory::parse_digest(&reply) })).into_response(),
+        Err(e) => {
+            eprintln!("herdr-planner: memory digest: {e}");
+            error(StatusCode::BAD_GATEWAY, "модель не ответила")
+        }
+    }
+}
+
 /// A task became done: ask the model once for one or two lines worth keeping in its universe's memory. The human
 /// decides; nothing is written here.
 pub async fn suggest_for(app: &Shared, t: &Task) {
@@ -1234,7 +1270,22 @@ mod tests {
         e.id = "t".into();
         let changes = vec![change_of("t", "docs/memory/t.md".into(), None, Some(e))];
         let (findings, redacted) = check_entries(&changes, &memory_guard::own_terms());
-        Plan { repo: "demo".into(), changes, findings, visibility: vis, draft: true, redacted }
+        Plan { repo: "demo".into(), changes, findings, visibility: vis, draft: true, redacted, warnings: Vec::new() }
+    }
+
+    #[test]
+    fn a_long_galaxy_body_warns_and_a_universe_one_does_not() {
+        let long = "слово ".repeat(memory::GALAXY_BODY_SOFT / 5);
+        let short = "коротко";
+        let change = |body: &str| {
+            let e = memory::complete(Entry { title: "Т".into(), body: body.into(), ..Entry::default() }, "rule", 0).unwrap();
+            vec![change_of("t", "t.md".into(), None, Some(e))]
+        };
+        let w = warnings_of("", &change(&long));
+        assert_eq!(w.len(), 1, "{w:?}");
+        assert!(w[0].contains(&memory::GALAXY_BODY_SOFT.to_string()), "{w:?}");
+        assert!(warnings_of("", &change(short)).is_empty());
+        assert!(warnings_of("demo", &change(&long)).is_empty(), "a universe has no such limit");
     }
 
     fn gate(token: &str, risk: bool, public: bool) -> Gate {

@@ -36,7 +36,7 @@ function Acts(props: { text: string; who: 'q' | 'a'; onReuse?: () => void; n: nu
     <div class="acts">
       <Act n="copy" label={t('chat.act.copy')} onClick={() => copyText(props.text)} attrs={{ 'data-act': 'copy' }} />
       <Act n="quote" label={t('chat.act.quote')} onClick={() => quote(props.text)} attrs={{ 'data-act': 'quote' }} />
-      <Act n="memory" label={t('mem.toMemory')} onClick={() => openRemember({ text: props.text, source: 'chat' })} attrs={{ 'data-act': 'to-memory', 'data-who': props.who }} />
+      <Act n="memory" label={t('mem.toMemory')} onClick={() => openRemember({ text: props.text, source: 'chat', digest: true })} attrs={{ 'data-act': 'to-memory', 'data-who': props.who }} />
       {props.onReuse && <Act n="redo" label={t('chat.act.repeat')} onClick={props.onReuse} attrs={{ 'data-reuse': props.n }} />}
     </div>
   );

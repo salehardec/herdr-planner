@@ -4256,11 +4256,16 @@ section('memory galaxy', async () => {
   check('every answer in the chat has a «В память» button', await exists('#clog .turn [data-act="to-memory"][data-who="a"]') && await exists('#clog .turn [data-act="to-memory"][data-who="q"]'));
   await evalJs('(() => { const b = [...document.querySelectorAll(\'#clog .turn [data-act="to-memory"][data-who="a"]\')].pop(); b.click(); return true; })()');
   check('it opens the dialog with that answer in it', await waitFor('!!document.querySelector("#remember")', 3000) && (await evalJs('document.querySelector("#rem-text").value')).includes('Ответ 9'), await evalJs('document.querySelector("#rem-text")?.value'));
+  check('while the cheap model boils it down, the fields wait', (await evalJs('document.querySelector("#rem-digest")?.dataset.state')) === 'busy' || (await evalJs('document.querySelector("#rem-digest")?.dataset.state')) === 'done');
+  check('the draft is short: a title, a description and a gist instead of the whole reply', await waitFor('document.querySelector("#rem-digest")?.dataset.state === "done"', 8000) && (await evalJs('document.querySelector("#rem-title").value')) === 'Выжимка ответа' && (await evalJs('document.querySelector("#rem-desc").value')).includes('одна мысль') && (await evalJs('document.querySelector("#rem-kind").value')) === 'convention' && (await evalJs('document.querySelector("#rem-text").value')).startsWith('Суть: Ответ 9') && !(await evalJs('document.querySelector("#rem-text").value')).includes('Started an agent'), await evalJs('document.querySelector("#rem-text")?.value'));
+  check('the model was asked once for the draft', calls('claude.jsonl').filter((c) => c.digest !== undefined).length === 1);
+  check('the draft can be edited before it is saved', !(await evalJs('document.querySelector("#rem-title").disabled || document.querySelector("#rem-desc").disabled || document.querySelector("#rem-text").disabled')));
   check('the Galaxy is the level, and the universe can be chosen', (await evalJs('document.querySelector("#rem-galaxy").classList.contains("on")')) && !(await evalJs('document.querySelector("#rem-universe").disabled')));
   await press('Escape');
   check('Esc closes the dialog', await waitFor('!document.querySelector("#remember")', 3000));
   await evalJs('(() => { const b = [...document.querySelectorAll(\'#clog .turn [data-act="to-memory"][data-who="a"]\')].pop(); b.click(); return true; })()');
   await waitFor('!!document.querySelector("#remember")', 3000);
+  await waitFor('document.querySelector("#rem-digest")?.dataset.state === "done"', 8000);
   await typeIn('#rem-title', 'Ход работ по ALP-9');
   await click('#rem-go');
   check('«Запомнить» shows was → will be first, with the level, and writes nothing', await waitCard() && (await text('#mem-chg-where')).includes('Галактика') && (await text('#mem-chg .mm-now')).includes('Ответ 9') && !filesIn(memDir).some((x) => readFile(join(memDir, x)).includes('Ответ 9')), await text('#mem-chg'));
@@ -4819,6 +4824,9 @@ section('memory guard', async () => {
   check('no token, a stale token and no «да» about the findings are all refused', noToken?.[0] === 409 && stale?.[0] === 409 && noYes?.[0] === 422 && filesIn(draftsOf('docs')).length === 0, JSON.stringify([noToken?.[0], stale?.[0], noYes?.[0]]));
   const edited = await save('docs', samples.ip + ' Ещё слово.', { confirm: true, token: prev[1].token, accept_risk: true });
   check('a text edited after the preview is not written under the old token', edited?.[0] === 409 && filesIn(draftsOf('docs')).length === 0);
+  const longGalaxy = await post('/api/memory/save', { repo: '', title: 'Длинная проба', body: 'слово '.repeat(400) });
+  check('a Galaxy entry over 1500 characters previews with a warning, and may still be saved', longGalaxy[1].risk === 'none' && (longGalaxy[1].warnings || []).length === 1 && (longGalaxy[1].warnings[0] || '').includes('1500'), JSON.stringify(longGalaxy[1].warnings));
+  check('a short one has none', ((await post('/api/memory/save', { repo: '', title: 'Короткая проба', body: 'x' }))[1].warnings || []).length === 0);
   const galaxyNoToken = await post('/api/memory/save', { repo: '', title: 'Без токена', body: 'x', confirm: true });
   check('the Galaxy too: a write without the preview\'s token is refused', galaxyNoToken?.[0] === 409 && !filesIn(memDir).some((f) => f.includes('bez-tokena')), JSON.stringify(galaxyNoToken));
   const yes = await save('docs', samples.ip, { confirm: true, token: prev[1].token, accept_risk: true });

@@ -13,9 +13,9 @@ import { AutoTextarea, fitText } from './AutoText';
 import { BatchBar } from './MemoryBatch';
 import { cardPick, linesOf, setLines, toggleCard, toggleLine, memPick, pickKey } from './memory-batch';
 import {
-  deleteEntry, discardDraft, dismissSuggestion, keepSuggestion, KINDS, kindLabel, loadMemory, memoryOf, openMemory, previewSend, sendMemory, stateOf,
+  deleteEntry, digestText, discardDraft, dismissSuggestion, keepSuggestion, KINDS, kindLabel, loadMemory, memoryOf, openMemory, previewSend, sendMemory, stateOf,
   previewDelete, previewDiscard, previewSave, previewSuggestion, rememberDlg, saveEntry, connectMemory, setSuggest,
-  type Accept, type MemAgentChange, type MemData, type MemEntry, type MemPreview, type MemSuggestion, type SaveBody, type SentTask, forgetSent,
+  type Accept, type MemAgentChange, type RememberInit, type MemData, type MemEntry, type MemPreview, type MemSuggestion, type SaveBody, type SentTask, forgetSent,
 } from './memory-api';
 import { ChangeCard } from './MemoryChange';
 import { parseDocId } from './memory-ids';
@@ -479,10 +479,29 @@ const dTitle = signal('');
 const dKind = signal('rule');
 const dLevel = signal<'galaxy' | 'universe'>('galaxy');
 const dRepo = signal('');
+const dDesc = signal('');
+const dDigest = signal<'' | 'busy' | 'done' | 'none' | 'failed'>('');
 const dBusy = signal(false);
 const dErr = signal('');
 const dCard = signal<{ p: MemPreview; body: SaveBody } | null>(null);
 let shown: unknown = null;
+
+/** Asks the cheap model for a short draft of a long message; the form is filled with it if the dialog is still on that message. */
+async function boilDown(init: RememberInit): Promise<void> {
+  try {
+    const d = await digestText(init.text);
+    if (rememberDlg.value !== init) return;
+    if (d) {
+      dText.value = d.body;
+      dTitle.value = d.title;
+      dDesc.value = d.description;
+      if (d.kind) dKind.value = d.kind;
+    }
+    dDigest.value = d ? 'done' : 'none';
+  } catch {
+    if (rememberDlg.value === init) dDigest.value = 'failed';
+  }
+}
 
 /** The dialog that puts a message, a closing note or a sentence into the Galaxy's or a universe's memory. */
 export function RememberDialog(): JSX.Element | null {
@@ -497,9 +516,12 @@ export function RememberDialog(): JSX.Element | null {
       dRepo.value = init.repo && view.projects.some((p) => p.name === init.repo) ? init.repo : view.projects[0]?.name ?? '';
       dLevel.value = init.repo && dRepo.value ? 'universe' : 'galaxy';
       dKind.value = init.kind ?? (dLevel.value === 'universe' ? 'decision' : 'rule');
+      dDesc.value = '';
       dBusy.value = false;
       dErr.value = '';
       dCard.value = null;
+      dDigest.value = init.digest ? 'busy' : '';
+      if (init.digest) void boilDown(init);
     }
   }
   // The text field takes the focus, so Esc reaches the page (and not the chat line the click came from).
@@ -514,7 +536,7 @@ export function RememberDialog(): JSX.Element | null {
     dErr.value = '';
     try {
       const repo = universe && !toGalaxy ? dRepo.value : '';
-      const body: SaveBody = { repo, title: dTitle.value, kind: dKind.value, body: dText.value, source: init.source };
+      const body: SaveBody = { repo, title: dTitle.value, description: dDesc.value || undefined, kind: dKind.value, body: dText.value, source: init.source };
       dCard.value = { p: await previewSave(body), body };
     } catch (e) { dErr.value = failWords(e); }
     dBusy.value = false;
@@ -555,11 +577,11 @@ export function RememberDialog(): JSX.Element | null {
           </div>
           <div class="hint">{universe ? t('mem.levelUniverseHint') : t('mem.levelGalaxyHint')}</div>
           <label class="fl2">{t('mem.fBody')}
-            <textarea class="field" id="rem-text" rows={6} value={dText.value} disabled={!!card} onInput={(e) => { dText.value = (e.target as HTMLTextAreaElement).value; }} />
+            <textarea class="field" id="rem-text" rows={6} value={dText.value} disabled={!!card || dDigest.value === 'busy'} onInput={(e) => { dText.value = (e.target as HTMLTextAreaElement).value; }} />
           </label>
           <div class="mm-two">
             <label class="fl2">{t('mem.fTitle')}
-              <input class="field" id="rem-title" value={dTitle.value} maxLength={80} disabled={!!card} placeholder={t('mem.fTitlePh')} onInput={(e) => { dTitle.value = (e.target as HTMLInputElement).value; }} />
+              <input class="field" id="rem-title" value={dTitle.value} maxLength={80} disabled={!!card || dDigest.value === 'busy'} placeholder={t('mem.fTitlePh')} onInput={(e) => { dTitle.value = (e.target as HTMLInputElement).value; }} />
             </label>
             <label class="fl2">{t('mem.fKind')}
               <select class="field" id="rem-kind" value={dKind.value} onChange={(e) => { dKind.value = (e.target as HTMLSelectElement).value; }}>
@@ -567,6 +589,10 @@ export function RememberDialog(): JSX.Element | null {
               </select>
             </label>
           </div>
+          {dDigest.value !== '' && <div class={`hint ${dDigest.value === 'failed' ? 'bad' : ''}`} id="rem-digest" data-state={dDigest.value}>{t(`mem.digest.${dDigest.value}`)}</div>}
+          <label class="fl2">{t('mem.fDesc')}
+            <input class="field" id="rem-desc" value={dDesc.value} maxLength={200} placeholder={t('mem.fDescPh')} disabled={!!card || dDigest.value === 'busy'} onInput={(e) => { dDesc.value = (e.target as HTMLInputElement).value; }} />
+          </label>
           {init.source && <div class="hint">{t('mem.from', { s: init.source })}</div>}
           {dErr.value && !card && <div class="hint bad" id="rem-err">{dErr.value}</div>}
           {card ? (
@@ -576,7 +602,7 @@ export function RememberDialog(): JSX.Element | null {
             />
           ) : (
             <div class="act">
-              <button class="btn primary" type="button" id="rem-go" disabled={dBusy.value || !dText.value.trim()} onClick={() => void ask()}>{t('mem.rememberGo', { where })}</button>
+              <button class="btn primary" type="button" id="rem-go" disabled={dBusy.value || dDigest.value === 'busy' || !dText.value.trim()} onClick={() => void ask()}>{t('mem.rememberGo', { where })}</button>
               <button class="btn" type="button" onClick={close}>{t('cancel')}</button>
             </div>
           )}

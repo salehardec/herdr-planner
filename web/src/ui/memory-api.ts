@@ -137,6 +137,8 @@ export interface MemPreview {
   visibility: 'public' | 'private' | 'local' | 'unknown' | null;
   /** The same entries without what was found: `{title, description, body}` per change, `null` where nothing was found. */
   redacted: ({ title: string; description: string; body: string } | null)[];
+  /** What to know before confirming, confirmable anyway (a Galaxy entry that is too long). */
+  warnings?: string[];
 }
 
 /** What the human says when they confirm a change with findings. */
@@ -231,7 +233,13 @@ export interface RememberInit {
   kind?: string;
   /** The universe it is probably about (a task's repo); the dialog starts on that level. */
   repo?: string;
+  /** A long message (from the chat): the dialog first asks the cheap model for a short draft, which the human corrects. */
+  digest?: boolean;
 }
+
+/** A message boiled down for a draft: `null` when there is nothing worth keeping. */
+export interface MemDigest { title: string; description: string; kind: string; body: string }
+export const digestText = async (text: string): Promise<MemDigest | null> => (await post<{ digest: MemDigest | null }>('/api/memory/digest', { text })).digest;
 export const rememberDlg = signal<RememberInit | null>(null);
 export function openRemember(init: RememberInit): void {
   rememberDlg.value = init;

@@ -1228,6 +1228,11 @@ function claudeMain(C, DATA) {
     const mi = argv.indexOf('--model');
     log('claude.jsonl', { argv, toolsEmpty: at >= 0 && argv[at + 1] === '', model: mi >= 0 ? argv[mi + 1] : null, chars: chars.length });
     const si = argv.indexOf('--system-prompt');
+    if (si >= 0 && String(argv[si + 1]).includes('Название: до 60 знаков')) {
+      log('claude.jsonl', { digest: chars.length });
+      process.stdout.write('Название: Выжимка ответа\nОписание: Выжимка ответа — одна мысль вместо всей реплики\nТип: convention\nТекст:\nСуть: ' + chars.slice(0, 40).join('') + '\n');
+      return;
+    }
     if (si >= 0 && String(argv[si + 1]).includes('долговременную память')) {
       const tag = (/Задача: (\S+)/.exec(text) || [])[1] || 'TASK';
       log('claude.jsonl', { suggest: tag });
