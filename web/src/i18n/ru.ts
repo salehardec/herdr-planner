@@ -28,6 +28,9 @@ export const ru: Record<string, string | string[]> = {
   'menu.sensitivity': 'Чувствительность мыши', 'menu.invertY': 'Инверсия вертикали', 'menu.help': 'Клавиши', 'menu.herdrOn': 'Herdr запущен',
   'menu.herdrOff': 'Herdr не запущен', 'menu.logout': 'Выйти',
   'menu.lite': 'Лёгкая версия',
+  'gate.banner.poll': 'Через шлюз · раз в {s} с · терминалы, верфи, настройки — на компьютере',
+  'gate.banner.stream': 'Через шлюз · терминалы, верфи, настройки — на компьютере',
+  'gate.local': 'Это можно только на компьютере, где работает планировщик.',
   'herdr.title': 'Планировщик работает отдельно от herdr.', 'herdr.running': 'и он сейчас запущен', 'herdr.notRunning': 'сейчас он не запущен',
   'herdr.text': 'Данные и действия идут напрямую в herdr-projects. Экран диалога и клавиши агента доступны только при запущенном herdr ({state}). Файлы открываются в yazi на машине с доской.',
   // чат

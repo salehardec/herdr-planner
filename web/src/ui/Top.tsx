@@ -1,6 +1,6 @@
 import type { JSX } from 'preact';
 import { useEffect, useRef } from 'preact/hooks';
-import { attention, level, mode, panels, selected, snap, universe, taskOf } from '../store';
+import { attention, gate, level, mode, panels, selected, snap, universe, taskOf } from '../store';
 import { Search } from './Search';
 import { goHome, navigateTo } from '../nav';
 import { fromQueue } from '../nav';
@@ -82,7 +82,7 @@ export function Top(): JSX.Element {
         <div class="mon" id="mon">
           <LoadBar />
           <LimitsChip />
-          <Tunnel />
+          {!gate.value && <Tunnel />}
         </div>
       </div>
       <Search />

@@ -1,7 +1,7 @@
 import { signal } from '@preact/signals';
 import type { JSX } from 'preact';
 import {
-  linkMode, NOTIFY_KEY, INVERT_KEY, SENS_KEY, SIMPLE_KEY, invertY, notifyOn, panels, persist, sensitivity, showQuiet, simple, snap, QUERY, requests,
+  gate, linkMode, NOTIFY_KEY, INVERT_KEY, SENS_KEY, SIMPLE_KEY, invertY, notifyOn, panels, persist, sensitivity, showQuiet, simple, snap, QUERY, requests,
 } from '../store';
 import { lang, setLang, t } from '../i18n';
 import { post, refreshNow } from '../api';
@@ -40,11 +40,15 @@ export function Menu(): JSX.Element {
           {item('limit', t('menu.limits'), () => { panels.limits.value = !panels.limits.value; }, panels.limits.value, 'Q')}
           {item('link', t('menu.linkMode'), () => { setLinkMode(!linkMode.value); }, linkMode.value, 'L')}
           {item('universe', t('menu.quiet'), () => { showQuiet.value = !showQuiet.value; }, showQuiet.value)}
-          <hr />
-          {item('globe', t('menu.addUniverse'), () => { openAddUniverse(); })}
-          {item('universe', t('menu.station'), () => { openStation(); })}
-          {item('plan', t('menu.crewWizard'), () => { openStation(true); })}
-          {item('ship', t('menu.ship'), () => { openShip(); })}
+          {!gate.value && (
+            <>
+              <hr />
+              {item('globe', t('menu.addUniverse'), () => { openAddUniverse(); })}
+              {item('universe', t('menu.station'), () => { openStation(); })}
+              {item('plan', t('menu.crewWizard'), () => { openStation(true); })}
+              {item('ship', t('menu.ship'), () => { openShip(); })}
+            </>
+          )}
           <hr />
           <div class="setrow">
             <span>{t('menu.language')}</span>

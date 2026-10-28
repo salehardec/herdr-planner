@@ -16,7 +16,7 @@ import { LimitsPop } from './Limits';
 import { Help } from './Help';
 import { Toasts } from './Toasts';
 import { Lightbox } from './Lightbox';
-import { Banner, FlightHud, HerdrPop, HintCard, LinkNotice, NoGl } from './Overlays';
+import { Banner, FlightHud, GateBanner, HerdrPop, HintCard, LinkNotice, NoGl } from './Overlays';
 import { Dialogs } from './Dialogs';
 import { TunnelGuide } from './TunnelGuide';
 import { Cockpit } from './Cockpit';
@@ -73,6 +73,7 @@ export function App(): JSX.Element {
       <HerdrPop />
       <Help />
       <Banner />
+      <GateBanner />
       <NoGl />
       <Dialogs />
       <TunnelGuide />

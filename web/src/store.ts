@@ -22,6 +22,17 @@ export const SENS_KEY = 'herdr-planner.sens';
 export const INVERT_KEY = 'herdr-planner.invertY';
 export const SEEN_KEY = 'herdr-planner.seen';
 
+/** How this page came: `null` from the machine itself; through the gate (a tunnel) `poll` where there is no event stream (a quick
+ *  tunnel) and `stream` where there is (the owner's own). The server writes it into the page. */
+export type GateKind = 'poll' | 'stream';
+const readGate = (): GateKind | null => {
+  const v = document.querySelector('meta[name="herdr-gate"]')?.getAttribute('content');
+  return v === 'poll' || v === 'stream' ? v : null;
+};
+export const gate = signal<GateKind | null>(readGate());
+/** The pace at which a page without the event stream asks again (the server says the same in the 410 of /api/events). */
+export const GATE_POLL_MS = 5000;
+
 export const snap = signal<Snapshot | null>(null);
 export const live = signal(false);
 /** The machine's load for the bars in the top bar; null until the first `load` event. */

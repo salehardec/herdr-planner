@@ -33,3 +33,7 @@
 .win.manual .kanban{opacity:0;pointer-events:none}
 .win.manual .hintcard{right:25.875rem;bottom:5.625rem}
 .win.manual .kbar{opacity:.85}
+.gatebar{position:absolute;left:50%;top:3.75rem;transform:translateX(-50%);z-index:44;display:flex;align-items:center;gap:0.5rem;padding:0.4375rem 0.5625rem;border-radius:var(--pl-r);border:1px solid color-mix(in srgb,var(--c-yellow) 40%,var(--pl-bg));background:var(--pl-panel-solid);color:var(--pl-text);max-width:min(45rem,92vw);font-size:0.75rem}
+.gatebar .gl{color:var(--c-yellow)}
+.gatebar a.btn{text-decoration:none;flex:none}
+.via-gate .banner{top:6.5rem}
