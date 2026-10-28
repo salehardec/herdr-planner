@@ -219,6 +219,8 @@ pub struct App {
     pub tunnel: crate::tunnel::Tunnel,
     /// The key of the gate's link and the devices that came in through the tunnel.
     pub devices: crate::devices::Devices,
+    /// What the phone's light page is shown: the projection of the snapshot and its own counter.
+    pub mobile: crate::mobile::Feed,
     pub chat: Mutex<ChatState>,
     pub journal: Mutex<Journal>,
     pub details: Mutex<HashMap<String, (u64, Details)>>,
@@ -384,6 +386,7 @@ impl App {
             gate,
             tunnel,
             devices,
+            mobile: crate::mobile::Feed::default(),
             chat: Mutex::new(chat),
             journal: Mutex::new(journal),
             details: Mutex::new(HashMap::new()),
@@ -815,6 +818,8 @@ pub async fn rebuild_runners(app: &Shared) {
 
 /// Serialises the snapshot for the page's event stream, when somebody listens.
 pub async fn publish(app: &Shared) {
+    // The light page's long-poll waits for this even when no event stream is open.
+    app.bus.pulse();
     if app.bus.subscribers() == 0 {
         return;
     }

@@ -16,7 +16,7 @@ use serde_json::json;
 use std::time::Duration;
 
 #[derive(Deserialize)]
-pub struct AnswerBody {
+pub(crate) struct AnswerBody {
     /// `coordinator` or a task id.
     target: Option<String>,
     /// `reviewer` asks for `<agent>-r`.
@@ -52,16 +52,18 @@ impl From<AnswerJson> for Answer {
 /// How many keys one `herdr agent send-keys` carries (the board's own limit for the `keys` action).
 const KEYS_PER_CALL: usize = 12;
 
-pub async fn menu_answer(
-    State(app): State<Shared>,
-    headers: HeaderMap,
-    Json(body): Json<AnswerBody>,
-) -> Response {
-    if !same_origin(&headers) {
+pub async fn menu_answer(State(app): State<Shared>, headers: HeaderMap, Json(body): Json<AnswerBody>) -> Response {
+    answer(&app, &headers, body, None).await
+}
+
+/// The answer to a menu. `via` is where the human is when it is not the planner's own page (`с телефона`): the
+/// Coordinator's notice says so.
+pub(crate) async fn answer(app: &Shared, headers: &HeaderMap, body: AnswerBody, via: Option<&str>) -> Response {
+    if !same_origin(headers) {
         return error(StatusCode::FORBIDDEN, "cross-origin request refused");
     }
     let target = body.target.as_deref().unwrap_or("coordinator");
-    let name = match agent_for(&app, target, body.role.as_deref()).await {
+    let name = match agent_for(app, target, body.role.as_deref()).await {
         Ok(name) => name,
         Err(e) => return error(StatusCode::BAD_REQUEST, e),
     };
@@ -128,9 +130,13 @@ pub async fn menu_answer(
             _ => None,
         };
         if let Some(what) = what {
-            crate::app::planner_notice(&app, target, what).await;
+            let what = match via {
+                Some(via) => format!("{what} ({via})"),
+                None => what.to_string(),
+            };
+            crate::app::planner_notice(app, target, &what).await;
             // The page reads the notice from the snapshot: read it again, so the chat shows it at once.
-            crate::app::refresh(&app).await;
+            crate::app::refresh(app).await;
         }
     }
     Json(json!({"ok": true, "steps": steps.len()})).into_response()

@@ -7,6 +7,7 @@ use crate::auth::{self, cookie_value, peer_ip, LoginError, COOKIE};
 use crate::board::{self, Status};
 use crate::config::now_ms;
 use crate::history;
+use crate::mobile;
 use crate::ship;
 use crate::station;
 use crate::usage;
@@ -151,6 +152,24 @@ pub fn router(app: Shared) -> Router {
             auth::require_auth,
         ));
 
+    // The light page's own API. Through the gate a device that is in the light version may use it (the gate has said
+    // so before this layer runs); from this machine or another one on the network the planner's own login is what
+    // counts, as for the routes above.
+    let light = Router::new()
+        .route("/m/api/state", get(mobile::state))
+        .route("/m/api/poll", get(mobile::poll))
+        .route("/m/api/chat", post(mobile::chat))
+        .route("/m/api/chat/history", get(mobile::chat_history))
+        .route("/m/api/chat/image/{n}/{i}", get(api_chat_image))
+        .route("/m/api/action", post(mobile::action))
+        .route("/m/api/menu/answer", post(mobile::menu_answer))
+        .route("/m/api/coordinator/screen", get(mobile::screen))
+        .route("/m/api/details", get(mobile::details))
+        .route("/m/api/session", get(mobile::session))
+        .route("/m/api/logout", post(mobile::logout))
+        .route("/m/api/tunnel/close", post(mobile::tunnel_close))
+        .route_layer(middleware::from_fn_with_state(app.clone(), mobile::guard));
+
     Router::new()
         .route("/", get(index))
         .route("/login", get(login_page))
@@ -167,6 +186,7 @@ pub fn router(app: Shared) -> Router {
         .route("/g/status", get(crate::devices::status))
         .route("/g/cancel", post(crate::devices::cancel))
         .merge(protected)
+        .merge(light)
         // The gate is the outermost layer but one: no route runs before it has said who is asking.
         .layer(middleware::from_fn_with_state(app.clone(), crate::gate::middleware))
         .layer(middleware::from_fn(headers_middleware))
@@ -469,10 +489,10 @@ async fn api_details(State(app): State<Shared>, Query(q): Query<DetailsQuery>) -
 }
 
 #[derive(Deserialize)]
-struct ScreenQuery {
-    target: Option<String>,
+pub(crate) struct ScreenQuery {
+    pub(crate) target: Option<String>,
     /// `reviewer` selects the board's `<agent>-r` reviewer pane; otherwise the worker.
-    role: Option<String>,
+    pub(crate) role: Option<String>,
 }
 
 /// A terminal screen is read deeper than a dialog: the window over the page scrolls through it.
@@ -486,7 +506,7 @@ const SCREEN_MAX_CHARS: usize = 24_000;
 /// The colours come as ANSI when herdr has them; the plain text is always there for the callers
 /// that draw no colours (the Coordinator's dialog in the chat).
 /// Without herdr the planner says so; it never pretends to see the dialog.
-async fn api_coordinator_screen(
+pub(crate) async fn api_coordinator_screen(
     State(app): State<Shared>,
     Query(q): Query<ScreenQuery>,
 ) -> Response {
@@ -794,16 +814,16 @@ async fn api_refresh(State(app): State<Shared>) -> Response {
 }
 
 #[derive(Deserialize)]
-struct HistoryQuery {
+pub(crate) struct HistoryQuery {
     /// Turns older than this one (`n` of the oldest the page has); the newest when absent.
-    before: Option<usize>,
-    limit: Option<usize>,
+    pub(crate) before: Option<usize>,
+    pub(crate) limit: Option<usize>,
     /// Words to look for in the whole conversation instead of paging.
-    q: Option<String>,
+    pub(crate) q: Option<String>,
 }
 
 /// The Coordinator's past questions and answers, read from its transcript.
-async fn api_chat_history(State(app): State<Shared>, Query(q): Query<HistoryQuery>) -> Response {
+pub(crate) async fn api_chat_history(State(app): State<Shared>, Query(q): Query<HistoryQuery>) -> Response {
     let cfg = app.cfg.clone();
     let limit = q.limit.unwrap_or(3);
     if let Some(text) = q.q.as_deref().map(str::trim).filter(|t| !t.is_empty()) {
@@ -829,7 +849,7 @@ async fn api_chat_history(State(app): State<Shared>, Query(q): Query<HistoryQuer
 }
 
 /// An image of a message in the Coordinator's transcript (turn `n` of the history, its `i`-th image).
-async fn api_chat_image(State(app): State<Shared>, Path((n, i)): Path<(usize, usize)>) -> Response {
+pub(crate) async fn api_chat_image(State(app): State<Shared>, Path((n, i)): Path<(usize, usize)>) -> Response {
     let cfg = app.cfg.clone();
     match tokio::task::spawn_blocking(move || history::image(&cfg, n, i)).await {
         Ok(Some((mime, bytes))) => match HeaderValue::from_str(&mime) {
@@ -849,11 +869,11 @@ async fn api_chat_image(State(app): State<Shared>, Path((n, i)): Path<(usize, us
 }
 
 #[derive(Deserialize)]
-struct ChatBody {
+pub(crate) struct ChatBody {
     #[serde(default)]
-    text: String,
+    pub(crate) text: String,
     #[serde(default)]
-    attachments: Vec<AttachmentRef>,
+    pub(crate) attachments: Vec<AttachmentRef>,
 }
 
 /// A message may name uploaded files by id alone (older callers) or carry a
@@ -937,7 +957,7 @@ async fn held_paths(dir: &std::path::Path, files: &[attachments::Attachment]) ->
     out
 }
 
-async fn api_chat(
+pub(crate) async fn api_chat(
     State(app): State<Shared>,
     headers: HeaderMap,
     Json(body): Json<ChatBody>,
@@ -1142,6 +1162,9 @@ pub(crate) struct ActionBody {
     pub(crate) to: Option<String>,
     /// A number the action carries (how far a clone is behind).
     pub(crate) n: Option<u32>,
+    /// Where the human acted from, when it is not the planner's own page (`с телефона`): the Coordinator's notice says so.
+    #[serde(skip)]
+    pub(crate) via: Option<String>,
 }
 
 /// `claude/claude-sonnet-5-5`, `omp/deepseek/deepseek-v4-flash`: what `--worker.agent` takes.
@@ -1207,7 +1230,7 @@ pub(crate) async fn perform_action(app: &Shared, body: ActionBody, local: bool) 
                 } else {
                     "слияние одобрено"
                 };
-                app::planner_notice(&app, id, what).await;
+                app::planner_notice(&app, id, &said_via(what, &body)).await;
                 if was_plan && body.action == "approve" {
                     app::journal_note(&app, id, "plan", "план одобрен в планировщике").await;
                 }
@@ -1516,10 +1539,10 @@ pub(crate) async fn perform_action(app: &Shared, body: ActionBody, local: bool) 
             let out = run_board(&app.cfg, &["tell", id, "--", text], Duration::from_secs(60)).await;
             if out.is_ok() {
                 if was_plan {
-                    app::planner_notice(&app, id, "план возвращён с замечаниями").await;
+                    app::planner_notice(&app, id, &said_via("план возвращён с замечаниями", &body)).await;
                     app::journal_note(&app, id, "plan", "план возвращён с замечаниями").await;
                 } else {
-                    app::planner_notice(&app, id, "агенту отправлено сообщение").await;
+                    app::planner_notice(&app, id, &said_via("агенту отправлено сообщение", &body)).await;
                 }
             }
             out
@@ -1534,6 +1557,14 @@ pub(crate) async fn perform_action(app: &Shared, body: ActionBody, local: bool) 
             Json(json!({"ok": true, "out": clip(out)})).into_response()
         }
         Err(e) => error(StatusCode::BAD_GATEWAY, e),
+    }
+}
+
+/// What the Coordinator is told of an action, with where it came from when that is not the planner's own page.
+fn said_via(what: &str, body: &ActionBody) -> String {
+    match &body.via {
+        Some(via) => format!("{what} ({via})"),
+        None => what.to_string(),
     }
 }
 

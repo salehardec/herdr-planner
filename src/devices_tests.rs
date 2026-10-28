@@ -297,6 +297,43 @@ fn the_gate_is_unused_after_the_hours_of_the_setting() {
 }
 
 #[test]
+fn a_page_that_only_looks_does_not_keep_the_gate_open() {
+    // The light page's long-poll repeats every half minute for as long as the tab lives.
+    let d = opened();
+    let t = let_in(&d, T0, "1.1.1.1", "iPhone · Safari 17");
+    for h in 1..4 {
+        assert_eq!(d.standing_quiet_at(T0 + h * HOUR, Some(&t)), Standing::Lite, "still in at {h} h");
+    }
+    assert_eq!(d.idle_due_at(T0 + 4 * HOUR), Some(4), "four hours of looking is four hours unused");
+    // …and the device's own idle clock runs on too
+    assert_eq!(d.standing_quiet_at(T0 + 6 * HOUR - 1, Some(&t)), Standing::Lite);
+    assert_eq!(d.standing_quiet_at(T0 + 6 * HOUR, Some(&t)), Standing::Nobody);
+    assert_eq!(d.status_at(T0 + 6 * HOUR, Some(&t)).reason, Some(Why::Idle));
+    // a stranger's cookie is nobody here as everywhere, and a device that waits is still waiting
+    let d = opened();
+    assert_eq!(d.standing_quiet_at(T0 + 1, Some("00")), Standing::Nobody);
+    assert_eq!(d.standing_quiet_at(T0 + 1, None), Standing::Nobody);
+}
+
+#[test]
+fn a_device_that_is_in_can_ask_who_it_is_without_using_the_gate() {
+    let d = opened();
+    let t = let_in(&d, T0, "1.1.1.1", "iPhone · Safari 17");
+    let s = d.session_at(T0 + 2 * HOUR, &t).expect("in");
+    assert_eq!((s.label.as_str(), s.scope, s.since_ms, s.ends_ms), ("iPhone · Safari 17", Scope::Lite, T0, T0 + 6 * HOUR));
+    assert_eq!(d.idle_due_at(T0 + 4 * HOUR), Some(4), "asking is no use of the gate");
+    assert_eq!(d.session_at(T0 + 2 * HOUR, "00"), None);
+    assert_eq!(d.session_at(T0 + 7 * HOUR, &t), None, "idle for six hours: gone");
+    // waiting for the owner is not being in
+    let d = devices_with(|_| {});
+    d.begin_at(T0);
+    let key = key_of(&d, T0);
+    let a = d.redeem_at(T0, "1.1.1.1", &key, who("Android · Chrome 126")).unwrap();
+    assert_eq!(a.state, Life::Pending);
+    assert_eq!(d.session_at(T0 + 1, &a.token), None);
+}
+
+#[test]
 fn what_happens_goes_to_the_journal_once() {
     let d = opened();
     let t = let_in(&d, T0, "1.1.1.1", "iPhone · Safari 17");
