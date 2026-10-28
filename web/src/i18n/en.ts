@@ -551,7 +551,7 @@ export const en: Record<string, string | string[]> = {
   'mem.gitDirtyOwn': 'These files are in your checkout: the planner does not touch them or take them into the task. Commit them yourself.',
   'mem.sendNote': 'Drafts live outside the checkout, so the board can still merge tasks into it. The button shows was → now, checks the text for personal data and adds a board task with the ready text of the files: it has its own working copy and is merged as usual. The planner never commits into the checkout.',
   'mem.foreign': 'Memory kept by {p}', 'mem.foreignNote': 'Read only: the planner does not change it, but searches it.',
-  'mem.rememberTitle': 'To memory', 'mem.level': 'Where', 'mem.levelGalaxy': 'Galaxy', 'mem.levelUniverse': 'Universe',
+  'mem.digest.busy': 'Boiling the message down to its gist…', 'mem.digest.done': 'A short draft from the message: correct it, then save.', 'mem.digest.none': 'Nothing worth remembering found; the message is kept as it is.', 'mem.digest.failed': 'The model did not answer; the message is kept as it is.', 'mem.rememberTitle': 'To memory', 'mem.level': 'Where', 'mem.levelGalaxy': 'Galaxy', 'mem.levelUniverse': 'Universe',
   'mem.levelGalaxyHint': 'About you and all projects on this machine: rules, preferences, agreements.',
   'mem.levelUniverseHint': 'About one project: a decision, a convention, a pitfall. The file goes to docs/memory/ in the repository.',
   'mem.whereGalaxy': 'Galaxy {g}', 'mem.whereUniverse': 'universe {repo}', 'mem.rememberGo': 'Remember: {where}', 'mem.rememberedIn': 'Remembered: {where}',

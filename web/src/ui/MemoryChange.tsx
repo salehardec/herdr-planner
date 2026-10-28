@@ -68,6 +68,11 @@ export function ChangeCard(props: {
           <div class="hint">{p.risk === 'block' ? t('mem.chg.blockWhy', { v: t(`mem.chg.vis.${p.visibility ?? 'unknown'}`) }) : t('mem.chg.confirmWhy')}</div>
         </div>
       )}
+      {(p.warnings ?? []).length > 0 && (
+        <div class="mm-found confirm" id={props.bare ? undefined : 'mem-chg-warn'} role="alert">
+          <ul>{(p.warnings ?? []).map((w, i) => <li key={i}>{w}</li>)}</ul>
+        </div>
+      )}
       {props.error && <div class="hint bad" id="mem-chg-error">{props.error}</div>}
       {!props.bare && <div class="row act">
         <button class={`btn ${p.risk === 'block' ? 'danger' : 'primary'} ${armedPublic ? 'arm' : ''}`} type="button" id="mem-chg-confirm" disabled={props.busy} onClick={confirm}>{label}</button>
