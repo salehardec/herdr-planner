@@ -455,13 +455,8 @@ async fn api_login(
         }
         Err(LoginError::Invalid) => {
             tokio::time::sleep(Duration::from_millis(300)).await;
-            if device.as_deref().is_some_and(|t| app.devices.password_failed_at(now_ms(), t)) {
-                crate::devices::flush(&app).await;
-                return (
-                    StatusCode::FORBIDDEN,
-                    Json(json!({"error": "Пять неверных паролей: устройство отключено. Нужна новая ссылка.", "code": "dropped"})),
-                )
-                    .into_response();
+            if let Some(res) = dropped_for_guessing(&app, device.as_deref()).await {
+                return res;
             }
             (
                 StatusCode::UNAUTHORIZED,
@@ -471,6 +466,10 @@ async fn api_login(
         }
         Err(LoginError::TooMany(secs)) => {
             tokio::time::sleep(Duration::from_millis(300)).await;
+            // the address limiter answers "too many" on the very attempt that is the fifth wrong one, so this counts too
+            if let Some(res) = dropped_for_guessing(&app, device.as_deref()).await {
+                return res;
+            }
             let mut res = (
                 StatusCode::TOO_MANY_REQUESTS,
                 Json(json!({
@@ -486,6 +485,21 @@ async fn api_login(
             res
         }
     }
+}
+
+/// A wrong (or refused) password from a device of the gate: the fifth in a row ends its session, and the answer says so.
+async fn dropped_for_guessing(app: &Shared, device: Option<&str>) -> Option<Response> {
+    if !device.is_some_and(|t| app.devices.password_failed_at(now_ms(), t)) {
+        return None;
+    }
+    crate::devices::flush(app).await;
+    Some(
+        (
+            StatusCode::FORBIDDEN,
+            Json(json!({"error": "Пять неверных паролей: устройство отключено. Нужна новая ссылка.", "code": "dropped"})),
+        )
+            .into_response(),
+    )
 }
 
 async fn api_logout(State(app): State<Shared>, headers: HeaderMap) -> Response {

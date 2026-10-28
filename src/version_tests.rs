@@ -408,3 +408,81 @@ async fn from_this_machine_the_planner_is_always_the_full_version() {
     let v: serde_json::Value = serde_json::from_str(&body).unwrap();
     assert_eq!((v["kind"].as_str(), v["form"].as_str(), v["full"].as_str(), v["view"].as_str()), (Some("local"), Some("desktop"), Some("yes"), Some("lite")), "{body}");
 }
+
+#[tokio::test]
+async fn five_wrong_passwords_from_one_address_switch_the_device_off() {
+    let r = rig(true, true).await;
+    let (mut pc, _) = Device::knock(&r, WINDOWS_CHROME, Some("?0"), false).await;
+    let wrong = "{\"user\":\"me\",\"password\":\"nope\"}";
+    for i in 0..4 {
+        assert_eq!(pc.ask("POST", "/api/login", Some(wrong)).await.0, 401, "try {i}");
+    }
+    // the planner's limiter answers "too many" on this fifth try; the device is out all the same
+    let (status, _, body) = pc.ask("POST", "/api/login", Some(wrong)).await;
+    assert_eq!(status, 403, "{body}");
+    assert!(body.contains("dropped"), "{body}");
+    assert!(r.app.devices.list_at(now_ms()).is_empty());
+    assert_eq!(pc.ask("GET", "/m/api/state", None).await.0, 401);
+}
+
+/// Opens `/api/events` as the device and reads until the first event is there; the rest of the stream is read by the caller.
+async fn open_stream(r: &Rig, d: &Device<'_>) -> tokio::net::TcpStream {
+    let mut req = String::from("GET /api/events HTTP/1.1\r\nConnection: close\r\nAccept: text/event-stream\r\n");
+    for (k, v) in d.headers() {
+        req.push_str(&format!("{k}: {v}\r\n"));
+    }
+    req.push_str("\r\n");
+    let mut s = tokio::net::TcpStream::connect(r.addr).await.unwrap();
+    s.write_all(req.as_bytes()).await.unwrap();
+    let mut seen = String::new();
+    let mut buf = [0u8; 4096];
+    while !seen.contains("event: state") {
+        let n = tokio::time::timeout(Duration::from_secs(10), s.read(&mut buf)).await.expect("the stream starts").unwrap();
+        assert!(n > 0, "closed before the first event: {seen}");
+        seen.push_str(&String::from_utf8_lossy(&buf[..n]));
+    }
+    assert!(seen.starts_with("HTTP/1.1 200"), "{seen}");
+    s
+}
+
+/// The stream has ended (the server closed it) within a few seconds.
+async fn ended(mut s: tokio::net::TcpStream) -> bool {
+    let mut sink = Vec::new();
+    tokio::time::timeout(Duration::from_secs(8), s.read_to_end(&mut sink)).await.is_ok()
+}
+
+async fn raised(r: &Rig) -> Device<'_> {
+    let (mut pc, _) = Device::knock(r, WINDOWS_CHROME, Some("?0"), false).await;
+    let right = format!("{{\"user\":\"me\",\"password\":\"{PASSWORD}\"}}");
+    assert_eq!(pc.ask("POST", "/api/login", Some(&right)).await.0, 200);
+    pc
+}
+
+#[tokio::test]
+async fn an_open_event_stream_ends_when_the_full_version_is_taken_away() {
+    // the setting is switched off
+    let r = rig(true, true).await;
+    let pc = raised(&r).await;
+    let s = open_stream(&r, &pc).await;
+    r.app.devices.set_settings(crate::devices::Settings { full_allowed: false, ..r.app.devices.settings() });
+    assert!(ended(s).await, "the stream outlived the setting");
+    // the owner switches the device off
+    let r = rig(true, true).await;
+    let pc = raised(&r).await;
+    let s = open_stream(&r, &pc).await;
+    let id = r.app.devices.list_at(now_ms())[0].id.clone();
+    r.app.devices.decide_at(now_ms(), &id, crate::devices::Op::Revoke).unwrap();
+    assert!(ended(s).await, "the stream outlived the device");
+    // the gate closes
+    let r = rig(true, true).await;
+    let pc = raised(&r).await;
+    let s = open_stream(&r, &pc).await;
+    r.app.devices.end();
+    assert!(ended(s).await, "the stream outlived the gate");
+    // …and a device that keeps its right keeps its stream
+    let r = rig(true, true).await;
+    let pc = raised(&r).await;
+    let s = open_stream(&r, &pc).await;
+    r.app.bus.send("devices", "{}".to_string());
+    assert!(!ended(s).await, "the stream of a device that is in with the full version goes on");
+}
