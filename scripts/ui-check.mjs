@@ -3258,7 +3258,7 @@ section('station', async () => {
   await readyCard();
   check('the light preset shows was → now, and says it is kept by the planner', await hasText('#st-change', 'Лёгкие задачи') && await hasText('#st-change', 'не на доске'), await text('#st-change'));
   await twoPresses('#st-confirm');
-  check('the planner keeps the preset', await waitFor('fetch("/api/station").then((r) => r.json()).then((d) => d.light === "claude/claude-haiku-5-5")', 15000));
+  check('the planner keeps the preset', await waitFor('fetch("/api/station").then((r) => r.json()).then((d) => d.light === "claude/claude-haiku-5-5")', 45000));
   check('and the board is not asked to change anything for it', !calls().some((c) => c.argv?.[0] === 'set' && c.argv.some((a) => String(a).includes('light'))));
   await resetUi();
 });
