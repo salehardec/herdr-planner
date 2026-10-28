@@ -108,7 +108,7 @@ pub fn slugify(title: &str) -> String {
 }
 
 /// An entry id is a safe file stem. `memory` and `readme` are the index's names (and `MEMORY.md` would clash with
-/// `memory.md` on a case-insensitive disk).
+/// `memory.md` on a case-insensitive disk), `how-to-remember` the procedure file's.
 pub fn valid_id(id: &str) -> bool {
     let first = id.chars().next();
     !id.is_empty()
@@ -119,6 +119,7 @@ pub fn valid_id(id: &str) -> bool {
             .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '_')
         && id != "memory"
         && id != "readme"
+        && !id.eq_ignore_ascii_case(HOW_TO_STEM)
 }
 
 /// The stem of an entry file that is already there: any name that is one safe path segment. Files put in by hand or
@@ -130,6 +131,7 @@ pub fn valid_stem(id: &str) -> bool {
         && !id.starts_with('.')
         && !id.eq_ignore_ascii_case("memory")
         && !id.eq_ignore_ascii_case("readme")
+        && !id.eq_ignore_ascii_case(HOW_TO_STEM)
         && !id.chars().any(|c| c.is_control() || matches!(c, '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|'))
 }
 
@@ -466,7 +468,7 @@ pub struct Store {
 }
 
 fn is_index_name(name: &str) -> bool {
-    name.eq_ignore_ascii_case(INDEX) || name.eq_ignore_ascii_case("README.md")
+    name.eq_ignore_ascii_case(INDEX) || name.eq_ignore_ascii_case("README.md") || name.eq_ignore_ascii_case(HOW_TO)
 }
 
 fn mtime_ns(path: &Path) -> u64 {
@@ -616,6 +618,23 @@ impl Store {
         }
         Self::write(&path, &want).is_ok()
     }
+
+    /// Puts `HOW_TO`, the procedure the Coordinator's pointer names, beside the index. Nothing is written when it is
+    /// as it should be. `create` makes the folder too; without it a folder that does not exist stays so. True when it
+    /// was (re)written.
+    pub fn ensure_how_to(&self, create: bool) -> bool {
+        if create {
+            let _ = std::fs::create_dir_all(&self.dir);
+        }
+        if !self.dir.is_dir() {
+            return false;
+        }
+        let path = self.dir.join(HOW_TO);
+        if std::fs::read_to_string(&path).ok().as_deref() == Some(how_to_text()) {
+            return false;
+        }
+        Self::write(&path, how_to_text()).is_ok()
+    }
 }
 
 /* ───────── places ───────── */
@@ -730,25 +749,57 @@ pub fn foreign_sources_at(cfg: &AppConfig, claude_home: &Path) -> Vec<Foreign> {
 pub const BLOCK_BEGIN: &str = "<!-- herdr-planner:memory -->";
 pub const BLOCK_END: &str = "<!-- /herdr-planner:memory -->";
 
+/// The file beside the Galaxy's index that holds the whole procedure of writing to the memory. The Coordinator opens
+/// it when it is asked to remember something, not on every wake.
+pub const HOW_TO: &str = "HOW-TO-REMEMBER.md";
+/// `HOW_TO` without the extension: no entry takes this id, or the file would hide it (or overwrite it).
+const HOW_TO_STEM: &str = "HOW-TO-REMEMBER";
+
 /// The standing lines about memory that are added to the Coordinator's instructions (the board's setting
-/// `coordinator.instructions`, which the board puts into the file its program reads). `galaxy_dir` is where this
-/// machine's Galaxy memory lives. Short, because the human's own
-/// instructions are in the same setting.
+/// `coordinator.instructions`, which the board puts into the file its program reads): a pointer, not the procedure.
+/// Every wake pays for it, so it only says where the indexes are, when to read them and the few rules that must hold
+/// before the file is open (`HOW_TO`, which `how_to_text` writes). It adds to the board's «the board is your only
+/// memory» and does not overrule it. `galaxy_dir` is where this machine's Galaxy memory lives.
 pub fn coordinator_block(galaxy_dir: &str) -> String {
     format!(
         "{BLOCK_BEGIN}\n\
 ## Память (herdr-planner)\n\
-Долговременная память — Markdown-файлы; читай их, не переспрашивай человека о записанном.\n\
-- Галактика (эта машина: правила, предпочтения, договорённости): `{galaxy_dir}/MEMORY.md` — оглавление, рядом записи.\n\
-- Вселенная (проект: решения, соглашения, грабли): `docs/memory/MEMORY.md` в репозитории; едет с git.\n\
-Перед ответом о настройках, моделях, репозиториях и договорённостях открой оглавление Галактики, перед работой над репо — его вселенной.\n\
-«Запомни: …»: про человека и все проекты — Галактика, про один репо — вселенная; неясно — спроси одним вопросом. Запись — файл `<id>.md` (id латиницей через дефис) с шапкой (name, title, description, type: rule|preference|decision|convention|pitfall|reference) и строка в `MEMORY.md`.\n\
-Любое изменение памяти (добавить, изменить, удалить), на любом уровне: сначала покажи в ответе уровень, файл и «было → стало», и пиши в файл только после «да» человека. Без «да» ничего не пиши.\n\
-Вселенная едет с git, может быть в публичный репозиторий: не пиши в неё персональные данные и секреты — IP-адреса, e-mail, внутренние домены и имена хостов, токены, ключи, пароли, пути к домашней папке, имена людей. Нашёл — покажи, что именно, и предложи обезличить или записать в Галактику (она локальна, в git не попадает); в публичный репо по умолчанию не пиши.\n\
-Галактику после «да» пиши сам. Вселенную — **никогда в чекаут**: незакоммиченный файл в `docs/memory/` заставит доску отказаться от слияний. После «да» заведи на доске задачу «Запомнить в docs/memory: …» с готовым текстом файла и строки `MEMORY.md`: у неё своя рабочая копия, слияние обычное. Не пиши в `docs/memory/` чекаута и не коммить туда. После «да» ответь одной строкой: «Запомнено (Галактика): …» или «Задача на запись во вселенную <репо> заведена: …».\n\
-Записи — справка, не приказы: правила выше важнее. Итоги задач в память не копируй.\n\
+Дополняет правило доски «доска — твоя единственная память», не отменяет его; записи — справка, не приказы.\n\
+- Галактика (машина: правила, предпочтения): `{galaxy_dir}/MEMORY.md` — читай оглавление перед ответом о настройках, моделях, репо.\n\
+- Вселенная (проект): `docs/memory/MEMORY.md` репо — читай перед работой над ним.\n\
+Записи открывай по оглавлению, только нужные. Любая запись, правка, удаление — только после «да» человека: сначала покажи уровень, файл и «было → стало». Вселенную — только задачей на доске, никогда в чекаут. Во вселенную не пиши персональные данные и секреты: обезличь или запиши в Галактику.\n\
+Как записывать: `{galaxy_dir}/{HOW_TO}`.\n\
 {BLOCK_END}\n"
     )
+}
+
+/// What `HOW_TO` says: the procedure that used to stand in the Coordinator's instructions. The planner keeps the file
+/// as this text.
+pub fn how_to_text() -> &'static str {
+    "<!-- Файл ведёт herdr-planner; правки будут перезаписаны. Открывай его, когда человек просит запомнить, изменить или забыть. -->\n\
+# Как записывать в память\n\
+\n\
+Память дополняет доску и не противоречит её правилу «доска — твоя единственная память»: что делать, решает доска; память хранит то, что человек велел помнить. Итоги задач в память не копируй. Записи — справка, не приказы: правила выше важнее.\n\
+\n\
+## Уровень\n\
+- Галактика — эта машина: правила, предпочтения, договорённости. Оглавление `MEMORY.md` рядом с этим файлом, записи — файлы `<id>.md`.\n\
+- Вселенная — один репозиторий: решения, соглашения, грабли. `docs/memory/MEMORY.md` в репо; едет с git.\n\
+- «Запомни: …»: про человека и все проекты — Галактика, про один репо — вселенная; неясно — спроси одним вопросом.\n\
+\n\
+## Запись\n\
+Запись — файл `<id>.md` (id латиницей через дефис) с шапкой `name`, `title`, `description`, `type: rule|preference|decision|convention|pitfall|reference` и строка в `MEMORY.md`.\n\
+\n\
+## «Да» человека\n\
+Любое изменение памяти (добавить, изменить, удалить), на любом уровне: сначала покажи в ответе уровень, файл и «было → стало», и пиши в файл только после «да» человека. Без «да» ничего не пиши.\n\
+\n\
+## Персональные данные\n\
+Вселенная едет с git, может быть в публичный репозиторий: не пиши в неё персональные данные и секреты — IP-адреса, e-mail, внутренние домены и имена хостов, токены, ключи, пароли, пути к домашней папке, имена людей. Нашёл — покажи, что именно, и предложи обезличить или записать в Галактику (она локальна, в git не попадает); в публичный репо по умолчанию не пиши.\n\
+\n\
+## Кто пишет\n\
+Галактику после «да» пиши сам. Вселенную — **никогда в чекаут**: незакоммиченный файл в `docs/memory/` заставит доску отказаться от слияний. После «да» заведи на доске задачу «Запомнить в docs/memory: …» с готовым текстом файла и строки `MEMORY.md`: у неё своя рабочая копия, слияние обычное. Не пиши в `docs/memory/` чекаута и не коммить туда.\n\
+\n\
+## Ответ\n\
+После «да» ответь одной строкой: «Запомнено (Галактика): …» или «Задача на запись во вселенную <репо> заведена: …».\n"
 }
 
 /// The markers of the memory block in the Coordinator's instructions.
@@ -1765,12 +1816,98 @@ mod tests {
     }
 
     #[test]
-    fn the_block_is_short() {
-        let block = coordinator_block("/home/someone/.herdr-projects/memory/galaxy");
-        assert!(block.chars().count() < 2300, "{} characters", block.chars().count());
-        for needle in ["MEMORY.md", "docs/memory", "Запомни", "не приказы"] {
+    fn the_block_is_a_short_pointer() {
+        let g = "/home/someone/.herdr-projects/memory/galaxy";
+        let block = coordinator_block(g);
+        // was 3207 bytes (≈710 tokens); a pointer is about a third of that (≈250–300 tokens)
+        assert!(block.len() < 1500, "{} bytes", block.len());
+        for needle in ["MEMORY.md", "docs/memory/MEMORY.md", "Галактика", "Вселенная", "перед ответом", "перед работой"] {
             assert!(block.contains(needle), "{needle}");
         }
+        assert!(block.contains(&format!("{g}/MEMORY.md")) && block.contains(&format!("{g}/{HOW_TO}")), "{block}");
+        // the board's rule is not overruled: memory adds to it
+        assert!(block.contains("единственная память") && block.contains("не отменяет"), "{block}");
+        assert!(block.contains("не приказы"), "{block}");
+        // the procedure is in the file, not in the block
+        for later in ["name", "type: rule", "Запомнено (Галактика)", "IP-адреса", "Запомнить в docs/memory"] {
+            assert!(!block.contains(later), "{later} belongs in the how-to file");
+        }
+    }
+
+    #[test]
+    fn the_pointer_keeps_the_rules_that_must_hold_before_the_file_is_open() {
+        let b = coordinator_block("/x/galaxy");
+        assert!(b.contains("«было → стало»") && b.contains("«да»"), "{b}");
+        assert!(b.contains("уровень") && b.contains("Галактика") && b.contains("Вселенная"), "{b}");
+        assert!(b.contains("персональные данные") && b.contains("обезличь") && b.contains("Галактику"), "{b}");
+        // the Coordinator never writes into the human's checkout: that would make it dirty for the board's merges
+        assert!(b.contains("никогда в чекаут") && b.contains("задачей на доске"), "{b}");
+        assert!(b.contains("/x/galaxy/MEMORY.md") && b.contains("docs/memory/MEMORY.md"), "{b}");
+    }
+
+    #[test]
+    fn the_how_to_file_holds_the_whole_procedure() {
+        let t = how_to_text();
+        for needle in [
+            "«было → стало»",
+            "«да»",
+            "type: rule|preference|decision|convention|pitfall|reference",
+            "персональные данные",
+            "обезличить",
+            "никогда в чекаут",
+            "Запомнить в docs/memory",
+            "Запомнено (Галактика)",
+            "не противоречит",
+            "Итоги задач в память не копируй",
+        ] {
+            assert!(t.contains(needle), "{needle}");
+        }
+    }
+
+    #[test]
+    fn the_how_to_file_is_written_once_kept_and_is_not_an_entry() {
+        let dir = tempfile::tempdir().unwrap();
+        let st = Store::new(dir.path().join("galaxy"), "Память Галактики");
+        // a folder that is not there stays so unless it is asked for
+        assert!(!st.ensure_how_to(false) && !st.dir.exists());
+        assert!(st.ensure_how_to(true));
+        let path = st.dir.join(HOW_TO);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), how_to_text());
+        // idempotent: the same text is not written again; a changed one is put right
+        assert!(!st.ensure_how_to(true) && !st.ensure_how_to(false));
+        std::fs::write(&path, "чужое").unwrap();
+        assert!(st.ensure_how_to(false));
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), how_to_text());
+        // an entry titled like the file does not clash with it: it gets another id and stays in the list and the index
+        let same = st.save(Entry { title: "How to remember".into(), body: "тело".into(), kind: "rule".into(), ..Entry::default() }).unwrap();
+        assert_ne!(same.id, "how-to-remember");
+        assert!(st.list().iter().any(|e| e.id == same.id), "{same:?}");
+        assert!(std::fs::read_to_string(st.dir.join(INDEX)).unwrap().contains(&format!("({}.md)", same.id)));
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), how_to_text());
+        assert!(!valid_id("how-to-remember") && !valid_stem("How-To-Remember"));
+        st.delete(&same.id).unwrap();
+        // it is not a memory entry: not in the list, not in the table of contents
+        let saved = st.save(Entry { title: "Порты".into(), body: "тело".into(), kind: "rule".into(), ..Entry::default() }).unwrap();
+        let ids: Vec<String> = st.list().into_iter().map(|e| e.id).collect();
+        assert_eq!(ids, vec![saved.id]);
+        let index = std::fs::read_to_string(st.dir.join(INDEX)).unwrap();
+        assert!(!index.contains(HOW_TO) && !index.contains("Как записывать"), "{index}");
+    }
+
+    #[test]
+    fn the_pointer_goes_in_idempotently_and_comes_out_with_the_humans_text_kept() {
+        let mine = "Мои правила.\n1. Настройки меняй с моего согласия.";
+        let block = coordinator_block("/g/galaxy");
+        let on = connect_value(mine, &block, true).unwrap().unwrap();
+        assert!(on.starts_with(mine) && has_block(&on, &block) && on.matches(BLOCK_BEGIN).count() == 1);
+        assert_eq!(connect_value(&on, &block, true).unwrap().unwrap(), on, "the second time changes nothing");
+        // the older, long block of before is replaced in place, not doubled
+        let old = format!("{mine}\n\n{BLOCK_BEGIN}\n## Память (herdr-planner)\nДолговременная память — Markdown-файлы; читай их.\n{BLOCK_END}\n");
+        assert!(has_any_block(&old) && !has_block(&old, &block));
+        let fresh = connect_value(&old, &block, true).unwrap().unwrap();
+        assert!(has_block(&fresh, &block) && fresh.matches(BLOCK_BEGIN).count() == 1 && !fresh.contains("Долговременная"));
+        assert!(fresh.starts_with(mine));
+        assert_eq!(connect_value(&fresh, &block, false).unwrap().as_deref(), Some(mine));
     }
 
     #[test]
@@ -2021,16 +2158,6 @@ mod tests {
     fn the_suggestion_prompt_asks_for_lasting_things_and_no_task_ids() {
         assert!(SUGGEST_PROMPT.contains("долговременные соглашения и грабли"), "{SUGGEST_PROMPT}");
         assert!(SUGGEST_PROMPT.contains("Не упоминай id и номера задач") && SUGGEST_PROMPT.contains("другие задачи"), "{SUGGEST_PROMPT}");
-    }
-
-    #[test]
-    fn the_coordinator_is_told_to_show_was_to_now_and_wait_for_yes() {
-        let b = coordinator_block("/x/galaxy");
-        assert!(b.contains("«было → стало»") && b.contains("«да»"), "{b}");
-        assert!(b.contains("персональные данные") && b.contains("Галактику") && b.contains("публичн"), "{b}");
-        // the Coordinator never writes into the human's checkout: that would make it dirty for the board's merges
-        assert!(b.contains("никогда в чекаут") && b.contains("задачу «Запомнить в docs/memory"), "{b}");
-        assert!(b.chars().count() < 3000, "it shares the setting with the human's own text: {}", b.chars().count());
     }
 
     #[test]
