@@ -6,17 +6,21 @@
 //!
 //! - `Local`: the peer is this machine, the `Host` is one of ours, and nothing says a proxy or a tunnel passed it on.
 //! - `Tunnel`: the peer is this machine, but a `Cf-*` header or the tunnel's address says it came through a tunnel.
-//!   Tunnel closed: 503 for everything. Open: only what the table allows, and only with a session (those come later).
+//!   Tunnel closed: 503 for everything. Open: only what the table allows for the device's standing (`devices.rs`):
+//!   nobody gets the sign-in page and the calls it makes, a device the owner let in the light version, and the full
+//!   planner a device that was raised to it.
 //! - `Direct`: the peer is another machine, or this machine's own reverse proxy (`X-Forwarded-For`…). The login and
 //!   TLS rules of the routes apply, as they always did; the gate lets it through.
 //! - `Foreign`: the peer is this machine, but the `Host` is not one of ours. That is a page whose name points at
 //!   `127.0.0.1` (DNS rebinding): 421, nothing runs. A reverse proxy's own domain goes into `trusted_hosts`.
 
 use crate::app::Shared;
-use crate::config::AppConfig;
+use crate::auth::cookie_value;
+use crate::config::{now_ms, AppConfig};
+use crate::devices::Standing;
 use crate::server::error;
 use axum::extract::{ConnectInfo, Request, State};
-use axum::http::{header, HeaderMap, StatusCode, Uri};
+use axum::http::{header, HeaderMap, Method, StatusCode, Uri};
 use axum::middleware::Next;
 use axum::response::Response;
 use std::net::{IpAddr, SocketAddr};
@@ -33,13 +37,17 @@ pub enum Class {
 /// What a request from a tunnel may reach.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Access {
-    /// The planner's page and its API, for a signed-in tunnel client.
+    /// The sign-in page and what it calls: anyone through the tunnel, no session needed.
+    Public,
+    /// What the light page uses: any device that is in.
+    Lite,
+    /// The planner's page and its API, for a device that has the full version.
     Full,
     /// Only the machine the planner runs on: terminals, files, shipyards, settings, memory, the tunnel itself.
     Local,
 }
 
-use Access::{Full, Local};
+use Access::{Full, Lite, Local, Public};
 
 /// Every route of the planner and who may use it through a tunnel. A route that is not here is invisible to a tunnel
 /// client (404), and `policy_covers_every_route` fails until the new route is entered.
@@ -48,9 +56,14 @@ pub const POLICY: &[(&str, Access)] = &[
     ("/login", Full),
     ("/api/login", Full),
     ("/api/logout", Full),
-    ("/assets/{*path}", Full),
-    ("/favicon.svg", Full),
-    ("/favicon.ico", Full),
+    ("/assets/{*path}", Lite),
+    ("/favicon.svg", Lite),
+    ("/favicon.ico", Lite),
+    // The sign-in page: the key of the link for a session, what became of the request, the page's script.
+    ("/g/gate.js", Public),
+    ("/g/redeem", Public),
+    ("/g/status", Public),
+    ("/g/cancel", Public),
     ("/api/state", Full),
     ("/api/summary", Full),
     ("/api/load", Full),
@@ -135,6 +148,9 @@ pub const POLICY: &[(&str, Access)] = &[
     ("/api/tunnel/open", Local),
     ("/api/tunnel/close", Local),
     ("/api/tunnel/config", Local),
+    ("/api/tunnel/rotate", Local),
+    ("/api/tunnel/session", Local),
+    ("/api/tunnel/settings", Local),
 ];
 
 /// The access a path has in `POLICY`, if it is there.
@@ -293,13 +309,17 @@ pub enum Verdict {
     PlainHttp,
     /// 404: nothing at this path for a tunnel client.
     Hidden,
-    /// 401: the path is open to a signed-in tunnel client, and this one is not.
+    /// 401: the path is open to a device that is in, and this one is not.
     SignIn,
+    /// The sign-in page, in place of the planner's own page, for a device that is not in.
+    SignInPage,
+    /// 403: the path needs the full version, and this device has the light one.
+    LiteOnly,
 }
 
 /// The tunnel's end of the gate: an HTTP request through Cloudflare carries `Cf-Visitor: {"scheme":"http"}` and
 /// `X-Forwarded-Proto: http` (checked on a live tunnel, PLN-73): a key or a cookie must not go over that.
-fn plain_http(headers: &HeaderMap) -> bool {
+pub fn plain_http(headers: &HeaderMap) -> bool {
     let visitor = headers.get("cf-visitor").and_then(|v| v.to_str().ok());
     if visitor.is_some_and(|v| v.contains("\"http\"")) {
         return true;
@@ -311,16 +331,21 @@ fn plain_http(headers: &HeaderMap) -> bool {
         .is_some_and(|v| v.trim().eq_ignore_ascii_case("http"))
 }
 
-pub fn verdict(class: Class, tunnel_open: bool, headers: &HeaderMap, path: &str) -> Verdict {
+/// `standing` is how the cookie of a tunnel request stands (`Devices::standing_at`); the other classes do not use it.
+pub fn verdict(class: Class, tunnel_open: bool, headers: &HeaderMap, path: &str, standing: Standing) -> Verdict {
     match class {
         Class::Local | Class::Direct => Verdict::Pass,
         Class::Foreign => Verdict::Misdirected,
         Class::Tunnel if !tunnel_open => Verdict::TunnelClosed,
         Class::Tunnel if plain_http(headers) => Verdict::PlainHttp,
-        // Sessions of tunnel clients come with the key and the devices; until then nobody is signed in.
-        Class::Tunnel => match policy_of(path) {
-            Some(Full) => Verdict::SignIn,
-            Some(Local) | None => Verdict::Hidden,
+        Class::Tunnel => match (policy_of(path), standing) {
+            (Some(Public), _) => Verdict::Pass,
+            (Some(Lite), Standing::Lite | Standing::Full) | (Some(Full), Standing::Full) => Verdict::Pass,
+            (Some(Full), Standing::Lite) => Verdict::LiteOnly,
+            // the planner's own page: a device that is not in gets the sign-in page instead of a refusal
+            (Some(Full), _) if path == "/" => Verdict::SignInPage,
+            (Some(Full | Lite), _) => Verdict::SignIn,
+            (Some(Local) | None, _) => Verdict::Hidden,
         },
     }
 }
@@ -331,17 +356,35 @@ pub async fn middleware(State(app): State<Shared>, req: Request, next: Next) -> 
         return error(StatusCode::MISDIRECTED_REQUEST, "unknown peer");
     };
     let class = app.gate.classify(addr.ip(), req.headers(), req.uri());
-    match verdict(class, app.gate.tunnel_open(), req.headers(), req.uri().path()) {
+    let open = app.gate.tunnel_open();
+    // Only a request that may be answered at all is a use of the gate: the idle clocks must not be fed by refusals.
+    let standing = if class == Class::Tunnel && open && !plain_http(req.headers()) {
+        let token = cookie_value(req.headers(), crate::devices::COOKIE);
+        app.devices.standing_at(now_ms(), token.as_deref())
+    } else {
+        Standing::Nobody
+    };
+    match verdict(class, open, req.headers(), req.uri().path(), standing) {
         Verdict::Pass => next.run(req).await,
         Verdict::Misdirected => error(
             StatusCode::MISDIRECTED_REQUEST,
             "this host name is not trusted; add it to trusted_hosts in config.toml",
         ),
+        // a browser that opens the address of a closed gate gets a page, not JSON
+        Verdict::TunnelClosed if wants_page(&req) => crate::devices::closed_page(),
         Verdict::TunnelClosed => error(StatusCode::SERVICE_UNAVAILABLE, "the tunnel is closed"),
         Verdict::PlainHttp => error(StatusCode::FORBIDDEN, "https only"),
         Verdict::Hidden => error(StatusCode::NOT_FOUND, "not found"),
-        Verdict::SignIn => error(StatusCode::UNAUTHORIZED, "sign in"),
+        Verdict::SignInPage if req.method() == Method::GET || req.method() == Method::HEAD => crate::devices::gate_page(),
+        Verdict::SignIn | Verdict::SignInPage => error(StatusCode::UNAUTHORIZED, "sign in"),
+        Verdict::LiteOnly => error(StatusCode::FORBIDDEN, "this device has the light version only"),
     }
+}
+
+/// A navigation of a browser (it asks for a page), not a call of a script.
+fn wants_page(req: &Request) -> bool {
+    req.method() == Method::GET
+        && req.headers().get(header::ACCEPT).and_then(|v| v.to_str().ok()).is_some_and(|v| v.contains("text/html"))
 }
 
 #[cfg(test)]
@@ -584,26 +627,52 @@ mod tests {
     #[test]
     fn verdicts_of_a_tunnel_request() {
         let none = HeaderMap::new();
+        use Standing::{Full as FullDevice, Lite as LiteDevice, Nobody, Waiting};
         // nothing is open: everything is 503, a known path or not
-        for p in ["/", "/api/state", "/api/limits", "/nope"] {
-            assert_eq!(verdict(Class::Tunnel, false, &none, p), Verdict::TunnelClosed, "{p}");
+        for p in ["/", "/api/state", "/api/limits", "/nope", "/g/redeem"] {
+            assert_eq!(verdict(Class::Tunnel, false, &none, p, Nobody), Verdict::TunnelClosed, "{p}");
+            assert_eq!(verdict(Class::Tunnel, false, &none, p, FullDevice), Verdict::TunnelClosed, "{p}");
         }
-        // open, nobody signed in
-        assert_eq!(verdict(Class::Tunnel, true, &none, "/api/state"), Verdict::SignIn);
-        assert_eq!(verdict(Class::Tunnel, true, &none, "/api/limits"), Verdict::Hidden);
-        assert_eq!(verdict(Class::Tunnel, true, &none, "/api/task/terminal"), Verdict::Hidden);
-        assert_eq!(verdict(Class::Tunnel, true, &none, "/api/tunnel"), Verdict::Hidden);
-        assert_eq!(verdict(Class::Tunnel, true, &none, "/nope"), Verdict::Hidden);
-        // plain http through Cloudflare
+        // open, nobody in: the sign-in page and its calls, and nothing else
+        for who in [Nobody, Waiting] {
+            assert_eq!(verdict(Class::Tunnel, true, &none, "/", who), Verdict::SignInPage);
+            for p in ["/g/redeem", "/g/status", "/g/gate.js", "/g/cancel"] {
+                assert_eq!(verdict(Class::Tunnel, true, &none, p, who), Verdict::Pass, "{p}");
+            }
+            for p in ["/api/state", "/api/action", "/assets/a.js", "/favicon.svg", "/login"] {
+                assert_eq!(verdict(Class::Tunnel, true, &none, p, who), Verdict::SignIn, "{p}");
+            }
+            for p in ["/api/limits", "/api/task/terminal", "/api/tunnel", "/api/tunnel/rotate", "/api/tunnel/session", "/api/tunnel/settings", "/nope", "/m"] {
+                assert_eq!(verdict(Class::Tunnel, true, &none, p, who), Verdict::Hidden, "{p}");
+            }
+        }
+        // a device that is in with the light version: what the light page uses, not the planner
+        assert_eq!(verdict(Class::Tunnel, true, &none, "/assets/a.js", LiteDevice), Verdict::Pass);
+        assert_eq!(verdict(Class::Tunnel, true, &none, "/g/status", LiteDevice), Verdict::Pass);
+        for p in ["/", "/api/state", "/api/action", "/api/chat"] {
+            assert_eq!(verdict(Class::Tunnel, true, &none, p, LiteDevice), Verdict::LiteOnly, "{p}");
+        }
+        for p in ["/api/limits", "/api/tunnel/session", "/api/memory"] {
+            assert_eq!(verdict(Class::Tunnel, true, &none, p, LiteDevice), Verdict::Hidden, "{p}");
+        }
+        // the full version: the planner's routes, and still nothing that is for this machine only
+        for p in ["/", "/api/state", "/api/action", "/assets/a.js"] {
+            assert_eq!(verdict(Class::Tunnel, true, &none, p, FullDevice), Verdict::Pass, "{p}");
+        }
+        for p in ["/api/task/terminal", "/api/runner/add", "/api/tunnel/close", "/api/tunnel/rotate", "/nope"] {
+            assert_eq!(verdict(Class::Tunnel, true, &none, p, FullDevice), Verdict::Hidden, "{p}");
+        }
+        // plain http through Cloudflare, whoever asks
         for h in [("cf-visitor", "{\"scheme\":\"http\"}"), ("x-forwarded-proto", "http"), ("x-forwarded-proto", "http, https")] {
-            assert_eq!(verdict(Class::Tunnel, true, &headers(&[h]), "/api/state"), Verdict::PlainHttp, "{h:?}");
+            assert_eq!(verdict(Class::Tunnel, true, &headers(&[h]), "/api/state", FullDevice), Verdict::PlainHttp, "{h:?}");
+            assert_eq!(verdict(Class::Tunnel, true, &headers(&[h]), "/g/redeem", Nobody), Verdict::PlainHttp, "{h:?}");
         }
         for h in [("cf-visitor", "{\"scheme\":\"https\"}"), ("x-forwarded-proto", "https")] {
-            assert_eq!(verdict(Class::Tunnel, true, &headers(&[h]), "/api/state"), Verdict::SignIn, "{h:?}");
+            assert_eq!(verdict(Class::Tunnel, true, &headers(&[h]), "/api/state", Nobody), Verdict::SignIn, "{h:?}");
         }
-        assert_eq!(verdict(Class::Foreign, true, &none, "/"), Verdict::Misdirected);
-        assert_eq!(verdict(Class::Local, false, &none, "/api/limits"), Verdict::Pass);
-        assert_eq!(verdict(Class::Direct, false, &none, "/api/limits"), Verdict::Pass);
+        assert_eq!(verdict(Class::Foreign, true, &none, "/", FullDevice), Verdict::Misdirected);
+        assert_eq!(verdict(Class::Local, false, &none, "/api/limits", Nobody), Verdict::Pass);
+        assert_eq!(verdict(Class::Direct, false, &none, "/api/limits", Nobody), Verdict::Pass);
     }
 
     // ---- the whole router, on a real socket (the peer address is the real one) ----
@@ -707,10 +776,19 @@ mod tests {
         let addr = serve(app).await;
         let https = ("Cf-Visitor", "{\"scheme\":\"https\"}");
         for (pattern, access) in POLICY {
-            let want = if *access == Local { 404 } else { 401 };
             for method in ["GET", "POST"] {
                 let (status, body) = ask(addr, method, &concrete(pattern), &[("Host", "planner.example.org"), ("Cf-Ray", "x"), https]).await;
-                assert_eq!(status, want, "{method} {pattern}: {body}");
+                match (access, method, *pattern) {
+                    (Local, _, _) => assert_eq!(status, 404, "{method} {pattern}: {body}"),
+                    // the planner's page is the sign-in page for a stranger
+                    (_, "GET", "/") => {
+                        assert_eq!(status, 200, "{body}");
+                        assert!(body.contains("/g/gate.js") && !body.contains("herdr-projects"), "{body}");
+                    }
+                    // the sign-in page's own calls are answered by themselves (a refusal of their own kind, never 404/503)
+                    (Public, _, _) => assert!(![401, 404, 503].contains(&status), "{method} {pattern}: {status} {body}"),
+                    _ => assert_eq!(status, 401, "{method} {pattern}: {body}"),
+                }
             }
         }
         for path in ["/api/tunnel", "/api/tunnel/open", "/m", "/nope"] {
@@ -720,8 +798,22 @@ mod tests {
         // a forged "I am local" changes nothing
         let (status, _) = ask(addr, "GET", "/api/limits", &[("Host", "localhost"), ("Cf-Ray", "x"), ("X-Forwarded-For", "127.0.0.1"), ("Cf-Connecting-Ip", "127.0.0.1"), https]).await;
         assert_eq!(status, 404);
+        // a cookie nobody issued is no cookie
+        let (status, _) = ask(addr, "GET", "/api/state", &[("Host", "planner.example.org"), ("Cf-Ray", "x"), https, ("Cookie", "__Host-hp_g=00; herdr_planner_session=00")]).await;
+        assert_eq!(status, 401);
         // plain http through the tunnel
         let (status, _) = ask(addr, "GET", "/api/state", &[("Host", "planner.example.org"), ("Cf-Visitor", "{\"scheme\":\"http\"}")]).await;
         assert_eq!(status, 403);
+    }
+
+    #[tokio::test]
+    async fn a_closed_gate_shows_a_browser_a_page() {
+        let (_dir, app) = app_with(&[], None);
+        let addr = serve(app).await;
+        let (status, body) = ask(addr, "GET", "/", &[("Host", "abc-def.trycloudflare.com"), ("Accept", "text/html,application/xhtml+xml")]).await;
+        assert_eq!(status, 503);
+        assert!(body.contains("<h1>") && !body.contains("<script"), "{body}");
+        let (status, body) = ask(addr, "GET", "/api/state", &[("Host", "abc-def.trycloudflare.com"), ("Accept", "application/json")]).await;
+        assert_eq!((status, body.contains("closed")), (503, true));
     }
 }

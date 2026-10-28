@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="referrer" content="no-referrer">
+<meta name="robots" content="noindex,nofollow">
+<meta name="color-scheme" content="dark light">
+<title>Herdr Planner</title>
+<style>
+:root{--bg:#f4f5f7;--card:#fff;--ink:#14171c;--dim:#5b6472;--line:#d9dde3;--accent:#2f6fed;--accent-ink:#fff;--warn:#b4690e}
+@media (prefers-color-scheme:dark){:root{--bg:#0d1014;--card:#161a20;--ink:#e8ebf0;--dim:#97a0ae;--line:#272d36;--accent:#6c9bff;--accent-ink:#0d1014;--warn:#e0a24a}}
+*{box-sizing:border-box}
+html,body{margin:0;min-height:100%}
+body{background:var(--bg);color:var(--ink);font:16px/1.45 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;display:grid;place-items:center;min-height:100vh;min-height:100dvh;padding:max(1rem,env(safe-area-inset-top)) max(1rem,env(safe-area-inset-right)) max(1rem,env(safe-area-inset-bottom)) max(1rem,env(safe-area-inset-left))}
+main{width:min(100%,24rem);background:var(--card);border:1px solid var(--line);border-radius:1rem;padding:1.75rem 1.5rem;text-align:center;display:grid;gap:.75rem;justify-items:center}
+.mark{width:3rem;height:3rem;color:var(--dim)}
+main[data-s=pending] .mark,main[data-s=slow] .mark{color:var(--warn)}
+main[data-s=arrived] .mark{color:var(--accent)}
+.mark svg{width:100%;height:100%;display:block}
+main[data-s=checking] .mark svg,main[data-s=pending] .mark svg{animation:turn 2.4s linear infinite}
+@media (prefers-reduced-motion:reduce){.mark svg{animation:none!important}}
+@keyframes turn{to{transform:rotate(360deg)}}
+h1{margin:0;font-size:1.125rem;font-weight:650}
+p{margin:0;color:var(--dim);font-size:.9rem}
+form{display:grid;gap:.5rem;width:100%;margin-top:.25rem}
+input{font:inherit;width:100%;min-height:2.75rem;padding:.5rem .75rem;border-radius:.625rem;border:1px solid var(--line);background:var(--bg);color:var(--ink)}
+input:focus-visible,button:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+button{font:inherit;min-height:2.75rem;padding:.5rem 1rem;border-radius:.625rem;border:1px solid var(--line);background:transparent;color:var(--ink);cursor:pointer}
+button.go{background:var(--accent);border-color:var(--accent);color:var(--accent-ink);font-weight:600}
+[hidden]{display:none!important}
+noscript p{color:var(--ink)}
+</style>
+</head>
+<body>
+<main id="box" data-s="checking">
+  <div class="mark" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9" stroke-dasharray="3 3"/><path d="M12 7v5l3 2"/></svg></div>
+  <h1 id="h" role="status" aria-live="polite"></h1>
+  <p id="p"></p>
+  <form id="f" hidden autocomplete="off">
+    <input id="k" name="k" type="text" inputmode="text" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" maxlength="2048">
+    <button class="go" id="enter" type="submit"></button>
+  </form>
+  <button id="again" type="button" hidden></button>
+  <button id="cancel" type="button" hidden></button>
+  <noscript><p>JavaScript is needed to sign in. Нужен JavaScript.</p></noscript>
+</main>
+<script src="/g/gate.js"></script>
+</body>
+</html>

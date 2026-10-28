@@ -13,6 +13,7 @@ mod config;
 mod coordinator;
 mod crew;
 mod db;
+mod devices;
 mod events;
 mod gate;
 mod gitlag;
@@ -307,6 +308,14 @@ fn spawn_loops(app: Shared) {
         }
     });
     tokio::spawn(load::run(app.clone()));
+    // The gate's clock: devices that time out, and the gate closing itself when nobody has used it.
+    let a = app.clone();
+    tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(Duration::from_secs(15)).await;
+            devices::sweep(&a).await;
+        }
+    });
     tokio::spawn(strays::run(app.clone()));
     let a = app.clone();
     tokio::spawn(async move {

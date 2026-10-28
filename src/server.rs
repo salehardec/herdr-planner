@@ -142,6 +142,9 @@ pub fn router(app: Shared) -> Router {
         .route("/api/tunnel/open", post(crate::tunnel::tunnel_open))
         .route("/api/tunnel/close", post(crate::tunnel::tunnel_close))
         .route("/api/tunnel/config", post(crate::tunnel::tunnel_config))
+        .route("/api/tunnel/rotate", post(crate::devices::tunnel_rotate))
+        .route("/api/tunnel/session", post(crate::devices::tunnel_session))
+        .route("/api/tunnel/settings", post(crate::devices::tunnel_settings))
         .route("/api/logout", post(api_logout))
         .route_layer(middleware::from_fn_with_state(
             app.clone(),
@@ -158,6 +161,11 @@ pub fn router(app: Shared) -> Router {
         .route("/assets/{*path}", get(dist_asset))
         .route("/favicon.svg", get(dist_root_file))
         .route("/favicon.ico", get(|| async { StatusCode::NO_CONTENT }))
+        // The sign-in page's calls: they belong to the gate, the planner's own login does not apply to them.
+        .route("/g/gate.js", get(crate::devices::gate_js))
+        .route("/g/redeem", post(crate::devices::redeem))
+        .route("/g/status", get(crate::devices::status))
+        .route("/g/cancel", post(crate::devices::cancel))
         .merge(protected)
         // The gate is the outermost layer but one: no route runs before it has said who is asking.
         .layer(middleware::from_fn_with_state(app.clone(), crate::gate::middleware))
