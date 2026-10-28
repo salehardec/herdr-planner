@@ -461,12 +461,17 @@ async fn a_tunnel_the_owner_started_is_shown_not_started_twice() {
     let r = named_rig("", Some(NAMED));
     let config = r.path("planner.yml").display().to_string();
     let mut manual = Manual::start(&r, &["--config", &config, "tunnel", "run"]);
-    for _ in 0..250 {
-        if find_external(&r.path("planner.yml"), None).is_some() {
+    let mut seen = false;
+    for _ in 0..500 {
+        seen = find_external(&r.path("planner.yml"), None).is_some();
+        if seen {
             break;
         }
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
+    assert!(seen, "the hand-started tunnel is found by its config");
+    // (the wrapper script becomes `node` by exec; the process table is read again once that is over)
+    tokio::time::sleep(Duration::from_millis(400)).await;
     open(&r.app).await;
     assert_eq!(r.app.tunnel.state(), Phase::External);
     let v = view(&r.app).await;

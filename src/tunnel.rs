@@ -586,9 +586,22 @@ fn clean_line(line: &str) -> Option<String> {
 /// Moves to `to`, lets `edit` change the rest, and tells the gate, the page and the journal. The gate hears about the
 /// address only while the tunnel is up, and first of all when it is not.
 async fn change(app: &Shared, to: Phase, edit: impl FnOnce(&mut Inner)) {
+    change_from(app, None, to, edit).await;
+}
+
+/// The step of a running tunnel: only from the state the supervisor saw. An owner who closed the tunnel while the
+/// supervisor was asking `/ready` is not overruled by its answer.
+async fn advance(app: &Shared, from: Phase, to: Phase) {
+    change_from(app, Some(from), to, |_| {}).await;
+}
+
+async fn change_from(app: &Shared, only_from: Option<Phase>, to: Phase, edit: impl FnOnce(&mut Inner)) {
     let (host, text) = {
         let mut g = app.tunnel.inner.lock().unwrap();
         let from = g.state;
+        if only_from.is_some_and(|f| f != from) {
+            return;
+        }
         g.state = to;
         g.since = now_ms();
         edit(&mut g);
@@ -843,19 +856,19 @@ async fn watch_child(app: &Shared, launch: &Launch, child: &mut Child, stop: &mu
                     None => None,
                 };
                 if host.is_some() && is_ready(launch.metrics).await {
-                    change(app, Phase::Open, |_| {}).await;
+                    advance(app, Phase::Starting, Phase::Open).await;
                 } else if started.elapsed() >= t.start {
                     return End::Timeout;
                 }
             }
             Phase::Open => {
                 if !is_ready(launch.metrics).await {
-                    change(app, Phase::Reconnecting, |_| {}).await;
+                    advance(app, Phase::Open, Phase::Reconnecting).await;
                 }
             }
             Phase::Reconnecting => {
                 if is_ready(launch.metrics).await {
-                    change(app, Phase::Open, |_| {}).await;
+                    advance(app, Phase::Reconnecting, Phase::Open).await;
                 } else if app.tunnel.inner.lock().unwrap().since + t.lost.as_millis() as u64 <= now_ms() {
                     return End::Lost;
                 }
