@@ -369,17 +369,23 @@ pub fn render_index(heading: &str, entries: &[Entry]) -> String {
 /// cut from, and the index line shows both. A description that does not begin with the title stays as it is; one
 /// that is nothing but the title is empty.
 pub fn without_title(desc: &str, title: &str) -> String {
+    const QUOTES: [char; 8] = ['«', '»', '"', '\'', '“', '”', '„', '‘'];
     let desc = desc.split_whitespace().collect::<Vec<_>>().join(" ");
     let stem = title.split_whitespace().collect::<Vec<_>>().join(" ");
-    let stem = stem.trim_end_matches('…').trim_end();
-    let Some(rest) = desc.strip_prefix(stem).filter(|_| !stem.is_empty()) else {
+    let cut_title = stem.ends_with('…');
+    let stem = stem.trim_end_matches('…').trim_end().trim_matches(QUOTES);
+    // a description may put the title in quotes: «Порты БД» — свободные выше 9000
+    let head = desc.trim_start_matches(QUOTES);
+    let Some(rest) = head.strip_prefix(stem).filter(|_| !stem.is_empty()) else {
         return desc;
     };
-    // only at a word boundary: «Порты» does not open «Портфель»
-    if rest.chars().next().is_some_and(char::is_alphanumeric) {
+    // only at a word boundary: «Порты» does not open «Портфель»; a title cut in the middle of a word ends it
+    let mid_word = rest.chars().next().is_some_and(char::is_alphanumeric);
+    if mid_word && !cut_title {
         return desc;
     }
-    let rest = rest.trim_start_matches([' ', ',', ';', ':', '.', '—', '-', '…']);
+    let rest = if mid_word { rest.trim_start_matches(char::is_alphanumeric) } else { rest };
+    let rest = rest.trim_start_matches(|c: char| c == ' ' || c == ',' || c == ';' || c == ':' || c == '.' || c == '—' || c == '-' || c == '…' || QUOTES.contains(&c));
     if rest.is_empty() { String::new() } else { rest.to_string() }
 }
 
@@ -1447,6 +1453,10 @@ mod tests {
         // the description is the title and nothing more: the kind stands in
         assert_eq!(index_line(&e("a", "Порты БД", "Порты БД", "rule", "")), "- [Порты БД](a.md) — rule");
         assert_eq!(index_line(&e("a", "Порты БД", "Порты БД: свободные выше 9000", "rule", "")), "- [Порты БД](a.md) — свободные выше 9000");
+        // the title in quotes, as the project's own fixture writes it
+        assert_eq!(index_line(&e("a", "Дешёвая модель", "«Дешёвая модель» — omp/deepseek/deepseek-v4-flash", "rule", "")), "- [Дешёвая модель](a.md) — omp/deepseek/deepseek-v4-flash");
+        assert_eq!(index_line(&e("a", "Порты БД", "\"Порты БД\"", "rule", "")), "- [Порты БД](a.md) — rule");
+        assert_eq!(index_line(&e("a", "Порты", "«Портфель» растёт", "rule", "")), "- [Порты](a.md) — «Портфель» растёт");
         // a description that only looks like the title is left alone (a word boundary), and so is a different one
         assert_eq!(without_title("Портфель задач", "Порты"), "Портфель задач");
         assert_eq!(without_title("Другое слово", "Порты"), "Другое слово");
@@ -1627,6 +1637,23 @@ mod tests {
         std::fs::write(dir.path().join("notes.txt"), "x").unwrap();
         std::fs::write(dir.path().join("README.md"), "x").unwrap();
         assert_eq!(st.list().len(), 1);
+    }
+
+    #[test]
+    fn an_old_index_with_repeated_titles_is_rebuilt_without_them() {
+        let dir = tempfile::tempdir().unwrap();
+        let st = Store::new(dir.path().to_path_buf(), "Память");
+        let long = "Починил, доска снова отвечает: board list проходит за 0,1 с, планировщик отвечает. Что было: после перезапуска доска висела.";
+        let cut = format!("{}…", long.chars().take(40).collect::<String>().trim_end());
+        std::fs::write(dir.path().join("pochinil.md"), format!("---\nname: pochinil\ntitle: {cut}\ndescription: {long}\ntype: reference\n---\n\n{long}\n")).unwrap();
+        std::fs::write(dir.path().join("model.md"), "---\nname: model\ntitle: Дешёвая модель\ndescription: «Дешёвая модель» — omp/deepseek/deepseek-v4-flash\ntype: rule\n---\n\nx\n").unwrap();
+        std::fs::write(dir.path().join(INDEX), format!("- [{cut}](pochinil.md) — {long}\n- [Дешёвая модель](model.md) — «Дешёвая модель» — omp/deepseek/deepseek-v4-flash\n")).unwrap();
+        assert!(st.reindex());
+        let index = std::fs::read_to_string(dir.path().join(INDEX)).unwrap();
+        let stem: String = long.chars().take(30).collect();
+        assert_eq!(index.matches(&stem).count(), 1, "the title is said once: {index}");
+        assert!(index.contains("- [Дешёвая модель](model.md) — omp/deepseek/deepseek-v4-flash"), "{index}");
+        assert!(!st.reindex(), "and it stays so");
     }
 
     #[test]
