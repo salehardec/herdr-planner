@@ -460,6 +460,8 @@ export interface Snapshot {
   version: string;
   at: number;
   seq: number;
+  /** Only in the light page's projection: grows when the Coordinator's transcript does. */
+  chat_rev?: number;
   board: { ok: boolean; error: string; stale_at: number };
   host: string;
   tasks: Task[];

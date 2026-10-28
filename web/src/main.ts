@@ -21,6 +21,7 @@ import { effectiveWidth, installScale } from './scale';
 import { chatWide, installChatWide, installWideRoom } from './chat-wide';
 import { installPanelWidths } from './panel-width';
 import { connectTasks } from './actions';
+import { taskOpener } from './task-open';
 import { installTodoDnD } from './ui/Todo';
 import { toast } from './toast';
 import { warpSound } from './sound';
@@ -47,6 +48,7 @@ const world = createWorld({
   freeArea,
 });
 setWorld(world);
+taskOpener.open = (task) => { void navigateTo({ kind: 'planet', id: task.id }); };
 webgl.value = world.webgl;
 if (!world.webgl) {
   panels.nav.value = true;

@@ -81,7 +81,7 @@ describe('the Russian dictionary is Russian', () => {
   // proper names and acronyms that read the same in both languages; command lines and the name of the Shell
   // button are the same words in both (PLN-44): a person pastes `psql …` into a terminal, not a translation.
   const SAME = new Set([
-    'lang.ru', 'lang.en', 'ship.tls', 'ship.version', 'load.cpu', 'load.mem', 'load.gpu',
+    'lang.ru', 'lang.en', 'm.brand', 'ship.tls', 'ship.version', 'load.cpu', 'load.mem', 'load.gpu',
     'ctl.shell', 'runner.connect.postgres', 'runner.connect.redis',
     // the gate: names of systems and of a service, and a config line, are the same in both languages
     'tun.chk.tunnel.ok', 'tun.miss.arch', 'tun.miss.mac', 'tg.install.arch', 'tg.install.mac', 'tg.install.deb', 'tg.t.access.link',

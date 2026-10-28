@@ -30,11 +30,11 @@ function merge(list: TurnData[]): void {
 
 export const hasOlder = (): boolean => chat.value.turns.length > 0 && chat.value.turns[0].n > 0;
 
-export async function loadLatest(): Promise<void> {
+export async function loadLatest(limit = 3): Promise<void> {
   if (chat.value.loadingLatest) return;
   update({ loadingLatest: true });
   try {
-    const r = await api<{ available: boolean; turns: TurnData[]; total: number }>('/api/chat/history?limit=3');
+    const r = await api<{ available: boolean; turns: TurnData[]; total: number }>(`/api/chat/history?limit=${limit}`);
     const patch: Partial<ReturnType<typeof chat.peek>> = { available: !!r.available, total: r.total };
     chat.value = { ...chat.value, ...patch };
     if (r.available) {

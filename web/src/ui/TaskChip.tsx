@@ -1,6 +1,6 @@
 import type { JSX } from 'preact';
 import { currentView, tasksIndex } from '../store';
-import { navigateTo } from '../nav';
+import { taskOpener } from '../task-open';
 import { t } from '../i18n';
 import { splitRefs } from '../chat-parse';
 import { Gl } from './Gl';
@@ -18,7 +18,7 @@ export function taskOf(ref: string): Task | undefined {
 
 export function goToTag(tag: string): void {
   const task = taskOf(tag);
-  if (task) void navigateTo({ kind: 'planet', id: task.id });
+  if (task) taskOpener.open(task);
 }
 
 /**
