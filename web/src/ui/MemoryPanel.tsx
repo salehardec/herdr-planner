@@ -15,7 +15,7 @@ import { cardPick, linesOf, setLines, toggleCard, toggleLine, memPick, pickKey }
 import {
   deleteEntry, discardDraft, dismissSuggestion, keepSuggestion, KINDS, kindLabel, loadMemory, memoryOf, openMemory, previewSend, sendMemory, stateOf,
   previewDelete, previewDiscard, previewSave, previewSuggestion, rememberDlg, saveEntry, connectMemory, setSuggest,
-  type Accept, type MemData, type MemEntry, type MemPreview, type MemSuggestion, type SaveBody, type SentTask, forgetSent,
+  type Accept, type MemAgentChange, type MemData, type MemEntry, type MemPreview, type MemSuggestion, type SaveBody, type SentTask, forgetSent,
 } from './memory-api';
 import { ChangeCard } from './MemoryChange';
 import { parseDocId } from './memory-ids';
@@ -247,7 +247,7 @@ export function SuggestionCard(props: { s: MemSuggestion; compact?: boolean }): 
  *  board's own `set` makes it. */
 function Connect(props: { data: MemData }): JSX.Element | null {
   const c = props.data.connect;
-  const [card, setCard] = useState<{ on: boolean; current: string; value: string | null; error: string } | null>(null);
+  const [card, setCard] = useState<{ on: boolean; current: string; value: string | null; agents: MemAgentChange[]; error: string } | null>(null);
   const [busy, setBusy] = useState(false);
   const [showBlock, setShowBlock] = useState(false);
   if (!c) return null;
@@ -256,7 +256,7 @@ function Connect(props: { data: MemData }): JSX.Element | null {
     setBusy(true);
     try {
       const p = await connectMemory(on);
-      setCard({ on, current: p.current, value: p.now, error: '' });
+      setCard({ on, current: p.current, value: p.now, agents: p.agents ?? [], error: '' });
     } catch (e) { toast(failWords(e), { icon: 'failed' }); }
     setBusy(false);
   };
@@ -312,6 +312,12 @@ function Connect(props: { data: MemData }): JSX.Element | null {
           <pre class="mm-block" id="mem-was">{card.current || t('mem.cardNone')}</pre>
           <div class="ba"><span class="kl">{t('mem.cardNow')}</span></div>
           <pre class="mm-block" id="mem-now">{card.value === null ? t('mem.cardUnset') : card.value}</pre>
+          {card.agents.filter((a) => (a.now ?? '') !== a.current).map((a) => (
+            <div key={a.setting} class="mm-agent" id={`mem-agent-${a.setting}`}>
+              <div class="chg-h">{t('mem.cardTitle', { name: a.setting })}</div>
+              <pre class="mm-block">{a.now === null ? t('mem.cardUnset') : a.now}</pre>
+            </div>
+          ))}
           <div class="hint">{card.on ? t('mem.cardNoteOn') : t('mem.cardNoteOff')}</div>
           {card.error && <div class="hint bad" id="mem-change-error">{card.error}</div>}
           <div class="row act">
@@ -326,6 +332,7 @@ function Connect(props: { data: MemData }): JSX.Element | null {
       {showBlock && (
         <>
           <pre class="mm-block" id="mem-block">{c.block}</pre>
+          {c.agent_block && <pre class="mm-block" id="mem-agent-block">{c.agent_block}</pre>}
           <div class="row">
             <button class="btn sm" type="button" onClick={() => { void navigator.clipboard?.writeText(c.block); toast(t('toast.copied')); }}>{t('mem.copy')}</button>
           </div>
