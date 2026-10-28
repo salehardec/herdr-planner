@@ -6,7 +6,7 @@
 
 use crate::app::Shared;
 use crate::menu::{self, Answer, Step};
-use crate::server::{agent_name, error, run_herdr, same_origin};
+use crate::server::{agent_for, error, run_herdr, same_origin};
 use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
@@ -61,7 +61,7 @@ pub async fn menu_answer(
         return error(StatusCode::FORBIDDEN, "cross-origin request refused");
     }
     let target = body.target.as_deref().unwrap_or("coordinator");
-    let name = match agent_name(target, body.role.as_deref()) {
+    let name = match agent_for(&app, target, body.role.as_deref()).await {
         Ok(name) => name,
         Err(e) => return error(StatusCode::BAD_REQUEST, e),
     };

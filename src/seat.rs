@@ -56,6 +56,10 @@ pub fn of(t: &Task, m: &TaskMeta, crew: &Crew) -> Option<Seat> {
     // «Ревью» and «ревьюеру нужен ты»: the reviewer's terminal is where the human is needed.
     if t.status == Status::Review || t.stage == "reviewneeds" {
         let spec = first(&[&m.reviewer_on, &m.own_reviewer, &crew.reviewer]);
+        // The program that really reviews is written on the task when its pane is made: the board puts the working
+        // agent's program there when the configured one is not installed here, and without a hand-over on record.
+        let kind = m.reviewer_kind.trim();
+        let spec = if kind.is_empty() || split(spec).0 == kind { spec } else { kind };
         return Some(seat("reviewer", spec, !m.reviewer_on.trim().is_empty()));
     }
     if t.status == Status::Working && t.exited_at == 0 && t.finished_ms == 0 {
@@ -107,6 +111,18 @@ mod tests {
         let m = TaskMeta { reviewer_on: "codex/gpt-6-luna".into(), ..TaskMeta::default() };
         let s = of(&task(Status::Review, "reviewing"), &m, &crew()).unwrap();
         assert_eq!((s.program.as_str(), s.model.as_str()), ("codex", "gpt-6-luna"));
+    }
+
+    #[test]
+    fn the_program_that_really_reviews_wins_over_a_setting_that_is_not_installed() {
+        // codex is set and not installed here: the board reviews with the working agent's program, on its default model
+        let m = TaskMeta { own_reviewer: "codex/gpt-6-luna".into(), reviewer_kind: "claude".into(), ..TaskMeta::default() };
+        let s = of(&task(Status::Review, "reviewing"), &m, &crew()).unwrap();
+        assert_eq!((s.program.as_str(), s.model.as_str()), ("claude", ""));
+        // the program is the configured one: its model stays
+        let m = TaskMeta { reviewer_kind: "claude".into(), ..TaskMeta::default() };
+        let s = of(&task(Status::Review, "reviewing"), &m, &crew()).unwrap();
+        assert_eq!((s.program.as_str(), s.model.as_str()), ("claude", "claude-opus-5-5"));
     }
 
     #[test]

@@ -46,6 +46,12 @@ pub struct TaskMeta {
     pub reviewer_on: String,
     /// `settings["reviewer.agent"]`: the task's own reviewer; `""` when it keeps the repo's or the Galaxy's.
     pub own_reviewer: String,
+    /// `link.agent`: the name the board gave the working agent in herdr (`sw-herdr-planner-64`); `""` when none was kept.
+    pub link_agent: String,
+    /// `link.reviewer.agent`: the name of the reviewer's agent in herdr while it reviews.
+    pub link_reviewer: String,
+    /// `link.reviewer.kind`: the program that actually reviews, which is not the configured one when that is not installed.
+    pub reviewer_kind: String,
 }
 
 /// The closing note of a task, cut to a size limit.
@@ -164,6 +170,9 @@ fn parse_task(v: &Value) -> TaskMeta {
             .and_then(Value::as_str)
             .unwrap_or("")
             .to_string(),
+        link_agent: v.pointer("/link/agent").and_then(Value::as_str).unwrap_or("").to_string(),
+        link_reviewer: v.pointer("/link/reviewer/agent").and_then(Value::as_str).unwrap_or("").to_string(),
+        reviewer_kind: v.pointer("/link/reviewer/kind").and_then(Value::as_str).unwrap_or("").to_string(),
         archived_at_ms: millis("archivedAt"),
         gone: v.pointer("/last/gone").and_then(Value::as_bool).unwrap_or(false),
         working: v.pointer("/last/status").and_then(Value::as_str) == Some("working"),
@@ -283,6 +292,7 @@ mod tests {
         "agent": "omp",
         "on": "codex/gpt-6-luna",
         "reviewerOn": "codex",
+        "link": {"agent": "sw-herdr-planner-2", "reviewer": {"agent": "sw-herdr-planner-2-r", "kind": "claude", "pane": "w:p4"}},
         "tokens": "not read"
     }"#;
 
@@ -315,6 +325,10 @@ mod tests {
         assert_eq!(t.after, vec!["herdr-planner/1", "herdr-planner/7"]);
         assert_eq!((t.agent.as_str(), t.on.as_str(), t.reviewer_on.as_str()), ("omp", "codex/gpt-6-luna", "codex"));
         assert_eq!(t.own_reviewer, "", "no reviewer of its own");
+        assert_eq!(
+            (t.link_agent.as_str(), t.link_reviewer.as_str(), t.reviewer_kind.as_str()),
+            ("sw-herdr-planner-2", "sw-herdr-planner-2-r", "claude")
+        );
     }
 
     #[test]
