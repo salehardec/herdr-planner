@@ -20,6 +20,20 @@ export interface MemEntry {
    *  has it and has not merged it yet (`task` says which); empty for a committed entry. */
   draft?: string;
   task?: string;
+  /** `YYYY-MM-DD` to look at the entry again, or empty (the optional `review:` of the header). */
+  review?: string;
+  /** A draft that has lain unsent for days. */
+  stuck?: boolean;
+  /** What the lint suggests to look at again; nothing is removed because of it. */
+  lint?: MemLint[];
+}
+
+/** `overdue`: the review date has come; `bad_review`: it is not a date; `oneoff`: reads like a one-off; `old`: a decision or
+ *  pitfall from the chat with no review date; `duplicate` (of `with`). */
+export interface MemLint {
+  kind: 'overdue' | 'bad_review' | 'oneoff' | 'old' | 'duplicate';
+  detail: string;
+  with?: string;
 }
 
 /** The memory block in the board's `coordinator.instructions`. */
@@ -58,7 +72,7 @@ export interface MemData {
   foreign?: { program: string; label: string; dir: string; entries: MemEntry[] }[];
   connect?: MemConnect;
   settings?: { suggest: boolean };
-  git?: { checkout: boolean; dirty: { state: string; file: string }[]; drafts: number; sent: { task: string; id: string | null; title: string; files: number }[] };
+  git?: { checkout: boolean; dirty: { state: string; file: string }[]; drafts: number; stuck?: { n: number; since: number }; sent: { task: string; id: string | null; title: string; files: number }[] };
   suggestions?: MemSuggestion[];
   note?: string;
 }
@@ -98,6 +112,8 @@ export interface SaveBody {
   kind: string;
   body: string;
   source?: string;
+  /** `YYYY-MM-DD`; empty clears the date, absent keeps it. */
+  review?: string;
 }
 
 /** One file's change, as the human is shown it before anything is written. */
@@ -171,6 +187,14 @@ export const previewDiscard = (repo: string, id: string): Promise<MemPreview> =>
 /** Drops a universe's draft of an entry (what git has stays), after its card was confirmed. */
 export const discardDraft = async (repo: string, id: string, token: string): Promise<void> => {
   await post('/api/memory/discard', { repo, id, confirm: true, token });
+  void loadMemory(repo);
+};
+
+export const previewDiscardStuck = (repo: string): Promise<MemPreview> => post<MemPreview>('/api/memory/discard-stuck', { repo });
+
+/** Throws away every draft that has lain unsent for days (what git has stays), after the card was confirmed. */
+export const discardStuck = async (repo: string, token: string): Promise<void> => {
+  await post('/api/memory/discard-stuck', { repo, confirm: true, token });
   void loadMemory(repo);
 };
 

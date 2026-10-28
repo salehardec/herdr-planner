@@ -15,6 +15,7 @@ import {
 } from './memory-api';
 import { ChangeCard } from './MemoryChange';
 import { failWords, Form, Git, matches, Row, type Draft } from './MemoryPanel';
+import { marked } from './memory-lint';
 import './memory.css';
 
 /** The entries of the level the window shows (a program's own memory is read only). */
@@ -94,7 +95,7 @@ function Body(props: { w: MemoryWin; shown: MemEntry[]; total: number }): JSX.El
               <Row
                 key={e.id} e={e} open={!!openIds[e.id]} editable={editable} hot={hotId === e.id} onTask={goTask}
                 onToggle={() => setOpen({ ...openIds, [e.id]: !openIds[e.id] })}
-                onEdit={() => setEditing({ id: e.id, title: e.title, kind: e.kind || defaultKind, description: e.description === e.title ? '' : e.description, body: e.body })}
+                onEdit={() => setEditing({ id: e.id, title: e.title, kind: e.kind || defaultKind, description: e.description === e.title ? '' : e.description, body: e.body, review: e.review ?? '' })}
                 // deleting shows «было → стало» first, like any change
                 onDelete={() => {
                   setDelErr('');
@@ -120,6 +121,7 @@ function Win(props: { w: MemoryWin }): JSX.Element {
   const [q, setQ] = useState(w.q ?? '');
   const [kind, setKind] = useState('');
   const [state, setState] = useState<EntryState | ''>('');
+  const [review, setReview] = useState(false);
   const [lastRepo, setLastRepo] = useState(w.repo || view.projects[0]?.name || '');
   const searchRef = useRef<HTMLInputElement>(null);
   const level = w.program ? 'foreign' : w.repo ? 'universe' : 'galaxy';
@@ -135,11 +137,12 @@ function Win(props: { w: MemoryWin }): JSX.Element {
   useEffect(() => { if (w.repo) setLastRepo(w.repo); }, [w.repo]);
 
   const close = (): void => { memoryWin.value = null; };
-  const go = (next: Partial<MemoryWin>): void => { setState(''); memoryWin.value = { repo: '', ...next }; };
+  const go = (next: Partial<MemoryWin>): void => { setState(''); setReview(false); memoryWin.value = { repo: '', ...next }; };
   const foreign = (memoryOf('').data?.foreign ?? []).filter((f) => f.entries.length > 0 || f.program === w.program);
   const all = entriesOf(w);
-  const shown = all.filter((e) => matches(e, q) && (!kind || e.kind === kind) && (!state || stateOf(e) === state));
-  const filtered = !!q.trim() || !!kind || !!state;
+  const shown = all.filter((e) => matches(e, q) && (!kind || e.kind === kind) && (!state || stateOf(e) === state) && (!review || (e.lint?.length ?? 0) > 0));
+  const filtered = !!q.trim() || !!kind || !!state || review;
+  const toReview = marked(all).length;
   const title = level === 'foreign' ? t('mem.foreign', { p: foreign.find((f) => f.program === w.program)?.label ?? w.program ?? '' })
     : level === 'universe' ? t('mem.titleUniverse', { repo: w.repo }) : t('mem.titleGalaxy', { g: snap.value?.host || '' });
 
@@ -183,7 +186,13 @@ function Win(props: { w: MemoryWin }): JSX.Element {
                 {(['saved', 'draft', 'waiting'] as const).map((s) => <option value={s}>{t(`mem.state.${s}`)}</option>)}
               </select>
             )}
-            {filtered && <button class="btn sm" type="button" id="mem-f-clear" onClick={() => { setQ(''); setKind(''); setState(''); }}>{t('mem.filterClear')}</button>}
+            {level !== 'foreign' && (toReview > 0 || review) && (
+              <select class="field" id="mem-f-lint" value={review ? 'lint' : ''} aria-label={t('mem.fLintLabel')} onChange={(e) => setReview((e.target as HTMLSelectElement).value === 'lint')}>
+                <option value="">{t('mem.fLintAny')}</option>
+                <option value="lint">{t('mem.fLintOnly', { n: toReview })}</option>
+              </select>
+            )}
+            {filtered && <button class="btn sm" type="button" id="mem-f-clear" onClick={() => { setQ(''); setKind(''); setState(''); setReview(false); }}>{t('mem.filterClear')}</button>}
             <span class="hint mmw-count" id="mem-shown">{t('mem.shown', { a: shown.length, b: all.length })}</span>
           </div>
         </div>

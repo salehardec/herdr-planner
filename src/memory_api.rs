@@ -12,6 +12,7 @@ use crate::board::Task;
 use crate::config::now_ms;
 use crate::memory::{self, Entry, Line};
 use crate::memory_guard::{self, Finding};
+use crate::memory_lint;
 use crate::server::{error, same_origin};
 use crate::station::{self, Fail};
 use crate::{taskmeta, translate};
@@ -141,11 +142,13 @@ async fn panel_read(app: &Shared, q: GetQuery) -> Result<Value, Fail> {
                     json!({"program": f.program, "label": f.label, "dir": f.dir.display().to_string(), "entries": entries})
                 })
                 .collect();
+            let mut entries: Vec<Value> = st.list().iter().map(entry_json).collect();
+            attach_lint(&mut entries, &memory::local_date_of(now_ms()));
             Ok(json!({
                 "dir": st.dir.display().to_string(),
                 "exists": st.exists(),
                 "writable": true,
-                "entries": st.list().iter().map(entry_json).collect::<Vec<_>>(),
+                "entries": entries,
                 "foreign": foreign,
             }))
         } else {
@@ -192,12 +195,21 @@ async fn panel_read(app: &Shared, q: GetQuery) -> Result<Value, Fail> {
                 }
             }
             entries.sort_by(|a, b| a["id"].as_str().cmp(&b["id"].as_str()));
+            attach_lint(&mut entries, &memory::local_date_of(now_ms()));
+            // Drafts that have lain unsent for days: the entries carry `stuck`, the git block says how many and since when.
+            let stuck = drafts.as_ref().map(|d| d.stuck(now_ms(), memory::STUCK_DRAFT_MS)).unwrap_or_default();
+            for j in entries.iter_mut() {
+                if j["draft"].as_str().is_some_and(|m| matches!(m, "new" | "changed" | "deleted")) && stuck.iter().any(|s| j["id"] == json!(s.id)) {
+                    j["stuck"] = json!(true);
+                }
+            }
             let git = match &dirty {
-                None => json!({"checkout": false, "dirty": [], "drafts": 0, "sent": []}),
+                None => json!({"checkout": false, "dirty": [], "drafts": 0, "sent": [], "stuck": {"n": 0, "since": 0}}),
                 Some(d) => json!({
                     "checkout": true,
                     "dirty": d.iter().map(|(s, f)| json!({"state": s, "file": f})).collect::<Vec<_>>(),
                     "drafts": drafts.as_ref().map(|d| d.puts().len() + d.dels().len()).unwrap_or(0),
+                    "stuck": {"n": stuck.len(), "since": stuck.first().map(|s| s.at).unwrap_or(0)},
                     "sent": sent.iter().map(|b| json!({"task": b.task, "id": b.id, "title": b.title, "files": b.files.len()})).collect::<Vec<_>>(),
                 }),
             };
@@ -222,6 +234,22 @@ async fn panel_read(app: &Shared, q: GetQuery) -> Result<Value, Fail> {
     v["level"] = json!(level);
     v["ok"] = json!(true);
     Ok(v)
+}
+
+/// Puts each entry's `lint` marks into its JSON (see `memory_lint`): only a suggestion for the human to look again,
+/// nothing is changed or removed because of it. Entries that are being deleted are left out.
+fn attach_lint(entries: &mut [Value], today: &str) {
+    let list: Vec<Entry> = entries.iter().filter_map(|j| serde_json::from_value(j.clone()).ok()).collect();
+    let going: Vec<String> = entries
+        .iter()
+        .filter(|j| j["draft"].as_str().is_some_and(|m| m == "deleted" || m == "sentdel"))
+        .filter_map(|j| j["id"].as_str().map(String::from))
+        .collect();
+    for (id, marks) in memory_lint::lint_all(&list, today, |e| going.contains(&e.id)) {
+        if let Some(j) = entries.iter_mut().find(|j| j["id"] == json!(id)) {
+            j["lint"] = json!(marks);
+        }
+    }
 }
 
 /// `GET /api/memory?repo=`: the entries of a level, with the Coordinator's wiring (Galaxy) or git state and
@@ -653,6 +681,9 @@ pub struct SaveBody {
     body: String,
     #[serde(default)]
     source: String,
+    /// `YYYY-MM-DD` to look at the entry again; empty clears it, absent keeps what the entry has.
+    #[serde(default)]
+    review: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -665,9 +696,9 @@ pub struct SaveReq {
 
 fn merged(existing: Option<Entry>, b: &SaveBody) -> Entry {
     // An edit keeps what the form does not carry: the date it was added, where it came from.
-    let (added, source) = existing
+    let (added, source, review) = existing
         .as_ref()
-        .map(|e| (e.added.clone(), e.source.clone()))
+        .map(|e| (e.added.clone(), e.source.clone(), e.review.clone()))
         .unwrap_or_default();
     Entry {
         id: b.id.clone(),
@@ -677,6 +708,7 @@ fn merged(existing: Option<Entry>, b: &SaveBody) -> Entry {
         body: b.body.clone(),
         added,
         source: if b.source.is_empty() { source } else { b.source.clone() },
+        review: b.review.as_deref().map_or(review, |r| r.trim().to_string()),
         at: 0,
     }
 }
@@ -769,6 +801,56 @@ pub async fn memory_discard(State(app): State<Shared>, headers: HeaderMap, Json(
         }
         memory::Drafts::new(&cfg, &repo).discard(&id);
         Ok(json!({"ok": true}))
+    })
+    .await
+    .map_err(|e| Fail::new(500, e.to_string()))
+    .and_then(|r| r);
+    respond(result)
+}
+
+/// What throwing away every stuck draft would change (see `memory::STUCK_DRAFT_MS`): the ids and each one's change.
+fn stuck_plan(cfg: &crate::config::AppConfig, repo: &str) -> Result<(Vec<String>, Vec<Change>), Fail> {
+    let stuck = memory::Drafts::new(cfg, repo).stuck(now_ms(), memory::STUCK_DRAFT_MS);
+    if stuck.is_empty() {
+        return Err(Fail::new(404, "застрявших черновиков нет"));
+    }
+    let mut ids = Vec::new();
+    let mut changes = Vec::new();
+    for s in stuck {
+        changes.extend(discard_plan(cfg, repo, &s.id)?);
+        ids.push(s.id);
+    }
+    Ok((ids, changes))
+}
+
+/// `POST /api/memory/discard-stuck`: throws away the drafts that have lain unsent for days, all at once. A change like any
+/// other: without `confirm` the answer is «было → стало» for each (the draft → what git has), with `confirm` and its token
+/// they go. What git has is never touched.
+pub async fn memory_discard_stuck(State(app): State<Shared>, headers: HeaderMap, Json(body): Json<SendBody>) -> Response {
+    if !same_origin(&headers) {
+        return error(StatusCode::FORBIDDEN, "cross-origin request refused");
+    }
+    if !taskmeta::valid_repo(&body.repo) || body.repo.is_empty() {
+        return error(StatusCode::BAD_REQUEST, "bad name");
+    }
+    let (cfg, repo) = (app.cfg.clone(), body.repo.clone());
+    let result = tokio::task::spawn_blocking(move || -> Result<Value, Fail> {
+        let (ids, changes) = stuck_plan(&cfg, &repo)?;
+        let token = token_of(&changes, &[]);
+        if body.gate.confirm != Some(true) {
+            return Ok(json!({
+                "ok": true, "preview": true, "token": token, "level": "universe", "repo": repo, "draft": true,
+                "discard": true, "changes": changes, "findings": [], "risk": "none", "visibility": null, "redacted": [],
+            }));
+        }
+        if body.gate.token.as_deref() != Some(token.as_str()) {
+            return Err(Fail::new(409, "черновики изменились с тех пор, как вы смотрели: посмотрите ещё раз"));
+        }
+        let drafts = memory::Drafts::new(&cfg, &repo);
+        for id in &ids {
+            drafts.discard(id);
+        }
+        Ok(json!({"ok": true, "discarded": ids.len()}))
     })
     .await
     .map_err(|e| Fail::new(500, e.to_string()))
@@ -1406,6 +1488,43 @@ mod tests {
         assert_eq!(git(&["status", "--porcelain", "--untracked-files=all"]), status, "the checkout is as it was");
         assert_eq!(git(&["rev-parse", "HEAD"]), head, "and has no new commit");
         assert!(!proj.path().join("docs/memory/raz.md").exists());
+    }
+
+    #[test]
+    fn the_panel_gets_the_marks_of_the_lint_and_entries_being_deleted_get_none() {
+        let mut es = vec![
+            json!({"id": "a", "title": "Без галактик", "description": "решение", "kind": "decision", "body": "удаляются задачей PLN-31", "review": ""}),
+            json!({"id": "b", "title": "Порты", "description": "Postgres слушает 5433", "kind": "pitfall", "body": "…", "review": "2026-01-01"}),
+            json!({"id": "c", "title": "Порты", "description": "Postgres слушает 5433", "kind": "pitfall", "body": "…", "draft": "deleted"}),
+            json!({"id": "d", "title": "Чисто", "description": "ничего лишнего", "kind": "rule", "body": "…"}),
+        ];
+        attach_lint(&mut es, "2026-10-28");
+        let kinds = |i: usize| es[i]["lint"].as_array().map(|l| l.iter().map(|m| m["kind"].as_str().unwrap().to_string()).collect::<Vec<_>>()).unwrap_or_default();
+        assert_eq!(kinds(0), ["oneoff"]);
+        assert_eq!(kinds(1), ["overdue"], "the entry going away is not compared, so b is no duplicate of c");
+        assert!(es[2].get("lint").is_none() && es[3].get("lint").is_none());
+    }
+
+    #[test]
+    fn stuck_drafts_are_thrown_away_together_after_a_preview_and_what_git_has_stays() {
+        let (proj, state) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let mut cfg = crate::testutil::test_cfg(state.path());
+        cfg.data_dir = state.path().join("data");
+        std::fs::create_dir_all(&cfg.data_dir).unwrap();
+        std::fs::write(cfg.data_dir.join("repos.json"), json!({"demo": proj.path().to_str().unwrap()}).to_string()).unwrap();
+        assert!(stuck_plan(&cfg, "demo").is_err(), "nothing drafted, nothing stuck");
+        let drafts = memory::Drafts::new(&cfg, "demo");
+        let mut e = memory::complete(Entry { title: "Раз".into(), body: "текст".into(), ..Entry::default() }, "decision", 0).unwrap();
+        e.id = "raz".into();
+        drafts.put(&e).unwrap();
+        // a draft written just now is not stuck; make it old
+        assert!(stuck_plan(&cfg, "demo").is_err());
+        let old = std::time::SystemTime::now() - Duration::from_secs(5 * 24 * 3600);
+        std::fs::File::options().write(true).open(state.path().join("state/memory-drafts/demo/put/raz.md")).unwrap().set_modified(old).unwrap();
+        let (ids, changes) = stuck_plan(&cfg, "demo").unwrap();
+        assert_eq!(ids, ["raz"]);
+        assert_eq!((changes[0].op, changes[0].after.is_none()), ("delete", true), "a new draft would vanish, nothing remains");
+        assert_eq!(token_of(&changes, &[]), token_of(&stuck_plan(&cfg, "demo").unwrap().1, &[]), "the same drafts, the same token");
     }
 
     #[test]
