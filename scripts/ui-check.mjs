@@ -98,7 +98,10 @@ const navigate = async (url) => {
   const loaded = new Promise((r) => { loadWaiters.push(r); });
   await send('Page.navigate', { url });
   await Promise.race([loaded, sleep(60000)]);
-  if (/^https?:/.test(url) && !/\/login(\?|$)/.test(url)) {
+  if (/^https?:\/\/[^/]+\/m(\?|$)/.test(url)) {
+    // the light page: no world, no `planner`; its first projection is what says it is up
+    await waitFor('document.readyState === "complete" && !!window.mobilePage && !!window.plannerSnap && !!window.plannerSnap()', 30000);
+  } else if (/^https?:/.test(url) && !/\/login(\?|$)/.test(url)) {
     await waitFor('document.readyState === "complete" && !!window.planner && !!window.plannerSnap && !!window.plannerSnap()', 30000);
   }
 };
@@ -6517,6 +6520,188 @@ section('chat unread', async () => {
   await navigate(base + '/?noauto&nocoach&bloom=0');
   check('after a reload that holds the last turns only, the answer is still counted: 4', await hasText('#bchat-n', '4', 15000), await text('#bchat') + JSON.stringify(await stored()));
   await send('Page.removeScriptToEvaluateOnNewDocument', { identifier: away2 });
+}, { retry: false });
+
+
+// ── the phone's light page: /m (PLN-79) ────────────────────────────────────
+
+const PHONE = [390, 844];
+const TABLET = [820, 1180];
+const asPhone = async ([w, h], mode = 'dark') => {
+  await send('Emulation.setDeviceMetricsOverride', { width: w, height: h, screenWidth: w, screenHeight: h, deviceScaleFactor: 1, mobile: true });
+  await send('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-color-scheme', value: mode }] });
+  await waitFor(`innerWidth === ${w}`, 5000);
+};
+const backToDesk = async () => {
+  await send('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-color-scheme', value: '' }] });
+  await send('Emulation.setDeviceMetricsOverride', { width: 1500, height: 950, deviceScaleFactor: 1, mobile: false });
+  await waitFor('innerWidth === 1500', 5000);
+  await evalJs('try { localStorage.removeItem("herdr-planner.m.theme"); localStorage.removeItem("herdr-planner.lang"); } catch {} true');
+};
+const openPhone = async (size, mode, tab) => {
+  // a phone that speaks Russian (the headless browser says en-US, and the page would take that for the phone's choice)
+  await evalJs('try { localStorage.removeItem("herdr-planner.m.theme"); localStorage.setItem("herdr-planner.lang", "ru"); } catch {} true');
+  await asPhone(size, mode);
+  await navigate(base + '/m');
+  if (tab) { await click(`.nav [data-tab="${tab}"]`); await pageTurn(); }
+};
+const phoneCard = (key) => `[data-card="${key}"]`;
+const sheetOpen = () => waitFor('document.querySelector("#sheet.on") !== null', 4000);
+const sheetClosed = () => waitFor('!document.querySelector("#sheet.on")', 4000);
+const noSideways = (w) => waitFor(`document.documentElement.scrollWidth <= ${w + 1} && document.body.scrollWidth <= ${w + 1}`, 4000);
+// What a finger can hit: every button, link-button and field that is on the screen is at least 44 px high (the chips of a task key in
+// a sentence are text, not buttons).
+const smallTargets = () => evalJs(`(() => [...document.querySelectorAll('.mob button, .mob a.btn, .mob textarea, .mob input')]
+  .filter((e) => !e.matches('.k, .k *') && e.offsetParent !== null && !e.closest('[hidden], .sheet:not(.on)'))
+  .map((e) => [e, e.getBoundingClientRect()]).filter(([, r]) => r.width > 0 && r.height > 0 && r.height < 43.5)
+  .map(([e, r]) => (e.dataset.act || e.id || e.className || e.tagName) + ':' + Math.round(r.height)))()`);
+
+section('light page', async () => {
+  for (const mode of ['dark', 'light']) {
+    await openPhone(PHONE, mode);
+    const at = `phone ${PHONE.join('×')} ${mode}`;
+    check(`${at}: the page is up, with a title and the host of the board`, (await evalJs('document.title')).includes('Herdr Planner') && await hasText('#hostline', HOST, 8000), await text('#hostline'));
+    check(`${at}: the mode follows the phone (${mode}) and the page paints with it`, await waitFor(`document.documentElement.dataset.mode === ${JSON.stringify(mode)} && getComputedStyle(document.body).backgroundColor !== ''`, 4000));
+    const dark = await evalJs('(() => { const c = getComputedStyle(document.querySelector(".mob")).backgroundColor.match(/\\d+/g).map(Number); return (c[0] + c[1] + c[2]) / 3 < 128; })()');
+    check(`${at}: and it really is ${mode === 'dark' ? 'dark' : 'light'}`, dark === (mode === 'dark'));
+    check(`${at}: nothing scrolls sideways`, await noSideways(PHONE[0]));
+    check(`${at}: the limits chip shows the share left`, await hasText('#limchip', '%', 6000), await text('#limchip'));
+    check(`${at}: «Ждёт тебя» is the first tab and counts the requests`, await exists('.nav [data-tab="wait"].on') && Number(await text('#nw')) >= 8, await text('.nav'));
+    const kinds = await evalJs(`Object.fromEntries([...document.querySelectorAll('[data-card]')].map((e) => [e.dataset.card, e.querySelector('.why')?.innerText || '']))`);
+    check(`${at}: a card for the plan, the approval, the failure, the question and the permission`, ['plan:alpha/3', 'approval:alpha/4', 'failed:alpha/8', 'question:alpha/2'].every((k) => k in kinds) && Object.keys(kinds).some((k) => k.startsWith('permission:')), JSON.stringify(Object.keys(kinds)));
+    check(`${at}: a plan offers its text, its approval and the remarks`, await evalJs(`(() => { const c = document.querySelector('${phoneCard('plan:alpha/3')}'); return !!c.querySelector('[data-act="plan-open"]') && !!c.querySelector('[data-act="approve"]') && !!c.querySelector('textarea'); })()`));
+    check(`${at}: a failed task offers «Повторить» and a word to the agent`, await evalJs(`(() => { const c = document.querySelector('${phoneCard('failed:alpha/8')}'); return !!c.querySelector('[data-act="retry"]') && !!c.querySelector('[data-act="tell"]'); })()`));
+    check(`${at}: nothing the phone may not do is offered: no «всё равно», stop, finish, fix`, !(await exists('[data-act="anyway"], [data-act="stop"], [data-act="finish"], [data-act="fix"], [data-act="keys"]')));
+    check(`${at}: a merge past a failed review is the computer's: no approve on it, and it says so`, await evalJs(`(() => { const c = document.querySelector('${phoneCard('permission:alpha/5')}'); return !!c && !c.querySelector('[data-act="approve"]') && c.querySelector('.hintline')?.innerText.includes('на компьютере'); })()`));
+    check(`${at}: a finger can hit every button (44 px)`, (await smallTargets()).length === 0, JSON.stringify(await smallTargets()));
+    check(`${at}: the cards do not stick out of the screen`, await evalJs(`[...document.querySelectorAll('.card')].every((c) => { const r = c.getBoundingClientRect(); return r.left >= 0 && r.right <= innerWidth + 1; })`));
+    await shot(`m-wait-${mode}.png`);
+
+    await click('.nav [data-tab="chat"]');
+    check(`${at}: the chat opens with the line and the quick phrases`, await waitFor('!!document.querySelector("#p-chat") && document.querySelector("#p-chat").offsetParent !== null && !!document.querySelector("#ask-in") && document.querySelectorAll("#cquick button").length === 3', 5000));
+    check(`${at}: the conversation is bubbles, with the last answer at the bottom`, await waitFor('document.querySelectorAll("#clog .b").length >= 2', 8000) && await evalJs('(() => { const l = document.querySelector("#clog"); return l.scrollHeight - l.scrollTop - l.clientHeight < 40; })()'));
+    check(`${at}: the chat fits the screen and the line is at the bottom`, await noSideways(PHONE[0]) && await evalJs(`(() => { const r = document.querySelector('#ask').getBoundingClientRect(); return r.bottom <= innerHeight - 40 && r.bottom > innerHeight - 140; })()`));
+    check(`${at}: the chat's buttons are 44 px`, (await smallTargets()).length === 0, JSON.stringify(await smallTargets()));
+    await shot(`m-chat-${mode}.png`);
+
+    await click('.nav [data-tab="board"]');
+    check(`${at}: the board lists the tasks in heaps`, await waitFor('document.querySelectorAll("#p-board [data-row]").length >= 10 && !!document.querySelector("#p-board [data-heap=working]") && !!document.querySelector("#p-board [data-heap=queued]")', 5000));
+    check(`${at}: the board's rows are 44 px and do not stick out`, (await smallTargets()).length === 0 && await noSideways(PHONE[0]), JSON.stringify(await smallTargets()));
+    await shot(`m-board-${mode}.png`);
+    await click('#p-board [data-row="alpha/6"]');
+    check(`${at}: a tap on a task opens its sheet with the state and the agent`, await sheetOpen() && await hasText('#sheet', 'ALP-6') && await hasText('#sheet', 'omp', 4000), (await text('#sheet')).slice(0, 120));
+    await shot(`m-task-${mode}.png`);
+    await click('#sheet [data-s="close"]');
+    check(`${at}: and closes`, await sheetClosed());
+
+    await click('#limchip');
+    check(`${at}: the limits sheet lists the subscriptions`, await sheetOpen() && await evalJs('document.querySelectorAll("#sheet .lim-agent").length >= 1'));
+    await click('#sheet [data-s="close"]'); await sheetClosed();
+    await click('#menu');
+    check(`${at}: the settings sheet: this device, language, theme`, await sheetOpen() && await evalJs('document.querySelectorAll("#sheet .seg").length === 2'));
+    await shot(`m-settings-${mode}.png`);
+    await click('#sheet [data-s="close"]'); await sheetClosed();
+  }
+
+  // the theme chosen on the phone wins over the phone's system, and the other palette is the page's own
+  await openPhone(PHONE, 'dark');
+  await click('#menu'); await sheetOpen();
+  await click('#sheet .seg [data-v="light"]');
+  check('the theme chosen in the settings is applied at once and remembered', await waitFor('document.documentElement.dataset.mode === "light"', 3000) && (await evalJs('localStorage.getItem("herdr-planner.m.theme")')) === 'light');
+  check('and the page is light then', await evalJs('(() => { const c = getComputedStyle(document.querySelector(".mob")).backgroundColor.match(/\\d+/g).map(Number); return (c[0] + c[1] + c[2]) / 3 > 128; })()'));
+  await click('#sheet .seg [data-v="dark"]');
+  check('and back', await waitFor('document.documentElement.dataset.mode === "dark"', 3000));
+  await click('#sheet [data-v="en"]');
+  check('the language switches to English', await waitFor('document.documentElement.lang === "en" && document.querySelector(".nav [data-tab=wait]").innerText.includes("Waiting")', 3000), await text('.nav'));
+  await click('#sheet [data-v="ru"]'); await waitFor('document.documentElement.lang === "ru"', 3000);
+  await click('#sheet [data-s="close"]');
+
+  // the news come by long-poll, not by the event stream; a change on the board reaches the page
+  const net = await evalJs('window.__net.log.filter((u) => u.includes("/m/api/poll")).length');
+  check('the page asks /m/api/poll and never /api/events', net >= 0 && !(await evalJs('performance.getEntriesByType("resource").some((e) => ["/api/events", "/api/state"].includes(new URL(e.name).pathname))')) && await evalJs('performance.getEntriesByType("resource").some((e) => new URL(e.name).pathname === "/m/api/state")'));
+  const f = join(fixture, 'state', 'board.json');
+  const w = JSON.parse(readFileSync(f, 'utf8'));
+  const row = w.rows.find((r) => r.id === 'alpha/11');
+  row.state = 'working'; row.stage = 'working'; row.msg = 'Только что взялась за дело';
+  writeFileSync(f, JSON.stringify(w, null, 1));
+  const t = join(fixture, 'board', 'tasks', 'alpha', '11', 'task.json');
+  writeFileSync(t, readFileSync(t, 'utf8'));
+  check('a change of a task on the board reaches the phone through the long-poll', await waitFor('plannerSnap().tasks.find((x) => x.id === "alpha/11")?.status === "working"', 20000));
+  check('and the poll was asked (the stream was not)', await waitFor('window.__net.log.filter((u) => u.includes("/m/api/poll")).length >= 1', 30000));
+  row.state = 'idle'; row.stage = 'todo'; row.msg = '';
+  writeFileSync(f, JSON.stringify(w, null, 1));
+  writeFileSync(t, readFileSync(t, 'utf8'));
+  await waitFor('plannerSnap().tasks.find((x) => x.id === "alpha/11")?.status !== "working"', 20000);
+  check('the light projection has nothing of the computer: no paths, no sessions', await evalJs(`(async () => { const text = await (await fetch('/m/api/state')).text(); return !text.includes('/worktrees/') && !/"session":"[^"]/.test(text) && !text.includes(${JSON.stringify(fixture)}); })()`));
+
+  // a tablet: the list on the left, the chat always on the right
+  for (const mode of ['dark', 'light']) {
+    await openPhone(TABLET, mode);
+    const at = `tablet ${TABLET.join('×')} ${mode}`;
+    check(`${at}: the list and the chat stand side by side`, await waitFor(`(() => { const a = document.querySelector('#p-wait')?.getBoundingClientRect(); const b = document.querySelector('#p-chat')?.getBoundingClientRect(); return !!a && !!b && a.width > 250 && b.width > 350 && a.right <= b.left + 1 && Math.abs(a.top - b.top) < 4; })()`, 6000));
+    check(`${at}: the nav has the list tabs only and nothing scrolls sideways`, (await evalJs('document.querySelectorAll(".nav button").length')) === 2 && await noSideways(TABLET[0]));
+    check(`${at}: the chat fills the right side down to the line`, await evalJs(`(() => { const r = document.querySelector('#ask').getBoundingClientRect(); return r.bottom <= innerHeight && r.bottom > innerHeight - 140 && r.width > 350; })()`));
+    check(`${at}: the buttons are 44 px`, (await smallTargets()).length === 0, JSON.stringify(await smallTargets()));
+    await shot(`m-tablet-${mode}.png`);
+    await click('.nav [data-tab="board"]');
+    check(`${at}: the board takes the left side, the chat stays`, await waitFor('document.querySelectorAll("#p-board [data-row]").length >= 10 && document.querySelector("#p-chat").offsetParent !== null', 4000));
+    await shot(`m-tablet-board-${mode}.png`);
+  }
+
+  // the bundle: what m.html loads is small and has no three.js
+  const sizes = await evalJs(`(async () => { const html = await (await fetch('/m')).text(); const urls = [...new Set([...html.matchAll(/(?:src|href)="(\\/assets\\/[^"]+)"/g)].map((m) => m[1]))];
+    const out = []; for (const u of urls) { const r = await fetch(u); const b = await r.arrayBuffer(); const cs = new CompressionStream('gzip'); const z = new Blob([b]).stream().pipeThrough(cs); const n = (await new Response(z).arrayBuffer()).byteLength; out.push([u, b.byteLength, n]); } return out; })()`);
+  const gz = (sizes || []).reduce((n, x) => n + x[2], 0);
+  console.log(`   m.html loads ${sizes?.length} files, ${Math.round(gz / 1024)} KB gzipped`);
+  check('the light page loads under 160 KB gzipped', gz > 0 && gz < 160 * 1024, JSON.stringify(sizes));
+  check('and no three.js with it', (sizes || []).length > 0 && !(sizes || []).some((x) => /three/.test(x[0])) && (await evalJs(`(async () => { const html = await (await fetch('/m')).text(); const urls = [...html.matchAll(/(?:src|href)="(\\/assets\\/[^"]+\\.js)"/g)].map((m) => m[1]); for (const u of urls) { if ((await (await fetch(u)).text()).includes('WebGLRenderer')) return false; } return true; })()`)));
+  await backToDesk();
+  await navigate(base + '/?noauto&nocoach&bloom=0');
+}, { retry: true });
+
+section('light page actions', async () => {
+  await openPhone(PHONE, 'dark');
+  await waitFor('!!document.querySelector("[data-card=\'plan:alpha/3\']")', 8000);
+  // a plan is approved with two presses, like on the computer
+  await click(`${phoneCard('plan:alpha/3')} [data-act="approve"]`);
+  check('the first press only arms the button', await hasText(`${phoneCard('plan:alpha/3')} [data-act="approve"]`, 'Нажми ещё раз', 2000) && !calls().some((c) => c.argv[0] === 'approve' && c.argv[1] === 'alpha/3'), JSON.stringify(lastCall()));
+  await secondPress(`${phoneCard('plan:alpha/3')} [data-act="approve"]`);
+  check('the second press approves the plan on the board', await waitLog(() => calls().some((c) => c.argv[0] === 'approve' && c.argv[1] === 'alpha/3'), 15000), JSON.stringify(lastCall()));
+  check('and the card leaves the list', await waitFor(`!document.querySelector('${phoneCard('plan:alpha/3')}')`, 15000));
+  const journal = await evalJs('fetch("/api/state").then((r) => r.json()).then((s) => s.journal.map((j) => j.text).filter((x) => x.includes("с телефона")))');
+  check('the journal says it was done from the phone', Array.isArray(journal) && journal.some((x) => x.includes('ALP-3') || x.includes('alpha/3')), JSON.stringify(journal));
+  // a word to the agent of a failed task
+  await evalJs(`(() => { const i = document.querySelector('${phoneCard('failed:alpha/8')} textarea'); const d = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(i), 'value'); d.set.call(i, 'попробуй ещё раз с телефона'); i.dispatchEvent(new Event('input', { bubbles: true })); })()`);
+  await click(`${phoneCard('failed:alpha/8')} [data-act="tell"]`);
+  check('a word written on the phone reaches the agent', await waitLog(() => calls().some((c) => c.argv[0] === 'tell' && c.argv[1] === 'alpha/8' && c.argv[3] === 'попробуй ещё раз с телефона'), 15000), JSON.stringify(lastCall()));
+  await click(`${phoneCard('failed:alpha/8')} [data-act="retry"]`);
+  check('«Повторить» runs the retry', await waitLog(() => calls().some((c) => c.argv[0] === 'retry' && c.argv[1] === 'alpha/8'), 15000), JSON.stringify(lastCall()));
+  // the chat: a message goes to the Coordinator
+  await click('.nav [data-tab="chat"]');
+  await evalJs(`(() => { const i = document.querySelector('#ask-in'); const d = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(i), 'value'); d.set.call(i, 'привет с телефона'); i.dispatchEvent(new Event('input', { bubbles: true })); })()`);
+  check('the send button wakes up with the text', await waitFor('!document.querySelector("#send").disabled', 2000));
+  await click('#send');
+  check('the Coordinator gets the message typed on the phone', await waitLog(() => calls('coordinator.jsonl').some((c) => c.text === 'привет с телефона'), 15000), JSON.stringify(lastCall('coordinator.jsonl')));
+  check('the line is empty again', await waitFor('document.querySelector("#ask-in").value === ""', 4000));
+  await click('.nav [data-tab="chat"]');
+  await click('#cquick button');
+  check('a quick phrase is a message too', await waitLog(() => calls('coordinator.jsonl').some((c) => c.text === 'Что горит?'), 15000), JSON.stringify(lastCall('coordinator.jsonl')));
+  // a permission of an agent is answered with buttons, through the menu's own checks (the same screen the computer's cards read)
+  writeFileSync(join(fixture, 'state', 'dialog.txt'), readFileSync(new URL('../src/menu_samples/claude-permission.txt', import.meta.url), 'utf8'));
+  await click('.nav [data-tab="wait"]');
+  const perm = phoneCard('permission:alpha/16');
+  check('a permission shows what the agent asks, with allow, always and deny', await waitFor(`!!document.querySelector(${JSON.stringify(perm + ' [data-act="dlg-allow"]')})`, 15000)
+    && await hasText(perm + ' .perm', 'touch made-by-test.txt') && await exists(perm + ' [data-act="dlg-always"]') && await exists(perm + ' [data-act="dlg-deny"]'), (await text(perm)).slice(0, 200));
+  check('and the buttons are 44 px', (await smallTargets()).length === 0, JSON.stringify(await smallTargets()));
+  const kAllow = calls('keys.jsonl').length;
+  await click(perm + ' [data-act="dlg-allow"]');
+  check('«Разрешить» presses the yes row in the agent\'s panel', await waitLog(() => calls('keys.jsonl').slice(kAllow).some((c) => c.target === 'sw-alpha-16' && c.keys.join() === 'enter'), 10000), JSON.stringify(calls('keys.jsonl').slice(kAllow)));
+  check('the Coordinator is told it was done from the phone', await waitLog(() => calls('coordinator.jsonl').some((c) => String(c.text).includes('ALP-16') && String(c.text).includes('с телефона')), 15000), JSON.stringify(calls('coordinator.jsonl').slice(-2)));
+  // what the phone is not given stays out of reach of its page too: «anyway» is refused by the server
+  const refused = await post('/m/api/action', { action: 'anyway', id: 'alpha/5', confirm: true });
+  check('the phone\'s API refuses «anyway» and «stop»', refused[0] === 403 && (await post('/m/api/action', { action: 'stop', id: 'alpha/6' }))[0] === 403, JSON.stringify(refused));
+  await backToDesk();
+  await navigate(base + '/?noauto&nocoach&bloom=0');
 }, { retry: false });
 
 for (const [name, fn, opts] of sections) {
