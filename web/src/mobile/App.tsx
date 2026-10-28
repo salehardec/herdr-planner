@@ -45,6 +45,14 @@ function Header(): JSX.Element {
   );
 }
 
+/** A computer that lands on the light page only because the full version is closed to it: the page says so. */
+function FullNote(): JSX.Element | null {
+  const s = session.value;
+  if (s?.kind !== 'device' || s.form !== 'desktop' || s.view === 'lite') return null;
+  if (s.full !== 'closed' && s.full !== 'nopassword') return null;
+  return <div class="banner" id="fullnote" role="note">{t(`m.full.${s.full}`)}</div>;
+}
+
 function Nav(): JSX.Element {
   const waiting = listed(requests.value).length;
   const unread = unreadCount.value;
@@ -71,6 +79,7 @@ export function App(): JSX.Element {
     <div class="mob" data-ready={ready ? '1' : '0'}>
       <Header />
       {!live.value && ready && <div class="banner" id="offline" role="status">{t('m.offline')}</div>}
+      <FullNote />
       {ready ? (
         <div class="pages" data-tab={listTab.value}>
           <div class={`pane ${listTab.value === 'wait' ? 'on' : ''}`}><WaitPage /></div>

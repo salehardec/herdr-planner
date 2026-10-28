@@ -8,7 +8,8 @@
 //! - `Tunnel`: the peer is this machine, but a `Cf-*` header or the tunnel's address says it came through a tunnel.
 //!   Tunnel closed: 503 for everything. Open: only what the table allows for the device's standing (`devices.rs`):
 //!   nobody gets the sign-in page and the calls it makes, a device the owner let in the light version (and its API,
-//!   `/m/api/*`, see `mobile.rs`), and the full planner a device that was raised to it.
+//!   `/m/api/*`, see `mobile.rs`), and the full planner a device that was raised to it. Which of the two a device
+//!   lands on at `/` is `version.rs`'s business (the kind of machine, the person's own switch, the password).
 //! - `Direct`: the peer is another machine, or this machine's own reverse proxy (`X-Forwarded-For`…). The login and
 //!   TLS rules of the routes apply, as they always did; the gate lets it through.
 //! - `Foreign`: the peer is this machine, but the `Host` is not one of ours. That is a page whose name points at
@@ -19,10 +20,11 @@ use crate::auth::cookie_value;
 use crate::config::{now_ms, AppConfig};
 use crate::devices::Standing;
 use crate::server::error;
+use crate::version::{self, Choice, View};
 use axum::extract::{ConnectInfo, Request, State};
 use axum::http::{header, HeaderMap, Method, StatusCode, Uri};
 use axum::middleware::Next;
-use axum::response::Response;
+use axum::response::{IntoResponse, Redirect, Response};
 use std::net::{IpAddr, SocketAddr};
 use std::sync::RwLock;
 
@@ -53,8 +55,9 @@ use Access::{Full, Lite, Local, Public};
 /// client (404), and `policy_covers_every_route` fails until the new route is entered.
 pub const POLICY: &[(&str, Access)] = &[
     ("/", Full),
-    ("/login", Full),
-    ("/api/login", Full),
+    // The planner's own login is how a device gets the full version (`devices::raise_at`): the light version may use it.
+    ("/login", Lite),
+    ("/api/login", Lite),
     ("/api/logout", Full),
     ("/assets/{*path}", Lite),
     ("/favicon.svg", Lite),
@@ -64,6 +67,8 @@ pub const POLICY: &[(&str, Access)] = &[
     ("/g/redeem", Public),
     ("/g/status", Public),
     ("/g/cancel", Public),
+    // the hand switch between the light and the full version
+    ("/g/view", Lite),
     ("/api/state", Full),
     ("/api/summary", Full),
     ("/api/load", Full),
@@ -329,6 +334,9 @@ pub enum Verdict {
     SignInPage,
     /// 403: the path needs the full version, and this device has the light one.
     LiteOnly,
+    /// The planner's own page, for a device that is in: the version chooser says whether it is served or the device is
+    /// sent to the other one (`version::choose`).
+    Landing,
 }
 
 /// The tunnel's end of the gate: an HTTP request through Cloudflare carries `Cf-Visitor: {"scheme":"http"}` and
@@ -354,6 +362,7 @@ pub fn verdict(class: Class, tunnel_open: bool, headers: &HeaderMap, path: &str,
         Class::Tunnel if plain_http(headers) => Verdict::PlainHttp,
         Class::Tunnel => match (policy_of(path), standing) {
             (Some(Public), _) => Verdict::Pass,
+            (Some(Full), Standing::Lite | Standing::Full) if path == "/" => Verdict::Landing,
             (Some(Lite), Standing::Lite | Standing::Full) | (Some(Full), Standing::Full) => Verdict::Pass,
             (Some(Full), Standing::Lite) => Verdict::LiteOnly,
             // the planner's own page, and the light one: a device that is not in gets the sign-in page instead of a refusal
@@ -385,8 +394,35 @@ pub async fn middleware(State(app): State<Shared>, mut req: Request, next: Next)
     match verdict(class, open, req.headers(), req.uri().path(), standing) {
         // the routes behind the gate that care who is asking (the light page's API) read the class from here
         Verdict::Pass => {
+            if let Some(res) = switch_by_hand(&req) {
+                return res;
+            }
             req.extensions_mut().insert(class);
+            req.extensions_mut().insert(standing);
             next.run(req).await
+        }
+        Verdict::Landing => {
+            if let Some(res) = switch_by_hand(&req) {
+                return res;
+            }
+            let raised = standing == Standing::Full;
+            if req.method() != Method::GET && req.method() != Method::HEAD {
+                return if raised {
+                    next.run(req).await
+                } else {
+                    error(StatusCode::FORBIDDEN, "this device has the light version only")
+                };
+            }
+            let token = cookie_value(req.headers(), crate::devices::COOKIE).unwrap_or_default();
+            let form = app.devices.form_at(now_ms(), &token).unwrap_or_default();
+            match version::choose(form, version::preference(req.headers()), raised, crate::devices::can_full(&app)) {
+                Choice::Full => {
+                    req.extensions_mut().insert(class);
+                    req.extensions_mut().insert(standing);
+                    next.run(req).await
+                }
+                elsewhere => Redirect::to(elsewhere.path()).into_response(),
+            }
         }
         Verdict::Misdirected => error(
             StatusCode::MISDIRECTED_REQUEST,
@@ -401,6 +437,16 @@ pub async fn middleware(State(app): State<Shared>, mut req: Request, next: Next)
         Verdict::SignIn | Verdict::SignInPage => error(StatusCode::UNAUTHORIZED, "sign in"),
         Verdict::LiteOnly => error(StatusCode::FORBIDDEN, "this device has the light version only"),
     }
+}
+
+/// `?view=lite` or `?view=full` on the planner's page or the light one: the hand switch, in a link. The preference is
+/// remembered and the person goes to that version (the chooser looks at the rest on the next request).
+fn switch_by_hand(req: &Request) -> Option<Response> {
+    if req.method() != Method::GET || !matches!(req.uri().path(), "/" | "/m") {
+        return None;
+    }
+    let word = req.uri().query()?.split('&').find_map(|p| p.strip_prefix("view="))?;
+    View::parse(word).map(version::switched)
 }
 
 /// A navigation of a browser (it asks for a page), not a call of a script.
@@ -673,16 +719,22 @@ mod tests {
         assert_eq!(verdict(Class::Tunnel, true, &none, "/assets/a.js", LiteDevice), Verdict::Pass);
         assert_eq!(verdict(Class::Tunnel, true, &none, "/g/status", LiteDevice), Verdict::Pass);
         assert_eq!(verdict(Class::Tunnel, true, &none, "/m", LiteDevice), Verdict::Pass);
-        for p in ["/", "/api/state", "/api/action", "/api/chat"] {
+        for p in ["/api/state", "/api/action", "/api/chat"] {
             assert_eq!(verdict(Class::Tunnel, true, &none, p, LiteDevice), Verdict::LiteOnly, "{p}");
+        }
+        // the planner's page: the choice of version decides whether it is served; the way to the full version is open
+        assert_eq!(verdict(Class::Tunnel, true, &none, "/", LiteDevice), Verdict::Landing);
+        for p in ["/login", "/api/login", "/g/view"] {
+            assert_eq!(verdict(Class::Tunnel, true, &none, p, LiteDevice), Verdict::Pass, "{p}");
         }
         for p in ["/api/limits", "/api/tunnel/session", "/api/memory"] {
             assert_eq!(verdict(Class::Tunnel, true, &none, p, LiteDevice), Verdict::Hidden, "{p}");
         }
         // the full version: the planner's routes, and still nothing that is for this machine only
-        for p in ["/", "/api/state", "/api/action", "/assets/a.js"] {
+        for p in ["/api/state", "/api/action", "/assets/a.js"] {
             assert_eq!(verdict(Class::Tunnel, true, &none, p, FullDevice), Verdict::Pass, "{p}");
         }
+        assert_eq!(verdict(Class::Tunnel, true, &none, "/", FullDevice), Verdict::Landing);
         for p in ["/api/task/terminal", "/api/runner/add", "/api/tunnel/close", "/api/tunnel/rotate", "/nope"] {
             assert_eq!(verdict(Class::Tunnel, true, &none, p, FullDevice), Verdict::Hidden, "{p}");
         }

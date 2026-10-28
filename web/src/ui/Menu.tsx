@@ -14,6 +14,9 @@ import { openShip, openStation } from './station-api';
 
 const open = signal(false);
 
+/** The light page is the phone's version; from another machine's browser (through the gate) the menu offers the way to it. */
+const onThisMachine = ['127.0.0.1', 'localhost', '::1', '[::1]'].includes(location.hostname);
+
 export function Menu(): JSX.Element {
   const s = snap.value;
   const close = (): void => { open.value = false; };
@@ -68,6 +71,7 @@ export function Menu(): JSX.Element {
           {item('up', t('menu.invertY'), () => { invertY.value = !invertY.value; persist(INVERT_KEY, invertY.value ? '1' : '0'); getWorld()?.setSensitivity(sensitivity.value, invertY.value); }, invertY.value)}
           <hr />
           {item('help', t('menu.help'), () => { panels.help.value = !panels.help.value; }, undefined, '?')}
+          {!onThisMachine && item('phone', t('menu.lite'), () => { location.href = '/g/view?v=lite'; })}
           {item('screen', s?.herdr.running ? t('menu.herdrOn') : t('menu.herdrOff'), () => { panels.herdr.value = !panels.herdr.value; })}
           {s?.auth.required && (
             <>

@@ -41,6 +41,11 @@ export interface Session {
   ends_ms?: number;
   gate_since_ms?: number;
   gate_closes_ms?: number;
+  /** What kind of machine the browser said it is, and whether it can have the full version (`src/version.rs`). */
+  form?: 'phone' | 'tablet' | 'desktop';
+  full?: 'yes' | 'login' | 'closed' | 'nopassword';
+  /** The person's own switch (the cookie `hp_view`). */
+  view?: 'lite' | 'full' | null;
 }
 export const session = signal<Session | null>(null);
 export async function loadSession(): Promise<void> {

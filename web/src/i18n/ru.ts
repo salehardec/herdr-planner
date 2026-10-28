@@ -27,6 +27,7 @@ export const ru: Record<string, string | string[]> = {
   'menu.language': 'Язык', 'menu.simple': 'Упрощённый режим', 'menu.notify': 'Уведомления и звук',
   'menu.sensitivity': 'Чувствительность мыши', 'menu.invertY': 'Инверсия вертикали', 'menu.help': 'Клавиши', 'menu.herdrOn': 'Herdr запущен',
   'menu.herdrOff': 'Herdr не запущен', 'menu.logout': 'Выйти',
+  'menu.lite': 'Лёгкая версия',
   'herdr.title': 'Планировщик работает отдельно от herdr.', 'herdr.running': 'и он сейчас запущен', 'herdr.notRunning': 'сейчас он не запущен',
   'herdr.text': 'Данные и действия идут напрямую в herdr-projects. Экран диалога и клавиши агента доступны только при запущенном herdr ({state}). Файлы открываются в yazi на машине с доской.',
   // чат
@@ -1052,4 +1053,11 @@ export const ru: Record<string, string | string[]> = {
   'm.logout': 'Выйти на этом устройстве', 'm.shut': 'Закрыть доступ для всех',
   'm.shutAgain': 'Нажми ещё раз — закрыть для всех', 'm.autoClose': 'Шлюз закроется сам через {left} без заходов.',
   'm.cloudflare': 'Cloudflare технически видит трафик.',
+  'm.fullVersion': 'Полная версия',
+  'm.version': 'Версия',
+  'm.full.yes': 'Это устройство уже вошло по паролю планировщика.',
+  'm.full.login': 'Понадобится пароль планировщика.',
+  'm.full.closed': 'Полная версия закрыта настройкой шлюза.',
+  'm.full.nopassword': 'Полной версии через шлюз нужен пароль планировщика: задайте его на компьютере.',
+  'm.full.local': 'Планировщик целиком, как на компьютере.',
 };
