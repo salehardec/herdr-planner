@@ -4,7 +4,7 @@
 use crate::app::{self, Shared};
 use crate::board;
 use crate::config::now_ms;
-use crate::server::{clip, client_is_local, error, same_origin};
+use crate::server::{clip, client_is_local, error, refuse_remote, same_origin};
 use crate::{models, search, subagents, taskmeta, translate};
 use axum::extract::{ConnectInfo, Query, State};
 use axum::http::{HeaderMap, StatusCode};
@@ -192,8 +192,23 @@ pub struct FsQuery {
     path: String,
 }
 
+#[cfg(test)]
+impl FsQuery {
+    pub(crate) fn for_path(path: &str) -> Self {
+        Self { path: path.into() }
+    }
+}
+
 /// `GET /api/fs/complete?path=`: folders for the path field.
-pub async fn fs_complete(State(app): State<Shared>, Query(q): Query<FsQuery>) -> Response {
+pub async fn fs_complete(
+    State(app): State<Shared>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    Query(q): Query<FsQuery>,
+) -> Response {
+    if let Some(refused) = refuse_remote(addr, &headers) {
+        return refused;
+    }
     if q.path.contains('\0') || q.path.len() > 1000 {
         return error(StatusCode::BAD_REQUEST, "bad path");
     }
