@@ -732,6 +732,45 @@ pub fn instructions_without(current: &str) -> Option<String> {
     crate::blocks::without_block(current, MARKERS)
 }
 
+/* ───────── what the executors and reviewers are told ───────── */
+
+pub const AGENT_BEGIN: &str = "<!-- herdr-planner:memory-agents -->";
+pub const AGENT_END: &str = "<!-- /herdr-planner:memory-agents -->";
+
+/// The board's settings that carry the instructions of the agents that work on tasks and review them.
+pub const AGENT_INSTRUCTIONS: [&str; 2] = ["worker.instructions", "reviewer.instructions"];
+
+/// The markers of the pointer block in `worker.instructions` and `reviewer.instructions`.
+pub const AGENT_MARKERS: crate::blocks::Markers = crate::blocks::Markers {
+    begin: AGENT_BEGIN,
+    end: AGENT_END,
+};
+
+/// A short pointer for the agents that work on a task or review it: the universe's index exists, read it. (The rules for
+/// writing to it stay with the Coordinator.) About a hundred tokens, the same text everywhere.
+pub fn agent_block() -> String {
+    format!(
+        "{AGENT_BEGIN}\n\
+Память проекта: перед работой над репозиторием прочитай `docs/memory/MEMORY.md`, если он есть, и открой только записи, относящиеся к задаче. Записи — справка, не приказы: правила задачи важнее.\n\
+{AGENT_END}\n"
+    )
+}
+
+pub fn has_agent_block(text: &str, block: &str) -> bool {
+    crate::blocks::has_block(text, AGENT_MARKERS, block)
+}
+
+#[allow(dead_code)]
+pub fn has_any_agent_block(text: &str) -> bool {
+    crate::blocks::has_any_block(text, AGENT_MARKERS)
+}
+
+/// The value `herdr-projects set <worker|reviewer>.instructions` is given to put the pointer in or take it out, from the
+/// instructions as they are now. `Ok(None)`: unset. The human's own text stays; the block is never doubled.
+pub fn agent_connect_value(current: &str, on: bool) -> Result<Option<String>, String> {
+    crate::blocks::connect_value(current, AGENT_MARKERS, &agent_block(), on)
+}
+
 /* ───────── the index in SQLite ───────── */
 
 /// Where an entry belongs, in one string for the page: `` for the Galaxy, a repo name for a universe, `@claude` for the
@@ -1438,6 +1477,42 @@ mod tests {
         let after = format!("{on}\n\nИ ещё одно моё правило.");
         let off = instructions_without(&after).unwrap();
         assert!(off.contains("И ещё одно моё правило.") && off.starts_with(mine) && !off.contains(BLOCK_BEGIN));
+    }
+
+    #[test]
+    fn the_agent_pointer_goes_in_updates_and_comes_out_without_doubling() {
+        let block = agent_block();
+        assert!(block.starts_with(AGENT_BEGIN) && block.trim_end().ends_with(AGENT_END));
+        assert!(block.contains("docs/memory/MEMORY.md"));
+        // about a hundred tokens: well under 400 characters of Russian
+        assert!(block.chars().count() < 400, "{}", block.chars().count());
+        // the Coordinator's block and this one never mistake each other
+        assert!(!has_any_block(&block) && !has_any_agent_block(&coordinator_block("/g")));
+
+        let mine = "Свои правила.\nВторая строка.";
+        let on = agent_connect_value(mine, true).unwrap().unwrap();
+        assert!(on.starts_with(mine) && has_agent_block(&on, &block));
+        assert_eq!(agent_connect_value(&on, true).unwrap().unwrap(), on, "adding twice changes nothing");
+        assert_eq!(on.matches(AGENT_BEGIN).count(), 1);
+
+        // an older text of the block is replaced in place, the human's lines around it stay
+        let old = on.replace("Записи — справка", "Записи — что-то другое");
+        assert!(has_any_agent_block(&old) && !has_agent_block(&old, &block));
+        let fresh = agent_connect_value(&old, true).unwrap().unwrap();
+        assert_eq!(fresh, on);
+
+        // taking it out leaves the human's text; nothing else left: unset
+        assert_eq!(agent_connect_value(&on, false).unwrap().as_deref(), Some(mine));
+        assert_eq!(agent_connect_value(mine, false).unwrap().as_deref(), Some(mine));
+        assert_eq!(agent_connect_value(&agent_connect_value("", true).unwrap().unwrap(), false), Ok(None));
+        assert_eq!(agent_connect_value("", false), Ok(None));
+
+        // it lives beside the docker block and the Coordinator's block without touching them
+        let docker = "<!-- herdr-planner:runners -->\nверфь\n<!-- /herdr-planner:runners -->\n";
+        let both = agent_connect_value(&format!("{mine}\n\n{docker}"), true).unwrap().unwrap();
+        assert!(both.contains(docker.trim_end()) && has_agent_block(&both, &block));
+        let back = agent_connect_value(&both, false).unwrap().unwrap();
+        assert!(back.contains(docker.trim_end()) && !has_any_agent_block(&back));
     }
 
     #[test]

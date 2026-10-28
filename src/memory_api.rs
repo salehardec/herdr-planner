@@ -40,27 +40,46 @@ pub const INSTRUCTIONS: &str = "coordinator.instructions";
 /// Files the board writes (its `AGENTS.md`, `rules.md`) are not touched.
 async fn connect_state(app: &Shared, galaxy_dir: &str) -> Value {
     let block = memory::coordinator_block(galaxy_dir);
+    let agent_block = memory::agent_block();
     match station::read_settings(&app.cfg, "").await {
         Ok(settings) => {
-            // «none» is what an unset setting says
-            let current = station::find(&settings, INSTRUCTIONS)
-                .filter(|s| s.from != "built in" && s.value.trim() != "none")
-                .map(|s| s.value.clone())
-                .unwrap_or_default();
+            let current = instructions_of(&settings, INSTRUCTIONS);
+            // The pointer for the executors and reviewers: a missing or older one makes the connection «stale», so an
+            // installation from before the pointer can bring it in with «Обновить блок».
+            let agents: Vec<Value> = memory::AGENT_INSTRUCTIONS
+                .iter()
+                .map(|name| {
+                    let cur = instructions_of(&settings, name);
+                    json!({"setting": name, "connected": memory::has_agent_block(&cur, &agent_block)})
+                })
+                .collect();
+            let agents_ok = agents.iter().all(|a| a["connected"] == true);
+            let coord_ok = memory::has_block(&current, &block);
             json!({
                 "setting": INSTRUCTIONS,
                 "block": block,
+                "agent_block": agent_block,
+                "agents": agents,
                 "current": current,
-                "connected": memory::has_block(&current, &block),
-                "stale": memory::has_any_block(&current) && !memory::has_block(&current, &block),
+                "connected": coord_ok,
+                "stale": (memory::has_any_block(&current) && !coord_ok) || (coord_ok && !agents_ok),
                 "error": "",
             })
         }
         Err(f) => json!({
-            "setting": INSTRUCTIONS, "block": block, "current": "", "connected": false, "stale": false,
+            "setting": INSTRUCTIONS, "block": block, "agent_block": agent_block, "agents": [],
+            "current": "", "connected": false, "stale": false,
             "error": f.message(),
         }),
     }
+}
+
+/// The own value of a board instruction setting («none» is what an unset setting says).
+fn instructions_of(settings: &[station::Setting], name: &str) -> String {
+    station::find(settings, name)
+        .filter(|s| s.from != "built in" && s.value.trim() != "none")
+        .map(|s| s.value.clone())
+        .unwrap_or_default()
 }
 
 /// Run by the refresh loop now and then: the tables of contents that hand-written files left behind. (The file watcher
@@ -953,16 +972,8 @@ pub struct ConnectBody {
     confirm: Option<bool>,
 }
 
-/// The instructions of the board as they are now (empty when the setting is not set).
-async fn current_instructions(app: &Shared) -> Result<String, Fail> {
-    let settings = station::read_settings(&app.cfg, "").await.map_err(Fail::refused)?;
-    Ok(station::find(&settings, INSTRUCTIONS)
-        .filter(|s| s.from != "built in" && s.value.trim() != "none")
-        .map(|s| s.value.clone())
-        .unwrap_or_default())
-}
-
-/// `POST /api/memory/connect`: puts the memory block into the board's `coordinator.instructions`, or takes it out.
+/// `POST /api/memory/connect`: puts the memory block into the board's `coordinator.instructions`, and the short pointer
+/// to `docs/memory/MEMORY.md` into `worker.instructions` and `reviewer.instructions`, or takes them out.
 /// Without `confirm` it only says what would change («было → стало»). With `confirm` and `expect` (what the card
 /// showed) it reads the instructions again first: if they are not the ones the human saw — an edit in the Station, the
 /// CLI or another tab — nothing is sent (409), so a newer text is never overwritten; otherwise the board's own `set`
@@ -973,10 +984,24 @@ pub async fn memory_connect(State(app): State<Shared>, headers: HeaderMap, Json(
     }
     let result = async {
         let block = memory::coordinator_block(&memory::galaxy_dir(&app.cfg).display().to_string());
-        let current = current_instructions(&app).await?;
+        let settings = station::read_settings(&app.cfg, "").await.map_err(Fail::refused)?;
+        let current = instructions_of(&settings, INSTRUCTIONS);
         let value = memory::connect_value(&current, &block, body.on).map_err(|e| Fail::new(422, e))?;
+        // the agents' pointer: (setting, was, now)
+        let mut agents = Vec::new();
+        for name in memory::AGENT_INSTRUCTIONS {
+            let was = instructions_of(&settings, name);
+            let now = memory::agent_connect_value(&was, body.on).map_err(|e| Fail::new(422, e))?;
+            agents.push((name, was, now));
+        }
+        let agents_json = |done: bool| -> Vec<Value> {
+            agents
+                .iter()
+                .map(|(name, was, now)| json!({"setting": name, "current": was, "now": now, "changed": done && now.as_deref() != Some(was.as_str())}))
+                .collect()
+        };
         if body.confirm != Some(true) {
-            return Ok(json!({"ok": true, "name": INSTRUCTIONS, "current": current, "now": value}));
+            return Ok(json!({"ok": true, "name": INSTRUCTIONS, "current": current, "now": value, "agents": agents_json(false)}));
         }
         let Some(expect) = body.expect.as_deref() else {
             return Err(Fail::new(400, "нужно показать «было → стало»: передайте expect"));
@@ -995,8 +1020,22 @@ pub async fn memory_connect(State(app): State<Shared>, headers: HeaderMap, Json(
         if !out.ok() {
             return Err(Fail::new(422, out.words()));
         }
+        // Idempotent: a setting that already is what it should be is not written again.
+        for (name, was, now) in &agents {
+            if now.as_deref().unwrap_or("") == was.as_str() {
+                continue;
+            }
+            let args: Vec<String> = match now {
+                Some(v) => vec!["set".into(), (*name).into(), v.clone()],
+                None => vec!["unset".into(), (*name).into()],
+            };
+            let out = station::board_run(&app.cfg, &args, station::BOARD_WAIT).await;
+            if !out.ok() {
+                return Err(Fail::new(422, out.words()));
+            }
+        }
         app::refresh(&app).await;
-        Ok(json!({"ok": true, "name": INSTRUCTIONS, "was": current, "now": value}))
+        Ok(json!({"ok": true, "name": INSTRUCTIONS, "was": current, "now": value, "agents": agents_json(true)}))
     }
     .await;
     match result {
