@@ -4216,6 +4216,8 @@ section('memory galaxy', async () => {
   check('the second press is the board\'s own `set coordinator.instructions`', await waitLog(() => setCalls('coordinator.instructions').length === setsBefore + 1, 10000), JSON.stringify(calls().slice(-1)));
   const afterOn = (await stationOf()).settings.find((x) => x.name === 'coordinator.instructions')?.value || '';
   check('the board has the human\'s text unchanged, then the block', afterOn.startsWith(humanRules) && afterOn.includes(BLOCK) && afterOn.split(BLOCK).length === 2, afterOn.slice(0, 80));
+  const agentPtr = async (name) => (await stationOf()).settings.find((x) => x.name === name)?.value || '';
+  check('the executors and reviewers get the one-line pointer to docs/memory, once, in worker and reviewer instructions', await waitFor('fetch("/api/station").then((r) => r.json()).then((d) => ["worker.instructions", "reviewer.instructions"].every((n) => { const v = d.settings.find((x) => x.name === n)?.value || ""; return v.split("<!-- herdr-planner:memory-agents -->").length === 2 && v.includes("docs/memory/MEMORY.md"); }))', 10000), (await agentPtr('worker.instructions')).slice(0, 120));
   check('and the panel says it is connected', await waitFor('(document.querySelector("#mem-connect")?.innerText || "").includes("подключена") && !(document.querySelector("#mem-connect")?.innerText || "").includes("не подключена")', 10000), await text('#mem-connect'));
   check('the board\'s own files are still untouched', boardFilesUntouched());
   // disconnect: back to exactly what the human wrote
@@ -4228,6 +4230,7 @@ section('memory galaxy', async () => {
   await waitFor('!!document.querySelector("#mem-change-confirm")', 10000);
   await twoPresses('#mem-change-confirm');
   check('the board has exactly the human\'s text again', await waitLog(() => setCalls('coordinator.instructions').length === setsBefore + 2, 10000) && await waitFor('fetch("/api/station").then((r) => r.json()).then((d) => d.settings.find((x) => x.name === "coordinator.instructions")?.value === ' + JSON.stringify(humanRules) + ')', 10000));
+  check('and the pointer is gone from the agents\' instructions', await waitFor('fetch("/api/station").then((r) => r.json()).then((d) => ["worker.instructions", "reviewer.instructions"].every((n) => !(d.settings.find((x) => x.name === n)?.value || "").includes("herdr-planner:memory-agents")))', 10000));
   await waitFor('!!document.querySelector("#mem-connect-toggle")', 10000);
   await click('#mem-connect-toggle');
   await waitFor('!!document.querySelector("#mem-change-confirm")', 10000);

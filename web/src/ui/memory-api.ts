@@ -30,8 +30,13 @@ export interface MemConnect {
   stale: boolean;
   current: string;
   block: string;
+  /** The short pointer to docs/memory for worker.instructions and reviewer.instructions. */
+  agent_block?: string;
+  agents?: { setting: string; connected: boolean }[];
   error: string;
 }
+
+export interface MemAgentChange { setting: string; current: string; now: string | null }
 
 export interface MemSuggestion {
   task: string;
@@ -187,8 +192,8 @@ export const sendMemory = async (repo: string, token: string, a: Accept = {}): P
 /** Switches the memory block in the board's `coordinator.instructions` on or off. Without `expect` it only previews
  *  (`current` → `now`, `now: null` means the setting would be unset); with `expect` (the text the card showed) it
  *  makes the change, unless the instructions are not those any more (409). */
-export const connectMemory = (on: boolean, expect?: string): Promise<{ current: string; now: string | null }> =>
-  post<{ current: string; now: string | null }>('/api/memory/connect', expect === undefined ? { on } : { on, expect, confirm: true });
+export const connectMemory = (on: boolean, expect?: string): Promise<{ current: string; now: string | null; agents: MemAgentChange[] }> =>
+  post<{ current: string; now: string | null; agents: MemAgentChange[] }>('/api/memory/connect', expect === undefined ? { on } : { on, expect, confirm: true });
 
 export const setSuggest = async (suggest: boolean): Promise<void> => {
   await post('/api/memory/settings', { suggest });
