@@ -45,9 +45,43 @@ pub struct AppConfig {
     /// Host names (`name` or `name:port`) a request may name besides this machine's own, e.g. the
     /// domain of a reverse proxy in front of the planner. Any other `Host` from this machine is refused.
     pub trusted_hosts: Vec<String>,
-    /// The fixed address of a named tunnel (`planner.example.org`): trusted as a `Host`, and a request
-    /// naming it is a tunnel request.
+    /// The fixed address of a named tunnel (`planner.example.org`): a request naming it is a tunnel request.
     pub tunnel_hostname: Option<String>,
+    /// Which tunnel the gate opens: a quick one (a random `*.trycloudflare.com`) or the owner's own, named one.
+    pub tunnel_mode: TunnelMode,
+    /// The `cloudflared` config of the owner's named tunnel (`~/.cloudflared/herdr-planner.yml`). The planner reads
+    /// only the `ingress` host names from it, never the credentials it points to.
+    pub tunnel_config: Option<PathBuf>,
+    /// The `cloudflared` program (a name or a path), when it is not in the usual places.
+    pub tunnel_bin: Option<String>,
+}
+
+/// `tunnel.mode` in `config.toml`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum TunnelMode {
+    /// `cloudflared tunnel --url …`: no domain, a new random address at every start.
+    #[default]
+    Quick,
+    /// `cloudflared --config <file> tunnel run`: a tunnel made earlier with `cloudflared tunnel create`, a fixed address.
+    Named,
+}
+
+impl TunnelMode {
+    pub fn parse(text: &str) -> Option<Self> {
+        match text.trim().to_lowercase().as_str() {
+            "quick" => Some(Self::Quick),
+            "named" => Some(Self::Named),
+            _ => None,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Quick => "quick",
+            Self::Named => "named",
+        }
+    }
 }
 
 pub fn home() -> PathBuf {
@@ -98,6 +132,9 @@ struct FileConfig {
 #[serde(default)]
 struct TunnelFile {
     hostname: Option<String>,
+    mode: Option<String>,
+    config: Option<String>,
+    bin: Option<String>,
 }
 
 fn parse_file(text: &str) -> FileConfig {
@@ -195,6 +232,9 @@ impl AppConfig {
                 .filter_map(|h| clean_host(h))
                 .collect(),
             tunnel_hostname: file.tunnel.hostname.as_deref().and_then(clean_host),
+            tunnel_mode: file.tunnel.mode.as_deref().and_then(TunnelMode::parse).unwrap_or_default(),
+            tunnel_config: file.tunnel.config.as_deref().map(str::trim).filter(|v| !v.is_empty()).map(expand_home),
+            tunnel_bin: file.tunnel.bin.map(|v| v.trim().to_string()).filter(|v| !v.is_empty()),
         }
     }
 
@@ -272,6 +312,11 @@ pub fn set_live_projects_dir(dir: PathBuf) {
     if let Ok(mut g) = LIVE_PROJECTS_DIR.write() {
         *g = Some(dir);
     }
+}
+
+/// The host name of a tunnel as the settings and the gate write it (see `clean_host`).
+pub fn tunnel_host(text: &str) -> Option<String> {
+    clean_host(text)
 }
 
 /// A host name as written in the settings, lower case: `https://Planner.example.org/` and
@@ -372,6 +417,26 @@ pub fn set_values(config_file: &Path, values: Vec<(&str, toml::Value)>) -> Resul
     })
 }
 
+/// Writes the `[tunnel]` table of `config.toml` (mode, the cloudflared config of a named tunnel, its address) and keeps
+/// the table's other keys and the rest of the file. An empty `config`/`hostname` removes the key.
+pub fn set_tunnel(config_file: &Path, mode: TunnelMode, config: &str, hostname: &str) -> Result<(), String> {
+    edit_config(config_file, |doc| {
+        let mut table = match doc.remove("tunnel") {
+            Some(toml::Value::Table(t)) => t,
+            _ => toml::map::Map::new(),
+        };
+        table.insert("mode".into(), toml::Value::String(mode.as_str().into()));
+        for (key, value) in [("config", config.trim()), ("hostname", hostname.trim())] {
+            if value.is_empty() {
+                table.remove(key);
+            } else {
+                table.insert(key.into(), toml::Value::String(value.into()));
+            }
+        }
+        doc.insert("tunnel".into(), toml::Value::Table(table));
+    })
+}
+
 /// Argon2id PHC string for the password.
 pub fn hash_password(password: &str) -> Result<String, String> {
     use argon2::password_hash::{rand_core::OsRng, PasswordHasher, SaltString};
@@ -433,6 +498,29 @@ mod tests {
         assert_eq!(f.tunnel.hostname.as_deref().and_then(clean_host).as_deref(), Some("planner.yanao.su"));
         let none = parse_file("port = 1\n");
         assert!(none.trusted_hosts.is_empty() && none.tunnel.hostname.is_none());
+    }
+
+    #[test]
+    fn the_tunnel_table_has_a_mode_a_config_and_an_address() {
+        let f = parse_file("[tunnel]\nmode = \"Named\"\nconfig = \" ~/.cloudflared/herdr-planner.yml \"\nhostname = \"planner.yanao.su\"\nbin = \"\"\n");
+        assert_eq!(f.tunnel.mode.as_deref().and_then(TunnelMode::parse), Some(TunnelMode::Named));
+        assert_eq!(f.tunnel.config.as_deref().map(str::trim), Some("~/.cloudflared/herdr-planner.yml"));
+        assert_eq!(TunnelMode::parse("anything else"), None, "an unknown mode falls back to the default, quick");
+        assert_eq!(TunnelMode::default(), TunnelMode::Quick);
+    }
+
+    #[test]
+    fn the_tunnel_table_is_edited_without_losing_other_keys() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        fs::write(&path, "port = 7333\n[tunnel]\nhostname = \"old.example.org\"\nbin = \"/opt/cloudflared\"\n").unwrap();
+        set_tunnel(&path, TunnelMode::Named, "/home/me/.cloudflared/x.yml", "").unwrap();
+        let f = parse_file(&fs::read_to_string(&path).unwrap());
+        assert_eq!(f.port, Some(7333));
+        assert_eq!(f.tunnel.mode.as_deref(), Some("named"));
+        assert_eq!(f.tunnel.config.as_deref(), Some("/home/me/.cloudflared/x.yml"));
+        assert_eq!(f.tunnel.hostname, None, "an empty address removes the key");
+        assert_eq!(f.tunnel.bin.as_deref(), Some("/opt/cloudflared"), "other keys of the table stay");
     }
 
     #[test]

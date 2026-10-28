@@ -45,6 +45,7 @@ mod strays_api;
 mod subagents;
 mod taskmeta;
 mod translate;
+mod tunnel;
 mod watch;
 #[cfg(test)]
 mod testutil;
@@ -220,6 +221,10 @@ async fn main() {
     let app = app::App::new(cfg.clone());
     // The first read happens before the socket opens: the page never starts empty.
     refresh(&app).await;
+    // A cloudflared that a crash of the last run left behind would keep a tunnel to nobody open.
+    if let Some(pid) = tunnel::reap_orphan(&app.cfg).await {
+        eprintln!("herdr-planner: stopped the cloudflared (pid {pid}) a previous run left behind");
+    }
     let _watch = watch::start(app.clone());
     spawn_loops(app.clone());
 
@@ -237,7 +242,7 @@ async fn main() {
         if cfg.tls().is_some() { "on" } else { "off" }
     );
 
-    let router = server::router(app);
+    let router = server::router(app.clone());
     if let Some((cert, key)) = cfg.tls() {
         let tls = match axum_server::tls_rustls::RustlsConfig::from_pem_file(cert, key).await {
             Ok(t) => t,
@@ -246,7 +251,17 @@ async fn main() {
                 std::process::exit(1);
             }
         };
+        // This branch used to end only with the process; the tunnel has to be stopped on the way out, so the signal is
+        // listened to here too, and the server is asked to wind down.
+        let handle = axum_server::Handle::new();
+        let stopper = handle.clone();
+        let for_signal = app.clone();
+        tokio::spawn(async move {
+            shutdown_signal(for_signal).await;
+            stopper.graceful_shutdown(Some(Duration::from_secs(2)));
+        });
         if let Err(e) = axum_server::bind_rustls(addr, tls)
+            .handle(handle)
             .serve(router.into_make_service_with_connect_info::<SocketAddr>())
             .await
         {
@@ -265,7 +280,7 @@ async fn main() {
             listener,
             router.into_make_service_with_connect_info::<SocketAddr>(),
         )
-        .with_graceful_shutdown(shutdown_signal())
+        .with_graceful_shutdown(shutdown_signal(app))
         .await
         {
             eprintln!("herdr-planner: {e}");
@@ -347,7 +362,9 @@ fn spawn_loops(app: Shared) {
     });
 }
 
-async fn shutdown_signal() {
+/// Waits for SIGTERM or Ctrl-C, arms the exit and stops the tunnel's `cloudflared`. The tunnel goes here, before the
+/// forced `exit(0)` that follows two seconds after the signal, in the HTTP and in the TLS branch alike.
+async fn shutdown_signal(app: Shared) {
     let ctrl_c = async {
         let _ = tokio::signal::ctrl_c().await;
     };
@@ -364,4 +381,5 @@ async fn shutdown_signal() {
         tokio::time::sleep(Duration::from_secs(2)).await;
         std::process::exit(0);
     });
+    tunnel::shutdown(&app).await;
 }

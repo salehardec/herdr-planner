@@ -215,6 +215,8 @@ pub struct App {
     pub auth: crate::auth::Auth,
     /// Who a request comes from: this machine, a tunnel, another machine, or a page that is none of them.
     pub gate: crate::gate::Gate,
+    /// The `cloudflared` the gate opens and closes.
+    pub tunnel: crate::tunnel::Tunnel,
     pub chat: Mutex<ChatState>,
     pub journal: Mutex<Journal>,
     pub details: Mutex<HashMap<String, (u64, Details)>>,
@@ -367,6 +369,7 @@ impl App {
         snapshot.runners = runners.clone();
         snapshot.runner_block = runner_block.clone();
         let gate = crate::gate::Gate::new(&cfg);
+        let tunnel = crate::tunnel::Tunnel::new(&cfg);
         Arc::new(Self {
             cfg,
             db,
@@ -376,6 +379,7 @@ impl App {
             snapshot: RwLock::new(snapshot),
             auth,
             gate,
+            tunnel,
             chat: Mutex::new(chat),
             journal: Mutex::new(journal),
             details: Mutex::new(HashMap::new()),

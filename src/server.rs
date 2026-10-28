@@ -138,6 +138,10 @@ pub fn router(app: Shared) -> Router {
         .route("/api/station/preset/preview", post(station::station_preset_preview))
         .route("/api/station/preset/apply", post(station::station_preset_apply))
         .route("/api/ship", get(ship::ship_get).post(ship::ship_post))
+        .route("/api/tunnel", get(crate::tunnel::tunnel_get))
+        .route("/api/tunnel/open", post(crate::tunnel::tunnel_open))
+        .route("/api/tunnel/close", post(crate::tunnel::tunnel_close))
+        .route("/api/tunnel/config", post(crate::tunnel::tunnel_config))
         .route("/api/logout", post(api_logout))
         .route_layer(middleware::from_fn_with_state(
             app.clone(),

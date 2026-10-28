@@ -436,6 +436,31 @@ tailscale serve --bg 7117      # HTTPS-адрес вида https://<машина
 поэтому подделать заголовок снаружи нельзя). Без пароля доступ получит каждый в вашей tailnet, так что пароль обязателен.
 Адрес прокси надо внести в `trusted_hosts` (`trusted_hosts = ["<машина>.<tailnet>.ts.net"]`), иначе ворота ответят `421`.
 
+**Шлюз: туннель Cloudflare** (`src/tunnel.rs`). Планировщик сам запускает и останавливает свой `cloudflared`; пока туннель
+закрыт, всё из туннеля получает `503`, а ссылки и вход придут позже (сессии и страница входа — следующие задачи плана). Два режима,
+`[tunnel] mode` в `config.toml`:
+
+```toml
+[tunnel]
+mode = "quick"        # быстрый, без домена: *.trycloudflare.com, адрес новый при каждом запуске (по умолчанию)
+# mode = "named"      # свой, уже созданный туннель с постоянным адресом
+# config = "~/.cloudflared/herdr-planner.yml"
+# hostname = "planner.yanao.su"
+# bin = "/путь/к/cloudflared"   # если его нет в $PATH, ~/.local/bin, /usr/local/bin, /opt/homebrew/bin, /usr/bin
+```
+
+- **quick**: `cloudflared --config ~/.cloudflared/quick-empty.yml tunnel --url http://127.0.0.1:<порт>`; адрес берётся из метрик
+  (`/quicktunnel`), готовность — по `/ready`. Без SSE.
+- **named**: `cloudflared --config <config> tunnel run`. Туннель и запись DNS вы создаёте сами (`cloudflared tunnel create`,
+  `cloudflared tunnel route dns`) — планировщик их не создаёт и не удаляет, а только запускает и останавливает свой процесс. Адрес
+  `hostname` сверяется с `ingress` из конфига (без `hostname` берётся первый оттуда); нет файла или в нём нет `hostname` — туннель не
+  запускается и говорит почему. Если такой туннель уже запущен вручную (с тем же `--config`, без `--config` при том же конфиге по умолчанию, или `tunnel run <имя из `tunnel:` конфига>`), планировщик показывает это и второй не запускает. SSE работает.
+  Файл учётных данных (`credentials-file`) и `cert.pem` не читаются и не попадают в журнал.
+
+Управление — только с самой машины: `GET /api/tunnel`, `POST /api/tunnel/open`, `/close`, `/config`. Автоперезапуска нет (новый
+запуск — новый адрес в режиме quick). Процесс гаснет вместе с планировщиком (в том числе по SIGTERM в режиме TLS); оставшийся после
+сбоя `cloudflared` следующий запуск останавливает по pid-файлу `~/.local/state/herdr-planner/cloudflared.pid`. Процессы читаются из `/proc`, на macOS (где его нет) — через `ps`.
+
 ### Память Галактики
 
 Долговременная память, которая переживает сжатие и смену Координатора и **не зависит от
@@ -668,7 +693,7 @@ herdr и [herdr-projects](https://github.com/eliasstravik/herdr-projects) раб
 
 Настройки `config.toml` (все ключи необязательны): `listen`, `port` (7117), `data`, `user`, `password_hash`, `tls_cert`, `tls_key`,
 `translator` (`claude/<модель>` или `omp/<модель>`), `projects_dir` (`~/Projects`), `trusted_hosts` (список имён, см. ниже),
-`[tunnel] hostname` (постоянный адрес именованного туннеля). Приоритет: аргументы
+`[tunnel] mode / config / hostname / bin` (шлюз, см. выше). Приоритет: аргументы
 `--listen/--port/--data`, затем `HERDR_PLANNER_LISTEN`, `HERDR_PLANNER_PORT`, `HERDR_PROJECTS_DATA_DIR`, затем конфиг. Переменные
 `HERDR_PROJECTS_BIN`, `HERDR_BIN`, `HERDR_PLANNER_CLAUDE`, `HERDR_PLANNER_GH`, `HERDR_PLANNER_GLAB` подменяют программы (так
 работают проверки).
