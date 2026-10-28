@@ -154,6 +154,8 @@ pub fn router(app: Shared) -> Router {
         .route("/favicon.svg", get(dist_root_file))
         .route("/favicon.ico", get(|| async { StatusCode::NO_CONTENT }))
         .merge(protected)
+        // The gate is the outermost layer but one: no route runs before it has said who is asking.
+        .layer(middleware::from_fn_with_state(app.clone(), crate::gate::middleware))
         .layer(middleware::from_fn(headers_middleware))
         .with_state(app)
 }

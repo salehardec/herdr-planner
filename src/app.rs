@@ -213,6 +213,8 @@ pub struct App {
     pub poke: Notify,
     pub snapshot: RwLock<Snapshot>,
     pub auth: crate::auth::Auth,
+    /// Who a request comes from: this machine, a tunnel, another machine, or a page that is none of them.
+    pub gate: crate::gate::Gate,
     pub chat: Mutex<ChatState>,
     pub journal: Mutex<Journal>,
     pub details: Mutex<HashMap<String, (u64, Details)>>,
@@ -364,6 +366,7 @@ impl App {
             .unwrap_or_default();
         snapshot.runners = runners.clone();
         snapshot.runner_block = runner_block.clone();
+        let gate = crate::gate::Gate::new(&cfg);
         Arc::new(Self {
             cfg,
             db,
@@ -372,6 +375,7 @@ impl App {
             poke: Notify::new(),
             snapshot: RwLock::new(snapshot),
             auth,
+            gate,
             chat: Mutex::new(chat),
             journal: Mutex::new(journal),
             details: Mutex::new(HashMap::new()),
