@@ -14,6 +14,7 @@ mod coordinator;
 mod crew;
 mod db;
 mod events;
+mod gate;
 mod gitlag;
 mod hints;
 mod history;

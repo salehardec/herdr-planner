@@ -42,6 +42,12 @@ pub struct AppConfig {
     pub ssh_bin: String,
     /// Where a repository added by address is cloned (`~/Projects`).
     pub projects_dir: PathBuf,
+    /// Host names (`name` or `name:port`) a request may name besides this machine's own, e.g. the
+    /// domain of a reverse proxy in front of the planner. Any other `Host` from this machine is refused.
+    pub trusted_hosts: Vec<String>,
+    /// The fixed address of a named tunnel (`planner.example.org`): trusted as a `Host`, and a request
+    /// naming it is a tunnel request.
+    pub tunnel_hostname: Option<String>,
 }
 
 pub fn home() -> PathBuf {
@@ -84,6 +90,14 @@ struct FileConfig {
     tls_key: Option<String>,
     translator: Option<String>,
     projects_dir: Option<String>,
+    trusted_hosts: Vec<String>,
+    tunnel: TunnelFile,
+}
+
+#[derive(Debug, Default, serde::Deserialize)]
+#[serde(default)]
+struct TunnelFile {
+    hostname: Option<String>,
 }
 
 fn parse_file(text: &str) -> FileConfig {
@@ -175,6 +189,12 @@ impl AppConfig {
                 .filter(|v| !v.trim().is_empty())
                 .map(|v| expand_home(&v))
                 .unwrap_or_else(|| home().join("Projects")),
+            trusted_hosts: file
+                .trusted_hosts
+                .iter()
+                .filter_map(|h| clean_host(h))
+                .collect(),
+            tunnel_hostname: file.tunnel.hostname.as_deref().and_then(clean_host),
         }
     }
 
@@ -252,6 +272,15 @@ pub fn set_live_projects_dir(dir: PathBuf) {
     if let Ok(mut g) = LIVE_PROJECTS_DIR.write() {
         *g = Some(dir);
     }
+}
+
+/// A host name as written in the settings, lower case: `https://Planner.example.org/` and
+/// `planner.example.org` are the same entry; an empty one is none.
+fn clean_host(text: &str) -> Option<String> {
+    let t = text.trim().to_lowercase();
+    let t = t.strip_prefix("https://").or_else(|| t.strip_prefix("http://")).unwrap_or(&t);
+    let t = t.split('/').next().unwrap_or("").trim_end_matches('.');
+    (!t.is_empty()).then(|| t.to_string())
 }
 
 pub fn listen_is_loopback(listen: &str) -> bool {
@@ -392,6 +421,18 @@ mod tests {
         assert_eq!(f.tls_cert.as_deref(), Some("/c"));
         assert_eq!(expand_home("~/p"), home().join("p"));
         assert!(f.tls_key.is_none());
+    }
+
+    #[test]
+    fn trusted_hosts_and_the_tunnel_address_are_read_and_cleaned() {
+        let f = parse_file(
+            "trusted_hosts = [\"Planner.LAN\", \"https://box.example.org:8443/x\", \"  \", \"a.b.\"]\n[tunnel]\nhostname = \"https://Planner.Yanao.Su/\"\n",
+        );
+        let hosts: Vec<String> = f.trusted_hosts.iter().filter_map(|h| clean_host(h)).collect();
+        assert_eq!(hosts, ["planner.lan", "box.example.org:8443", "a.b"]);
+        assert_eq!(f.tunnel.hostname.as_deref().and_then(clean_host).as_deref(), Some("planner.yanao.su"));
+        let none = parse_file("port = 1\n");
+        assert!(none.trusted_hosts.is_empty() && none.tunnel.hostname.is_none());
     }
 
     #[test]
