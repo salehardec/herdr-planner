@@ -350,6 +350,25 @@ async fn a_device_that_is_in_reads_the_projection() {
 }
 
 #[tokio::test]
+async fn the_light_page_is_for_a_device_that_is_in_and_a_stranger_gets_the_sign_in_page() {
+    let g = Gate::open(false).await;
+    let (status, head, body) = g.ask("GET", "/m", None).await;
+    assert_eq!(status, 200, "{body}");
+    assert!(head.to_lowercase().contains("text/html"), "{head}");
+    assert!(body.contains("id=\"app\"") && !body.contains("__MODE__") && !body.contains("/g/gate.js"), "{body}");
+    // nobody in: the sign-in page, which knows nothing of the planner
+    let none = [("Host", ADDRESS), ("Cf-Ray", "x"), ("Cf-Visitor", "{\"scheme\":\"https\"}")];
+    let (status, _, body) = ask(g.addr, "GET", "/m", &none, None).await;
+    assert_eq!(status, 200);
+    assert!(body.contains("/g/gate.js") && !body.contains("id=\"app\""), "{body}");
+    // from this machine with a password set: the planner's own login
+    let g = Gate::open(true).await;
+    let (status, head, _) = ask(g.addr, "GET", "/m", &[("Host", "localhost")], None).await;
+    assert_eq!(status, 303, "{head}");
+    assert!(head.contains("/login?next=/m"), "{head}");
+}
+
+#[tokio::test]
 async fn a_stranger_gets_nothing_from_the_phones_api() {
     let g = Gate::open(false).await;
     let none = [("Host", ADDRESS), ("Cf-Ray", "x"), ("Cf-Visitor", "{\"scheme\":\"https\"}")];

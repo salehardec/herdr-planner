@@ -16,7 +16,7 @@ use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
 use axum::middleware::{self, Next};
 use axum::response::{Html, IntoResponse, Redirect, Response};
 use axum::routing::{get, post};
-use axum::{Json, Router};
+use axum::{Extension, Json, Router};
 use serde::Deserialize;
 use serde_json::json;
 use std::collections::HashSet;
@@ -173,6 +173,9 @@ pub fn router(app: Shared) -> Router {
     Router::new()
         .route("/", get(index))
         .route("/login", get(login_page))
+        // The light page for a phone (`mobile.rs` is its API). Through the gate a device that is in gets it; anybody else
+        // gets the sign-in page instead, before this handler runs.
+        .route("/m", get(mobile_page))
         .route("/api/login", post(api_login))
         // The Omarchy bar widget is local and has no login cookie; any other
         // caller must be logged in (and with no login set up, nobody else is let in).
@@ -237,6 +240,29 @@ async fn index(State(app): State<Shared>, headers: HeaderMap) -> Response {
     }
     match Dist::get("index.html") {
         Some(f) => Html(String::from_utf8_lossy(&f.data).into_owned()).into_response(),
+        None => error(StatusCode::NOT_FOUND, "the page is not built"),
+    }
+}
+
+/// `/m`: the light page. A request that came through the tunnel has been judged by the gate already; from this machine
+/// or the network the planner's own login applies, as to the full page.
+async fn mobile_page(State(app): State<Shared>, class: Option<Extension<crate::gate::Class>>, headers: HeaderMap) -> Response {
+    let through_gate = matches!(class, Some(Extension(crate::gate::Class::Tunnel)));
+    if !through_gate && !authed(&app, &headers) {
+        return Redirect::to("/login?next=/m").into_response();
+    }
+    let (css, mode) = {
+        let snap = app.snapshot.read().await;
+        (theme_css(&snap.theme), snap.theme.mode.clone())
+    };
+    // The board's colours go in as a <style> after the bundled stylesheet, so the first frame is already in them.
+    match Dist::get("m.html") {
+        Some(f) => Html(
+            String::from_utf8_lossy(&f.data)
+                .replace("__MODE__", &mode)
+                .replace("</head>", &format!("<style id=\"board-theme\">{css}</style></head>")),
+        )
+        .into_response(),
         None => error(StatusCode::NOT_FOUND, "the page is not built"),
     }
 }

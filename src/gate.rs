@@ -152,6 +152,7 @@ pub const POLICY: &[(&str, Access)] = &[
     ("/api/tunnel/session", Local),
     ("/api/tunnel/settings", Local),
     // The light page's own API: a narrow slice of the planner's, for a device that is in (`mobile.rs`).
+    ("/m", Lite),
     ("/m/api/state", Lite),
     ("/m/api/poll", Lite),
     ("/m/api/chat", Lite),
@@ -355,8 +356,8 @@ pub fn verdict(class: Class, tunnel_open: bool, headers: &HeaderMap, path: &str,
             (Some(Public), _) => Verdict::Pass,
             (Some(Lite), Standing::Lite | Standing::Full) | (Some(Full), Standing::Full) => Verdict::Pass,
             (Some(Full), Standing::Lite) => Verdict::LiteOnly,
-            // the planner's own page: a device that is not in gets the sign-in page instead of a refusal
-            (Some(Full), _) if path == "/" => Verdict::SignInPage,
+            // the planner's own page, and the light one: a device that is not in gets the sign-in page instead of a refusal
+            (Some(Full | Lite), _) if path == "/" || path == "/m" => Verdict::SignInPage,
             (Some(Full | Lite), _) => Verdict::SignIn,
             (Some(Local) | None, _) => Verdict::Hidden,
         },
@@ -657,19 +658,21 @@ mod tests {
         // open, nobody in: the sign-in page and its calls, and nothing else
         for who in [Nobody, Waiting] {
             assert_eq!(verdict(Class::Tunnel, true, &none, "/", who), Verdict::SignInPage);
+            assert_eq!(verdict(Class::Tunnel, true, &none, "/m", who), Verdict::SignInPage);
             for p in ["/g/redeem", "/g/status", "/g/gate.js", "/g/cancel"] {
                 assert_eq!(verdict(Class::Tunnel, true, &none, p, who), Verdict::Pass, "{p}");
             }
             for p in ["/api/state", "/api/action", "/assets/a.js", "/favicon.svg", "/login"] {
                 assert_eq!(verdict(Class::Tunnel, true, &none, p, who), Verdict::SignIn, "{p}");
             }
-            for p in ["/api/limits", "/api/task/terminal", "/api/tunnel", "/api/tunnel/rotate", "/api/tunnel/session", "/api/tunnel/settings", "/nope", "/m"] {
+            for p in ["/api/limits", "/api/task/terminal", "/api/tunnel", "/api/tunnel/rotate", "/api/tunnel/session", "/api/tunnel/settings", "/nope"] {
                 assert_eq!(verdict(Class::Tunnel, true, &none, p, who), Verdict::Hidden, "{p}");
             }
         }
         // a device that is in with the light version: what the light page uses, not the planner
         assert_eq!(verdict(Class::Tunnel, true, &none, "/assets/a.js", LiteDevice), Verdict::Pass);
         assert_eq!(verdict(Class::Tunnel, true, &none, "/g/status", LiteDevice), Verdict::Pass);
+        assert_eq!(verdict(Class::Tunnel, true, &none, "/m", LiteDevice), Verdict::Pass);
         for p in ["/", "/api/state", "/api/action", "/api/chat"] {
             assert_eq!(verdict(Class::Tunnel, true, &none, p, LiteDevice), Verdict::LiteOnly, "{p}");
         }
@@ -802,7 +805,7 @@ mod tests {
                 match (access, method, *pattern) {
                     (Local, _, _) => assert_eq!(status, 404, "{method} {pattern}: {body}"),
                     // the planner's page is the sign-in page for a stranger
-                    (_, "GET", "/") => {
+                    (_, "GET", "/" | "/m") => {
                         assert_eq!(status, 200, "{body}");
                         assert!(body.contains("/g/gate.js") && !body.contains("herdr-projects"), "{body}");
                     }
@@ -812,7 +815,7 @@ mod tests {
                 }
             }
         }
-        for path in ["/api/tunnel", "/api/tunnel/open", "/m", "/nope"] {
+        for path in ["/api/tunnel", "/api/tunnel/open", "/nope"] {
             let (status, _) = ask(addr, "GET", path, &[("Host", "planner.example.org"), ("Cf-Ray", "x"), https]).await;
             assert_eq!(status, 404, "{path}");
         }
