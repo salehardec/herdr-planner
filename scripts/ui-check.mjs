@@ -5240,8 +5240,8 @@ section('runners', async () => {
   await twoPresses('#r-connect');
   check('the block reaches this machine’s agent instructions', await waitLog(() => { try { const t = readFileSync(join(fixture, 'state', 'board-settings.json'), 'utf8'); return t.includes('herdr-planner:runners') && t.includes('me@192.0.2.29') && !t.includes('herdr.galaxy'); } catch { return false; } }, 20000), 'board-settings');
   check('the yard journal keeps the rule block connection', await waitApi('/api/runner/log?id=vm-r&kind=rules', (r) => r.ok && r.entries.some((e) => e.data?.on === true && e.who === 'human')), await evalJs('fetch("/api/runner/log?id=vm-r&kind=rules").then((x) => x.json()).then((r) => JSON.stringify(r.entries))'));
-  check('and it carries the yard’s limits: the docker run and compose examples, the containers’ maximum',
-    (() => { try { const t = readFileSync(join(fixture, 'state', 'board-settings.json'), 'utf8'); return t.includes('--cpus 3 --memory 3g') && t.includes('docker run -d --name pg-PLN-26') && t.includes('deploy:') && t.includes('не больше одного контейнера на задачу'); } catch { return false; } })(),
+  check('and it carries the yard’s limits in one line: the flags, the containers’ maximum, no examples',
+    (() => { try { const t = readFileSync(join(fixture, 'state', 'board-settings.json'), 'utf8'); return t.includes('--cpus 3 --memory 3g') && t.includes('deploy.resources.limits') && !t.includes('docker run -d --name pg-PLN-26') && t.includes('не больше одного контейнера на задачу'); } catch { return false; } })(),
     (() => { try { return readFileSync(join(fixture, 'state', 'board-settings.json'), 'utf8').match(/Лимиты[^\n]*/)?.[0] || ''; } catch { return ''; } })());
   check('no copy of the block goes to another machine', (() => { try { return !readFileSync(join(fixture, 'state', 'vm-a-settings.json'), 'utf8').includes('herdr-planner:runners'); } catch { return true; } })());
   // Which yard a task gets (PLN-45): the Focus names it; a repository rule is written, its block names the yard, and

@@ -2239,10 +2239,10 @@ pub fn block_text(file: &RunnersFile) -> String {
     let mut s = String::from(BLOCK_BEGIN);
     s.push('\n');
     s.push_str(&format!(
-        "Docker-контейнеры (базы, стенды, заглушки, прокси и т.п.) не запускай на этой машине: используй верфь {} — export DOCKER_HOST=ssh://{} (вход по SSH-ключу уже настроен; проверка: {}). Порты контейнеров открываются на {}, не на localhost.\n",
+        "Docker-контейнеры не запускай на этой машине: верфь {} — export DOCKER_HOST=ssh://{} (проверка: {}). Порты — на {}, не на localhost.\n",
         def.id, def_target, check, host_of(def)
     ));
-    s.push_str("Каждому контейнеру, сети и тому давай имя с id своей задачи (например pg-PLN-26) и метку --label herdr.task=PLN-26; для docker compose — имя проекта с id задачи (docker compose -p pln-26 …) и та же метка в labels каждого сервиса; после себя всегда останавливай и удаляй их (docker rm -f -v, docker network rm, docker volume rm, docker compose -p pln-26 down -v), даже если работа прервалась.\n");
+    s.push_str("Контейнеру, сети и тому давай имя с id задачи (pg-PLN-26) и --label herdr.task=PLN-26 (compose: -p pln-26 и метка в labels каждого сервиса). После себя всегда удаляй всё (docker rm -f -v, docker network rm, docker volume rm, docker compose -p pln-26 down -v), даже если работа прервалась.\n");
     let def_limits = def.effective_limits(None);
     if let Some(limits) = limits_paragraph(&def_limits) {
         s.push_str(&limits);
@@ -2282,17 +2282,11 @@ pub fn block_text(file: &RunnersFile) -> String {
             .join(", ");
         s.push_str(&format!("Ещё верфи: {list}.\n"));
     }
-    if file.busy_pct > 0 {
-        s.push_str(&format!(
-            "Верфь считается занятой, когда её нагрузка (load1) не ниже {} % числа ядер; тогда берётся следующая подходящая, а если заняты все — наименее загруженная. Порог задаётся в настройках верфи, 0 — не проверять.\n",
-            file.busy_pct
-        ));
-    }
     if !file.assign.is_empty() || !file.need.is_empty() || !file.tasks.is_empty() {
-        s.push_str("Верфь задачи задаётся правилом задачи или её репозитория (метки gpu, arch или конкретная верфь): такое правило идёт отдельным блоком ниже, с запасными верфями; без правила верфь — по умолчанию.\n");
+        s.push_str("Если у задачи или её репозитория есть правило верфи (метки или конкретная верфь), оно идёт отдельным блоком ниже; без правила — верфь по умолчанию.\n");
     }
     s.push_str(&format!(
-        "Если верфь не отвечает — не запускай контейнеры здесь, а остановись: herdr-projects report <id> --state blocked --kind permission --msg \"Верфь <метка> не отвечает\". Метка — из блока задачи или репозитория, иначе {}.\n",
+        "Верфь не отвечает — остановись: herdr-projects report <id> --state blocked --kind permission --msg \"Верфь <метка> не отвечает\" (метка — из блока задачи или репозитория, иначе {}).\n",
         def.id
     ));
     s.push_str(BLOCK_END);
@@ -2418,27 +2412,14 @@ fn limits_words(l: &Limits) -> String {
 }
 
 /// The paragraph of the agents' rule about the limits of a task's container (PLN-43), or `None` when the yard asks
-/// for none. The examples carry the very values of the rule: `docker run` and one compose service.
+/// for none. The flags are the very values of the rule; compose is named in a few words, with no file shown (PLN-68).
 fn limits_paragraph(l: &Limits) -> Option<String> {
     if !l.any() {
         return None;
     }
-    let mut flags: Vec<String> = Vec::new();
-    let mut yaml = String::new();
-    if l.cpus > 0 {
-        flags.push(format!("--cpus {}", l.cpu_text()));
-        yaml.push_str(&format!("          cpus: \"{}\"\n", l.cpu_text()));
-    }
-    if l.mem_mb > 0 {
-        flags.push(format!("--memory {}", l.mem_text()));
-        yaml.push_str(&format!("          memory: {}\n", l.mem_text()));
-    }
-    let flags = flags.join(" ");
     Some(format!(
-        "Лимиты контейнера задачи: {words}. Так: docker run -d --name pg-PLN-26 --label herdr.task=PLN-26 {flags} postgres:16. В compose — те же значения каждому сервису:\n```yaml\nservices:\n  db:\n    image: postgres:16\n    labels: [\"herdr.task=PLN-26\"]\n    deploy:\n      resources:\n        limits:\n{yaml}```\nКонтейнер задачи без этих лимитов помечается в «Фокусе» верфи.\n",
-        words = limits_words(l),
-        flags = flags,
-        yaml = yaml
+        "Лимиты контейнера задачи: {} (compose: deploy.resources.limits).\n",
+        limits_words(l)
     ))
 }
 
@@ -3362,13 +3343,57 @@ mod tests {
         assert!(block.contains("buildx_*, neighbor") || block.contains("buildx_*, neighbor"));
         // Without a word in the list the rule carries the fallback's numbers (a yard not read yet).
         assert!(block.contains("--cpus 2 --memory 2g"), "{block}");
-        assert!(block.contains("docker run -d --name pg-PLN-26 --label herdr.task=PLN-26 --cpus 2 --memory 2g"), "{block}");
-        assert!(block.contains("deploy:") && block.contains("cpus: \"2\"") && block.contains("memory: 2g"), "{block}");
+        assert!(block.contains("deploy.resources.limits"), "{block}");
+        assert!(!block.contains("```"), "no compose file in the block: {block}");
         assert!(!block.contains("на задачу"), "no maximum is asked for: none is mentioned");
         let on = connect_value("Мои правила.", &block, true).unwrap().unwrap();
         assert!(on.starts_with("Мои правила.") && on.contains(BLOCK_BEGIN));
         assert_eq!(connect_value(&on, &block, false).unwrap().as_deref(), Some("Мои правила."));
         assert!(has_old_docker_paragraph("Мои правила.\n\nСтавьте DOCKER_HOST=ssh://x сюда.\n"));
+    }
+
+    /// PLN-68: the block goes to every worker and every review round, so its size is watched. It was 2393 bytes for
+    /// this very list (one yard, the limits 4/4g, three masks, the busy threshold 85 %).
+    #[test]
+    fn the_block_stays_short_and_keeps_every_rule() {
+        let file = RunnersFile {
+            default: "app-semantics".into(),
+            busy_pct: 85,
+            runners: vec![Runner {
+                id: "app-semantics".into(),
+                target: "app-semantics".into(),
+                ports_host: "10.31.21.29".into(),
+                tags: vec![],
+                protected: vec!["buildx_*".into(), "gigam-server-*".into(), "supabase".into()],
+                note: String::new(),
+                added_at_ms: 0,
+                capacity: None,
+                auto: AutoClean::default(),
+                alerts: Default::default(),
+                limits: Some(Limits { cpus: 4, mem_mb: 4096, per_task: 0 }),
+                busy_pct: None,
+                check_cpus: None,
+                check_slots: None,
+            }],
+            ..RunnersFile::default()
+        };
+        let block = block_text(&file);
+        assert!(block.len() <= 1200, "{} bytes: {block}", block.len());
+        for rule in [
+            "export DOCKER_HOST=ssh://app-semantics",
+            "10.31.21.29",
+            "pg-PLN-26",
+            "--label herdr.task=PLN-26",
+            "docker compose -p pln-26 down -v",
+            "docker rm -f -v",
+            "даже если работа прервалась",
+            "--cpus 4 --memory 4g",
+            "Чужие контейнеры (buildx_*, gigam-server-*, supabase) не трогай",
+            "herdr-projects report <id> --state blocked --kind permission",
+        ] {
+            assert!(block.contains(rule), "{rule}: {block}");
+        }
+        assert!(!block.contains("```") && !block.contains("load1"), "{block}");
     }
 
     #[test]
@@ -3400,9 +3425,7 @@ mod tests {
             ..RunnersFile::default()
         };
         let block = block_text(&file);
-        assert!(block.contains("Лимиты контейнера задачи: --cpus 4 --memory 1536m, не больше 2 контейнеров на задачу."), "{block}");
-        assert!(block.contains("docker run -d --name pg-PLN-26 --label herdr.task=PLN-26 --cpus 4 --memory 1536m postgres:16"), "{block}");
-        assert!(block.contains("cpus: \"4\"") && block.contains("memory: 1536m"), "{block}");
+        assert!(block.contains("Лимиты контейнера задачи: --cpus 4 --memory 1536m, не больше 2 контейнеров на задачу (compose"), "{block}");
         assert!(block.contains("vm-g (ssh://me@192.0.2.30, порты 192.0.2.30; лимиты: --cpus 1 --memory 1g)"), "{block}");
         assert!(!block.contains("vm-h (ssh://me@192.0.2.31, порты 192.0.2.31; лимиты"), "the same share as the default yard: no words wasted");
         // A yard whose human asked for no limits at all: no paragraph, no mark promise.
@@ -3414,7 +3437,6 @@ mod tests {
         let block = block_text(&none);
         assert!(!block.contains("--cpus"), "{block}");
         assert!(!block.contains("--memory"), "{block}");
-        assert!(!block.contains("Фокусе"), "{block}");
     }
 
     #[test]
@@ -3443,7 +3465,7 @@ mod tests {
         assert!(block.contains("DOCKER_HOST=ssh://me@192.0.2.29:2222"), "{block}");
         assert!(block.contains("ssh -p 2222 -o BatchMode=yes me@192.0.2.29 true"), "{block}");
         assert!(!block.contains("BatchMode=yes me@192.0.2.29:2222"), "{block}");
-        assert!(block.contains("открываются на 192.0.2.29"), "{block}");
+        assert!(block.contains("Порты — на 192.0.2.29"), "{block}");
         let m = MachineRef {
             label: "vm-r".into(),
             target: "me@192.0.2.29:2222".into(),
@@ -3820,11 +3842,11 @@ mod tests {
         file.tasks.insert("alpha/7".into(), TaskRule { runner: String::new(), tags: vec!["tpu".into()] });
         let block = scope_block_text(&file, &states, "alpha", Some("alpha/7"));
         assert!(block.contains("нет подходящей верфи") && block.contains("tpu"), "{block}");
-        // The global block tells the agent that such blocks exist and how busy is counted.
+        // The global block tells the agent that such blocks exist; how busy is counted stays with the blocks and the station.
         file.need.insert("alpha".into(), vec!["gpu".into()]);
         let global = block_text(&file);
-        assert!(global.contains("Верфь задачи задаётся правилом"), "{global}");
-        assert!(global.contains("85 % числа ядер"), "{global}");
+        assert!(global.contains("правило верфи") && global.contains("отдельным блоком ниже"), "{global}");
+        assert!(!global.contains("load1"), "which yard is busy is the station's business, not the agent's: {global}");
     }
 
     #[test]
