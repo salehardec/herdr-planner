@@ -100,6 +100,10 @@ export const ru: Record<string, string | string[]> = {
   'reason.yard': 'верфь', 'reason.coordinator': 'координатор', 'reason.memory': 'память',
   'req.showReviewer': 'Показать экран ревьюера', 'req.screenHint': 'Содержимое диалога доска не отдаёт: его читает herdr.', 'req.reading': 'читаю экран…',
   'req.refreshScreen': 'Обновить экран',
+  // кто сейчас на задаче
+  'seat.reviewer': 'ревью', 'seat.who.reviewer': 'Ревьюер', 'seat.who.worker': 'Исполнитель',
+  'seat.nobody': 'не назван', 'seat.tookOver': 'передано запасному', 'seat.open': 'Открыть терминал в herdr',
+  'seat.opened': 'Открыт терминал в herdr: {name}',
   // экран агента
   'screen.title': 'Экран агента', 'screen.reviewer': 'Экран ревьюера', 'screen.keys': 'Клавиши агента',
   'screen.updated': 'Обновлено в {at}', 'screen.updatedTip': 'Время последнего обновления: пока окно открыто, экран обновляется сам',

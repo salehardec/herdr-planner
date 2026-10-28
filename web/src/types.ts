@@ -27,6 +27,14 @@ export interface Subagent {
   note: string;
 }
 
+/** Who is on a task now: the reviewer while it is under review, the working agent while it works. */
+export interface Seat {
+  role: 'reviewer' | 'worker';
+  program: string;
+  model: string;
+  took_over: boolean;
+}
+
 export interface Task {
   id: string;
   repo: string;
@@ -61,6 +69,7 @@ export interface Task {
   key: string;
   subagents: Subagent[];
   subagents_note: string;
+  seat?: Seat | null;
 }
 
 export interface Link {

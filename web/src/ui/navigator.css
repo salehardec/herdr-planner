@@ -13,6 +13,12 @@
 /* the status of a task is the glyph before its name and a short word after it; the whole text is in the tooltip. The name takes the rest. */
 .ti .meta.st{max-width:5.5rem}
 .ti.planet .lab{min-width:6rem}
+/* a task with a seat keeps its name a little over 10 rem wide; the chip gives way and ends in «…» (the whole text is in its tooltip) */
+.ti.planet.seated .lab{min-width:10.4rem;flex:1 0 10.4rem}
+.ti .meta.seat{flex:0 1 auto;overflow:hidden;text-overflow:ellipsis}
+/* who is on the task: «ревью · pi/k3.1-pro», a button into that agent's terminal in herdr */
+.ti .meta.seat{display:inline-block;max-width:62%;min-width:3rem;padding:0 0.375rem;height:1.125rem;font:inherit;font-size:0.6562rem;color:var(--pl-dim);background:transparent;border:1px solid var(--pl-line);border-radius:0.5rem;cursor:pointer;white-space:nowrap}
+.ti .meta.seat:hover,.ti .meta.seat:focus-visible{color:var(--pl-title);border-color:var(--pl-accent);background:color-mix(in srgb,var(--pl-accent) 14%,transparent)}
 .ti .cnt{color:var(--pl-faint);font-size:0.6562rem;border:1px solid var(--pl-line);border-radius:0.5rem;padding:0 0.3125rem;flex:none}
 .ti .cnt.hot,.ti.attn>.cnt{color:var(--c-yellow);border-color:color-mix(in srgb,var(--c-yellow) 40%,var(--pl-line))}
 .ti .lag{color:var(--c-yellow);font-size:0.6562rem;border:1px solid color-mix(in srgb,var(--c-yellow) 40%,transparent);border-radius:0.5rem;padding:0 0.3125rem;flex:none}

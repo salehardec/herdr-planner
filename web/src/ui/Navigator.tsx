@@ -6,6 +6,8 @@ import { buildTree, type NavNode } from './navtree';
 import { Gl } from './Gl';
 import { t } from '../i18n';
 import { navigateTo } from '../nav';
+import { openTerminal } from '../actions';
+import { seatLabel, seatTip } from '../seat';
 import { Grip } from './Grip';
 import { openAddUniverse } from './AddUniverse';
 import { openAddRunner } from './AddRunner';
@@ -94,7 +96,7 @@ export function Navigator(): JSX.Element {
             <div
               key={n.key} role="treeitem" tabIndex={focusKey.value === n.key || (!focusKey.value && sel) ? 0 : -1}
               data-nav={n.key} data-kind={n.kind} aria-selected={sel} aria-expanded={n.expandable ? n.open : undefined}
-              class={`ti ${n.kind} ${n.status ? `s-${n.status}` : ''} ${sel ? 'sel' : ''} ${here ? 'here' : ''} ${n.dim ? 'dim' : ''} ${n.attention ? 'attn' : ''}`}
+              class={`ti ${n.kind} ${n.status ? `s-${n.status}` : ''} ${sel ? 'sel' : ''} ${here ? 'here' : ''} ${n.dim ? 'dim' : ''} ${n.seat ? 'seated' : ''} ${n.attention ? 'attn' : ''}`}
               style={`padding-left:${(6 + n.depth * 14) / 16}rem`} title={tip(n)}
               onFocus={() => { focusKey.value = n.key; }}
               onClick={() => activate(n)}
@@ -106,7 +108,13 @@ export function Navigator(): JSX.Element {
               <span class="lab">{n.label}{n.sub && n.kind !== 'planet' ? <em>{n.sub}</em> : null}</span>
               {n.count !== undefined && <span class="cnt">{n.count}</span>}
               {n.badge ? <span class={n.kind === 'universe' ? 'lag' : 'cnt hot'}>{n.badge}</span> : null}
-              {n.kind === 'planet' && n.status && n.status !== 'done' ? <span class="meta st">{shortStatus(n)}</span> : null}
+              {n.kind === 'planet' && n.seat && n.entity ? (
+                <button
+                  class={`meta st seat ${n.seat.role}`} type="button" data-seat={n.seat.role} title={seatTip(n.seat)}
+                  onClick={(e) => { e.stopPropagation(); if (n.seat && n.entity) void openTerminal(n.entity.id, n.seat); }}
+                  onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') e.stopPropagation(); }}
+                >{seatLabel(n.seat)}</button>
+              ) : n.kind === 'planet' && n.status && n.status !== 'done' ? <span class="meta st">{shortStatus(n)}</span> : null}
               {n.kind === 'moon' && n.sub ? <span class="meta">{n.sub}</span> : null}
               {n.kind === 'galaxy' && n.sub ? <span class="meta">{n.sub}</span> : null}
             </div>

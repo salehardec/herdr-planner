@@ -69,6 +69,7 @@ pub fn router(app: Shared) -> Router {
         .route("/api/details", get(api_details))
         .route("/api/coordinator/screen", get(api_coordinator_screen))
         .route("/api/action", post(api_action))
+        .route("/api/task/terminal", post(api_task_terminal))
         .route("/api/menu/answer", post(crate::menu_api::menu_answer))
         .route("/api/chat", post(api_chat))
         .route("/api/chat/history", get(api_chat_history))
@@ -460,7 +461,7 @@ async fn api_coordinator_screen(
     Query(q): Query<ScreenQuery>,
 ) -> Response {
     let target = q.target.as_deref().unwrap_or("coordinator");
-    let name = match agent_name(target, q.role.as_deref()) {
+    let name = match agent_for(&app, target, q.role.as_deref()).await {
         Ok(name) => name,
         Err(e) => return error(StatusCode::BAD_REQUEST, e),
     };
@@ -507,6 +508,103 @@ async fn api_coordinator_screen(
         "ansi": if colored { tail } else { String::new() },
     }))
     .into_response()
+}
+
+#[derive(Deserialize)]
+struct TerminalBody {
+    task: String,
+    /// `reviewer` for the reviewer's terminal; the working agent's otherwise.
+    role: Option<String>,
+}
+
+/// Why a task's terminal could not be opened, in words for the person: herdr's own error says only that the agent is not found.
+fn terminal_failure(role: Option<&str>, name: &str, said: &str) -> String {
+    let who = if role == Some("reviewer") { "ревьюера" } else { "исполнителя" };
+    if said.contains("not_found") || said.contains("not found") || said.contains("no such agent") {
+        let why = if role == Some("reviewer") {
+            "ревью, видимо, уже закончилось или ещё не началось"
+        } else {
+            "агент ушёл или ещё не запущен"
+        };
+        return format!("В herdr нет терминала {who} ({name}): {why}");
+    }
+    format!("herdr не открыл терминал {who} ({name}): {said}")
+}
+
+/// herdr's own rule for an agent's name: `[a-z][a-z0-9_-]{0,31}`.
+fn herdr_name(name: &str) -> bool {
+    let b = name.as_bytes();
+    !b.is_empty() && b.len() <= 32 && b[0].is_ascii_lowercase() && b.iter().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, b'_' | b'-'))
+}
+
+/// The name herdr knows a task's agent by: the one the board kept on the task (`link.agent`, `link.reviewer.agent`),
+/// which is not always `sw-<repo>-<n>` (the board shortens a long repo name, folds odd characters and tells two equal
+/// names apart). Without a kept name, the board's own way of making it.
+fn terminal_name(task: &str, role: Option<&str>, meta: Option<&crate::taskmeta::TaskMeta>) -> String {
+    let reviewer = role == Some("reviewer");
+    let kept = meta.map(|m| if reviewer { &m.link_reviewer } else { &m.link_agent });
+    if let Some(name) = kept.filter(|n| herdr_name(n)) {
+        return name.clone();
+    }
+    let base = meta.map(|m| m.link_agent.as_str()).filter(|n| herdr_name(n)).map(str::to_string).unwrap_or_else(|| {
+        let repo: String = board::repo_of(task)
+            .to_lowercase()
+            .chars()
+            .map(|c| if c.is_ascii_lowercase() || c.is_ascii_digit() { c } else { '-' })
+            .take(16)
+            .collect();
+        format!("sw-{repo}-{}", board::number_of(task))
+    });
+    if reviewer {
+        format!("{base}-r").chars().take(32).collect()
+    } else {
+        base
+    }
+}
+
+/// The name to ask herdr for: the Coordinator's, or the one the board kept for a task's agent (see `terminal_name`).
+pub(crate) async fn agent_for(app: &Shared, target: &str, role: Option<&str>) -> Result<String, String> {
+    let name = agent_name(target, role)?;
+    if target == "coordinator" {
+        return Ok(name);
+    }
+    let (repo, n) = (board::repo_of(target).to_string(), board::number_of(target));
+    let data_dir = app.cfg.data_dir.clone();
+    let meta = tokio::task::spawn_blocking(move || crate::taskmeta::read_task(&data_dir, &repo, n))
+        .await
+        .ok()
+        .flatten();
+    Ok(terminal_name(target, role, meta.as_ref()))
+}
+
+/// Brings a task's agent terminal to the front in herdr: its workspace, tab and pane get the focus.
+async fn api_task_terminal(
+    State(app): State<Shared>,
+    headers: HeaderMap,
+    Json(body): Json<TerminalBody>,
+) -> Response {
+    if !same_origin(&headers) {
+        return error(StatusCode::FORBIDDEN, "cross-origin request refused");
+    }
+    let role = body.role.as_deref();
+    if body.task == "coordinator" || !board::valid_id(&body.task) || !body.task.contains('/') {
+        return error(StatusCode::BAD_REQUEST, "not a task id");
+    }
+    let name = match agent_for(&app, &body.task, role).await {
+        Ok(name) => name,
+        Err(e) => return error(StatusCode::BAD_REQUEST, e),
+    };
+    if !app.cfg.herdr_socket.exists() {
+        return error(StatusCode::CONFLICT, "herdr не запущен: открыть терминал негде");
+    }
+    let wait = Duration::from_secs(8);
+    if let Err(e) = run_herdr(&["agent", "get", &name], wait).await {
+        return error(StatusCode::CONFLICT, terminal_failure(role, &name, &e));
+    }
+    if let Err(e) = run_herdr(&["agent", "focus", &name], wait).await {
+        return error(StatusCode::BAD_GATEWAY, terminal_failure(role, &name, &e));
+    }
+    Json(json!({"ok": true, "name": name})).into_response()
 }
 
 /// `sw-coordinator` for the Coordinator, `sw-<repo>-<n>` for a task's agent.
@@ -1328,7 +1426,7 @@ async fn api_action(
         }
         "keys" => {
             let target = body.target.as_deref().unwrap_or("coordinator");
-            let name = match agent_name(target, body.role.as_deref()) {
+            let name = match agent_for(&app, target, body.role.as_deref()).await {
                 Ok(name) => name,
                 Err(e) => return error(StatusCode::BAD_REQUEST, e),
             };
@@ -1786,6 +1884,39 @@ mod tests {
         assert_eq!(clip_tail_to(one_line, 15), "…");
         // A whole tail of one line that is only text still keeps its end.
         assert_eq!(clip_tail_to("abcdefghij".into(), 4), "…ghij");
+    }
+
+    #[test]
+    fn a_terminal_is_found_by_the_name_the_board_kept() {
+        use crate::taskmeta::TaskMeta;
+        let kept = TaskMeta {
+            link_agent: "sw-a-very-long-rep-7-3f2a".into(),
+            link_reviewer: "sw-a-very-long-rep-7-3f2a-r".into(),
+            ..TaskMeta::default()
+        };
+        assert_eq!(terminal_name("A_very_long_repo_name/7", None, Some(&kept)), "sw-a-very-long-rep-7-3f2a");
+        assert_eq!(terminal_name("A_very_long_repo_name/7", Some("reviewer"), Some(&kept)), "sw-a-very-long-rep-7-3f2a-r");
+        // a reviewer name the board made apart from the worker's (a clash) is taken as it is
+        let clash = TaskMeta { link_agent: "sw-alpha-7".into(), link_reviewer: "sw-alpha-7-r-4821".into(), ..TaskMeta::default() };
+        assert_eq!(terminal_name("alpha/7", Some("reviewer"), Some(&clash)), "sw-alpha-7-r-4821");
+        // nothing kept: the board's own way (lower case, odd characters folded, 16 characters, the reviewer's name cut at 32)
+        assert_eq!(terminal_name("My_Repo.x/12", None, None), "sw-my-repo-x-12");
+        assert_eq!(terminal_name("A_very_long_repo_name/7", None, None), "sw-a-very-long-repo-7");
+        assert_eq!(terminal_name("alpha/7", Some("reviewer"), None), "sw-alpha-7-r");
+        // a kept name that herdr would not take as a name is not passed on as an argument
+        let bad = TaskMeta { link_agent: "--all".into(), ..TaskMeta::default() };
+        assert_eq!(terminal_name("alpha/7", None, Some(&bad)), "sw-alpha-7");
+    }
+
+    #[test]
+    fn a_terminal_that_is_not_there_is_said_plainly() {
+        let said = r#"{"error":{"code":"agent_not_found","message":"agent target sw-alpha-7-r not found"}}"#;
+        let m = terminal_failure(Some("reviewer"), "sw-alpha-7-r", said);
+        assert!(m.contains("нет терминала ревьюера (sw-alpha-7-r)") && m.contains("ревью"), "{m}");
+        let m = terminal_failure(None, "sw-alpha-7", "no such agent: sw-alpha-7");
+        assert!(m.contains("нет терминала исполнителя") && m.contains("агент ушёл"), "{m}");
+        let m = terminal_failure(None, "sw-alpha-7", "herdr: no answer in 8s");
+        assert!(m.contains("не открыл терминал исполнителя") && m.contains("no answer in 8s"), "{m}");
     }
 
     #[test]
