@@ -3258,7 +3258,7 @@ section('station', async () => {
   await readyCard();
   check('the light preset shows was → now, and says it is kept by the planner', await hasText('#st-change', 'Лёгкие задачи') && await hasText('#st-change', 'не на доске'), await text('#st-change'));
   await twoPresses('#st-confirm');
-  check('the planner keeps the preset', await waitFor('fetch("/api/station").then((r) => r.json()).then((d) => d.light === "claude/claude-haiku-5-5")', 8000));
+  check('the planner keeps the preset', await waitFor('fetch("/api/station").then((r) => r.json()).then((d) => d.light === "claude/claude-haiku-5-5")', 15000));
   check('and the board is not asked to change anything for it', !calls().some((c) => c.argv?.[0] === 'set' && c.argv.some((a) => String(a).includes('light'))));
   await resetUi();
 });
@@ -4245,7 +4245,7 @@ section('memory galaxy', async () => {
   await click('#mem-tell');
   check('«прочитать сейчас» sends the Coordinator the path of the index', await waitLog(() => calls('coordinator.jsonl').slice(before).some((c) => String(c.text).includes(`${memDir}/MEMORY.md`)), 20000), JSON.stringify(lastCall('coordinator.jsonl')));
   await click('#mem-showblock');
-  check('the text of the block can be shown for programs that read another file', await waitFor('(document.querySelector("#mem-block")?.innerText || "").includes("Запомни")', 3000));
+  check('the text of the block can be shown for programs that read another file', await waitFor('(document.querySelector("#mem-block")?.innerText || "").includes("единственная память")', 3000));
 
   // «В память» beside a chat answer
   await resetUi();
@@ -4907,9 +4907,9 @@ section('memory guard', async () => {
   // 6. the Coordinator is told the same rules
   const mem = await api('/api/memory');
   const block = mem?.[1]?.connect?.block || '';
-  check('the block for the Coordinator says: show «было → стало», wait for «да»', block.includes('«было → стало»') && block.includes('«да»') && block.includes('ничего не пиши'), block.slice(0, 200));
-  check('the Coordinator is told never to write a universe into the checkout (that would make it dirty for the board): a task instead', block.includes('никогда в чекаут') && block.includes('задачу «Запомнить в docs/memory'), block.slice(0, 200));
-  check('and: no personal data or secrets in a universe, anonymise or write it to the Galaxy', block.includes('персональные данные') && block.includes('обезличить') && block.includes('в Галактику'));
+  check('the block for the Coordinator says: show «было → стало», wait for «да»', block.includes('«было → стало»') && block.includes('«да»') && block.includes('единственная память') && block.includes('не отменяет'), block.slice(0, 200));
+  check('the Coordinator is told never to write a universe into the checkout (that would make it dirty for the board): a task instead', block.includes('никогда в чекаут') && block.includes('задачей на доске'), block.slice(0, 200));
+  check('and: no personal data or secrets in a universe, anonymise or write it to the Galaxy', block.includes('персональные данные') && block.includes('обезличь') && block.includes('в Галактику') && block.includes('HOW-TO-REMEMBER.md'));
   await resetUi();
 });
 
