@@ -575,7 +575,7 @@ pub fn checks_of(text: &str, hostname: Option<&str>, port: u16, credentials_exis
     let services = ingress_services(text);
     let ports: Vec<u16> = services.iter().filter_map(|s| local_port(s)).collect();
     out.push(Check::new("service", ports.contains(&port), true, ports.first().map(|p| p.to_string()), Some(port.to_string())));
-    out.push(Check::new("catch-all", services.last().is_some_and(|s| s.starts_with("http_status:")), true, None, None));
+    out.push(Check::new("catch-all", services.last().is_some_and(|s| s == "http_status:404"), true, None, None));
     out
 }
 

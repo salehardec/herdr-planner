@@ -361,6 +361,7 @@ function External(props: { v: TunnelView }): JSX.Element {
     <>
       <div class="tn-box warn"><b class="ttl">{t('tun.ext.title')}</b><div class="note">{t('tun.ext.text', { pid: props.v.external_pid ?? '' })}</div></div>
       <Setup v={props.v} />
+      <div class="tn-row"><button class="btn go" type="button" id="tn-recheck" onClick={() => { void loadTunnel(); }}>{t('tun.miss.recheck')}</button></div>
     </>
   );
 }

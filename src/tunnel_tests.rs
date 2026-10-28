@@ -1231,6 +1231,9 @@ fn the_other_slips_of_a_config_are_named() {
     assert_eq!(failed(&checks), ["service"]);
     let c = checks.iter().find(|c| c.id == "service").unwrap();
     assert!(c.warn && c.have.as_deref() == Some("8080") && c.want.as_deref() == Some("7117"));
+    // a last rule that answers 200 is not the catch-all that refuses
+    let ok200 = good_config().replace("http_status:404", "http_status:200");
+    assert_eq!(failed(&checks_of(&ok200, None, 7117, &|_| true)), ["catch-all"]);
     // no last rule: cloudflared would not start without it, but it is a warning here (the version may differ)
     let open = good_config().replace("  - service: http_status:404\n", "");
     assert_eq!(failed(&checks_of(&open, None, 7117, &|_| true)), ["catch-all"]);

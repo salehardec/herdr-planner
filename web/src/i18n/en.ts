@@ -953,7 +953,7 @@ export const en: Record<string, string | string[]> = {
   'tun.miss.path': 'The program’s path can be set in config.toml: bin under [tunnel].',
   'tun.miss.recheck': 'Check again',
   'tun.ext.title': 'A tunnel is already running, started by hand',
-  'tun.ext.text': 'A tunnel with this config is running (process {pid}), not started from the planner. The planner leaves it alone and does not start a second copy. Stop it and press «Open the gate».',
+  'tun.ext.text': 'A tunnel with this config is running (process {pid}), not started from the planner. The planner leaves it alone and does not start a second copy. Stop it and press «Check again».',
   'tg.title': 'How to set up the gate',
   'tg.quick': 'Quick (no domain)',
   'tg.named': 'Own domain',
