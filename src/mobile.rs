@@ -190,7 +190,7 @@ fn digest_of(bytes: &[u8]) -> u64 {
 }
 
 impl Feed {
-    /// The projection now, numbered. The number moves when what the phone would draw moves (the time of the read does
+    /// The projection now, numbered. The number moves when what the phone would draw moves (the times of the read do
     /// not count), and it starts from the clock, so a phone that kept a number from before a restart is not told
     /// "nothing new" by a planner that has counted its way back to the same one.
     pub async fn current(&self, app: &Shared) -> Current {
@@ -198,9 +198,11 @@ impl Feed {
         let snapshot = app.snapshot.read().await;
         let mut state = Out { snap: project(&snapshot), chat_rev: app.bus.chat_rev() };
         drop(snapshot);
-        let at = state.snap.at;
+        // the clocks of the read: the snapshot's and the limits' (they are read again, and stamped, at every refresh)
+        let (at, limits_at) = (state.snap.at, state.snap.limits.at);
         state.snap.at = 0;
         state.snap.seq = 0;
+        state.snap.limits.at = 0;
         let digest = digest_of(&serde_json::to_vec(&state).unwrap_or_default());
         if inner.seq == 0 {
             inner.seq = now_ms() / 1000;
@@ -210,6 +212,7 @@ impl Feed {
             inner.digest = digest;
         }
         state.snap.at = at;
+        state.snap.limits.at = limits_at;
         state.snap.seq = inner.seq;
                 Current { seq: inner.seq, body: serde_json::to_string(&state).unwrap_or_else(|_| "{}".into()) }
     }

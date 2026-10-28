@@ -168,6 +168,9 @@ async fn the_projections_number_moves_with_what_the_phone_draws_and_not_with_the
     assert_eq!(first.seq, again.seq);
     let v: Value = serde_json::from_str(&again.body).unwrap();
     assert_eq!(v["seq"], json!(again.seq), "the page is told the projection's number");
+    // the limits are read again at every refresh and stamped with the time of the read
+    app.snapshot.write().await.limits.at += 1;
+    assert_eq!(app.mobile.current(&app).await.seq, first.seq);
     // something the phone shows changed
     app.snapshot.write().await.tasks[0].msg = "ждёт тебя".into();
     let changed = app.mobile.current(&app).await;
@@ -545,4 +548,24 @@ async fn the_poll_does_not_keep_the_gate_alive() {
     let (status, _, _) = g.ask("GET", "/m/api/poll?seq=1", None).await;
     assert_eq!(status, 200);
     assert_eq!(g.app.devices.idle_closes_at().unwrap(), before, "a poll is not");
+}
+
+#[tokio::test]
+async fn a_refresh_that_finds_nothing_new_does_not_end_the_poll() {
+    let dir = tempfile::tempdir().unwrap();
+    let app = loaded_app(dir.path()).await;
+    app::refresh(&app).await;
+    let seq = app.mobile.current(&app).await.seq;
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    let (at, limits_at) = {
+        let s = app.snapshot.read().await;
+        (s.at, s.limits.at)
+    };
+    app::refresh(&app).await;
+    {
+        let s = app.snapshot.read().await;
+        assert!(s.at > at && s.limits.at > limits_at, "the refresh really ran: the clocks of the snapshot moved");
+    }
+    let res = poll_for(&app, Some(seq), Duration::from_millis(150)).await;
+    assert_eq!(res.status(), StatusCode::NO_CONTENT, "nothing the phone shows has changed");
 }
