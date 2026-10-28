@@ -7,6 +7,7 @@ use crate::auth::{self, cookie_value, peer_ip, LoginError, COOKIE};
 use crate::board::{self, Status};
 use crate::config::now_ms;
 use crate::history;
+use crate::mobile;
 use crate::ship;
 use crate::station;
 use crate::usage;
@@ -151,6 +152,24 @@ pub fn router(app: Shared) -> Router {
             auth::require_auth,
         ));
 
+    // The light page's own API. Through the gate a device that is in the light version may use it (the gate has said
+    // so before this layer runs); from this machine or another one on the network the planner's own login is what
+    // counts, as for the routes above.
+    let light = Router::new()
+        .route("/m/api/state", get(mobile::state))
+        .route("/m/api/poll", get(mobile::poll))
+        .route("/m/api/chat", post(mobile::chat))
+        .route("/m/api/chat/history", get(mobile::chat_history))
+        .route("/m/api/chat/image/{n}/{i}", get(api_chat_image))
+        .route("/m/api/action", post(mobile::action))
+        .route("/m/api/menu/answer", post(mobile::menu_answer))
+        .route("/m/api/coordinator/screen", get(mobile::screen))
+        .route("/m/api/details", get(mobile::details))
+        .route("/m/api/session", get(mobile::session))
+        .route("/m/api/logout", post(mobile::logout))
+        .route("/m/api/tunnel/close", post(mobile::tunnel_close))
+        .route_layer(middleware::from_fn_with_state(app.clone(), mobile::guard));
+
     Router::new()
         .route("/", get(index))
         .route("/login", get(login_page))
@@ -167,6 +186,7 @@ pub fn router(app: Shared) -> Router {
         .route("/g/status", get(crate::devices::status))
         .route("/g/cancel", post(crate::devices::cancel))
         .merge(protected)
+        .merge(light)
         // The gate is the outermost layer but one: no route runs before it has said who is asking.
         .layer(middleware::from_fn_with_state(app.clone(), crate::gate::middleware))
         .layer(middleware::from_fn(headers_middleware))
@@ -469,10 +489,10 @@ async fn api_details(State(app): State<Shared>, Query(q): Query<DetailsQuery>) -
 }
 
 #[derive(Deserialize)]
-struct ScreenQuery {
-    target: Option<String>,
+pub(crate) struct ScreenQuery {
+    pub(crate) target: Option<String>,
     /// `reviewer` selects the board's `<agent>-r` reviewer pane; otherwise the worker.
-    role: Option<String>,
+    pub(crate) role: Option<String>,
 }
 
 /// A terminal screen is read deeper than a dialog: the window over the page scrolls through it.
@@ -486,7 +506,7 @@ const SCREEN_MAX_CHARS: usize = 24_000;
 /// The colours come as ANSI when herdr has them; the plain text is always there for the callers
 /// that draw no colours (the Coordinator's dialog in the chat).
 /// Without herdr the planner says so; it never pretends to see the dialog.
-async fn api_coordinator_screen(
+pub(crate) async fn api_coordinator_screen(
     State(app): State<Shared>,
     Query(q): Query<ScreenQuery>,
 ) -> Response {
@@ -794,16 +814,16 @@ async fn api_refresh(State(app): State<Shared>) -> Response {
 }
 
 #[derive(Deserialize)]
-struct HistoryQuery {
+pub(crate) struct HistoryQuery {
     /// Turns older than this one (`n` of the oldest the page has); the newest when absent.
-    before: Option<usize>,
-    limit: Option<usize>,
+    pub(crate) before: Option<usize>,
+    pub(crate) limit: Option<usize>,
     /// Words to look for in the whole conversation instead of paging.
-    q: Option<String>,
+    pub(crate) q: Option<String>,
 }
 
 /// The Coordinator's past questions and answers, read from its transcript.
-async fn api_chat_history(State(app): State<Shared>, Query(q): Query<HistoryQuery>) -> Response {
+pub(crate) async fn api_chat_history(State(app): State<Shared>, Query(q): Query<HistoryQuery>) -> Response {
     let cfg = app.cfg.clone();
     let limit = q.limit.unwrap_or(3);
     if let Some(text) = q.q.as_deref().map(str::trim).filter(|t| !t.is_empty()) {
@@ -829,7 +849,7 @@ async fn api_chat_history(State(app): State<Shared>, Query(q): Query<HistoryQuer
 }
 
 /// An image of a message in the Coordinator's transcript (turn `n` of the history, its `i`-th image).
-async fn api_chat_image(State(app): State<Shared>, Path((n, i)): Path<(usize, usize)>) -> Response {
+pub(crate) async fn api_chat_image(State(app): State<Shared>, Path((n, i)): Path<(usize, usize)>) -> Response {
     let cfg = app.cfg.clone();
     match tokio::task::spawn_blocking(move || history::image(&cfg, n, i)).await {
         Ok(Some((mime, bytes))) => match HeaderValue::from_str(&mime) {
@@ -849,11 +869,11 @@ async fn api_chat_image(State(app): State<Shared>, Path((n, i)): Path<(usize, us
 }
 
 #[derive(Deserialize)]
-struct ChatBody {
+pub(crate) struct ChatBody {
     #[serde(default)]
-    text: String,
+    pub(crate) text: String,
     #[serde(default)]
-    attachments: Vec<AttachmentRef>,
+    pub(crate) attachments: Vec<AttachmentRef>,
 }
 
 /// A message may name uploaded files by id alone (older callers) or carry a
@@ -861,7 +881,7 @@ struct ChatBody {
 /// path.
 #[derive(Deserialize)]
 #[serde(untagged)]
-enum AttachmentRef {
+pub(crate) enum AttachmentRef {
     Id(String),
     Named {
         id: String,
@@ -937,7 +957,7 @@ async fn held_paths(dir: &std::path::Path, files: &[attachments::Attachment]) ->
     out
 }
 
-async fn api_chat(
+pub(crate) async fn api_chat(
     State(app): State<Shared>,
     headers: HeaderMap,
     Json(body): Json<ChatBody>,
@@ -1113,35 +1133,38 @@ async fn api_attachment(State(app): State<Shared>, Path(id): Path<String>) -> Re
     }
 }
 
-#[derive(Deserialize)]
-struct ActionBody {
-    action: String,
-    id: Option<String>,
-    text: Option<String>,
-    confirm: Option<bool>,
-    scope: Option<String>,
-    repo: Option<String>,
-    kind: Option<String>,
+#[derive(Deserialize, Default)]
+pub(crate) struct ActionBody {
+    pub(crate) action: String,
+    pub(crate) id: Option<String>,
+    pub(crate) text: Option<String>,
+    pub(crate) confirm: Option<bool>,
+    pub(crate) scope: Option<String>,
+    pub(crate) repo: Option<String>,
+    pub(crate) kind: Option<String>,
     /// The complete `after` set for a task; empty means `--clear`.
-    after: Option<Vec<String>>,
+    pub(crate) after: Option<Vec<String>>,
     /// An attempt letter for `pick`.
-    letter: Option<String>,
+    pub(crate) letter: Option<String>,
     /// Keys for `herdr agent send-keys`.
-    keys: Option<Vec<String>>,
+    pub(crate) keys: Option<Vec<String>>,
     /// `coordinator` or a task id, for `keys` and the screen endpoint.
-    target: Option<String>,
+    pub(crate) target: Option<String>,
     /// `reviewer` asks for `<agent>-r`; the worker is the default.
-    role: Option<String>,
+    pub(crate) role: Option<String>,
     /// The worker agent for a new task: `claude/claude-sonnet-5-5`.
-    agent: Option<String>,
+    pub(crate) agent: Option<String>,
     /// Uploaded files a todo item holds (todo-add; todo-update replaces the set).
-    attachments: Option<Vec<AttachmentRef>>,
+    pub(crate) attachments: Option<Vec<AttachmentRef>>,
     /// The order of the God's list.
-    ids: Option<Vec<String>>,
+    pub(crate) ids: Option<Vec<String>>,
     /// To whom a list item is addressed: empty, `quasar` or a task id.
-    to: Option<String>,
+    pub(crate) to: Option<String>,
     /// A number the action carries (how far a clone is behind).
-    n: Option<u32>,
+    pub(crate) n: Option<u32>,
+    /// Where the human acted from, when it is not the planner's own page (`с телефона`): the Coordinator's notice says so.
+    #[serde(skip)]
+    pub(crate) via: Option<String>,
 }
 
 /// `claude/claude-sonnet-5-5`, `omp/deepseek/deepseek-v4-flash`: what `--worker.agent` takes.
@@ -1164,6 +1187,14 @@ async fn api_action(
         return error(StatusCode::FORBIDDEN, "cross-origin request refused");
     }
     let local = client_is_local(addr, &headers);
+    perform_action(&app, body, local).await
+}
+
+/// Does what the human asked of the board. The caller has checked who asks and where the request comes from; `local`
+/// says whether it is this machine (the folder of a task opens in a file manager only there). The page's
+/// `/api/action` passes the body through as it came; the phone's narrow route builds the body itself and passes
+/// `local = false`.
+pub(crate) async fn perform_action(app: &Shared, body: ActionBody, local: bool) -> Response {
     if matches!(
         body.action.as_str(),
         "retry" | "review" | "stop" | "archive" | "restore"
@@ -1199,7 +1230,7 @@ async fn api_action(
                 } else {
                     "слияние одобрено"
                 };
-                app::planner_notice(&app, id, what).await;
+                app::planner_notice(&app, id, &said_via(what, &body)).await;
                 if was_plan && body.action == "approve" {
                     app::journal_note(&app, id, "plan", "план одобрен в планировщике").await;
                 }
@@ -1508,10 +1539,10 @@ async fn api_action(
             let out = run_board(&app.cfg, &["tell", id, "--", text], Duration::from_secs(60)).await;
             if out.is_ok() {
                 if was_plan {
-                    app::planner_notice(&app, id, "план возвращён с замечаниями").await;
+                    app::planner_notice(&app, id, &said_via("план возвращён с замечаниями", &body)).await;
                     app::journal_note(&app, id, "plan", "план возвращён с замечаниями").await;
                 } else {
-                    app::planner_notice(&app, id, "агенту отправлено сообщение").await;
+                    app::planner_notice(&app, id, &said_via("агенту отправлено сообщение", &body)).await;
                 }
             }
             out
@@ -1526,6 +1557,14 @@ async fn api_action(
             Json(json!({"ok": true, "out": clip(out)})).into_response()
         }
         Err(e) => error(StatusCode::BAD_GATEWAY, e),
+    }
+}
+
+/// What the Coordinator is told of an action, with where it came from when that is not the planner's own page.
+fn said_via(what: &str, body: &ActionBody) -> String {
+    match &body.via {
+        Some(via) => format!("{what} ({via})"),
+        None => what.to_string(),
     }
 }
 
@@ -2030,6 +2069,158 @@ mod tests {
         // On this machine the request goes on to herdr, which is not running here.
         let resp = api_task_terminal(State(app), peer([127, 0, 0, 1]), HeaderMap::new(), body()).await;
         assert_eq!(resp.status(), StatusCode::CONFLICT);
+    }
+
+    /// A `herdr-projects` that writes down the commands it is given (the reads of a refresh are not written) and
+    /// answers `details` with a folder, so `yazi` can be asked about a task.
+    fn fake_board(dir: &std::path::Path) -> (Shared, std::path::PathBuf) {
+        let log = dir.join("board.log");
+        let script = dir.join("herdr-projects");
+        let folder = dir.join("tree");
+        crate::testutil::write_exec(
+            &script,
+            format!(
+                "#!/bin/sh\ncase \"$1\" in\n  list|coordinator|show) exit 0 ;;\n  details) echo '{{\"task\":{{\"id\":\"alpha/1\"}},\"worktree\":\"{}\"}}' ; exit 0 ;;\nesac\necho \"$@\" >> {}\n",
+                folder.display(),
+                log.display()
+            ),
+        );
+        let cfg = crate::config::AppConfig { herdr_projects: script.display().to_string(), ..crate::testutil::test_cfg(dir) };
+        (app::App::new(cfg), log)
+    }
+
+    fn said(log: &std::path::Path) -> Vec<String> {
+        std::fs::read_to_string(log).unwrap_or_default().lines().map(str::to_string).collect()
+    }
+
+    fn act(json: serde_json::Value) -> ActionBody {
+        serde_json::from_value(json).unwrap()
+    }
+
+    async fn status_of(res: Response) -> (StatusCode, serde_json::Value) {
+        let status = res.status();
+        let bytes = axum::body::to_bytes(res.into_body(), 1 << 20).await.unwrap();
+        (status, serde_json::from_slice(&bytes).unwrap_or_default())
+    }
+
+    #[tokio::test]
+    async fn the_action_route_refuses_a_foreign_origin_and_an_unknown_action() {
+        let dir = tempfile::tempdir().unwrap();
+        let (app, log) = fake_board(dir.path());
+        let mut foreign = HeaderMap::new();
+        foreign.insert(header::HOST, HeaderValue::from_static("localhost:7117"));
+        foreign.insert(header::ORIGIN, HeaderValue::from_static("http://attacker.example"));
+        let res = api_action(State(app.clone()), peer([127, 0, 0, 1]), foreign, Json(act(json!({"action": "stop", "id": "alpha/1"})))).await;
+        assert_eq!(res.status(), StatusCode::FORBIDDEN);
+        let (status, body) = status_of(perform_action(&app, act(json!({"action": "fly"})), true).await).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert!(body["error"].as_str().unwrap().contains("unknown action"), "{body}");
+        assert!(said(&log).is_empty(), "nothing reached the board");
+    }
+
+    #[tokio::test]
+    async fn an_approval_needs_its_confirmation_and_names_the_task() {
+        let dir = tempfile::tempdir().unwrap();
+        let (app, log) = fake_board(dir.path());
+        for action in ["approve", "anyway"] {
+            let res = perform_action(&app, act(json!({"action": action, "id": "alpha/1"})), true).await;
+            assert_eq!(res.status(), StatusCode::BAD_REQUEST, "{action} without confirm");
+            let res = perform_action(&app, act(json!({"action": action, "id": "--all", "confirm": true})), true).await;
+            assert_eq!(res.status(), StatusCode::BAD_REQUEST, "{action} with a flag for an id");
+        }
+        assert!(said(&log).is_empty());
+        let res = perform_action(&app, act(json!({"action": "approve", "id": "alpha/1", "confirm": true})), true).await;
+        assert_eq!(res.status(), StatusCode::OK);
+        let res = perform_action(&app, act(json!({"action": "anyway", "id": "alpha/1", "confirm": true})), true).await;
+        assert_eq!(res.status(), StatusCode::OK);
+        assert_eq!(said(&log), ["approve alpha/1", "approve alpha/1 --anyway"]);
+    }
+
+    #[tokio::test]
+    async fn the_tasks_commands_take_a_task_id_and_nothing_else() {
+        let dir = tempfile::tempdir().unwrap();
+        let (app, log) = fake_board(dir.path());
+        for action in ["retry", "review", "stop", "archive", "restore", "fix", "finish", "delegate"] {
+            // fix and finish are checked inside the command, which says it as a failure of the command
+            let refused = if matches!(action, "fix" | "finish") { StatusCode::BAD_GATEWAY } else { StatusCode::BAD_REQUEST };
+            for bad in [json!({"action": action}), json!({"action": action, "id": "-x/1"}), json!({"action": action, "id": "nothing"})] {
+                let res = perform_action(&app, act(bad.clone()), true).await;
+                assert_eq!(res.status(), refused, "{bad}");
+            }
+        }
+        assert!(said(&log).is_empty());
+        let res = perform_action(&app, act(json!({"action": "retry", "id": "alpha/1"})), true).await;
+        assert_eq!(res.status(), StatusCode::OK);
+        let res = perform_action(&app, act(json!({"action": "stop", "id": "alpha/1"})), true).await;
+        assert_eq!(res.status(), StatusCode::OK);
+        assert_eq!(said(&log), ["retry alpha/1", "stop alpha/1"]);
+    }
+
+    #[tokio::test]
+    async fn a_message_to_a_task_is_trimmed_and_never_empty() {
+        let dir = tempfile::tempdir().unwrap();
+        let (app, log) = fake_board(dir.path());
+        for text in [json!(null), json!(""), json!("   \n")] {
+            let res = perform_action(&app, act(json!({"action": "tell", "id": "alpha/1", "text": text})), true).await;
+            assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+        }
+        let long = "я".repeat(MAX_TEXT_CHARS + 1);
+        let res = perform_action(&app, act(json!({"action": "tell", "id": "alpha/1", "text": long})), true).await;
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+        assert!(said(&log).is_empty());
+        let res = perform_action(&app, act(json!({"action": "tell", "id": "alpha/1", "text": "  делай так \n"})), true).await;
+        assert_eq!(res.status(), StatusCode::OK);
+        assert_eq!(said(&log), ["tell alpha/1 -- делай так"]);
+    }
+
+    #[tokio::test]
+    async fn a_pick_names_a_task_and_a_letter() {
+        let dir = tempfile::tempdir().unwrap();
+        let (app, log) = fake_board(dir.path());
+        for bad in [json!({"action": "pick", "id": "alpha/1"}), json!({"action": "pick", "id": "alpha/1", "letter": "--x"}), json!({"action": "pick", "id": "alpha/1", "letter": "AB"})] {
+            let res = perform_action(&app, act(bad.clone()), true).await;
+            assert_eq!(res.status(), StatusCode::BAD_REQUEST, "{bad}");
+        }
+        assert!(said(&log).is_empty());
+        let res = perform_action(&app, act(json!({"action": "pick", "id": "alpha/1", "letter": "B"})), true).await;
+        assert_eq!(res.status(), StatusCode::OK);
+        assert_eq!(said(&log), ["pick alpha/1 B"]);
+    }
+
+    #[tokio::test]
+    async fn a_failing_board_command_is_a_bad_gateway_with_its_words() {
+        let dir = tempfile::tempdir().unwrap();
+        let app = {
+            let script = dir.path().join("herdr-projects");
+            crate::testutil::write_exec(&script, "#!/bin/sh\ncase \"$1\" in list|coordinator|show) exit 0 ;; esac\necho 'no such task' >&2\nexit 1\n");
+            app::App::new(crate::config::AppConfig { herdr_projects: script.display().to_string(), ..crate::testutil::test_cfg(dir.path()) })
+        };
+        let (status, body) = status_of(perform_action(&app, act(json!({"action": "retry", "id": "alpha/1"})), true).await).await;
+        assert_eq!(status, StatusCode::BAD_GATEWAY);
+        assert!(body["error"].as_str().unwrap().contains("no such task"), "{body}");
+    }
+
+    #[tokio::test]
+    async fn the_folder_of_a_task_opens_only_for_a_local_caller() {
+        let dir = tempfile::tempdir().unwrap();
+        let (app, _log) = fake_board(dir.path());
+        let (status, body) = status_of(perform_action(&app, act(json!({"action": "yazi", "id": "alpha/1"})), false).await).await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        assert_eq!(body["remote"], json!(true));
+        // the caller's place is decided by the route, not by anything in the body
+        let (status, _) = status_of(perform_action(&app, act(json!({"action": "yazi", "id": "alpha/1"})), true).await).await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "the folder is not there");
+    }
+
+    #[tokio::test]
+    async fn the_route_decides_locality_from_the_peer() {
+        let dir = tempfile::tempdir().unwrap();
+        let (app, _log) = fake_board(dir.path());
+        let (addr, h) = tunnelled();
+        let res = api_action(State(app.clone()), addr, h, Json(act(json!({"action": "yazi", "id": "alpha/1"})))).await;
+        assert_eq!(res.status(), StatusCode::FORBIDDEN);
+        let res = api_action(State(app), peer([127, 0, 0, 1]), HeaderMap::new(), Json(act(json!({"action": "yazi", "id": "alpha/1"})))).await;
+        assert_eq!(res.status(), StatusCode::NOT_FOUND);
     }
 
     #[tokio::test]

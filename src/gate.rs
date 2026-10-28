@@ -7,8 +7,8 @@
 //! - `Local`: the peer is this machine, the `Host` is one of ours, and nothing says a proxy or a tunnel passed it on.
 //! - `Tunnel`: the peer is this machine, but a `Cf-*` header or the tunnel's address says it came through a tunnel.
 //!   Tunnel closed: 503 for everything. Open: only what the table allows for the device's standing (`devices.rs`):
-//!   nobody gets the sign-in page and the calls it makes, a device the owner let in the light version, and the full
-//!   planner a device that was raised to it.
+//!   nobody gets the sign-in page and the calls it makes, a device the owner let in the light version (and its API,
+//!   `/m/api/*`, see `mobile.rs`), and the full planner a device that was raised to it.
 //! - `Direct`: the peer is another machine, or this machine's own reverse proxy (`X-Forwarded-For`…). The login and
 //!   TLS rules of the routes apply, as they always did; the gate lets it through.
 //! - `Foreign`: the peer is this machine, but the `Host` is not one of ours. That is a page whose name points at
@@ -151,6 +151,19 @@ pub const POLICY: &[(&str, Access)] = &[
     ("/api/tunnel/rotate", Local),
     ("/api/tunnel/session", Local),
     ("/api/tunnel/settings", Local),
+    // The light page's own API: a narrow slice of the planner's, for a device that is in (`mobile.rs`).
+    ("/m/api/state", Lite),
+    ("/m/api/poll", Lite),
+    ("/m/api/chat", Lite),
+    ("/m/api/chat/history", Lite),
+    ("/m/api/chat/image/{n}/{i}", Lite),
+    ("/m/api/action", Lite),
+    ("/m/api/menu/answer", Lite),
+    ("/m/api/coordinator/screen", Lite),
+    ("/m/api/details", Lite),
+    ("/m/api/session", Lite),
+    ("/m/api/logout", Lite),
+    ("/m/api/tunnel/close", Lite),
 ];
 
 /// The access a path has in `POLICY`, if it is there.
@@ -351,7 +364,7 @@ pub fn verdict(class: Class, tunnel_open: bool, headers: &HeaderMap, path: &str,
 }
 
 /// The outermost layer of the router (inside the security headers).
-pub async fn middleware(State(app): State<Shared>, req: Request, next: Next) -> Response {
+pub async fn middleware(State(app): State<Shared>, mut req: Request, next: Next) -> Response {
     let Some(ConnectInfo(addr)) = req.extensions().get::<ConnectInfo<SocketAddr>>().copied() else {
         return error(StatusCode::MISDIRECTED_REQUEST, "unknown peer");
     };
@@ -360,12 +373,20 @@ pub async fn middleware(State(app): State<Shared>, req: Request, next: Next) -> 
     // Only a request that may be answered at all is a use of the gate: the idle clocks must not be fed by refusals.
     let standing = if class == Class::Tunnel && open && !plain_http(req.headers()) {
         let token = cookie_value(req.headers(), crate::devices::COOKIE);
-        app.devices.standing_at(now_ms(), token.as_deref())
+        if req.method() == Method::GET && req.uri().path() == crate::mobile::POLL_PATH {
+            app.devices.standing_quiet_at(now_ms(), token.as_deref())
+        } else {
+            app.devices.standing_at(now_ms(), token.as_deref())
+        }
     } else {
         Standing::Nobody
     };
     match verdict(class, open, req.headers(), req.uri().path(), standing) {
-        Verdict::Pass => next.run(req).await,
+        // the routes behind the gate that care who is asking (the light page's API) read the class from here
+        Verdict::Pass => {
+            req.extensions_mut().insert(class);
+            next.run(req).await
+        }
         Verdict::Misdirected => error(
             StatusCode::MISDIRECTED_REQUEST,
             "this host name is not trusted; add it to trusted_hosts in config.toml",

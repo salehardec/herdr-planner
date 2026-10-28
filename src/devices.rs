@@ -270,6 +270,16 @@ pub struct DeviceView {
     pub answer_by_ms: Option<u64>,
 }
 
+/// What a device that is in is told about its own session.
+#[derive(Serialize, Debug, PartialEq, Eq)]
+pub struct SessionView {
+    pub label: String,
+    pub scope: Scope,
+    pub since_ms: u64,
+    /// When the session ends if nothing changes (24 hours from the start, 6 hours from the last request).
+    pub ends_ms: u64,
+}
+
 /// What `/g/status` says about a cookie.
 #[derive(Serialize, Debug, PartialEq, Eq)]
 pub struct Status {
@@ -480,6 +490,16 @@ impl Devices {
 
     /// How a request with this cookie stands. A device that is in is touched: the idle clocks start over.
     pub fn standing_at(&self, now: u64, token: Option<&str>) -> Standing {
+        self.standing(now, token, true)
+    }
+
+    /// The same, for a request that is a page looking at the screen and not someone using it (the light page's
+    /// long-poll, which a forgotten tab repeats all night): the device stays in, the idle clocks run on.
+    pub fn standing_quiet_at(&self, now: u64, token: Option<&str>) -> Standing {
+        self.standing(now, token, false)
+    }
+
+    fn standing(&self, now: u64, token: Option<&str>, touch: bool) -> Standing {
         let Some(token) = token else { return Standing::Nobody };
         let mut g = self.inner.lock().unwrap();
         g.maintain(now);
@@ -488,14 +508,24 @@ impl Devices {
             Life::Pending => Standing::Waiting,
             Life::Gone(_) => Standing::Nobody,
             Life::Active => {
-                g.devices[i].last = now;
-                g.busy = now;
+                if touch {
+                    g.devices[i].last = now;
+                    g.busy = now;
+                }
                 match g.devices[i].scope {
                     Scope::Lite => Standing::Lite,
                     Scope::Full => Standing::Full,
                 }
             }
         }
+    }
+
+    /// What a device that is in knows about its own session (no touch: asking who one is is not using the gate).
+    pub fn session_at(&self, now: u64, token: &str) -> Option<SessionView> {
+        let mut g = self.inner.lock().unwrap();
+        g.maintain(now);
+        let d = g.find_token(token).map(|i| &g.devices[i]).filter(|d| d.state == Life::Active)?;
+        Some(SessionView { label: d.label.clone(), scope: d.scope, since_ms: d.since, ends_ms: d.ends() })
     }
 
     /// The owner's decision on a device.
@@ -665,11 +695,11 @@ fn address_of(headers: &HeaderMap) -> String {
         .unwrap_or_else(|| "-".into())
 }
 
-fn cookie_header(value: &str, max_age: u64) -> String {
+pub(crate) fn cookie_header(value: &str, max_age: u64) -> String {
     format!("{COOKIE}={value}; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age={max_age}")
 }
 
-fn with_cookie(mut res: Response, cookie: String) -> Response {
+pub(crate) fn with_cookie(mut res: Response, cookie: String) -> Response {
     if let Ok(v) = HeaderValue::from_str(&cookie) {
         res.headers_mut().insert(header::SET_COOKIE, v);
     }

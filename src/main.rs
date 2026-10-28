@@ -25,6 +25,7 @@ mod memory_guard;
 mod memory_lint;
 mod menu;
 mod menu_api;
+mod mobile;
 mod load;
 mod models;
 mod runners;

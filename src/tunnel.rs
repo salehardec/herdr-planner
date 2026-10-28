@@ -180,8 +180,22 @@ impl Tunnel {
         self.settings.lock().unwrap().clone()
     }
 
-    fn timing(&self) -> Timing {
+    /// When the phase the tunnel is in began (ms): for an open gate, when it opened.
+    pub fn since_ms(&self) -> u64 {
+        self.inner.lock().unwrap().since
+    }
+
+    pub(crate) fn timing(&self) -> Timing {
         self.timing.lock().unwrap().clone()
+    }
+
+    /// A gate that is open as far as the state goes, with no process behind it.
+    #[cfg(test)]
+    pub(crate) fn set_open_for_test(&self, host: &str) {
+        let mut g = self.inner.lock().unwrap();
+        g.state = Phase::Open;
+        g.since = now_ms();
+        g.host = Some(host.to_string());
     }
 
     #[cfg(test)]
