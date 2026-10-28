@@ -145,6 +145,8 @@ pub struct Tunnel {
     inner: Mutex<Inner>,
     settings: Mutex<Settings>,
     timing: Mutex<Timing>,
+    /// Where a `cloudflared` started without `--config` reads its config from (see `default_config_files`).
+    defaults: Mutex<Vec<PathBuf>>,
     /// Sent to: the supervisor stops its process. The value is the grace, in milliseconds.
     stop: watch::Sender<u64>,
 }
@@ -165,6 +167,7 @@ impl Tunnel {
             }),
             settings: Mutex::new(settings),
             timing: Mutex::new(Timing::default()),
+            defaults: Mutex::new(default_config_files()),
             stop: watch::channel(0).0,
         }
     }
@@ -179,6 +182,11 @@ impl Tunnel {
 
     fn timing(&self) -> Timing {
         self.timing.lock().unwrap().clone()
+    }
+
+    #[cfg(test)]
+    pub fn set_default_configs(&self, files: Vec<PathBuf>) {
+        *self.defaults.lock().unwrap() = files;
     }
 
     #[cfg(test)]
@@ -407,41 +415,172 @@ fn check_named(settings: &Settings) -> Result<Named, (Problem, Vec<String>)> {
     }
 }
 
+/* ───────── the process table ───────── */
+
+/// Where processes are read from: `/proc` where there is one (exact arguments, exact start time), else `ps`, which
+/// macOS has (the arguments come as one line, so a path with spaces in it is not matched).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Backend {
+    Proc,
+    Ps,
+}
+
+fn backend() -> Backend {
+    if cfg!(target_os = "linux") && Path::new("/proc/self/stat").exists() {
+        Backend::Proc
+    } else {
+        Backend::Ps
+    }
+}
+
+struct Proc {
+    pid: u32,
+    args: Vec<String>,
+}
+
+fn processes(b: Backend) -> Vec<Proc> {
+    match b {
+        Backend::Proc => std::fs::read_dir("/proc")
+            .into_iter()
+            .flatten()
+            .flatten()
+            .filter_map(|e| {
+                let pid = e.file_name().to_str()?.parse::<u32>().ok()?;
+                let raw = std::fs::read(e.path().join("cmdline")).ok()?;
+                let args = raw.split(|c| *c == 0).filter(|a| !a.is_empty()).map(|a| String::from_utf8_lossy(a).into_owned()).collect();
+                Some(Proc { pid, args })
+            })
+            .collect(),
+        Backend::Ps => ps(&["-axo", "pid=,command="])
+            .map(|text| {
+                text.lines()
+                    .filter_map(|l| {
+                        let mut it = l.split_whitespace();
+                        let pid = it.next()?.parse().ok()?;
+                        Some(Proc { pid, args: it.map(String::from).collect() })
+                    })
+                    .collect()
+            })
+            .unwrap_or_default(),
+    }
+}
+
+/// The output of `ps` (the same words on Linux and macOS), if it ran.
+fn ps(args: &[&str]) -> Option<String> {
+    let out = std::process::Command::new("ps").args(args).env("LC_ALL", "C").stdin(Stdio::null()).stderr(Stdio::null()).output().ok()?;
+    let text = String::from_utf8_lossy(&out.stdout).into_owned();
+    (!text.trim().is_empty()).then_some(text)
+}
+
+fn ps_field(pid: u32, field: &str) -> Option<String> {
+    ps(&["-o", &format!("{field}="), "-p", &pid.to_string()]).map(|t| t.trim().to_string())
+}
+
+/// What names one process and not a later one that got the same pid: the start time (clock ticks since boot from
+/// `/proc`, the `lstart` text from `ps`).
+fn proc_start_with(b: Backend, pid: u32) -> Option<String> {
+    match b {
+        Backend::Proc => {
+            let text = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+            crate::strays::parse_stat(&text).map(|s| s.4.to_string())
+        }
+        Backend::Ps => ps_field(pid, "lstart"),
+    }
+}
+
+fn proc_alive_with(b: Backend, pid: u32) -> bool {
+    // A zombie is gone for our purposes.
+    match b {
+        Backend::Proc => std::fs::read_to_string(format!("/proc/{pid}/stat")).ok().and_then(|t| crate::strays::parse_stat(&t)).is_some_and(|s| s.1 != 'Z'),
+        Backend::Ps => ps_field(pid, "stat").is_some_and(|s| !s.starts_with('Z')),
+    }
+}
+
+fn proc_cmdline_with(b: Backend, pid: u32) -> String {
+    match b {
+        Backend::Proc => String::from_utf8_lossy(&std::fs::read(format!("/proc/{pid}/cmdline")).unwrap_or_default()).replace('\0', " "),
+        Backend::Ps => ps_field(pid, "command").unwrap_or_default(),
+    }
+}
+
+#[cfg(test)]
+fn proc_alive(pid: u32) -> bool {
+    proc_alive_with(backend(), pid)
+}
+
 /* ───────── a tunnel somebody else started ───────── */
 
-/// The pid of a running `cloudflared … run` that uses this config file, if it is not ours.
-fn find_external(config: &Path, own: Option<u32>) -> Option<u32> {
-    let want = std::fs::canonicalize(config).unwrap_or_else(|_| config.to_path_buf());
-    let same = |t: &str| {
-        let p = crate::config::expand_home(t);
-        p == want || std::fs::canonicalize(&p).is_ok_and(|c| c == want)
-    };
-    let me = std::process::id();
-    for e in std::fs::read_dir("/proc").ok()?.flatten() {
-        let Some(pid) = e.file_name().to_str().and_then(|n| n.parse::<u32>().ok()) else { continue };
-        if pid == me || Some(pid) == own {
-            continue;
-        }
-        let Ok(raw) = std::fs::read(e.path().join("cmdline")) else { continue };
-        let args: Vec<String> = raw.split(|b| *b == 0).filter(|a| !a.is_empty()).map(|a| String::from_utf8_lossy(a).into_owned()).collect();
-        let program = args.iter().take(2).any(|a| a.rsplit('/').next().is_some_and(|n| n.contains("cloudflared")));
-        if !program || !args.iter().any(|a| a == "run") {
-            continue;
-        }
-        let uses = args.iter().enumerate().any(|(i, a)| match a.strip_prefix("--config=") {
-            Some(v) => same(v),
-            None => (a == "--config" || a == "-c") && args.get(i + 1).is_some_and(|v| same(v)),
-        });
-        if uses && proc_alive(pid) {
-            return Some(pid);
+/// Where `cloudflared` looks for its config when it is not told: the first of these that exists.
+pub fn default_config_files() -> Vec<PathBuf> {
+    let dirs = ["~/.cloudflared", "~/.cloudflare-warp", "~/cloudflare-warp", "/etc/cloudflared", "/usr/local/etc/cloudflared"];
+    dirs.iter().flat_map(|d| ["config.yml", "config.yaml"].map(|f| crate::config::expand_home(d).join(f))).collect()
+}
+
+/// What tells a tunnel somebody started from the one this config is for.
+struct Wanted {
+    config: PathBuf,
+    /// The `tunnel:` of the config (an id or a name): `cloudflared tunnel run <it>` is the same tunnel.
+    tunnel: Option<String>,
+    /// Where a `cloudflared` without `--config` reads its config from.
+    defaults: Vec<PathBuf>,
+}
+
+fn same_file(a: &Path, b: &Path) -> bool {
+    a == b || std::fs::canonicalize(a).ok().zip(std::fs::canonicalize(b).ok()).is_some_and(|(x, y)| x == y)
+}
+
+/// Whether these arguments are a `cloudflared … run` of the tunnel `want` describes: it names this config, or names
+/// none and reads this one by default, or names this tunnel.
+fn runs_tunnel(args: &[String], want: &Wanted) -> bool {
+    let program = args.iter().take(2).any(|a| a.rsplit('/').next().is_some_and(|n| n.contains("cloudflared")));
+    let Some(run) = args.iter().position(|a| a == "run") else { return false };
+    if !program {
+        return false;
+    }
+    let mut explicit = false;
+    let mut uses = false;
+    for (i, a) in args.iter().enumerate() {
+        let value = match a.strip_prefix("--config=") {
+            Some(v) => Some(v),
+            None if a == "--config" || a == "-c" => args.get(i + 1).map(String::as_str),
+            None => None,
+        };
+        if let Some(v) = value {
+            explicit = true;
+            uses |= same_file(&crate::config::expand_home(v), &want.config);
         }
     }
-    None
+    if !explicit {
+        uses = want.defaults.iter().find(|d| d.is_file()).is_some_and(|d| same_file(d, &want.config));
+    }
+    let by_name = want.tunnel.as_deref().is_some_and(|t| args[run + 1..].iter().any(|a| a == t));
+    uses || by_name
+}
+
+fn external_in(procs: &[Proc], want: &Wanted, own: Option<u32>, b: Backend) -> Option<u32> {
+    let me = std::process::id();
+    procs.iter().find(|p| p.pid != me && Some(p.pid) != own && runs_tunnel(&p.args, want) && proc_alive_with(b, p.pid)).map(|p| p.pid)
+}
+
+/// The `tunnel:` line of a config (an id or a name), and nothing else of it.
+fn config_tunnel(text: &str) -> Option<String> {
+    text.lines().find_map(|l| l.strip_prefix("tunnel:")).map(|v| v.split('#').next().unwrap_or("").trim().trim_matches(|c| c == '"' || c == '\'').to_string()).filter(|v| !v.is_empty())
+}
+
+fn wanted(app: &Shared, config: &Path) -> Wanted {
+    let tunnel = std::fs::metadata(config).ok().filter(|m| m.len() <= CONFIG_MAX).and_then(|_| std::fs::read_to_string(config).ok()).and_then(|t| config_tunnel(&t));
+    Wanted { config: config.to_path_buf(), tunnel, defaults: app.tunnel.defaults.lock().unwrap().clone() }
+}
+
+/// The pid of a running `cloudflared … run` of this tunnel, if it is not ours.
+fn find_external(app: &Shared, config: &Path, own: Option<u32>) -> Option<u32> {
+    let b = backend();
+    external_in(&processes(b), &wanted(app, config), own, b)
 }
 
 fn recheck_external(app: &Shared) {
     let settings = app.tunnel.settings();
-    let still = settings.config.as_deref().and_then(|c| find_external(c, None));
+    let still = settings.config.as_deref().and_then(|c| find_external(app, c, None));
     let mut g = app.tunnel.inner.lock().unwrap();
     if g.state == Phase::External && still.is_none() {
         g.state = Phase::Closed;
@@ -464,50 +603,46 @@ fn signal(pid: u32, sig: i32) {
 #[cfg(not(unix))]
 fn signal(_: u32, _: i32) {}
 
-/// The start time of a process in clock ticks since boot: with the pid it names one process, not a later one that
-/// got the same number.
-fn proc_start(pid: u32) -> Option<u64> {
-    let text = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
-    crate::strays::parse_stat(&text).map(|s| s.4)
-}
-
-fn proc_alive(pid: u32) -> bool {
-    // A zombie is gone for our purposes.
-    std::fs::read_to_string(format!("/proc/{pid}/stat")).ok().and_then(|t| crate::strays::parse_stat(&t)).is_some_and(|s| s.1 != 'Z')
-}
-
 fn pid_file(cfg: &AppConfig) -> PathBuf {
     cfg.state_dir.join("cloudflared.pid")
 }
 
 fn write_pid_file(cfg: &AppConfig, pid: u32) {
+    write_pid_file_with(backend(), cfg, pid);
+}
+
+/// `<pid> <start time>`: the start time is what tells the process from a later one with the same pid.
+fn write_pid_file_with(b: Backend, cfg: &AppConfig, pid: u32) {
     let _ = std::fs::create_dir_all(&cfg.state_dir);
-    let _ = std::fs::write(pid_file(cfg), format!("{pid} {}\n", proc_start(pid).unwrap_or(0)));
+    let _ = std::fs::write(pid_file(cfg), format!("{pid} {}\n", proc_start_with(b, pid).unwrap_or_default()));
 }
 
 /// At the planner's start: a `cloudflared` it started before and a crash left running is stopped. It is stopped only
 /// when the pid and the start time are the recorded ones and the process is still a `cloudflared`; a pid that was
 /// reused by something else is left alone.
 pub async fn reap_orphan(cfg: &AppConfig) -> Option<u32> {
+    reap_orphan_with(backend(), cfg).await
+}
+
+async fn reap_orphan_with(b: Backend, cfg: &AppConfig) -> Option<u32> {
     let file = pid_file(cfg);
     let text = std::fs::read_to_string(&file).ok()?;
     let _ = std::fs::remove_file(&file);
-    let mut it = text.split_whitespace();
-    let pid: u32 = it.next()?.parse().ok()?;
-    let start: u64 = it.next()?.parse().ok()?;
-    if start == 0 || proc_start(pid) != Some(start) || !proc_alive(pid) {
+    let (pid, start) = text.trim().split_once(' ')?;
+    let pid: u32 = pid.parse().ok()?;
+    let start = start.trim();
+    if start.is_empty() || start == "0" || proc_start_with(b, pid).as_deref() != Some(start) || !proc_alive_with(b, pid) {
         return None;
     }
-    let cmd = std::fs::read(format!("/proc/{pid}/cmdline")).unwrap_or_default();
-    if !String::from_utf8_lossy(&cmd).contains("cloudflared") {
+    if !proc_cmdline_with(b, pid).contains("cloudflared") {
         return None;
     }
     signal(pid, libc::SIGTERM);
     let end = Instant::now() + Duration::from_secs(3);
-    while proc_alive(pid) && Instant::now() < end {
+    while proc_alive_with(b, pid) && Instant::now() < end {
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
-    if proc_alive(pid) {
+    if proc_alive_with(b, pid) {
         signal(pid, libc::SIGKILL);
     }
     Some(pid)
@@ -676,7 +811,7 @@ fn prepare(app: &Shared) -> Result<Prepared, Problem> {
         TunnelMode::Named => {
             let named = check_named(&settings).map_err(|(p, _)| p)?;
             let config = settings.config.unwrap_or_default();
-            if let Some(pid) = find_external(&config, None) {
+            if let Some(pid) = find_external(app, &config, None) {
                 return Ok(Prepared::External(pid, named.host));
             }
             let args = vec!["--config".to_string(), config.display().to_string(), "tunnel".into(), "--no-autoupdate".into(), "--metrics".into(), metrics_arg, "run".into()];

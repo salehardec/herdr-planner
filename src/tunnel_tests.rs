@@ -79,6 +79,8 @@ fn rig_with(scenario: &str, edit: impl FnOnce(&mut AppConfig)) -> Rig {
     edit(&mut cfg);
     let app = crate::app::App::new(cfg);
     app.tunnel.set_timing(fast());
+    // the real ~/.cloudflared is nobody's business here
+    app.tunnel.set_default_configs(Vec::new());
     Rig { dir, app }
 }
 
@@ -463,7 +465,7 @@ async fn a_tunnel_the_owner_started_is_shown_not_started_twice() {
     let mut manual = Manual::start(&r, &["--config", &config, "tunnel", "run"]);
     let mut seen = false;
     for _ in 0..500 {
-        seen = find_external(&r.path("planner.yml"), None).is_some();
+        seen = find_external(&r.app, &r.path("planner.yml"), None).is_some();
         if seen {
             break;
         }
@@ -502,7 +504,7 @@ async fn a_tunnel_with_another_config_is_not_ours_to_notice() {
     std::fs::write(&other, NAMED).unwrap();
     let _manual = Manual::start(&r, &["--config", &other.display().to_string(), "tunnel", "run"]);
     tokio::time::sleep(Duration::from_millis(300)).await;
-    assert_eq!(find_external(&r.path("planner.yml"), None), None);
+    assert_eq!(find_external(&r.app, &r.path("planner.yml"), None), None);
     open(&r.app).await;
     r.until("open", |s| s == Phase::Open).await;
     close(&r.app, Duration::from_secs(2)).await;
@@ -556,7 +558,7 @@ async fn a_pid_that_belongs_to_something_else_now_is_left_alone() {
     let mut other = Manual(std::process::Command::new("sleep").arg("30").spawn().unwrap());
     // the recorded start time is not this process's: the pid was reused
     std::fs::create_dir_all(&r.app.cfg.state_dir).unwrap();
-    std::fs::write(pid_file(&r.app.cfg), format!("{} {}\n", other.pid(), proc_start(other.pid()).unwrap() + 7)).unwrap();
+    std::fs::write(pid_file(&r.app.cfg), format!("{} {}x\n", other.pid(), proc_start_with(backend(), other.pid()).unwrap())).unwrap();
     assert_eq!(reap_orphan(&r.app.cfg).await, None);
     assert!(proc_alive(other.pid()));
     assert!(!pid_file(&r.app.cfg).exists(), "the stale record goes");
@@ -721,4 +723,119 @@ async fn a_changed_setting_clears_an_old_failure() {
     assert_eq!(status, 200, "{text}");
     assert_eq!(r.app.tunnel.state(), Phase::Closed);
     assert!(json_of(&text)["error"].is_null());
+}
+
+/* ───────── a tunnel started by hand without --config, and the table on a machine without /proc ───────── */
+
+async fn wait_found(r: &Rig) -> bool {
+    for _ in 0..500 {
+        if find_external(&r.app, &r.path("planner.yml"), None).is_some() {
+            // (the wrapper script becomes `node` by exec; look again once that is over)
+            tokio::time::sleep(Duration::from_millis(400)).await;
+            return find_external(&r.app, &r.path("planner.yml"), None).is_some();
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    false
+}
+
+#[tokio::test]
+async fn a_tunnel_started_by_hand_with_the_default_config_is_found() {
+    // `cloudflared tunnel run`: no --config, the config is the one it finds by itself
+    let r = named_rig("", Some(NAMED));
+    let other = r.path("other.yml");
+    std::fs::write(&other, NAMED.replace("6ff42ae2-765d-4adf-8112-31c55c1551ef", "another-tunnel")).unwrap();
+    // the default is another file: the hand-started tunnel is not this one
+    r.app.tunnel.set_default_configs(vec![r.path("missing.yml"), other, r.path("planner.yml")]);
+    let mut manual = Manual::start(&r, &["tunnel", "run"]);
+    tokio::time::sleep(Duration::from_millis(600)).await;
+    assert!(!wait_found(&r).await);
+
+    // the default is the planner's own file
+    r.app.tunnel.set_default_configs(vec![r.path("missing.yml"), r.path("planner.yml")]);
+    assert!(wait_found(&r).await, "a bare `tunnel run` reads the default config, which is this one");
+    open(&r.app).await;
+    assert_eq!(r.app.tunnel.state(), Phase::External, "a second cloudflared is not started");
+    assert_eq!(view(&r.app).await.external_pid, Some(manual.pid()));
+    assert!(!pid_file(&r.app.cfg).exists(), "no process of ours");
+    assert!(!r.app.gate.tunnel_open());
+    manual.stop();
+    assert_eq!(view(&r.app).await.state, Phase::Closed);
+}
+
+#[tokio::test]
+async fn a_tunnel_started_by_hand_by_name_is_found_whatever_config_it_reads() {
+    let r = named_rig("", Some(NAMED));
+    let mut manual = Manual::start(&r, &["tunnel", "run", "6ff42ae2-765d-4adf-8112-31c55c1551ef"]);
+    assert!(wait_found(&r).await);
+    open(&r.app).await;
+    assert_eq!(r.app.tunnel.state(), Phase::External);
+    manual.stop();
+    // another tunnel's name is another tunnel
+    let mut manual = Manual::start(&r, &["tunnel", "run", "some-other-tunnel"]);
+    tokio::time::sleep(Duration::from_millis(600)).await;
+    assert!(!wait_found(&r).await);
+    manual.stop();
+}
+
+#[test]
+fn which_command_lines_are_this_tunnel() {
+    let want = Wanted { config: PathBuf::from("/nonexistent/planner.yml"), tunnel: Some("planner".into()), defaults: Vec::new() };
+    let args = |s: &str| s.split_whitespace().map(String::from).collect::<Vec<_>>();
+    assert!(runs_tunnel(&args("/usr/bin/cloudflared --config /nonexistent/planner.yml tunnel run"), &want));
+    assert!(runs_tunnel(&args("cloudflared tunnel --config=/nonexistent/planner.yml run"), &want));
+    assert!(runs_tunnel(&args("cloudflared tunnel -c /nonexistent/planner.yml run"), &want));
+    assert!(runs_tunnel(&args("cloudflared tunnel run planner"), &want));
+    assert!(runs_tunnel(&args("cloudflared --config /else.yml tunnel run planner"), &want));
+    assert!(!runs_tunnel(&args("cloudflared tunnel run"), &want), "no default config here");
+    assert!(!runs_tunnel(&args("cloudflared --config /else.yml tunnel run"), &want));
+    assert!(!runs_tunnel(&args("cloudflared tunnel run other"), &want));
+    assert!(!runs_tunnel(&args("cloudflared tunnel --config /nonexistent/planner.yml list"), &want), "only `run` is a running tunnel");
+    assert!(!runs_tunnel(&args("vim planner.yml run"), &want), "only cloudflared");
+    assert_eq!(config_tunnel("tunnel: 6ff4\ncredentials-file: /x.json\n").as_deref(), Some("6ff4"));
+    assert_eq!(config_tunnel("tunnel: \"planner\"  # mine\n").as_deref(), Some("planner"));
+    assert_eq!(config_tunnel("ingress:\n  - service: x\n"), None);
+}
+
+#[tokio::test]
+async fn the_process_table_comes_from_ps_where_there_is_no_proc() {
+    // macOS has `ps` and no /proc; the same questions are put to `ps` here
+    let r = named_rig("", Some(NAMED));
+    let config = r.path("planner.yml").display().to_string();
+    let mut manual = Manual::start(&r, &["--config", &config, "tunnel", "run"]);
+    let pid = manual.pid();
+    let mut found = None;
+    for _ in 0..500 {
+        let want = wanted(&r.app, &r.path("planner.yml"));
+        found = external_in(&processes(Backend::Ps), &want, None, Backend::Ps);
+        if found.is_some() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert_eq!(found, Some(pid), "the hand-started tunnel is found through ps");
+    assert!(proc_alive_with(Backend::Ps, pid));
+    assert!(proc_cmdline_with(Backend::Ps, pid).contains("cloudflared"));
+    let start = proc_start_with(Backend::Ps, pid).expect("ps knows when it started");
+    assert_eq!(proc_start_with(Backend::Ps, pid).as_deref(), Some(start.as_str()));
+
+    // a crash's orphan: stopped by pid and start time, and only that one
+    write_pid_file_with(Backend::Ps, &r.app.cfg, pid);
+    assert!(std::fs::read_to_string(pid_file(&r.app.cfg)).unwrap().contains(&start));
+    assert_eq!(reap_orphan_with(Backend::Ps, &r.app.cfg).await, Some(pid));
+    manual.0.wait().unwrap();
+    assert!(!proc_alive_with(Backend::Ps, pid));
+    assert!(!pid_file(&r.app.cfg).exists());
+
+    // not a cloudflared, or not the recorded start: left alone
+    let mut other = Manual(std::process::Command::new("sleep").arg("30").spawn().unwrap());
+    write_pid_file_with(Backend::Ps, &r.app.cfg, other.pid());
+    assert_eq!(reap_orphan_with(Backend::Ps, &r.app.cfg).await, None);
+    std::fs::write(pid_file(&r.app.cfg), format!("{} Thu Jan  1 00:00:00 1970\n", other.pid())).unwrap();
+    assert_eq!(reap_orphan_with(Backend::Ps, &r.app.cfg).await, None);
+    assert!(proc_alive_with(Backend::Ps, other.pid()));
+    // a record with no start time stops nothing
+    std::fs::write(pid_file(&r.app.cfg), format!("{} \n", other.pid())).unwrap();
+    assert_eq!(reap_orphan_with(Backend::Ps, &r.app.cfg).await, None);
+    other.stop();
 }
