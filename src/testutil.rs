@@ -33,6 +33,9 @@ pub(crate) fn test_cfg(dir: &Path) -> AppConfig {
         tunnel_mode: Default::default(),
         tunnel_config: None,
         tunnel_bin: None,
+        tunnel_confirm_devices: true,
+        tunnel_idle_close_h: crate::config::IDLE_CLOSE_DEFAULT,
+        tunnel_full_allowed: false,
     }
 }
 

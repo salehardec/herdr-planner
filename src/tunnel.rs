@@ -229,8 +229,19 @@ pub struct View {
     pub state: Phase,
     pub since_ms: u64,
     pub host: Option<String>,
-    /// `https://<host>` while the tunnel is up. T3 adds the key after a `#`.
+    /// `https://<host>/#k=<key>` while the tunnel is up and the key is good; the bare address after that.
     pub link: Option<String>,
+    /// `fresh` (good for one device), `used`, `expired` or `none` (no gate open).
+    pub link_state: crate::devices::LinkState,
+    /// When the key stops working.
+    pub link_expires_ms: Option<u64>,
+    pub settings: crate::devices::Settings,
+    /// A password is set: only then the full planner through the gate is possible.
+    pub password_set: bool,
+    /// The devices that wait for «Let in» and those that are in.
+    pub sessions: Vec<crate::devices::DeviceView>,
+    /// When the gate closes by itself, if nobody uses it.
+    pub idle_closes_ms: Option<u64>,
     pub error: Option<Problem>,
     /// The pid of a tunnel somebody else runs (`state` is `external`).
     pub external_pid: Option<u32>,
@@ -262,6 +273,9 @@ pub async fn view(app: &Shared) -> View {
         Ok(n) => ConfigCheck { ok: true, problem: None, hosts: n.hosts, host: Some(n.host) },
         Err((p, hosts)) => ConfigCheck { ok: false, problem: Some(p), hosts, host: None },
     });
+    let now = now_ms();
+    let link = app.devices.link_at(now);
+    let sessions = app.devices.list_at(now);
     let g = app.tunnel.inner.lock().unwrap();
     let up = matches!(g.state, Phase::Open | Phase::Reconnecting);
     View {
@@ -275,7 +289,16 @@ pub async fn view(app: &Shared) -> View {
         state: g.state,
         since_ms: g.since,
         host: g.host.clone(),
-        link: g.host.as_ref().filter(|_| up).map(|h| format!("https://{h}")),
+        link: g.host.as_ref().filter(|_| up).map(|h| match &link.key {
+            Some(k) => format!("https://{h}/#k={k}"),
+            None => format!("https://{h}"),
+        }),
+        link_state: link.state,
+        link_expires_ms: link.expires_ms.filter(|_| up),
+        settings: app.devices.settings(),
+        password_set: app.cfg.auth_required(),
+        sessions: if up { sessions } else { Vec::new() },
+        idle_closes_ms: app.devices.idle_closes_at().filter(|_| up),
         error: g.problem.clone(),
         external_pid: g.external,
         sse: settings.mode == TunnelMode::Named,
@@ -731,7 +754,7 @@ async fn advance(app: &Shared, from: Phase, to: Phase) {
 }
 
 async fn change_from(app: &Shared, only_from: Option<Phase>, to: Phase, edit: impl FnOnce(&mut Inner)) {
-    let (host, text) = {
+    let (host, text, from) = {
         let mut g = app.tunnel.inner.lock().unwrap();
         let from = g.state;
         if only_from.is_some_and(|f| f != from) {
@@ -746,9 +769,15 @@ async fn change_from(app: &Shared, only_from: Option<Phase>, to: Phase, edit: im
             Phase::Failed => Some(format!("шлюз не работает: {}", g.problem.as_ref().map(|p| p.message.as_str()).unwrap_or("?"))),
             _ => None,
         };
-        (g.host.clone().filter(|_| matches!(to, Phase::Open | Phase::Reconnecting)), text)
+        (g.host.clone().filter(|_| matches!(to, Phase::Open | Phase::Reconnecting)), text, from)
     };
     app.gate.set_tunnel(host.as_deref());
+    // A gate that has just opened has a first link and nobody in; one that is not open has no key and no session.
+    match to {
+        Phase::Open if from != Phase::Reconnecting => app.devices.begin_at(now_ms()),
+        Phase::Open | Phase::Reconnecting => {}
+        _ => app.devices.end(),
+    }
     // The bus reaches every subscriber, so it carries the state and nothing else.
     app.bus.send("tunnel", json!({"state": to}).to_string());
     if let Some(text) = text {
@@ -1041,6 +1070,8 @@ pub async fn close(app: &Shared, grace: Duration) {
         }
     };
     app.gate.set_tunnel(None);
+    // The key and every session go before the process is told to leave: a stolen cookie is dead from this moment.
+    app.devices.end();
     app.bus.send("tunnel", json!({"state": app.tunnel.state()}).to_string());
     if !supervised {
         return;
@@ -1050,6 +1081,12 @@ pub async fn close(app: &Shared, grace: Duration) {
     while app.tunnel.state() == Phase::Closing && Instant::now() < end {
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
+}
+
+/// Nobody has used the gate for `hours`: it closes itself.
+pub async fn close_idle(app: &Shared, hours: u32) {
+    crate::app::journal_note(app, "tunnel", "tunnel", &format!("шлюз закрыт: им не пользовались {hours} ч")).await;
+    close(app, app.tunnel.timing().term_grace).await;
 }
 
 /// The planner is stopping (SIGTERM or Ctrl-C): the tunnel goes first, before the process's own exit.
@@ -1070,7 +1107,7 @@ pub async fn tunnel_get(State(app): State<Shared>, ConnectInfo(addr): ConnectInf
 }
 
 /// A POST of the tunnel: from this machine, from this page.
-fn guard(addr: SocketAddr, headers: &HeaderMap) -> Option<Response> {
+pub(crate) fn guard(addr: SocketAddr, headers: &HeaderMap) -> Option<Response> {
     if !same_origin(headers) {
         return Some(error(StatusCode::FORBIDDEN, "cross-origin request refused"));
     }

@@ -217,6 +217,8 @@ pub struct App {
     pub gate: crate::gate::Gate,
     /// The `cloudflared` the gate opens and closes.
     pub tunnel: crate::tunnel::Tunnel,
+    /// The key of the gate's link and the devices that came in through the tunnel.
+    pub devices: crate::devices::Devices,
     pub chat: Mutex<ChatState>,
     pub journal: Mutex<Journal>,
     pub details: Mutex<HashMap<String, (u64, Details)>>,
@@ -370,6 +372,7 @@ impl App {
         snapshot.runner_block = runner_block.clone();
         let gate = crate::gate::Gate::new(&cfg);
         let tunnel = crate::tunnel::Tunnel::new(&cfg);
+        let devices = crate::devices::Devices::new(&cfg);
         Arc::new(Self {
             cfg,
             db,
@@ -380,6 +383,7 @@ impl App {
             auth,
             gate,
             tunnel,
+            devices,
             chat: Mutex::new(chat),
             journal: Mutex::new(journal),
             details: Mutex::new(HashMap::new()),

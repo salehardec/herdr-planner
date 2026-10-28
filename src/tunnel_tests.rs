@@ -202,7 +202,11 @@ async fn a_quick_tunnel_opens_shows_its_address_and_closes() {
     assert!(r.app.gate.tunnel_open());
     let v = view(&r.app).await;
     assert_eq!(v.state, Phase::Open);
-    assert_eq!(v.link.as_deref(), Some("https://fake-quick-tunnel.trycloudflare.com"));
+    // the link carries the key after a `#`: the one thing a server never sees
+    let link = v.link.clone().unwrap();
+    let key = link.strip_prefix("https://fake-quick-tunnel.trycloudflare.com/#k=").unwrap_or_else(|| panic!("{link}"));
+    assert_eq!((key.len(), v.link_state), (22, crate::devices::LinkState::Fresh));
+    assert!(key.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_'), "{key}");
     assert!(v.installed && !v.sse && v.error.is_none());
     assert_eq!(v.version.as_deref(), Some("cloudflared version 2026.8.3 (fake, for the planner's tests)"));
 
@@ -318,10 +322,12 @@ async fn a_lost_connection_is_reconnecting_and_comes_back_to_open() {
     let r = rig("ready=100,blip=100:500");
     open(&r.app).await;
     r.until("open", |s| s == Phase::Open).await;
+    let link = view(&r.app).await.link.unwrap();
     r.until("reconnecting", |s| s == Phase::Reconnecting).await;
     assert!(r.app.gate.tunnel_open(), "the address is the same, the gate stays");
-    assert!(view(&r.app).await.link.is_some());
+    assert_eq!(view(&r.app).await.link.as_deref(), Some(link.as_str()), "so does the link, key and all");
     r.until("open again", |s| s == Phase::Open).await;
+    assert_eq!(view(&r.app).await.link.as_deref(), Some(link.as_str()));
     close(&r.app, Duration::from_secs(2)).await;
 }
 
@@ -391,7 +397,7 @@ async fn a_named_tunnel_runs_the_owners_config_at_the_owners_address() {
     r.until("open", |s| s == Phase::Open).await;
     assert!(r.app.gate.tunnel_open());
     let v = view(&r.app).await;
-    assert_eq!(v.link.as_deref(), Some("https://planner.yanao.su"));
+    assert!(v.link.as_deref().unwrap().starts_with("https://planner.yanao.su/#k="), "{:?}", v.link);
     assert!(v.sse, "server-sent events work through a named tunnel");
 
     let args = r.fake_args();
@@ -607,6 +613,12 @@ async fn serve(app: Shared) -> SocketAddr {
 
 /// One request as a client writes it: the status and the body.
 async fn call(addr: SocketAddr, method: &str, path: &str, extra: &[(&str, &str)], body: &str) -> (u16, String) {
+    let (status, _, body) = call_head(addr, method, path, extra, body).await;
+    (status, body)
+}
+
+/// The same, with the head of the answer (its headers) kept: the status, the head, the body.
+async fn call_head(addr: SocketAddr, method: &str, path: &str, extra: &[(&str, &str)], body: &str) -> (u16, String, String) {
     let mut req = format!("{method} {path} HTTP/1.1\r\nConnection: close\r\nContent-Type: application/json\r\nContent-Length: {}\r\n", body.len());
     for (k, v) in extra {
         req.push_str(&format!("{k}: {v}\r\n"));
@@ -618,7 +630,8 @@ async fn call(addr: SocketAddr, method: &str, path: &str, extra: &[(&str, &str)]
     tokio::time::timeout(Duration::from_secs(10), s.read_to_end(&mut raw)).await.unwrap().ok();
     let text = String::from_utf8_lossy(&raw).into_owned();
     let status = text.split(' ').nth(1).and_then(|c| c.parse().ok()).unwrap_or(0);
-    (status, text.split_once("\r\n\r\n").map(|(_, b)| b.to_string()).unwrap_or_default())
+    let (head, body) = text.split_once("\r\n\r\n").map(|(h, b)| (h.to_string(), b.to_string())).unwrap_or_default();
+    (status, head, body)
 }
 
 fn json_of(body: &str) -> serde_json::Value {
@@ -647,7 +660,8 @@ async fn the_api_opens_and_closes_the_tunnel_for_this_machine() {
     assert_eq!(status, 200, "{body}");
     r.until("open", |s| s == Phase::Open).await;
     let v = json_of(&call(addr, "GET", "/api/tunnel", &local, "").await.1);
-    assert_eq!((v["state"].as_str(), v["link"].as_str(), v["host"].as_str()), (Some("open"), Some("https://planner.yanao.su"), Some("planner.yanao.su")));
+    assert_eq!((v["state"].as_str(), v["host"].as_str()), (Some("open"), Some("planner.yanao.su")));
+    assert!(v["link"].as_str().unwrap().starts_with("https://planner.yanao.su/#k="), "{v}");
 
     // the gate lets the tunnel's address in as a tunnel request (a refusal for lack of a session, not the 503 of a closed tunnel)
     let https = ("Cf-Visitor", "{\"scheme\":\"https\"}");
@@ -847,4 +861,329 @@ async fn the_process_table_comes_from_ps_where_there_is_no_proc() {
     std::fs::write(pid_file(&r.app.cfg), format!("{} \n", other.pid())).unwrap();
     assert_eq!(reap_orphan_with(Backend::Ps, &r.app.cfg).await, None);
     other.stop();
+}
+
+/* ───────── the key, the devices, the sessions ───────── */
+
+const QUICK: &str = "fake-quick-tunnel.trycloudflare.com";
+const PHONE: &str = "Mozilla/5.0 (iPhone; CPU iPhone OS 17_4 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Mobile/15E148 Safari/604.1";
+const LOCAL: [(&str, &str); 1] = [("Host", "localhost")];
+const HOUR: u64 = 3_600_000;
+
+/// A request that comes through the tunnel, from a phone in Russia, with the cookie of its session if it has one.
+async fn via(addr: SocketAddr, method: &str, path: &str, cookie: Option<&str>, body: &str) -> (u16, String, String) {
+    let cookie_line = cookie.map(|c| format!("{}={c}", crate::devices::COOKIE));
+    let mut h = vec![("Host", QUICK), ("Cf-Ray", "x"), ("Cf-Visitor", "{\"scheme\":\"https\"}"), ("Cf-Connecting-Ip", "203.0.113.7"), ("Cf-Ipcountry", "RU"), ("User-Agent", PHONE)];
+    if let Some(c) = cookie_line.as_deref() {
+        h.push(("Cookie", c));
+    }
+    call_head(addr, method, path, &h, body).await
+}
+
+/// The value of the session cookie a response sets.
+fn cookie_of(head: &str) -> String {
+    let line = head.lines().find(|l| l.to_lowercase().starts_with("set-cookie:")).unwrap_or_else(|| panic!("no cookie: {head}"));
+    let (_, rest) = line.split_once(':').unwrap();
+    let pair = rest.trim().split(';').next().unwrap();
+    pair.strip_prefix(&format!("{}=", crate::devices::COOKIE)).unwrap_or_else(|| panic!("{line}")).to_string()
+}
+
+fn key_in(v: &serde_json::Value) -> Option<String> {
+    v["link"].as_str().and_then(|l| l.split("#k=").nth(1)).map(str::to_string)
+}
+
+async fn plaque(addr: SocketAddr) -> serde_json::Value {
+    let (status, body) = call(addr, "GET", "/api/tunnel", &LOCAL, "").await;
+    assert_eq!(status, 200, "{body}");
+    json_of(&body)
+}
+
+async fn opened_rig(scenario: &str) -> (Rig, SocketAddr) {
+    let r = rig(scenario);
+    let addr = serve(r.app.clone()).await;
+    open(&r.app).await;
+    r.until("open", |s| s == Phase::Open).await;
+    (r, addr)
+}
+
+#[tokio::test]
+async fn a_phone_comes_in_with_the_key_and_the_owner_lets_it_in() {
+    let (r, addr) = opened_rig("").await;
+    let v = plaque(addr).await;
+    let key = key_in(&v).expect("the link has the key");
+    assert_eq!((v["link_state"].as_str(), v["sessions"].as_array().map(Vec::len)), (Some("fresh"), Some(0)));
+    assert_eq!((v["settings"]["confirm_devices"].as_bool(), v["settings"]["idle_close_h"].as_u64(), v["settings"]["full_allowed"].as_bool()), (Some(true), Some(4), Some(false)));
+    assert_eq!(v["password_set"], false);
+
+    // the address alone is the sign-in page, and the key is in none of what it sends
+    let (status, head, page) = via(addr, "GET", "/", None, "").await;
+    assert_eq!(status, 200);
+    assert!(page.contains("/g/gate.js") && !page.contains(&key) && !head.contains(&key), "{head}");
+    let (status, _, js) = via(addr, "GET", "/g/gate.js", None, "").await;
+    assert_eq!(status, 200);
+    assert!(js.contains("/g/redeem") && !js.contains(&key));
+
+    // a wrong key gets nothing; the right one a cookie, and the question goes to the owner
+    let (status, head, _) = via(addr, "POST", "/g/redeem", None, "{\"key\":\"AAAAAAAAAAAAAAAAAAAAAA\"}").await;
+    assert_eq!(status, 410);
+    assert!(!head.to_lowercase().contains("set-cookie"), "{head}");
+    let (status, head, body) = via(addr, "POST", "/g/redeem", None, &format!("{{\"key\":\"{key}\",\"touch\":true}}")).await;
+    assert_eq!(status, 200, "{body}");
+    let j = json_of(&body);
+    assert_eq!((j["state"].as_str(), j["label"].as_str(), j["next"].as_str()), (Some("pending"), Some("iPhone · Safari 17"), Some("/m")));
+    let cookie_line = head.lines().find(|l| l.to_lowercase().starts_with("set-cookie:")).unwrap().to_lowercase();
+    for part in ["__host-hp_g=", "path=/", "httponly", "secure", "samesite=strict", "max-age=86400"] {
+        assert!(cookie_line.contains(part), "{part}: {cookie_line}");
+    }
+    assert!(!cookie_line.contains("domain"), "{cookie_line}");
+    let token = cookie_of(&head);
+    assert_eq!(token.len(), 64);
+    // the key is spent: the same link again, from another phone or the same, is dead
+    let (status, _, _) = via(addr, "POST", "/g/redeem", None, &format!("{{\"key\":\"{key}\"}}")).await;
+    assert_eq!(status, 410);
+
+    // waiting is not being in
+    for p in ["/favicon.ico", "/api/state"] {
+        let (status, _, _) = via(addr, "GET", p, Some(&token), "").await;
+        assert_eq!(status, 401, "{p}");
+    }
+    let (_, _, body) = via(addr, "GET", "/g/status", Some(&token), "").await;
+    assert_eq!(json_of(&body)["state"], "pending");
+    let (_, _, body) = via(addr, "GET", "/g/status", None, "").await;
+    let j = json_of(&body);
+    assert_eq!(j["state"], "none");
+    assert!(j["computer"].is_null() && j["label"].is_null(), "a stranger is not told the name of this machine: {j}");
+
+    // the owner sees who, from where, and that the link is spent
+    let v = plaque(addr).await;
+    assert_eq!(v["link_state"], "used");
+    assert!(key_in(&v).is_none() && v["link"].as_str().unwrap().ends_with(QUICK), "{v}");
+    let s = &v["sessions"][0];
+    assert_eq!((s["state"].as_str(), s["label"].as_str(), s["country"].as_str(), s["scope"].as_str()), (Some("pending"), Some("iPhone · Safari 17"), Some("RU"), Some("lite")));
+    let id = s["id"].as_str().unwrap().to_string();
+
+    // «Let in»
+    let (status, body) = call(addr, "POST", "/api/tunnel/session", &LOCAL, &format!("{{\"id\":\"{id}\",\"op\":\"allow\"}}")).await;
+    assert_eq!(status, 200, "{body}");
+    assert_eq!(json_of(&body)["sessions"][0]["state"], "active");
+    let (_, _, body) = via(addr, "GET", "/g/status", Some(&token), "").await;
+    assert_eq!(json_of(&body)["state"], "active");
+    // in: what the light page uses; not the planner, and not a thing of this machine
+    let (status, _, _) = via(addr, "GET", "/favicon.ico", Some(&token), "").await;
+    assert_eq!(status, 204);
+    let (status, _, _) = via(addr, "GET", "/api/state", Some(&token), "").await;
+    assert_eq!(status, 403, "the light version only");
+    for p in ["/api/limits", "/api/tunnel", "/api/task/terminal", "/api/memory"] {
+        let (status, _, _) = via(addr, "GET", p, Some(&token), "").await;
+        assert_eq!(status, 404, "{p}");
+    }
+    for (m, p) in [("POST", "/api/tunnel/close"), ("POST", "/api/tunnel/rotate"), ("POST", "/api/tunnel/session"), ("POST", "/api/tunnel/settings")] {
+        let (status, _, _) = via(addr, m, p, Some(&token), "{}").await;
+        assert_eq!(status, 404, "{m} {p}: a device cannot decide about devices");
+    }
+    // another browser with this cookie's name and any value is nobody
+    let (status, _, _) = via(addr, "GET", "/favicon.ico", Some("0".repeat(64).as_str()), "").await;
+    assert_eq!(status, 401);
+
+    // a new link: the old key is void, and the owner can let a second device in
+    let (status, body) = call(addr, "POST", "/api/tunnel/rotate", &LOCAL, "").await;
+    assert_eq!(status, 200, "{body}");
+    let v2 = json_of(&body);
+    let key2 = key_in(&v2).expect("a new key");
+    assert_ne!(key, key2);
+    assert_eq!(v2["link_state"], "fresh");
+    assert!(v2["link_expires_ms"].as_u64().unwrap() > crate::config::now_ms());
+
+    // switched off: the cookie is dead at once
+    let (status, _) = call(addr, "POST", "/api/tunnel/session", &LOCAL, &format!("{{\"id\":\"{id}\",\"op\":\"revoke\"}}")).await;
+    assert_eq!(status, 200);
+    let (status, _, _) = via(addr, "GET", "/favicon.ico", Some(&token), "").await;
+    assert_eq!(status, 401);
+    let (_, _, body) = via(addr, "GET", "/g/status", Some(&token), "").await;
+    let j = json_of(&body);
+    assert_eq!((j["state"].as_str(), j["reason"].as_str()), (Some("gone"), Some("revoked")));
+    assert_eq!(plaque(addr).await["sessions"].as_array().unwrap().len(), 0);
+
+    // the journal tells it, without the key or the cookie
+    let lines: Vec<String> = r.app.snapshot.read().await.journal.iter().map(|e| e.text.clone()).collect();
+    for want in ["устройство просит войти: iPhone · Safari 17", "устройство подключено: iPhone · Safari 17", "устройство отключено (владельцем): iPhone · Safari 17"] {
+        assert!(lines.iter().any(|l| l == want), "{want} in {lines:?}");
+    }
+    assert!(!lines.iter().any(|l| l.contains(&key) || l.contains(&token)), "{lines:?}");
+
+    // closing the gate: the key is void with the rest, the answers are 503
+    let (status, _) = call(addr, "POST", "/api/tunnel/close", &LOCAL, "").await;
+    assert_eq!(status, 200);
+    for (m, p, body) in [("GET", "/g/status", ""), ("POST", "/g/redeem", "{\"key\":\"x\"}"), ("GET", "/favicon.ico", "")] {
+        let (status, _, _) = via(addr, m, p, Some(&token), body).await;
+        assert_eq!(status, 503, "{p}");
+    }
+    let (status, _, _) = via(addr, "POST", "/g/redeem", None, &format!("{{\"key\":\"{key2}\"}}")).await;
+    assert_eq!(status, 503);
+    let v = plaque(addr).await;
+    assert_eq!((v["link_state"].as_str(), v["sessions"].as_array().map(Vec::len)), (Some("none"), Some(0)));
+}
+
+#[tokio::test]
+async fn a_browser_that_opens_the_closed_address_gets_a_page_and_a_reopened_gate_forgets_old_cookies() {
+    let (r, addr) = opened_rig("").await;
+    r.app.devices.set_settings(crate::devices::Settings { confirm_devices: false, ..r.app.devices.settings() });
+    let key = key_in(&plaque(addr).await).unwrap();
+    let (status, head, _) = via(addr, "POST", "/g/redeem", None, &format!("{{\"key\":\"{key}\"}}")).await;
+    assert_eq!(status, 200);
+    let token = cookie_of(&head);
+    let (status, _, _) = via(addr, "GET", "/favicon.ico", Some(&token), "").await;
+    assert_eq!(status, 204, "no question to the owner: in at once");
+
+    close(&r.app, Duration::from_secs(2)).await;
+    let (status, _, page) = call_head(addr, "GET", "/", &[("Host", QUICK), ("Cf-Ray", "x"), ("Accept", "text/html")], "").await;
+    assert_eq!(status, 503);
+    assert!(page.contains("<h1>") && !page.contains("<script"), "{page}");
+
+    // the same address again (a named tunnel's is always the same): the cookie of the last time means nothing
+    open(&r.app).await;
+    r.until("open", |s| s == Phase::Open).await;
+    let (status, _, _) = via(addr, "GET", "/favicon.ico", Some(&token), "").await;
+    assert_eq!(status, 401);
+    let (_, _, body) = via(addr, "GET", "/g/status", Some(&token), "").await;
+    assert_eq!(json_of(&body)["state"], "none");
+    assert!(key_in(&plaque(addr).await).is_some_and(|k| k != key), "a gate that opens again has a key of its own");
+    close(&r.app, Duration::from_secs(2)).await;
+}
+
+#[tokio::test]
+async fn a_tunnel_that_falls_takes_the_key_and_the_sessions_with_it() {
+    let (r, addr) = opened_rig("die=2500").await;
+    let key = key_in(&plaque(addr).await).unwrap();
+    let (status, head, _) = via(addr, "POST", "/g/redeem", None, &format!("{{\"key\":\"{key}\"}}")).await;
+    assert_eq!(status, 200);
+    assert_eq!(r.app.devices.list_at(crate::config::now_ms()).len(), 1);
+    r.until("failed", |s| s == Phase::Failed).await;
+    assert!(r.app.devices.list_at(crate::config::now_ms()).is_empty());
+    assert_eq!(r.app.devices.link_at(crate::config::now_ms()).state, crate::devices::LinkState::None);
+    let (status, _, _) = via(addr, "GET", "/favicon.ico", Some(&cookie_of(&head)), "").await;
+    assert_eq!(status, 503);
+    let v = plaque(addr).await;
+    assert_eq!((v["state"].as_str(), v["sessions"].as_array().map(Vec::len), v["link"].is_null()), (Some("failed"), Some(0), true));
+}
+
+#[tokio::test]
+async fn the_owners_calls_are_checked() {
+    let (r, addr) = opened_rig("").await;
+    let key = key_in(&plaque(addr).await).unwrap();
+    let (_, head, _) = via(addr, "POST", "/g/redeem", None, &format!("{{\"key\":\"{key}\"}}")).await;
+    let _ = head;
+    let id = plaque(addr).await["sessions"][0]["id"].as_str().unwrap().to_string();
+
+    // a page of another site cannot press «Let in»
+    let evil = [("Host", "localhost"), ("Origin", "http://evil.example")];
+    for (p, body) in [("/api/tunnel/session", format!("{{\"id\":\"{id}\",\"op\":\"allow\"}}")), ("/api/tunnel/rotate", String::new()), ("/api/tunnel/settings", "{\"idle_close_h\":12}".into())] {
+        let (status, _) = call(addr, "POST", p, &evil, &body).await;
+        assert_eq!(status, 403, "{p}");
+    }
+    // …nor can a reverse proxy's client
+    let (status, _) = call(addr, "POST", "/api/tunnel/session", &[("Host", "localhost"), ("X-Forwarded-For", "203.0.113.5")], &format!("{{\"id\":\"{id}\",\"op\":\"allow\"}}")).await;
+    assert_eq!(status, 403);
+    assert_eq!(r.app.devices.counts_at(crate::config::now_ms()), (1, 0), "still waiting");
+
+    // mistakes
+    let (status, _) = call(addr, "POST", "/api/tunnel/session", &LOCAL, "{\"id\":\"nobody\",\"op\":\"allow\"}").await;
+    assert_eq!(status, 404);
+    let (status, _) = call(addr, "POST", "/api/tunnel/session", &LOCAL, &format!("{{\"id\":\"{id}\",\"op\":\"destroy\"}}")).await;
+    assert!((400..500).contains(&status), "{status}");
+    let (status, _) = call(addr, "POST", "/api/tunnel/session", &LOCAL, &format!("{{\"id\":\"{id}\",\"op\":\"deny\"}}")).await;
+    assert_eq!(status, 200);
+    let (status, _) = call(addr, "POST", "/api/tunnel/session", &LOCAL, &format!("{{\"id\":\"{id}\",\"op\":\"allow\"}}")).await;
+    assert_eq!(status, 404, "it is gone");
+
+    // the settings: the hours are the ones offered, the full version needs a password, the file keeps them
+    for bad in ["{\"idle_close_h\":3}", "{\"idle_close_h\":-1}", "{\"idle_close_h\":\"4\"}"] {
+        let (status, _) = call(addr, "POST", "/api/tunnel/settings", &LOCAL, bad).await;
+        assert!((400..500).contains(&status), "{bad}: {status}");
+    }
+    let (status, _) = call(addr, "POST", "/api/tunnel/settings", &LOCAL, "{\"full_allowed\":true}").await;
+    assert_eq!(status, 409, "no password");
+    let (status, body) = call(addr, "POST", "/api/tunnel/settings", &LOCAL, "{\"idle_close_h\":12,\"confirm_devices\":false}").await;
+    assert_eq!(status, 200, "{body}");
+    let v = json_of(&body);
+    assert_eq!((v["settings"]["idle_close_h"].as_u64(), v["settings"]["confirm_devices"].as_bool()), (Some(12), Some(false)));
+    assert!(v["idle_closes_ms"].as_u64().unwrap() > crate::config::now_ms() + 11 * 3_600_000);
+    let saved = std::fs::read_to_string(&r.app.cfg.config_file).unwrap();
+    assert!(saved.contains("idle_close_h = 12") && saved.contains("confirm_devices = false") && saved.contains("full_allowed = false"), "{saved}");
+    let (status, _) = call(addr, "POST", "/api/tunnel/settings", &LOCAL, "{\"idle_close_h\":0}").await;
+    assert_eq!(status, 200);
+    assert_eq!(r.app.devices.idle_closes_at(), None, "never");
+
+    // a gate that is not open has no link to renew
+    close(&r.app, Duration::from_secs(2)).await;
+    let (status, _) = call(addr, "POST", "/api/tunnel/rotate", &LOCAL, "").await;
+    assert_eq!(status, 409);
+}
+
+#[tokio::test]
+async fn an_unanswered_device_is_declined_by_the_clock_and_a_gate_nobody_uses_closes() {
+    let (r, addr) = opened_rig("").await;
+    let now = crate::config::now_ms();
+    let key = key_in(&plaque(addr).await).unwrap();
+    let (_, head, _) = via(addr, "POST", "/g/redeem", None, &format!("{{\"key\":\"{key}\"}}")).await;
+    let token = cookie_of(&head);
+
+    // two minutes without an answer
+    crate::devices::sweep_at(&r.app, now + crate::devices::ASK_MS + 1000).await;
+    let (_, _, body) = via(addr, "GET", "/g/status", Some(&token), "").await;
+    let j = json_of(&body);
+    assert_eq!((j["state"].as_str(), j["reason"].as_str()), (Some("gone"), Some("unanswered")));
+    assert_eq!(r.app.tunnel.state(), Phase::Open, "a gate that was just asked about is not idle");
+
+    // one hour is the setting; a device that is in, and busy, keeps the gate open
+    r.app.devices.set_settings(crate::devices::Settings { idle_close_h: 1, confirm_devices: false, ..r.app.devices.settings() });
+    r.app.devices.rotate_at(now + 5 * HOUR);
+    let key = r.app.devices.link_at(now + 5 * HOUR).key.unwrap();
+    let t = r.app.devices.redeem_at(now + 5 * HOUR, "1.2.3.4", &key, crate::devices::Who { label: "iPhone · Safari 17".into(), ..Default::default() }).unwrap().token;
+    r.app.devices.standing_at(now + 5 * HOUR + HOUR / 2, Some(&t));
+    crate::devices::sweep_at(&r.app, now + 5 * HOUR + HOUR + 1000).await;
+    assert_eq!(r.app.tunnel.state(), Phase::Open, "the device used it half an hour ago");
+
+    let pid = r.fake_pid().await;
+    crate::devices::sweep_at(&r.app, now + 5 * HOUR + HOUR / 2 + HOUR + 1000).await;
+    assert_eq!(r.app.tunnel.state(), Phase::Closed);
+    assert!(!r.app.gate.tunnel_open());
+    wait_gone(pid).await;
+    assert_eq!(r.app.devices.standing_at(now, Some(&t)), crate::devices::Standing::Nobody, "its session went with the gate");
+    let lines: Vec<String> = r.app.snapshot.read().await.journal.iter().map(|e| e.text.clone()).collect();
+    assert!(lines.iter().any(|l| l == "шлюз закрыт: им не пользовались 1 ч"), "{lines:?}");
+    assert!(lines.iter().any(|l| l == "шлюз закрыт"), "{lines:?}");
+}
+
+#[tokio::test]
+async fn a_stranger_that_guesses_is_stopped_at_five() {
+    let (_r, addr) = opened_rig("").await;
+    for i in 0..5 {
+        let (status, _, _) = via(addr, "POST", "/g/redeem", None, &format!("{{\"key\":\"BBBBBBBBBBBBBBBBBBBB{i:02}\"}}")).await;
+        assert_eq!(status, 410, "{i}");
+    }
+    let (status, head, body) = via(addr, "POST", "/g/redeem", None, "{\"key\":\"BBBBBBBBBBBBBBBBBBBB99\"}").await;
+    assert_eq!(status, 429, "{body}");
+    assert!(head.to_lowercase().contains("retry-after: "), "{head}");
+    assert!(json_of(&body)["retry_s"].as_u64().unwrap() > 0);
+    // a key that is too long is no key; a body that is no JSON is refused before anything is compared
+    let (status, _, _) = via(addr, "POST", "/g/redeem", None, "not json").await;
+    assert!((400..500).contains(&status), "{status}");
+}
+
+#[tokio::test]
+async fn a_device_can_withdraw_its_request() {
+    let (r, addr) = opened_rig("").await;
+    let key = key_in(&plaque(addr).await).unwrap();
+    let (_, head, _) = via(addr, "POST", "/g/redeem", None, &format!("{{\"key\":\"{key}\"}}")).await;
+    let token = cookie_of(&head);
+    let (status, head, _) = via(addr, "POST", "/g/cancel", Some(&token), "{}").await;
+    assert_eq!(status, 200);
+    assert!(head.to_lowercase().contains("max-age=0"), "the cookie is cleared: {head}");
+    assert_eq!(r.app.devices.counts_at(crate::config::now_ms()), (0, 0));
+    let (_, _, body) = via(addr, "GET", "/g/status", Some(&token), "").await;
+    assert_eq!(json_of(&body)["reason"], "left");
+    // a page of another site cannot do it for the device
+    let (status, _, _) = call_head(addr, "POST", "/g/cancel", &[("Host", QUICK), ("Cf-Ray", "x"), ("Origin", "https://evil.example")], "{}").await;
+    assert_eq!(status, 403);
 }

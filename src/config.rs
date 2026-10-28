@@ -54,7 +54,18 @@ pub struct AppConfig {
     pub tunnel_config: Option<PathBuf>,
     /// The `cloudflared` program (a name or a path), when it is not in the usual places.
     pub tunnel_bin: Option<String>,
+    /// Whether a new device that came in with the key waits for the owner's «Let in» on this machine (default: yes).
+    pub tunnel_confirm_devices: bool,
+    /// After this many hours without a request from a device the planner closes the gate by itself; 0: never.
+    pub tunnel_idle_close_h: u32,
+    /// Whether a device may get the full planner through the gate (it also needs a password set; default: no).
+    pub tunnel_full_allowed: bool,
 }
+
+/// The hours of idleness after which the gate closes, as the settings offer them (0: never).
+pub const IDLE_CLOSE_CHOICES: [u32; 4] = [0, 1, 4, 12];
+/// The usual one.
+pub const IDLE_CLOSE_DEFAULT: u32 = 4;
 
 /// `tunnel.mode` in `config.toml`.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -135,6 +146,9 @@ struct TunnelFile {
     mode: Option<String>,
     config: Option<String>,
     bin: Option<String>,
+    confirm_devices: Option<bool>,
+    idle_close_h: Option<u32>,
+    full_allowed: Option<bool>,
 }
 
 fn parse_file(text: &str) -> FileConfig {
@@ -235,6 +249,9 @@ impl AppConfig {
             tunnel_mode: file.tunnel.mode.as_deref().and_then(TunnelMode::parse).unwrap_or_default(),
             tunnel_config: file.tunnel.config.as_deref().map(str::trim).filter(|v| !v.is_empty()).map(expand_home),
             tunnel_bin: file.tunnel.bin.map(|v| v.trim().to_string()).filter(|v| !v.is_empty()),
+            tunnel_confirm_devices: file.tunnel.confirm_devices.unwrap_or(true),
+            tunnel_idle_close_h: idle_close_hours(file.tunnel.idle_close_h),
+            tunnel_full_allowed: file.tunnel.full_allowed.unwrap_or(false),
         }
     }
 
@@ -312,6 +329,11 @@ pub fn set_live_projects_dir(dir: PathBuf) {
     if let Ok(mut g) = LIVE_PROJECTS_DIR.write() {
         *g = Some(dir);
     }
+}
+
+/// The hours of the setting, or the usual ones when the file names others.
+fn idle_close_hours(v: Option<u32>) -> u32 {
+    v.filter(|h| IDLE_CLOSE_CHOICES.contains(h)).unwrap_or(IDLE_CLOSE_DEFAULT)
 }
 
 /// The host name of a tunnel as the settings and the gate write it (see `clean_host`).
@@ -437,6 +459,21 @@ pub fn set_tunnel(config_file: &Path, mode: TunnelMode, config: &str, hostname: 
     })
 }
 
+/// Writes who may come through the gate and for how long it stays open (`[tunnel]` of `config.toml`), keeping the
+/// table's other keys and the rest of the file.
+pub fn set_tunnel_access(config_file: &Path, confirm_devices: bool, idle_close_h: u32, full_allowed: bool) -> Result<(), String> {
+    edit_config(config_file, |doc| {
+        let mut table = match doc.remove("tunnel") {
+            Some(toml::Value::Table(t)) => t,
+            _ => toml::map::Map::new(),
+        };
+        table.insert("confirm_devices".into(), toml::Value::Boolean(confirm_devices));
+        table.insert("idle_close_h".into(), toml::Value::Integer(idle_close_h.into()));
+        table.insert("full_allowed".into(), toml::Value::Boolean(full_allowed));
+        doc.insert("tunnel".into(), toml::Value::Table(table));
+    })
+}
+
 /// Argon2id PHC string for the password.
 pub fn hash_password(password: &str) -> Result<String, String> {
     use argon2::password_hash::{rand_core::OsRng, PasswordHasher, SaltString};
@@ -521,6 +558,26 @@ mod tests {
         assert_eq!(f.tunnel.config.as_deref(), Some("/home/me/.cloudflared/x.yml"));
         assert_eq!(f.tunnel.hostname, None, "an empty address removes the key");
         assert_eq!(f.tunnel.bin.as_deref(), Some("/opt/cloudflared"), "other keys of the table stay");
+    }
+
+    #[test]
+    fn who_may_come_through_the_gate_is_read_and_written_beside_the_rest_of_the_table() {
+        let f = parse_file("[tunnel]\nconfirm_devices = false\nidle_close_h = 12\nfull_allowed = true\n");
+        assert_eq!((f.tunnel.confirm_devices, f.tunnel.idle_close_h, f.tunnel.full_allowed), (Some(false), Some(12), Some(true)));
+        let none = parse_file("");
+        assert_eq!((none.tunnel.confirm_devices, none.tunnel.idle_close_h, none.tunnel.full_allowed), (None, None, None));
+        // only the hours the settings offer; anything else is the usual four
+        for (given, want) in [(Some(0), 0), (Some(1), 1), (Some(4), 4), (Some(12), 12), (Some(3), 4), (Some(9999), 4), (None, 4)] {
+            assert_eq!(idle_close_hours(given), want, "{given:?}");
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        fs::write(&path, "port = 7333\n[tunnel]\nhostname = \"planner.yanao.su\"\n").unwrap();
+        set_tunnel_access(&path, false, 1, false).unwrap();
+        set_tunnel(&path, TunnelMode::Named, "", "planner.yanao.su").unwrap();
+        let f = parse_file(&fs::read_to_string(&path).unwrap());
+        assert_eq!((f.port, f.tunnel.hostname.as_deref()), (Some(7333), Some("planner.yanao.su")));
+        assert_eq!((f.tunnel.confirm_devices, f.tunnel.idle_close_h, f.tunnel.full_allowed, f.tunnel.mode.as_deref()), (Some(false), Some(1), Some(false), Some("named")));
     }
 
     #[test]
