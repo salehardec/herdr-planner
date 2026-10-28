@@ -17,7 +17,7 @@
 .ti.planet.seated .lab{min-width:10rem;flex:1 0 10rem}
 .ti .meta.seat{flex:0 1 auto;overflow:hidden;text-overflow:ellipsis}
 /* who is on the task: «ревью · pi/k3.1-pro», a button into that agent's terminal in herdr */
-.ti .meta.seat{display:inline-block;max-width:62%;min-width:4.5rem;padding:0 0.375rem;height:1.125rem;font:inherit;font-size:0.6562rem;color:var(--pl-dim);background:transparent;border:1px solid var(--pl-line);border-radius:0.5rem;cursor:pointer;white-space:nowrap}
+.ti .meta.seat{display:inline-block;max-width:62%;min-width:3rem;padding:0 0.375rem;height:1.125rem;font:inherit;font-size:0.6562rem;color:var(--pl-dim);background:transparent;border:1px solid var(--pl-line);border-radius:0.5rem;cursor:pointer;white-space:nowrap}
 .ti .meta.seat:hover,.ti .meta.seat:focus-visible{color:var(--pl-title);border-color:var(--pl-accent);background:color-mix(in srgb,var(--pl-accent) 14%,transparent)}
 .ti .cnt{color:var(--pl-faint);font-size:0.6562rem;border:1px solid var(--pl-line);border-radius:0.5rem;padding:0 0.3125rem;flex:none}
 .ti .cnt.hot,.ti.attn>.cnt{color:var(--c-yellow);border-color:color-mix(in srgb,var(--c-yellow) 40%,var(--pl-line))}
