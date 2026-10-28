@@ -314,6 +314,61 @@ section('navigator', async () => {
   await send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: 700, y: 400 });
 }, { retry: true });
 
+section('seats', async () => {
+  // Who is on a task now, in the navigator's row, and the way into their terminal in herdr (PLN-64).
+  await resetUi();
+  if (await exists('#nav.off')) await press('KeyN', 'n');
+  const row = (id) => `#nav [data-nav="planet|${id}"]`;
+  const chip = (id) => `${row(id)} .seat`;
+  const reveal = async (id) => {
+    for (let i = 0; i < 8 && !(await exists(row(id))); i++) {
+      await evalJs('(() => { const g = document.querySelector("#nav [data-kind=\\"group\\"][aria-expanded=\\"false\\"]"); g?.click(); return !!g; })()');
+      await sleep(150);
+    }
+  };
+  for (const id of ['alpha/7', 'sigma/2', 'alpha/6']) await reveal(id);
+  const label = (id) => evalJs(`document.querySelector(${JSON.stringify(chip(id))})?.innerText.trim() || ''`);
+  const tip = (id) => evalJs(`document.querySelector(${JSON.stringify(chip(id))})?.title || ''`);
+  check('a task under review shows its reviewer: agent and model of its own setting', await waitFor(`(document.querySelector(${JSON.stringify(chip('alpha/7'))})?.innerText || '').trim() === 'ревью · pi/k3.1-pro'`, 6000), await label('alpha/7'));
+  check('the whole reviewer is in the tooltip, with the way in', (await tip('alpha/7')).includes('Ревьюер: pi/kimi-coding/k3.1-pro') && (await tip('alpha/7')).includes('Открыть терминал'), await tip('alpha/7'));
+  check('a review handed over to the fallback shows the one that reviews now', await waitFor(`(document.querySelector(${JSON.stringify(chip('sigma/2'))})?.innerText || '').trim() === 'ревью · codex/gpt-6-luna'`, 4000) && (await tip('sigma/2')).includes('передано запасному'), `${await label('sigma/2')} | ${await tip('sigma/2')}`);
+  check('the working agent is shown the same way', await waitFor(`(document.querySelector(${JSON.stringify(chip('alpha/6'))})?.innerText || '').trim() === 'omp/deepseek-v4-flash'`, 4000), await label('alpha/6'));
+  check('a task whose review is over, a queued one and a failed one have no mark', !(await exists(chip('alpha/4'))) && !(await exists(chip('alpha/9'))) && !(await exists(chip('alpha/8'))), JSON.stringify([await exists(chip('alpha/4')), await exists(chip('alpha/9')), await exists(chip('alpha/8'))]));
+  const names = await evalJs('plannerSnap().tasks.filter((x) => x.seat).map((x) => x.id + ":" + x.seat.role).sort()');
+  check('the server names a reviewer for the two tasks that have one and a worker for those at work, nobody else', JSON.stringify(names.filter((n) => n.endsWith(':reviewer'))) === JSON.stringify(['alpha/7:reviewer', 'sigma/2:reviewer']) && names.includes('alpha/6:worker') && names.includes('gamma/1:worker') && names.length === 4, JSON.stringify(names));
+  const before = await evalJs('plannerDebug().selected?.id || ""');
+  await shot('navigator-seats.png');
+  await clearToasts();
+  await click(chip('alpha/7'));
+  check('a click on the reviewer brings its terminal to the front in herdr', await waitLog(() => calls('focus.jsonl').some((c) => c.target === 'sw-alpha-7-r'), 8000), JSON.stringify(calls('focus.jsonl')));
+  check('the page says which terminal it opened', await waitFor('document.querySelector("#toasts")?.innerText.includes("sw-alpha-7-r")', 4000), await text('#toasts'));
+  check('the click does not also open the task', (await evalJs('plannerDebug().selected?.id || ""')) === before, before);
+  await click(chip('alpha/6'));
+  check('a click on the worker opens the worker\'s own terminal', await waitLog(() => calls('focus.jsonl').some((c) => c.target === 'sw-alpha-6'), 8000), JSON.stringify(calls('focus.jsonl')));
+  // The reviewer's terminal is gone: the page says so instead of pretending.
+  writeFileSync(join(fixture, 'state', 'no-reviewer'), '');
+  await clearToasts();
+  const focused = calls('focus.jsonl').length;
+  await click(chip('alpha/7'));
+  check('a reviewer with no terminal is said plainly, with the reason', await waitFor('document.querySelector("#toasts")?.innerText.includes("нет терминала ревьюера")', 6000), await text('#toasts'));
+  check('nothing was focused when there was nothing to focus', calls('focus.jsonl').length === focused, String(calls('focus.jsonl').length));
+  unlinkSync(join(fixture, 'state', 'no-reviewer'));
+  // The review is over: the mark goes with it. (The row comes back as it was afterwards.)
+  const f = join(fixture, 'state', 'board.json');
+  const w = JSON.parse(readFileSync(f, 'utf8'));
+  const r = w.rows.find((x) => x.id === 'alpha/7');
+  const was = { ...r };
+  Object.assign(r, { state: 'blocked', kind: 'permission', stage: 'approval', msg: 'Pass · 1 minor' });
+  writeFileSync(f, JSON.stringify(w, null, 1));
+  const rec = join(fixture, 'board', 'tasks', 'alpha', '7', 'task.json');
+  writeFileSync(rec, readFileSync(rec, 'utf8'));
+  check('when the review ends the mark goes', await waitFor(`plannerSnap().tasks.find((x) => x.id === "alpha/7")?.seat == null && !document.querySelector(${JSON.stringify(chip('alpha/7'))})`, 15000), await label('alpha/7'));
+  Object.assign(r, was);
+  writeFileSync(f, JSON.stringify(w, null, 1));
+  writeFileSync(rec, readFileSync(rec, 'utf8'));
+  check('and comes back with the next review', await waitFor(`plannerSnap().tasks.find((x) => x.id === "alpha/7")?.seat?.role === "reviewer"`, 15000));
+}, { retry: true });
+
 section('panel widths', async () => {
   // Every panel that stands at a side has the navigator's edge, and the chat in the middle has one too: all of them share a single
   // handle (ui/Grip.tsx) and a single store of widths (panel-width.ts). Dragged, the width changes and is kept by the browser; a
@@ -3761,7 +3816,7 @@ const layoutRun = async (w, h, dsf, scale = 'auto') => {
     const m = await evalJs(`(() => { const nav = document.querySelector('#nav'); const px = parseFloat(getComputedStyle(document.documentElement).fontSize);
       const labs = [...nav.querySelectorAll('.ti.planet .lab')].filter((e) => e.getBoundingClientRect().width > 0);
       const titles = labs.map((e) => e.clientWidth / px);
-      const metas = [...nav.querySelectorAll('.ti.planet .meta.st')].map((e) => e.getBoundingClientRect().width / px);
+      const metas = [...nav.querySelectorAll('.ti.planet .meta.st:not(.seat)')].map((e) => e.getBoundingClientRect().width / px);
       return { navRem: nav.getBoundingClientRect().width / px, minTitle: Math.min(...titles), rows: titles.length, maxStatus: Math.max(0, ...metas), tip: nav.querySelector('.ti.planet')?.title || '', pxNav: nav.getBoundingClientRect().width };
     })()`);
     check(`${at}: the navigator is wide (${m.navRem?.toFixed(1)} rem, ${Math.round(m.pxNav)} px)`, (eff <= 900 || (m.navRem >= (eff > 1400 ? 26 : eff > 1100 ? 22 : 21) - 0.1 && m.pxNav >= 300)), JSON.stringify(m));

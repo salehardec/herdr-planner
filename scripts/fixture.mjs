@@ -124,6 +124,7 @@ function common(DATA, mods) {
       id: row.id, repo, n: Number(n), root: (w.folders || {})[repo] || '', title: row.title,
       description: m.description || '', owner: 'me', app: row.app, stage: row.stage, state: row.state,
       created: m.created || 0, at: m.at || m.created || 0, settings: m.settings || {}, model: m.model ?? null,
+      agent: row.app, reviewerOn: m.reviewerOn ?? null,
       session: m.session || '', worktree: m.worktree || '', branch: m.branch || '',
       after, afterDone: m.afterDone || [], exitedAt: m.exitedAt ?? null,
       ...(m.gone ? { last: { status: null, gone: true } } : {}),
@@ -340,7 +341,7 @@ const META = {
   'alpha/4': { ago: 3 * HOUR, desc: 'Тёмная тема для страницы отчётов: цвета из палитры Omarchy, контраст не ниже AA.' },
   'alpha/5': { ago: 50 * MIN, desc: 'Cache of report aggregates: invalidate on dataset change. The review found a stale-cache bug, see the findings.' },
   'alpha/6': { ago: 5 * HOUR, desc: 'Миграция базы под новую схему отчётов: таблицы, индексы и откат. Работать в своей ветке, main не трогать.', worker: 'omp/deepseek/deepseek-v4-flash', model: 'deepseek-v4-flash' },
-  'alpha/7': { ago: 26 * HOUR, desc: 'Document the export API for the new schema, examples included.', worker: 'pi/default', model: null },
+  'alpha/7': { ago: 26 * HOUR, desc: 'Document the export API for the new schema, examples included.', worker: 'pi/default', model: null, reviewer: 'pi/kimi-coding/k3.1-pro' },
   'alpha/8': { ago: 3 * DAY, desc: 'Сборка падает на шаге линковки после обновления зависимостей. Найти причину и починить.' },
   'alpha/9': { ago: 2 * HOUR, desc: 'Run the nightly import of tenant reports; the worker waits for a free slot.' },
   'alpha/10': { ago: 30 * HOUR, desc: 'Follow-up of the nightly import: fix retries once ALP-9 is merged.', afterDone: [] },
@@ -358,7 +359,7 @@ const META = {
   'delta/2': { ago: 30 * HOUR, desc: 'Выбрать один из трёх вариантов интерфейса импорта.' },
   'delta/3': { ago: 3 * DAY, desc: 'Как кешировать: в памяти, на диске или оба. Три попытки, выбрать одну.' },
   'sigma/1': { ago: 7 * HOUR, desc: 'Перенести конфиг сборки на новый формат; агент остановился без итога.', noSettings: true },
-  'sigma/2': { ago: 26 * HOUR, desc: 'Ревьюеру нужен человек: спорный вопрос про лицензию зависимости.', worker: 'omp/deepseek/deepseek-v4-flash', model: 'deepseek-v4-flash' },
+  'sigma/2': { ago: 26 * HOUR, desc: 'Ревьюеру нужен человек: спорный вопрос про лицензию зависимости.', worker: 'omp/deepseek/deepseek-v4-flash', model: 'deepseek-v4-flash', reviewerOn: 'codex/gpt-6-luna' },
   'docs/1': { ago: 9 * DAY, desc: 'Archived documentation pass.' },
 };
 const WORKER_BY_APP = { claude: 'claude/claude-sonnet-5-5', omp: 'omp/deepseek/deepseek-v4-flash', pi: 'pi/default', codex: 'codex/gpt-5-codex' };
@@ -507,7 +508,8 @@ for (const r of rows) {
     created,
     at: r.state === 'done' || r.archivedAt ? Math.min(NOW, created + 40 * MIN) : created,
     description: m.desc ?? `Задача ${r.id}: ${r.title}.`,
-    settings: m.noSettings ? {} : (worker ? { 'worker.agent': worker } : {}),
+    settings: { ...(m.noSettings ? {} : (worker ? { 'worker.agent': worker } : {})), ...(m.reviewer ? { 'reviewer.agent': m.reviewer } : {}) },
+    reviewerOn: m.reviewerOn ?? null,
     model: m.model !== undefined ? m.model : MODEL_BY_APP[r.app] ?? null,
     session: C0.uuid('session ' + r.id),
     worktree: path.join(dir, 'worktrees', `${repo}-${n}`),
@@ -1143,7 +1145,8 @@ function herdrMain(C, DATA) {
       if (r.archivedAt) continue;
       const base = 'sw-' + r.id.split('/')[0] + '-' + r.id.split('/')[1];
       names.push(base);
-      if (r.stage === 'reviewneeds') names.push(base + '-r');
+      // The reviewer's terminal is there while it reviews or needs you; `state/no-reviewer` says it has gone.
+      if ((r.stage === 'reviewneeds' || r.stage === 'reviewing') && !fs.existsSync(join('state', 'no-reviewer'))) names.push(base + '-r');
     }
     return names;
   };
@@ -1187,6 +1190,15 @@ function herdrMain(C, DATA) {
     const name = rest[0];
     if (!namesOf(world()).includes(name)) { console.error('no such agent: ' + name); process.exit(1); }
     console.log(JSON.stringify({ id: 'cli:agent:get', result: { agent: { name, pane_id: 'w1:p-' + name }, type: 'agent_info' } }));
+    return;
+  }
+  // The terminal brought to the front: the agent has to be there.
+  if (cmd === 'agent' && sub === 'focus') {
+    log('herdr.jsonl', { argv: process.argv.slice(2) });
+    const name = rest[0];
+    if (!namesOf(world()).includes(name)) { console.error(JSON.stringify({ error: { code: 'agent_not_found', message: 'agent target ' + name + ' not found' } })); process.exit(1); }
+    log('focus.jsonl', { target: name });
+    console.log(JSON.stringify({ id: 'cli:agent:focus', result: { type: 'ok' } }));
     return;
   }
   // Literal text into a pane (the own answer of a selection menu): the pane is named `w1:p-<agent>`.

@@ -33,6 +33,7 @@ mod runners_disk;
 mod runners_hist;
 mod runners_log;
 mod search;
+mod seat;
 mod server;
 mod ship;
 mod ssh;

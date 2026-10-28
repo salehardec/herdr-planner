@@ -135,6 +135,8 @@ pub struct Task {
     pub subagents: Vec<crate::subagents::Subagent>,
     /// Why there is no sub-agent data, when that is the honest answer.
     pub subagents_note: String,
+    /// Who is on the task now (the reviewer under review, the working agent while it works); see `seat`.
+    pub seat: Option<crate::seat::Seat>,
 }
 
 impl Default for Status {

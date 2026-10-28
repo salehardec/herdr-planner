@@ -38,6 +38,14 @@ pub struct TaskMeta {
     pub working: bool,
     /// Task refs this task waits for, e.g. `herdr-planner/2`.
     pub after: Vec<String>,
+    /// `agent`: the program on the task (`claude`).
+    pub agent: String,
+    /// `on`: the agent that took the task over from the first one (`codex/gpt-6-luna`); `""` while the first is on it.
+    pub on: String,
+    /// `reviewerOn`: the reviewer that took the review over, the same way.
+    pub reviewer_on: String,
+    /// `settings["reviewer.agent"]`: the task's own reviewer; `""` when it keeps the repo's or the Galaxy's.
+    pub own_reviewer: String,
 }
 
 /// The closing note of a task, cut to a size limit.
@@ -148,6 +156,14 @@ fn parse_task(v: &Value) -> TaskMeta {
         root: text("root"),
         exited_at_ms: millis("exitedAt"),
         at_ms: millis("at"),
+        agent: text("agent"),
+        on: text("on"),
+        reviewer_on: text("reviewerOn"),
+        own_reviewer: v
+            .pointer("/settings/reviewer.agent")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string(),
         archived_at_ms: millis("archivedAt"),
         gone: v.pointer("/last/gone").and_then(Value::as_bool).unwrap_or(false),
         working: v.pointer("/last/status").and_then(Value::as_str) == Some("working"),
@@ -264,6 +280,9 @@ mod tests {
         "after": ["herdr-planner/1", "herdr-planner/7"],
         "afterDone": [{"id": "herdr-planner/1", "title": "Старое"}],
         "exitedAt": 1792390700000,
+        "agent": "omp",
+        "on": "codex/gpt-6-luna",
+        "reviewerOn": "codex",
         "tokens": "not read"
     }"#;
 
@@ -294,6 +313,8 @@ mod tests {
         assert_eq!(t.root, "/srv/projects/herdr-planner");
         assert_eq!(t.exited_at_ms, 1_792_390_700_000);
         assert_eq!(t.after, vec!["herdr-planner/1", "herdr-planner/7"]);
+        assert_eq!((t.agent.as_str(), t.on.as_str(), t.reviewer_on.as_str()), ("omp", "codex/gpt-6-luna", "codex"));
+        assert_eq!(t.own_reviewer, "", "no reviewer of its own");
     }
 
     #[test]
@@ -308,6 +329,7 @@ mod tests {
         assert_eq!(t.exited_at_ms, 0);
         assert_eq!(t.after, vec!["a/1"]);
         assert_eq!(t.created_ms, 0);
+        assert_eq!((t.on.as_str(), t.reviewer_on.as_str()), ("", ""), "no hand-over");
     }
 
     #[test]

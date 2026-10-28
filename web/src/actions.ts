@@ -8,7 +8,7 @@ import { ApiError, api, post, refreshNow } from './api';
 import { toast } from './toast';
 import { t } from './i18n';
 import { afterAnswered } from './nav';
-import type { Entity, MenuAnswer, Task } from './types';
+import type { Entity, MenuAnswer, Seat, Task } from './types';
 
 export const ACTION_LABEL: Record<string, string> = {
   approve: 'act.approve', anyway: 'act.anyway', retry: 'act.retry', review: 'act.review', stop: 'act.stop',
@@ -281,3 +281,15 @@ draftSent.fn = (ids) => {
   const have = new Set((snap.value?.todo ?? []).map((x) => x.id));
   ids.filter((id) => have.has(id)).forEach((id) => { void todoRemove(id); });
 };
+
+/** Brings the agent's terminal to the front in herdr; says why when that cannot be done. */
+export async function openTerminal(task: string, seat: Seat): Promise<boolean> {
+  try {
+    const r = await post<{ name: string }>('/api/task/terminal', { task, role: seat.role === 'reviewer' ? 'reviewer' : undefined });
+    toast(t('seat.opened', { name: r.name }), { icon: 'screen' });
+    return true;
+  } catch (e) {
+    toast((e as Error).message, { icon: 'failed', timeout: 8000 });
+    return false;
+  }
+}

@@ -216,6 +216,8 @@ pub struct App {
     pub chat: Mutex<ChatState>,
     pub journal: Mutex<Journal>,
     pub details: Mutex<HashMap<String, (u64, Details)>>,
+    /// The reviewer and worker a repository's tasks inherit, by repo name, with when they were read.
+    pub crews: Mutex<HashMap<String, (u64, crate::seat::Crew)>>,
     pub refresh_lock: Mutex<()>,
     pub action_lock: Mutex<()>,
     pub after: Mutex<AfterCache>,
@@ -373,6 +375,7 @@ impl App {
             chat: Mutex::new(chat),
             journal: Mutex::new(journal),
             details: Mutex::new(HashMap::new()),
+            crews: Mutex::new(HashMap::new()),
             refresh_lock: Mutex::new(()),
             action_lock: Mutex::new(()),
             after: Mutex::new(AfterCache::default()),
@@ -498,6 +501,43 @@ fn finished_of(t: &Task, m: &taskmeta::TaskMeta) -> u64 {
         return m.at_ms;
     }
     0
+}
+
+/// How long what a repository's tasks inherit (`show --repo`) is trusted before it is read again.
+const CREW_TTL_MS: u64 = 30_000;
+
+/// The reviewer and worker the tasks of these repositories inherit. Only the repositories with a task that has a
+/// seat are asked, one `show --repo` each, kept for `CREW_TTL_MS`; a read that fails keeps the last answer.
+async fn crews_for(app: &Shared, repos: Vec<String>, now: u64) -> HashMap<String, crate::seat::Crew> {
+    let stale: Vec<String> = {
+        let kept = app.crews.lock().await;
+        repos
+            .iter()
+            .filter(|r| kept.get(*r).is_none_or(|(at, _)| now.saturating_sub(*at) >= CREW_TTL_MS))
+            .cloned()
+            .collect()
+    };
+    let read = futures_util::future::join_all(stale.iter().map(|repo| async move {
+        let settings = tokio::time::timeout(Duration::from_secs(6), crate::station::read_settings(&app.cfg, repo)).await;
+        (repo.clone(), settings.ok().and_then(Result::ok))
+    }))
+    .await;
+    let mut kept = app.crews.lock().await;
+    for (repo, settings) in read {
+        let old = kept.get(&repo).map(|(_, c)| c.clone()).unwrap_or_default();
+        let crew = match settings {
+            Some(list) => {
+                let value = |name: &str| crate::station::find(&list, name).map(|s| s.value.clone()).unwrap_or_default();
+                crate::seat::Crew { reviewer: value("reviewer.agent"), worker: value("worker.agent") }
+            }
+            None => old,
+        };
+        kept.insert(repo, (now, crew));
+    }
+    repos
+        .into_iter()
+        .filter_map(|r| kept.get(&r).map(|(_, c)| (r, c.clone())))
+        .collect()
 }
 
 /// Merges the task's own record (`task.json`) and its repo's key into the row of `list --json`.
@@ -849,6 +889,18 @@ async fn refresh_inner(app: &Shared) {
             let data_dir = cfg.data_dir.clone();
             let roots2 = roots.clone();
             let keys2 = keys.clone();
+            // Who is on each task now needs what the repository gives its tasks: asked for the busy repositories only.
+            let busy_repos: Vec<String> = {
+                let mut v: Vec<String> = tasks
+                    .iter()
+                    .filter(|t| !t.archived && matches!(t.status, Status::Review | Status::Working | Status::Waiting))
+                    .map(|t| t.repo.clone())
+                    .collect();
+                v.sort();
+                v.dedup();
+                v
+            };
+            let crews = crews_for(app, busy_repos, now).await;
             let tasks = tokio::task::spawn_blocking(move || {
                 let mut tasks = tasks;
                 let mut metas_local: HashMap<String, taskmeta::TaskMeta> = HashMap::new();
@@ -856,6 +908,9 @@ async fn refresh_inner(app: &Shared) {
                     let meta = taskmeta::read_task(&data_dir, &t.repo, t.n);
                     let key = keys2.get(&t.repo).cloned().unwrap_or_default();
                     apply_meta(t, meta.as_ref(), &key);
+                    if let Some(m) = &meta {
+                        t.seat = crate::seat::of(t, m, &crews.get(&t.repo).cloned().unwrap_or_default());
+                    }
                     if let Some(m) = meta {
                         metas_local.insert(t.id.clone(), m);
                     }

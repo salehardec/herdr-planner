@@ -69,6 +69,7 @@ pub fn router(app: Shared) -> Router {
         .route("/api/details", get(api_details))
         .route("/api/coordinator/screen", get(api_coordinator_screen))
         .route("/api/action", post(api_action))
+        .route("/api/task/terminal", post(api_task_terminal))
         .route("/api/menu/answer", post(crate::menu_api::menu_answer))
         .route("/api/chat", post(api_chat))
         .route("/api/chat/history", get(api_chat_history))
@@ -507,6 +508,55 @@ async fn api_coordinator_screen(
         "ansi": if colored { tail } else { String::new() },
     }))
     .into_response()
+}
+
+#[derive(Deserialize)]
+struct TerminalBody {
+    task: String,
+    /// `reviewer` for the reviewer's terminal; the working agent's otherwise.
+    role: Option<String>,
+}
+
+/// Why a task's terminal could not be opened, in words for the person: herdr's own error says only that the agent is not found.
+fn terminal_failure(role: Option<&str>, name: &str, said: &str) -> String {
+    let who = if role == Some("reviewer") { "ревьюера" } else { "исполнителя" };
+    if said.contains("not_found") || said.contains("not found") || said.contains("no such agent") {
+        let why = if role == Some("reviewer") {
+            "ревью, видимо, уже закончилось или ещё не началось"
+        } else {
+            "агент ушёл или ещё не запущен"
+        };
+        return format!("В herdr нет терминала {who} ({name}): {why}");
+    }
+    format!("herdr не открыл терминал {who} ({name}): {said}")
+}
+
+/// Brings a task's agent terminal to the front in herdr: its workspace, tab and pane get the focus.
+async fn api_task_terminal(
+    State(app): State<Shared>,
+    headers: HeaderMap,
+    Json(body): Json<TerminalBody>,
+) -> Response {
+    if !same_origin(&headers) {
+        return error(StatusCode::FORBIDDEN, "cross-origin request refused");
+    }
+    let role = body.role.as_deref();
+    let name = match agent_name(&body.task, role) {
+        Ok(name) if body.task != "coordinator" => name,
+        Ok(_) => return error(StatusCode::BAD_REQUEST, "not a task id"),
+        Err(e) => return error(StatusCode::BAD_REQUEST, e),
+    };
+    if !app.cfg.herdr_socket.exists() {
+        return error(StatusCode::CONFLICT, "herdr не запущен: открыть терминал негде");
+    }
+    let wait = Duration::from_secs(8);
+    if let Err(e) = run_herdr(&["agent", "get", &name], wait).await {
+        return error(StatusCode::CONFLICT, terminal_failure(role, &name, &e));
+    }
+    if let Err(e) = run_herdr(&["agent", "focus", &name], wait).await {
+        return error(StatusCode::BAD_GATEWAY, terminal_failure(role, &name, &e));
+    }
+    Json(json!({"ok": true, "name": name})).into_response()
 }
 
 /// `sw-coordinator` for the Coordinator, `sw-<repo>-<n>` for a task's agent.
@@ -1786,6 +1836,17 @@ mod tests {
         assert_eq!(clip_tail_to(one_line, 15), "…");
         // A whole tail of one line that is only text still keeps its end.
         assert_eq!(clip_tail_to("abcdefghij".into(), 4), "…ghij");
+    }
+
+    #[test]
+    fn a_terminal_that_is_not_there_is_said_plainly() {
+        let said = r#"{"error":{"code":"agent_not_found","message":"agent target sw-alpha-7-r not found"}}"#;
+        let m = terminal_failure(Some("reviewer"), "sw-alpha-7-r", said);
+        assert!(m.contains("нет терминала ревьюера (sw-alpha-7-r)") && m.contains("ревью"), "{m}");
+        let m = terminal_failure(None, "sw-alpha-7", "no such agent: sw-alpha-7");
+        assert!(m.contains("нет терминала исполнителя") && m.contains("агент ушёл"), "{m}");
+        let m = terminal_failure(None, "sw-alpha-7", "herdr: no answer in 8s");
+        assert!(m.contains("не открыл терминал исполнителя") && m.contains("no answer in 8s"), "{m}");
     }
 
     #[test]

@@ -80,4 +80,13 @@ describe('navigator tree', () => {
     expect(rows[rows.length - 2].kind).toBe('runner');
     expect(rows[rows.length - 1].kind).toBe('addRunner');
   });
+
+  it('carries who is on a task: the reviewer under review, none once the review is over', () => {
+    const reviewer = { role: 'reviewer' as const, program: 'pi', model: 'kimi-coding/k3.1-pro', took_over: false };
+    const t = [task(1, day(20, 9), 'review', { seat: reviewer }), task(2, day(20, 10), 'ready', { seat: null }), task(3, day(20, 11), 'working')];
+    const planets = build(view(t)).filter((r) => r.kind === 'planet');
+    expect(planets.find((p) => p.entity?.id === 'alpha/1')?.seat).toEqual(reviewer);
+    expect(planets.find((p) => p.entity?.id === 'alpha/2')?.seat).toBeUndefined();
+    expect(planets.find((p) => p.entity?.id === 'alpha/3')?.seat).toBeUndefined();
+  });
 });
