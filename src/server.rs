@@ -147,8 +147,8 @@ pub fn router(app: Shared) -> Router {
         .route("/", get(index))
         .route("/login", get(login_page))
         .route("/api/login", post(api_login))
-        // The Omarchy bar widget is local and has no login cookie; only a
-        // non-loopback caller must authenticate for this small summary.
+        // The Omarchy bar widget is local and has no login cookie; any other
+        // caller must be logged in (and with no login set up, nobody else is let in).
         .route("/api/limits", get(api_limits))
         .route("/assets/{*path}", get(dist_asset))
         .route("/favicon.svg", get(dist_root_file))
@@ -311,6 +311,21 @@ pub(crate) fn client_is_local(addr: SocketAddr, headers: &HeaderMap) -> bool {
         .unwrap_or(true)
 }
 
+/// `Some(403)` for a request that does not come from the machine the planner runs on. Routes that open a terminal
+/// or read this machine's folders use it: a login cookie is not enough for them, also behind a tunnel or a proxy.
+pub(crate) fn refuse_remote(addr: SocketAddr, headers: &HeaderMap) -> Option<Response> {
+    if client_is_local(addr, headers) {
+        None
+    } else {
+        Some(error(StatusCode::FORBIDDEN, "only from this machine"))
+    }
+}
+
+/// Who may read `/api/limits`: this machine always; anyone else only with a login, and with no login set up nobody.
+fn limits_allowed(auth_required: bool, local: bool, logged_in: bool) -> bool {
+    local || (auth_required && logged_in)
+}
+
 #[derive(Deserialize)]
 struct LoginBody {
     user: String,
@@ -389,8 +404,7 @@ async fn api_limits(
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
 ) -> Response {
-    let local = client_is_local(addr, &headers);
-    if app.auth.required && !local && !authed(&app, &headers) {
+    if !limits_allowed(app.auth.required, client_is_local(addr, &headers), authed(&app, &headers)) {
         return error(StatusCode::UNAUTHORIZED, "login required");
     }
     let snap = app.snapshot.read().await;
@@ -581,11 +595,15 @@ pub(crate) async fn agent_for(app: &Shared, target: &str, role: Option<&str>) ->
 /// Brings a task's agent terminal to the front in herdr: its workspace, tab and pane get the focus.
 async fn api_task_terminal(
     State(app): State<Shared>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
     Json(body): Json<TerminalBody>,
 ) -> Response {
     if !same_origin(&headers) {
         return error(StatusCode::FORBIDDEN, "cross-origin request refused");
+    }
+    if let Some(refused) = refuse_remote(addr, &headers) {
+        return refused;
     }
     let role = body.role.as_deref();
     if body.task == "coordinator" || !board::valid_id(&body.task) || !body.task.contains('/') {
@@ -1944,5 +1962,72 @@ mod tests {
             client_ip(proxy, &HeaderMap::new()),
             IpAddr::V6(Ipv6Addr::LOCALHOST)
         );
+    }
+
+    fn peer(ip: [u8; 4]) -> ConnectInfo<SocketAddr> {
+        ConnectInfo(SocketAddr::from((ip, 9000)))
+    }
+
+    /// A request that a same-host proxy passed on for a client on the internet.
+    fn tunnelled() -> (ConnectInfo<SocketAddr>, HeaderMap) {
+        (peer([127, 0, 0, 1]), forwarded("203.0.113.5"))
+    }
+
+    fn test_app(dir: &std::path::Path, password_hash: &str) -> Shared {
+        let cfg = crate::config::AppConfig { password_hash: password_hash.into(), ..crate::testutil::test_cfg(dir) };
+        app::App::new(cfg)
+    }
+
+    #[test]
+    fn limits_are_for_this_machine_or_a_logged_in_client() {
+        assert!(limits_allowed(false, true, true), "the bar widget, no login set up");
+        assert!(limits_allowed(true, true, false), "the bar widget, login set up");
+        assert!(limits_allowed(true, false, true), "a logged-in client");
+        assert!(!limits_allowed(true, false, false), "a stranger with a login set up");
+        assert!(!limits_allowed(false, false, true), "with no login set up a remote client is not logged in, whatever authed() says");
+    }
+
+    #[tokio::test]
+    async fn limits_refuse_a_tunnelled_client_without_a_login() {
+        let dir = tempfile::tempdir().unwrap();
+        for hash in ["", "$argon2id$x"] {
+            let app = test_app(dir.path(), hash);
+            let (addr, h) = tunnelled();
+            let resp = api_limits(State(app.clone()), addr, h).await;
+            assert_eq!(resp.status(), StatusCode::UNAUTHORIZED, "login set up: {}", !hash.is_empty());
+            let resp = api_limits(State(app.clone()), peer([198, 51, 100, 4]), HeaderMap::new()).await;
+            assert_eq!(resp.status(), StatusCode::UNAUTHORIZED, "a direct remote client");
+            let resp = api_limits(State(app), peer([127, 0, 0, 1]), HeaderMap::new()).await;
+            assert_eq!(resp.status(), StatusCode::OK, "the bar widget on this machine");
+        }
+    }
+
+    #[tokio::test]
+    async fn the_task_terminal_opens_only_for_this_machine() {
+        let dir = tempfile::tempdir().unwrap();
+        let app = test_app(dir.path(), "");
+        let body = || Json(TerminalBody { task: "herdr-planner/72".into(), role: None });
+        let (addr, h) = tunnelled();
+        let resp = api_task_terminal(State(app.clone()), addr, h, body()).await;
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+        let resp = api_task_terminal(State(app.clone()), peer([198, 51, 100, 4]), HeaderMap::new(), body()).await;
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+        // On this machine the request goes on to herdr, which is not running here.
+        let resp = api_task_terminal(State(app), peer([127, 0, 0, 1]), HeaderMap::new(), body()).await;
+        assert_eq!(resp.status(), StatusCode::CONFLICT);
+    }
+
+    #[tokio::test]
+    async fn folder_completion_answers_only_this_machine() {
+        let dir = tempfile::tempdir().unwrap();
+        let app = test_app(dir.path(), "");
+        let q = || Query(api::FsQuery::for_path(dir.path().to_str().unwrap()));
+        let (addr, h) = tunnelled();
+        let resp = api::fs_complete(State(app.clone()), addr, h, q()).await;
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+        let resp = api::fs_complete(State(app.clone()), peer([198, 51, 100, 4]), HeaderMap::new(), q()).await;
+        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+        let resp = api::fs_complete(State(app), peer([127, 0, 0, 1]), HeaderMap::new(), q()).await;
+        assert_eq!(resp.status(), StatusCode::OK);
     }
 }
