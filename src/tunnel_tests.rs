@@ -59,6 +59,11 @@ impl Rig {
         self.app.tunnel.inner.lock().unwrap().problem.clone().expect("a problem")
     }
 
+    /// The `tunnel:` of this rig's config.
+    fn tunnel_id(&self) -> String {
+        format!("tunnel-{}", self.dir.path().file_name().unwrap().to_string_lossy().trim_start_matches('.'))
+    }
+
     fn host(&self) -> Option<String> {
         self.app.tunnel.inner.lock().unwrap().host.clone()
     }
@@ -94,7 +99,8 @@ const NAMED: &str = "tunnel: 6ff42ae2-765d-4adf-8112-31c55c1551ef\ncredentials-f
 fn named_rig(scenario: &str, config: Option<&str>) -> Rig {
     let r = rig(scenario);
     if let Some(text) = config {
-        std::fs::write(r.path("planner.yml"), text).unwrap();
+        // a tunnel of its own: tests run side by side, and a hand-started `cloudflared` of another is none of ours
+        std::fs::write(r.path("planner.yml"), text.replace("6ff42ae2-765d-4adf-8112-31c55c1551ef", &r.tunnel_id())).unwrap();
     }
     *r.app.tunnel.settings.lock().unwrap() = Settings { mode: TunnelMode::Named, config: Some(r.path("planner.yml")), hostname: None };
     r
@@ -533,7 +539,7 @@ async fn a_cloudflared_left_by_a_crash_is_stopped_at_the_next_start() {
     let manual = Manual::start(&r, &["--config", "x.yml", "tunnel", "run"]);
     let pid = manual.pid();
     for _ in 0..250 {
-        if std::fs::read(format!("/proc/{pid}/cmdline")).is_ok_and(|c| String::from_utf8_lossy(&c).contains("cloudflared")) {
+        if std::fs::read(format!("/proc/{pid}/cmdline")).is_ok_and(|c| String::from_utf8_lossy(&c).contains("fake-cloudflared.mjs")) {
             break;
         }
         tokio::time::sleep(Duration::from_millis(20)).await;
@@ -745,6 +751,7 @@ async fn a_tunnel_started_by_hand_with_the_default_config_is_found() {
     let r = named_rig("", Some(NAMED));
     let other = r.path("other.yml");
     std::fs::write(&other, NAMED.replace("6ff42ae2-765d-4adf-8112-31c55c1551ef", "another-tunnel")).unwrap();
+    assert_ne!(r.tunnel_id(), "another-tunnel");
     // the default is another file: the hand-started tunnel is not this one
     r.app.tunnel.set_default_configs(vec![r.path("missing.yml"), other, r.path("planner.yml")]);
     let mut manual = Manual::start(&r, &["tunnel", "run"]);
@@ -766,13 +773,15 @@ async fn a_tunnel_started_by_hand_with_the_default_config_is_found() {
 #[tokio::test]
 async fn a_tunnel_started_by_hand_by_name_is_found_whatever_config_it_reads() {
     let r = named_rig("", Some(NAMED));
-    let mut manual = Manual::start(&r, &["tunnel", "run", "6ff42ae2-765d-4adf-8112-31c55c1551ef"]);
+    // (with a config of its own: a bare `tunnel run` of another test would be taken for the default one)
+    let elsewhere = r.path("elsewhere.yml").display().to_string();
+    let mut manual = Manual::start(&r, &["--config", &elsewhere, "tunnel", "run", &r.tunnel_id()]);
     assert!(wait_found(&r).await);
     open(&r.app).await;
     assert_eq!(r.app.tunnel.state(), Phase::External);
     manual.stop();
     // another tunnel's name is another tunnel
-    let mut manual = Manual::start(&r, &["tunnel", "run", "some-other-tunnel"]);
+    let mut manual = Manual::start(&r, &["--config", &elsewhere, "tunnel", "run", "some-other-tunnel"]);
     tokio::time::sleep(Duration::from_millis(600)).await;
     assert!(!wait_found(&r).await);
     manual.stop();
