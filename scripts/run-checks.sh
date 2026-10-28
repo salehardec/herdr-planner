@@ -49,12 +49,13 @@ start_server() {
   mkdir -p "$D/cfg/herdr-planner" "$D/state"
   READY_PATH=/api/state
   STATE_NAME=state
+  # ui-check and auth-check open the page under the name remote.test (mapped to 127.0.0.1 in the browser): the gate
+  # refuses a Host that is not ours, so this one is let in. set-auth below keeps the other keys.
+  printf 'trusted_hosts = ["remote.test"]\n' >"$D/cfg/herdr-planner/config.toml"
   if [ -n "${PASSWORD:-}" ]; then
     # A server with a password (user me, listening on 127.0.0.1 only).
     HASH=$(printf '%s\n' "$PASSWORD" | "$TARGET/debug/herdr-planner" hash-password)
     printf '%s' "$HASH" | XDG_CONFIG_HOME="$D/cfg" "$TARGET/debug/herdr-planner" set-auth --user me --listen 127.0.0.1 >/dev/null
-    # auth-check opens the login page under the name remote.test (mapped to 127.0.0.1): the gate lets that name in
-    printf 'trusted_hosts = ["remote.test"]\n' >>"$D/cfg/herdr-planner/config.toml"
     READY_PATH=/login
     STATE_NAME=state-auth   # where auth-check looks for the chat attachments
   fi
