@@ -188,6 +188,7 @@ pub fn router(app: Shared) -> Router {
         .route("/g/redeem", post(crate::devices::redeem))
         .route("/g/status", get(crate::devices::status))
         .route("/g/cancel", post(crate::devices::cancel))
+        .route("/g/view", get(crate::version::view))
         .merge(protected)
         .merge(light)
         // The gate is the outermost layer but one: no route runs before it has said who is asking.
@@ -312,8 +313,24 @@ async fn dist_root_file(req: axum::extract::Request) -> Response {
     }
 }
 
-async fn login_page(State(app): State<Shared>, headers: HeaderMap) -> Response {
-    if authed(&app, &headers) {
+async fn login_page(
+    State(app): State<Shared>,
+    class: Option<Extension<crate::gate::Class>>,
+    standing: Option<Extension<crate::devices::Standing>>,
+    headers: HeaderMap,
+) -> Response {
+    // A device of the gate is not "logged in" by the planner's cookie alone: the password is what raises it to the full
+    // version, so a device with the light one meets this page even when the cookie is good; and if the full version
+    // cannot be had there is nothing to enter a password for.
+    if matches!(class, Some(Extension(crate::gate::Class::Tunnel))) {
+        let raised = matches!(standing, Some(Extension(crate::devices::Standing::Full)));
+        if !raised && !crate::devices::can_full(&app) {
+            return Redirect::to("/m").into_response();
+        }
+        if raised && authed(&app, &headers) {
+            return Redirect::to("/").into_response();
+        }
+    } else if authed(&app, &headers) {
         return Redirect::to("/").into_response();
     }
     let (css, mode) = {
@@ -396,11 +413,24 @@ struct LoginBody {
 async fn api_login(
     State(app): State<Shared>,
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    class: Option<Extension<crate::gate::Class>>,
     headers: HeaderMap,
     Json(body): Json<LoginBody>,
 ) -> Response {
     if !app.auth.required {
         return Json(json!({"ok": true, "login": false})).into_response();
+    }
+    // Through the gate this is the step that raises a device to the full version. The setting is looked at first, so a
+    // closed gate takes no guesses at the password at all.
+    let device = matches!(class, Some(Extension(crate::gate::Class::Tunnel)))
+        .then(|| cookie_value(&headers, crate::devices::COOKIE).unwrap_or_default());
+    if device.is_some() {
+        if !crate::devices::can_full(&app) {
+            return error(StatusCode::FORBIDDEN, "the full version through the gate is switched off");
+        }
+        if !same_origin(&headers) {
+            return error(StatusCode::FORBIDDEN, "cross-origin request refused");
+        }
     }
     if body.password.len() > 4096 || body.user.len() > 200 {
         return (
@@ -409,17 +439,25 @@ async fn api_login(
         )
             .into_response();
     }
-    match app
-        .auth
-        .login(client_ip(addr, &headers), &body.user, &body.password)
-    {
+    // A request through the tunnel comes from this machine's own socket: the address that counts is the one Cloudflare saw.
+    let from = if device.is_some() { crate::devices::client_address(&headers).unwrap_or_else(|| client_ip(addr, &headers)) } else { client_ip(addr, &headers) };
+    match app.auth.login(from, &body.user, &body.password) {
         Ok(token) => {
+            if let Some(t) = &device {
+                if !app.devices.raise_at(now_ms(), t) {
+                    return error(StatusCode::FORBIDDEN, "this device is not let in");
+                }
+                crate::devices::flush(&app).await;
+            }
             let mut res = Json(json!({"ok": true})).into_response();
             auth::set_cookie(res.headers_mut(), app.auth.cookie(&token));
             res
         }
         Err(LoginError::Invalid) => {
             tokio::time::sleep(Duration::from_millis(300)).await;
+            if let Some(res) = dropped_for_guessing(&app, device.as_deref()).await {
+                return res;
+            }
             (
                 StatusCode::UNAUTHORIZED,
                 Json(json!({"error": "Неверный пользователь или пароль", "code": "invalid"})),
@@ -428,6 +466,10 @@ async fn api_login(
         }
         Err(LoginError::TooMany(secs)) => {
             tokio::time::sleep(Duration::from_millis(300)).await;
+            // the address limiter answers "too many" on the very attempt that is the fifth wrong one, so this counts too
+            if let Some(res) = dropped_for_guessing(&app, device.as_deref()).await {
+                return res;
+            }
             let mut res = (
                 StatusCode::TOO_MANY_REQUESTS,
                 Json(json!({
@@ -443,6 +485,21 @@ async fn api_login(
             res
         }
     }
+}
+
+/// A wrong (or refused) password from a device of the gate: the fifth in a row ends its session, and the answer says so.
+async fn dropped_for_guessing(app: &Shared, device: Option<&str>) -> Option<Response> {
+    if !device.is_some_and(|t| app.devices.password_failed_at(now_ms(), t)) {
+        return None;
+    }
+    crate::devices::flush(app).await;
+    Some(
+        (
+            StatusCode::FORBIDDEN,
+            Json(json!({"error": "Пять неверных паролей: устройство отключено. Нужна новая ссылка.", "code": "dropped"})),
+        )
+            .into_response(),
+    )
 }
 
 async fn api_logout(State(app): State<Shared>, headers: HeaderMap) -> Response {

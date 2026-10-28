@@ -2634,6 +2634,7 @@ section('top bar', async () => {
     !(await exists('#station-chip')) && !(await exists('#station-open')) && !(await text('#top')).includes('своя станция') && !(await exists('#right #menu-btn')) && !(await exists('#right #hud-limits')), await text('#top'));
   await click('#menu-btn');
   check('the menu opens at the left, inside the window', await waitFor('!!document.querySelector(".menupop")', 3000) && await evalJs(`(() => { const p = document.querySelector('.menupop').getBoundingClientRect(); const b = document.querySelector('#menu-btn').getBoundingClientRect(); return p.left >= -1 && Math.abs(p.left - b.left) < 12 && p.right <= innerWidth + 1; })()`));
+  check('on this machine the menu has no way to the light version (it is for a page opened from another one)', !(await evalJs(`[...document.querySelectorAll('.menupop button')].some((b) => b.innerText.includes('Лёгкая версия'))`)));
   await click('#menu-btn');
   check('the Station opens from the menu', await menuPick('Станция') && await waitFor('!!document.querySelector("#station")', 6000));
   await resetUi();
@@ -3340,6 +3341,9 @@ section('remote client', async () => {
   await navigate(remoteURL);
   check('a non-loopback page is a remote client', await waitFor('window.planner && !["127.0.0.1","localhost"].includes(location.hostname)', 8000));
   check('a remote page still shows the limits chip', await waitFor('document.querySelector("#hud-limits")?.innerText.includes("3%")', 10000), await text('#hud-limits'));
+  await click('#menu-btn');
+  check('the menu of a page opened from another machine leads to the light version', await waitFor('[...document.querySelectorAll(".menupop button")].some((b) => b.innerText.includes("Лёгкая версия"))', 3000));
+  await click('#menu-btn');
   await go('alpha/6');
   await click('#focus [data-act="files"]');
   check('a remote file button shows the path and does not start yazi', await waitFor('(document.querySelector(".toast")?.innerText || "").includes("worktrees")', 6000) && calls('terminal.jsonl').length === terminalsBefore, await text('.toast'));
@@ -6599,6 +6603,8 @@ section('light page', async () => {
     await click('#sheet [data-s="close"]'); await sheetClosed();
     await click('#menu');
     check(`${at}: the settings sheet: this device, language, theme`, await sheetOpen() && await evalJs('document.querySelectorAll("#sheet .seg").length === 2'));
+    check(`${at}: the settings sheet leads to the full version: a link to the switch`, await evalJs(`document.querySelector('#fullrow a[data-s="full"]')?.getAttribute('href') === '/g/view?v=full'`)
+      && (await evalJs(`document.querySelector('#fullrow .hintline')?.dataset.full`)) === 'yes' && !(await exists('#fullnote')));
     await shot(`m-settings-${mode}.png`);
     await click('#sheet [data-s="close"]'); await sheetClosed();
   }

@@ -23,7 +23,7 @@ fn opened() -> Devices {
 }
 
 fn who(label: &str) -> Who {
-    Who { label: label.into(), country: Some("RU".into()), touch: true }
+    Who { label: label.into(), country: Some("RU".into()), touch: true, form: crate::version::Form::Phone }
 }
 
 fn key_of(d: &Devices, now: u64) -> String {

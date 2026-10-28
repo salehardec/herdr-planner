@@ -48,6 +48,7 @@ mod subagents;
 mod taskmeta;
 mod translate;
 mod tunnel;
+mod version;
 mod watch;
 #[cfg(test)]
 mod testutil;

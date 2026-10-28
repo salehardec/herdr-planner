@@ -6,11 +6,14 @@ use crate::board;
 use crate::config::now_ms;
 use crate::server::{clip, client_is_local, error, refuse_remote, same_origin};
 use crate::{models, search, subagents, taskmeta, translate};
+use crate::auth::cookie_value;
+use crate::devices::Standing;
+use crate::gate::Class;
 use axum::extract::{ConnectInfo, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
-use axum::Json;
+use axum::{Extension, Json};
 use serde::Deserialize;
 use serde_json::json;
 use std::convert::Infallible;
@@ -19,7 +22,11 @@ use std::time::Duration;
 use tokio::sync::broadcast::error::RecvError;
 
 /// `GET /api/events`: the first event is the whole snapshot, then every change.
-pub async fn events(State(app): State<Shared>) -> Response {
+///
+/// Through the gate the stream is the full version's, and it ends when the device is no longer in with it: the
+/// setting was switched off, the owner switched the device off, its session ran out or the gate closed.
+pub async fn events(State(app): State<Shared>, class: Option<Extension<Class>>, headers: HeaderMap) -> Response {
+    let device = matches!(class, Some(Extension(Class::Tunnel))).then(|| cookie_value(&headers, crate::devices::COOKIE).unwrap_or_default());
     // Subscribe first: nothing published between the two steps is lost.
     let mut rx = app.bus.subscribe();
     let first = serde_json::to_string(&*app.snapshot.read().await).unwrap_or_default();
@@ -29,8 +36,20 @@ pub async fn events(State(app): State<Shared>) -> Response {
     let stream = async_stream::stream! {
         yield Ok::<_, Infallible>(Event::default().event("state").data(first));
         yield Ok(Event::default().event("load").data(load));
+        let mut watch = tokio::time::interval(Duration::from_secs(2));
         loop {
-            match rx.recv().await {
+            let got = tokio::select! {
+                m = rx.recv() => Some(m),
+                _ = watch.tick() => None,
+            };
+            // looked at without touching the device's clocks: an open stream is not someone using the gate
+            if let Some(t) = &device {
+                if app2.devices.standing_quiet_at(now_ms(), Some(t)) != Standing::Full {
+                    break;
+                }
+            }
+            let Some(got) = got else { continue };
+            match got {
                 Ok(m) => yield Ok(Event::default().event(m.event).data(m.data.clone())),
                 Err(RecvError::Lagged(_)) => {
                     // Too slow a client: give it the current state instead of the missed ones.

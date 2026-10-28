@@ -95,6 +95,24 @@ const hours = (ms: number): string => {
   return h > 0 ? t('chat.elapsedHm', { h, m }) : t('dur.min', { n: Math.max(1, m) });
 };
 
+/** The way to the other version: open when it can be had (through the planner's password), else the words why not. */
+function FullVersion(): JSX.Element | null {
+  const full = session.value?.full;
+  if (!full) return null;
+  const open = full === 'yes' || full === 'login';
+  return (
+    <div class="setrow" id="fullrow">
+      <span class="l">{t('m.version')}</span>
+      <div>
+        {open
+          ? <a class="btn" data-s="full" href="/g/view?v=full">{t('m.fullVersion')}</a>
+          : <button class="btn" type="button" data-s="full" aria-disabled="true" disabled>{t('m.fullVersion')}</button>}
+        <div class="hintline" data-full={full}>{t(session.value?.kind === 'local' ? 'm.full.local' : `m.full.${full}`)}</div>
+      </div>
+    </div>
+  );
+}
+
 function Settings(): JSX.Element {
   const s = session.value;
   const [leaving, setLeaving] = useState(false);
@@ -122,6 +140,7 @@ function Settings(): JSX.Element {
         <span class="l">{t('m.theme')}</span>
         <Seg<ThemePref> label={t('m.theme')} value={themePref.value} items={[['system', t('m.theme.system')], ['dark', t('m.theme.dark')], ['light', t('m.theme.light')]]} onPick={setThemePref} />
       </div>
+      <FullVersion />
       {gate && (
         <>
           <button class="btn" type="button" data-s="logout" aria-disabled={leaving} onClick={() => void logout()}>{t('m.logout')}</button>

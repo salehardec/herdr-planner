@@ -323,7 +323,7 @@ impl Gate {
         let now = now_ms();
         app.devices.begin_at(now);
         let key = app.devices.link_at(now).key.unwrap();
-        let token = app.devices.redeem_at(now, "-", &key, Who { label: "iPhone · Safari 17".into(), country: None, touch: true }).unwrap().token;
+        let token = app.devices.redeem_at(now, "-", &key, Who { label: "iPhone · Safari 17".into(), country: None, touch: true, form: crate::version::Form::Phone }).unwrap().token;
         let addr = serve(app.clone()).await;
         let device = vec![("Host", ADDRESS.to_string()), ("Cf-Ray", "x".into()), ("Cf-Visitor", "{\"scheme\":\"https\"}".into()), ("Cookie", format!("{COOKIE}={token}"))];
         Gate { _dir: dir, app, addr, log, device }

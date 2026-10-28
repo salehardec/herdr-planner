@@ -23,6 +23,7 @@ use crate::auth::cookie_value;
 use crate::config::{now_ms, AppConfig, IDLE_CLOSE_CHOICES};
 use crate::server::{error, same_origin};
 use crate::tunnel::{self, Phase};
+use crate::version::{self, Form};
 use axum::extract::{ConnectInfo, State};
 use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
 use axum::response::{Html, IntoResponse, Response};
@@ -54,9 +55,9 @@ const BLOCK_MS: u64 = 5 * 60 * 1000;
 const MAX_FAILS: u32 = 5;
 /// Wrong keys from all addresses together: a guess spread over many addresses meets this.
 const MAX_FAILS_ALL: u32 = 40;
+/// Wrong planner passwords in a row after which a device is switched off.
+const MAX_WRONG: u32 = 5;
 const ADDRESSES_MAX: usize = 256;
-/// Where a device that is in goes first (the light page; the choice of version comes with it).
-const NEXT: &str = "/m";
 
 /// What a device may reach.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -64,8 +65,8 @@ const NEXT: &str = "/m";
 pub enum Scope {
     /// The phone's light page.
     Lite,
-    /// The planner itself (needs `full_allowed` and the planner's password); a device is raised to it by a later step.
-    #[allow(dead_code)]
+    /// The planner itself (needs `full_allowed` and the planner's password): a device is raised to it by entering the
+    /// planner's password (`raise_at`) and falls back to the light page when the setting is switched off.
     Full,
 }
 
@@ -85,6 +86,8 @@ pub enum Why {
     Expired,
     /// 6 hours without a request.
     Idle,
+    /// Five wrong planner passwords in a row.
+    Password,
 }
 
 impl Why {
@@ -96,6 +99,7 @@ impl Why {
             Why::Left => "само вышло",
             Why::Expired => "по сроку: 24 ч",
             Why::Idle => "по простою: 6 ч",
+            Why::Password => "пять неверных паролей",
         }
     }
 }
@@ -127,6 +131,9 @@ struct Device {
     label: String,
     country: Option<String>,
     touch: bool,
+    form: Form,
+    /// Wrong planner passwords since the last right one.
+    wrong: u32,
     /// When it came in (the 24 hours count from the owner's «Let in»).
     since: u64,
     last: u64,
@@ -147,6 +154,7 @@ pub struct Who {
     pub label: String,
     pub country: Option<String>,
     pub touch: bool,
+    pub form: Form,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -251,6 +259,7 @@ pub struct Admitted {
     pub token: String,
     pub state: Life,
     pub label: String,
+    pub form: Form,
 }
 
 #[derive(Serialize, Clone, Debug, PartialEq, Eq)]
@@ -262,6 +271,7 @@ pub struct DeviceView {
     pub state: &'static str,
     pub country: Option<String>,
     pub touch: bool,
+    pub form: Form,
     pub since_ms: u64,
     pub last_ms: u64,
     /// When the session ends if nothing changes (active).
@@ -275,6 +285,7 @@ pub struct DeviceView {
 pub struct SessionView {
     pub label: String,
     pub scope: Scope,
+    pub form: Form,
     pub since_ms: u64,
     /// When the session ends if nothing changes (24 hours from the start, 6 hours from the last request).
     pub ends_ms: u64,
@@ -287,6 +298,9 @@ pub struct Status {
     pub state: &'static str,
     pub reason: Option<Why>,
     pub label: Option<String>,
+    /// What the device is and whether it has the full version: where it goes next.
+    pub form: Form,
+    pub raised: bool,
 }
 
 pub struct Devices {
@@ -387,6 +401,16 @@ impl Devices {
 
     pub fn set_settings(&self, s: Settings) {
         *self.settings.lock().unwrap() = s;
+        if !s.full_allowed {
+            // the right to the full version goes with the setting
+            let mut g = self.inner.lock().unwrap();
+            let mut lines = Vec::new();
+            for d in g.devices.iter_mut().filter(|d| d.scope == Scope::Full) {
+                d.scope = Scope::Lite;
+                lines.push(format!("устройство вернулось к лёгкой версии (полная выключена): {}", d.label));
+            }
+            g.notes.extend(lines);
+        }
     }
 
     fn new_key(now: u64) -> Key {
@@ -459,6 +483,8 @@ impl Devices {
             label: who.label,
             country: who.country,
             touch: who.touch,
+            form: who.form,
+            wrong: 0,
             since: now,
             last: now,
             ask_until: now + ASK_MS,
@@ -468,7 +494,7 @@ impl Devices {
             Life::Pending => format!("устройство просит войти: {}", device.label),
             _ => format!("устройство подключено: {}", device.label),
         });
-        let admitted = Admitted { token: device.token.clone(), state, label: device.label.clone() };
+        let admitted = Admitted { token: device.token.clone(), state, label: device.label.clone(), form: device.form };
         g.devices.push(device);
         g.busy = now;
         Ok(admitted)
@@ -478,13 +504,13 @@ impl Devices {
         let mut g = self.inner.lock().unwrap();
         g.maintain(now);
         let Some(d) = token.and_then(|t| g.find_token(t)).map(|i| &g.devices[i]) else {
-            return Status { state: "none", reason: None, label: None };
+            return Status { state: "none", reason: None, label: None, form: Form::default(), raised: false };
         };
-        let label = Some(d.label.clone());
+        let (label, form, raised) = (Some(d.label.clone()), d.form, d.scope == Scope::Full);
         match d.state {
-            Life::Pending => Status { state: "pending", reason: None, label },
-            Life::Active => Status { state: "active", reason: None, label },
-            Life::Gone(w) => Status { state: "gone", reason: Some(w), label },
+            Life::Pending => Status { state: "pending", reason: None, label, form, raised },
+            Life::Active => Status { state: "active", reason: None, label, form, raised },
+            Life::Gone(w) => Status { state: "gone", reason: Some(w), label, form, raised },
         }
     }
 
@@ -525,7 +551,7 @@ impl Devices {
         let mut g = self.inner.lock().unwrap();
         g.maintain(now);
         let d = g.find_token(token).map(|i| &g.devices[i]).filter(|d| d.state == Life::Active)?;
-        Some(SessionView { label: d.label.clone(), scope: d.scope, since_ms: d.since, ends_ms: d.ends() })
+        Some(SessionView { label: d.label.clone(), scope: d.scope, form: d.form, since_ms: d.since, ends_ms: d.ends() })
     }
 
     /// The owner's decision on a device.
@@ -557,6 +583,49 @@ impl Devices {
         Ok(())
     }
 
+    /// The device entered the planner's password: it has the full version from now on. `false`: no such device in, or the
+    /// setting is off (the caller has checked it too; this is the last look).
+    pub fn raise_at(&self, now: u64, token: &str) -> bool {
+        let full_allowed = self.settings().full_allowed;
+        let mut g = self.inner.lock().unwrap();
+        g.maintain(now);
+        let Some(i) = g.find_token(token).filter(|i| g.devices[*i].state == Life::Active) else { return false };
+        if !full_allowed {
+            return false;
+        }
+        let d = &mut g.devices[i];
+        d.wrong = 0;
+        if d.scope == Scope::Full {
+            return true;
+        }
+        d.scope = Scope::Full;
+        let line = format!("устройство получило полную версию (пароль): {}", d.label);
+        g.notes.push(line);
+        g.busy = now;
+        true
+    }
+
+    /// A wrong planner password from this device. Five in a row end its session (`true`): a device that guesses is not
+    /// let go on.
+    pub fn password_failed_at(&self, now: u64, token: &str) -> bool {
+        let mut g = self.inner.lock().unwrap();
+        g.maintain(now);
+        let Some(i) = g.find_token(token).filter(|i| g.devices[*i].state == Life::Active) else { return false };
+        g.devices[i].wrong += 1;
+        if g.devices[i].wrong >= MAX_WRONG {
+            g.gone(i, Why::Password, now);
+            return true;
+        }
+        false
+    }
+
+    /// What kind of machine a device that is in is (without touching its clocks).
+    pub fn form_at(&self, now: u64, token: &str) -> Option<Form> {
+        let mut g = self.inner.lock().unwrap();
+        g.maintain(now);
+        g.find_token(token).map(|i| &g.devices[i]).filter(|d| d.state == Life::Active).map(|d| d.form)
+    }
+
     /// A device leaves by itself (the page's «Cancel»).
     pub fn leave_at(&self, now: u64, token: &str) {
         let mut g = self.inner.lock().unwrap();
@@ -583,6 +652,7 @@ impl Devices {
                     state: if pending { "pending" } else { "active" },
                     country: d.country.clone(),
                     touch: d.touch,
+                    form: d.form,
                     since_ms: d.since,
                     last_ms: d.last,
                     ends_ms: (!pending).then(|| d.ends()),
@@ -682,17 +752,23 @@ fn country_of(headers: &HeaderMap) -> Option<String> {
 
 fn who_from(headers: &HeaderMap, touch: bool) -> Who {
     let ua = headers.get(header::USER_AGENT).and_then(|v| v.to_str().ok()).unwrap_or("");
-    Who { label: device_label(ua), country: country_of(headers), touch }
+    let form = version::form_of(headers, touch);
+    let mut label = device_label(ua);
+    // an iPad says «Macintosh»; the owner should read what it is
+    if form == Form::Tablet && label.starts_with("Mac ·") {
+        label = label.replacen("Mac", "iPad", 1);
+    }
+    Who { label, country: country_of(headers), touch, form }
 }
 
-/// The key of the limiter: the address Cloudflare saw, or one shared name when there is none.
+/// The address Cloudflare saw (`Cf-Connecting-Ip`), if it is one.
+pub(crate) fn client_address(headers: &HeaderMap) -> Option<IpAddr> {
+    headers.get("cf-connecting-ip").and_then(|v| v.to_str().ok()).and_then(|v| v.trim().parse::<IpAddr>().ok())
+}
+
+/// The key of the limiter: that address, or one shared name when there is none.
 fn address_of(headers: &HeaderMap) -> String {
-    headers
-        .get("cf-connecting-ip")
-        .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.trim().parse::<IpAddr>().ok())
-        .map(|ip| ip.to_string())
-        .unwrap_or_else(|| "-".into())
+    client_address(headers).map(|ip| ip.to_string()).unwrap_or_else(|| "-".into())
 }
 
 pub(crate) fn cookie_header(value: &str, max_age: u64) -> String {
@@ -753,6 +829,16 @@ pub async fn gate_js() -> Response {
 
 /* ───────── the device's side: the /g paths ───────── */
 
+/// Whether a device may be given the full version at all: the gate's setting is on and the planner has a password.
+pub fn can_full(app: &Shared) -> bool {
+    app.devices.settings().full_allowed && app.cfg.auth_required()
+}
+
+/// Where a device that is in goes first: the light page or the planner (`version::choose`).
+fn next_of(app: &Shared, headers: &HeaderMap, form: Form, raised: bool) -> &'static str {
+    version::choose(form, version::preference(headers), raised, can_full(app)).path()
+}
+
 fn gate_open(app: &Shared) -> Option<Response> {
     (!app.gate.tunnel_open()).then(|| error(StatusCode::SERVICE_UNAVAILABLE, "the tunnel is closed"))
 }
@@ -782,7 +868,7 @@ pub async fn redeem(State(app): State<Shared>, headers: HeaderMap, Json(body): J
     match result {
         Ok(a) => {
             let state = if a.state == Life::Pending { "pending" } else { "active" };
-            let res = Json(json!({"state": state, "next": NEXT, "computer": crate::app::hostname(), "label": a.label})).into_response();
+            let res = Json(json!({"state": state, "next": next_of(&app, &headers, a.form, false), "computer": crate::app::hostname(), "label": a.label})).into_response();
             with_cookie(res, cookie_header(&a.token, SESSION_MS / 1000))
         }
         Err(RedeemError::Stale) => error(StatusCode::GONE, "the link no longer works"),
@@ -806,7 +892,7 @@ pub async fn status(State(app): State<Shared>, headers: HeaderMap) -> Response {
     let s = app.devices.status_at(now_ms(), token.as_deref());
     // The name of this machine is for a device that knocked, not for whoever asks.
     let computer = (s.state != "none").then(crate::app::hostname);
-    Json(json!({"state": s.state, "reason": s.reason, "label": s.label, "next": NEXT, "computer": computer})).into_response()
+    Json(json!({"state": s.state, "reason": s.reason, "label": s.label, "next": next_of(&app, &headers, s.form, s.raised), "computer": computer})).into_response()
 }
 
 /// `POST /g/cancel`: the device withdraws its request, or signs itself out.

@@ -401,8 +401,10 @@ pub async fn details(State(app): State<Shared>, Query(q): Query<DetailsQuery>) -
 /// `GET /m/api/session`: who this is and until when, for the page's header and its settings.
 pub async fn session(State(app): State<Shared>, Extension(class): Extension<Class>, headers: HeaderMap) -> Response {
     let computer = app::hostname();
+    let view = crate::version::preference(&headers).map(|v| v.word());
     if class != Class::Tunnel {
-        return Json(json!({"kind": "local", "computer": computer})).into_response();
+        // this machine has the full version whenever it asks for it
+        return Json(json!({"kind": "local", "computer": computer, "form": crate::version::Form::Desktop, "full": crate::version::FullState::Yes, "view": view})).into_response();
     }
     let token = crate::auth::cookie_value(&headers, crate::devices::COOKIE).unwrap_or_default();
     match app.devices.session_at(now_ms(), &token) {
@@ -411,6 +413,10 @@ pub async fn session(State(app): State<Shared>, Extension(class): Extension<Clas
             "computer": computer,
             "label": s.label,
             "scope": s.scope,
+            // what the page says about the other version: the kind of machine, whether it can be had, the person's switch
+            "form": s.form,
+            "full": crate::version::full_state(app.devices.settings().full_allowed, app.cfg.auth_required(), s.scope == crate::devices::Scope::Full),
+            "view": view,
             "since_ms": s.since_ms,
             "ends_ms": s.ends_ms,
             "gate_since_ms": app.tunnel.since_ms(),
