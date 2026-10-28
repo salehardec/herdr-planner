@@ -56,6 +56,10 @@ pub struct Entry {
     /// Where it came from: `chat`, `task herdr-planner/14`, `button`, …
     #[serde(default)]
     pub source: String,
+    /// `YYYY-MM-DD` to look at the entry again, or empty (the header's optional `review:`). The panel marks an entry whose
+    /// date has come; nothing is ever removed because of it (`memory_lint`).
+    #[serde(default)]
+    pub review: String,
     /// When the file was last written, milliseconds (0 when unknown).
     #[serde(default)]
     pub at: u64,
@@ -300,6 +304,7 @@ pub fn parse_entry(id: &str, text: &str) -> Entry {
                     "type" | "kind" => e.kind = v,
                     "added" | "created" => e.added = v,
                     "source" => e.source = v,
+                    "review" | "review-by" => e.review = v,
                     _ => {}
                 }
             }
@@ -346,6 +351,9 @@ pub fn render_entry(e: &Entry) -> String {
     }
     if !e.source.is_empty() {
         s.push_str(&format!("source: {}\n", quote(&e.source)));
+    }
+    if !e.review.is_empty() {
+        s.push_str(&format!("review: {}\n", quote(&e.review)));
     }
     s.push_str("---\n\n");
     s.push_str(e.body.trim());
@@ -787,7 +795,7 @@ pub fn how_to_text() -> &'static str {
 - «Запомни: …»: про человека и все проекты — Галактика, про один репо — вселенная; неясно — спроси одним вопросом.\n\
 \n\
 ## Запись\n\
-Запись — файл `<id>.md` (id латиницей через дефис) с шапкой `name`, `title`, `description`, `type: rule|preference|decision|convention|pitfall|reference` и строка в `MEMORY.md`.\n\
+Запись — файл `<id>.md` (id латиницей через дефис) с шапкой `name`, `title`, `description`, `type: rule|preference|decision|convention|pitfall|reference` и строка в `MEMORY.md`. Необязательно `review: ГГГГ-ММ-ДД` — когда посмотреть запись ещё раз (после этой даты панель пометит её; сама запись не удаляется). Номера задач и PR, даты починок и «что сейчас стоит» в записи не пиши: это устаревает.\n\
 \n\
 ## «Да» человека\n\
 Любое изменение памяти (добавить, изменить, удалить), на любом уровне: сначала покажи в ответе уровень, файл и «было → стало», и пиши в файл только после «да» человека. Без «да» ничего не пиши.\n\
@@ -1134,6 +1142,34 @@ impl Drafts {
     }
 }
 
+/// A draft that nobody sent for this long is «stuck»: the panel says so and offers to send or throw it away.
+pub const STUCK_DRAFT_MS: u64 = 3 * 24 * 3600 * 1000;
+
+/// A draft that has been lying unsent: an entry to add or change (`put`) or a removal (`del`), and since when.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct StuckDraft {
+    pub id: String,
+    pub op: &'static str,
+    pub at: u64,
+}
+
+impl Drafts {
+    /// The drafts last written `min_age` ms ago or longer, oldest first. A draft saved again is a new draft: its clock
+    /// starts over.
+    pub fn stuck(&self, now: u64, min_age: u64) -> Vec<StuckDraft> {
+        let old = |at: u64| at > 0 && now.saturating_sub(at) >= min_age;
+        let mut out: Vec<StuckDraft> = self.puts().into_iter().filter(|e| old(e.at)).map(|e| StuckDraft { id: e.id, op: "put", at: e.at }).collect();
+        for id in self.dels() {
+            let at = std::fs::metadata(self.dels_dir().join(&id)).and_then(|m| m.modified()).ok().and_then(|t| t.duration_since(UNIX_EPOCH).ok()).map_or(0, |d| d.as_millis() as u64);
+            if old(at) {
+                out.push(StuckDraft { id, op: "del", at });
+            }
+        }
+        out.sort_by(|a, b| a.at.cmp(&b.at).then_with(|| a.id.cmp(&b.id)));
+        out
+    }
+}
+
 /// A send that a board task has not merged yet. The drafts are gone from the planner's folder once a task has their text;
 /// this note keeps them on the panel («ждёт слияния PLN-35») until the checkout has them, and after a reload.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -1348,8 +1384,41 @@ mod tests {
             body: body.into(),
             added: "2026-10-21".into(),
             source: "chat".into(),
+            review: String::new(),
             at: 0,
         }
+    }
+
+    #[test]
+    fn the_review_date_is_an_optional_header_field_that_survives_a_round_trip() {
+        let mut one = e("a", "Порты", "Postgres слушает 5433", "pitfall", "Не 5432.");
+        assert!(!render_entry(&one).contains("review"), "no date, no line");
+        one.review = "2026-12-01".into();
+        let text = render_entry(&one);
+        assert!(text.contains("\nreview: 2026-12-01\n"));
+        assert_eq!(parse_entry("a", &text).review, "2026-12-01");
+        // a file written by hand, with the date in front of the body, reads the same
+        assert_eq!(parse_entry("b", "---\ntitle: Т\nreview: 2027-01-05\n---\n\nтекст\n").review, "2027-01-05");
+        assert_eq!(parse_entry("c", "---\ntitle: Т\n---\n\nтекст\n").review, "");
+    }
+
+    #[test]
+    fn drafts_unsent_for_days_are_stuck_and_a_draft_saved_again_starts_over() {
+        let state = tempfile::tempdir().unwrap();
+        let drafts = Drafts::at(state.path().join("memory-drafts/demo"));
+        let a = e("raz", "Раз", "один", "decision", "текст");
+        drafts.put(&a).unwrap();
+        drafts.delete("dva", true).unwrap();
+        let now = Drafts::at(state.path().join("memory-drafts/demo")).puts()[0].at;
+        assert!(now > 0);
+        assert!(drafts.stuck(now + 1000, STUCK_DRAFT_MS).is_empty(), "fresh drafts are not stuck");
+        let later = now + STUCK_DRAFT_MS + 60_000;
+        let s = drafts.stuck(later, STUCK_DRAFT_MS);
+        assert_eq!(s.len(), 2);
+        assert!(s.iter().any(|x| x.id == "raz" && x.op == "put") && s.iter().any(|x| x.id == "dva" && x.op == "del"));
+        // sending or throwing away takes them out of the count
+        assert!(drafts.discard("raz") && drafts.discard("dva"));
+        assert!(drafts.stuck(later, STUCK_DRAFT_MS).is_empty());
     }
 
     #[test]
@@ -1859,6 +1928,7 @@ mod tests {
             "Запомнено (Галактика)",
             "не противоречит",
             "Итоги задач в память не копируй",
+            "review: ГГГГ-ММ-ДД",
         ] {
             assert!(t.contains(needle), "{needle}");
         }

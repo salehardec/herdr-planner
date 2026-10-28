@@ -7,18 +7,19 @@ import { send } from '../chat';
 import { afterAnswered, navigateTo } from '../nav';
 import { t, tn } from '../i18n';
 import { toast } from '../toast';
-import { dayTimeOf } from '../util/dates';
+import { dayKey, dayTimeOf } from '../util/dates';
 import { Gl } from './Gl';
 import { AutoTextarea, fitText } from './AutoText';
 import { BatchBar } from './MemoryBatch';
 import { cardPick, linesOf, setLines, toggleCard, toggleLine, memPick, pickKey } from './memory-batch';
 import {
-  deleteEntry, digestText, discardDraft, dismissSuggestion, keepSuggestion, KINDS, kindLabel, loadMemory, memoryOf, openMemory, previewSend, sendMemory, stateOf,
-  previewDelete, previewDiscard, previewSave, previewSuggestion, rememberDlg, saveEntry, connectMemory, setSuggest,
+  deleteEntry, digestText, discardDraft, discardStuck, dismissSuggestion, keepSuggestion, KINDS, kindLabel, loadMemory, memoryOf, openMemory, previewSend, sendMemory, stateOf,
+  previewDelete, previewDiscard, previewDiscardStuck, previewSave, previewSuggestion, rememberDlg, saveEntry, connectMemory, setSuggest,
   type Accept, type MemAgentChange, type RememberInit, type MemData, type MemEntry, type MemPreview, type MemSuggestion, type SaveBody, type SentTask, forgetSent,
 } from './memory-api';
 import { ChangeCard } from './MemoryChange';
 import { parseDocId } from './memory-ids';
+import { daysSince, dmy, marked, stuckOf } from './memory-lint';
 import './memory.css';
 
 export const failWords = (e: unknown): string => (e as Error)?.message || t('mem.failed');
@@ -36,6 +37,7 @@ export function Row(props: {
   const ref = useRef<HTMLDivElement>(null);
   useEffect(() => { if (props.hot) ref.current?.scrollIntoView({ block: 'center' }); }, [props.hot]);
   const badge = e.draft ? t(`mem.draft.${e.draft}`, { task: e.task ?? '' }) : '';
+  const lint = e.lint ?? [];
   const task = e.draft?.startsWith('sent') && e.task && props.onTask ? currentView.value.tasks.find((x) => x.tag === e.task) : undefined;
   return (
     <div ref={ref} class={`mm-row ${props.open ? 'open' : ''} ${props.hot ? 'hot' : ''} ${e.draft ? `draft d-${e.draft}` : ''}`} data-mem={e.id} data-draft={e.draft || undefined}>
@@ -51,14 +53,23 @@ export function Row(props: {
         {e.draft && (task
           ? <button type="button" class={`mm-draft mm-task d-${e.draft}`} data-act="mem-task" data-task={task.id} title={t('mem.taskTip', { task: task.tag })} onClick={() => props.onTask?.(task.id)}>{badge}</button>
           : <span class={`mm-draft d-${e.draft}`} title={t('mem.draftTip')}>{badge}</span>)}
+        {e.stuck && <span class="mm-stuckbadge" data-stuck-badge title={t('mem.stuckTip')}>{t('mem.stuckBadge', { n: daysSince(e.at) })}</span>}
+        {lint.map((l) => <span key={l.kind} class={`mm-lint k-${l.kind}`} data-lint={l.kind} title={l.detail}>{t(`mem.lint.${l.kind}`)}</span>)}
       </div>
       {props.open && (
         <div class="mm-more">
           {e.description && e.description !== e.title && <div class="mm-lead">{e.description}</div>}
           <div class="mm-body">{e.body}</div>
+          {lint.length > 0 && (
+            <div class="mm-lintnote" data-lint-note>
+              <ul>{lint.map((l) => <li key={l.kind} data-lint={l.kind}><b>{t(`mem.lint.${l.kind}`)}</b> — {l.detail}</li>)}</ul>
+              <div class="hint">{props.editable && !frozen ? t('mem.lintAsk') : t('mem.lintAskRo')}</div>
+            </div>
+          )}
           <div class="mm-meta">
             <code>{e.id}.md</code>
             {e.added && <span>{t('mem.added', { d: e.added })}</span>}
+            {e.review && <span>{t('mem.reviewOn', { d: dmy(e.review) })}</span>}
             {e.source && <span>{t('mem.from', { s: e.source })}</span>}
             {e.at > 0 && <span>{t('mem.changed', { d: dayTimeOf(e.at) })}</span>}
           </div>
@@ -75,7 +86,7 @@ export function Row(props: {
   );
 }
 
-export interface Draft { id: string; title: string; kind: string; description: string; body: string }
+export interface Draft { id: string; title: string; kind: string; description: string; body: string; review?: string }
 
 export function Form(props: { repo: string; draft: Draft; onDone: () => void }): JSX.Element {
   const [d, setD] = useState(props.draft);
@@ -84,7 +95,7 @@ export function Form(props: { repo: string; draft: Draft; onDone: () => void }):
   const [card, setCard] = useState<{ p: MemPreview; body: SaveBody } | null>(null);
   const set = (patch: Partial<Draft>): void => setD({ ...d, ...patch });
   const ok = d.body.trim().length > 0 || d.title.trim().length > 0;
-  const bodyOf = (x: Draft, repo: string, id: string): SaveBody => ({ repo, id, title: x.title, kind: x.kind, description: x.description, body: x.body });
+  const bodyOf = (x: Draft, repo: string, id: string): SaveBody => ({ repo, id, title: x.title, kind: x.kind, description: x.description, body: x.body, review: x.review ?? '' });
   // Saving shows «было → стало» first; the entry is written only when the card is confirmed.
   const ask = async (x: Draft, repo: string = props.repo, id: string = x.id): Promise<void> => {
     setBusy(true);
@@ -129,6 +140,10 @@ export function Form(props: { repo: string; draft: Draft; onDone: () => void }):
       <label class="fl2">{t('mem.fBody')}
         <textarea class="field" id="mem-body" rows={5} value={d.body} disabled={!!card} onInput={(e) => set({ body: (e.target as HTMLTextAreaElement).value })} />
       </label>
+      <label class="fl2">{t('mem.fReview')}
+        <input class="field" id="mem-review" type="date" value={d.review ?? ''} disabled={!!card} onInput={(e) => set({ review: (e.target as HTMLInputElement).value })} />
+      </label>
+      <div class="hint">{t('mem.fReviewHint')}</div>
       {err && !card && <div class="hint bad" id="mem-err">{err}</div>}
       {card ? (
         <ChangeCard
@@ -350,6 +365,7 @@ export function Git(props: { repo: string; data: MemData }): JSX.Element | null 
   const g = props.data.git;
   const [busy, setBusy] = useState(false);
   const [card, setCard] = useState<MemPreview | null>(null);
+  const [dcard, setDcard] = useState<MemPreview | null>(null);
   const [err, setErr] = useState('');
   if (!g) return null;
   if (!g.checkout) return <div class="hint" id="mem-git">{t('mem.notGit')}</div>;
@@ -370,6 +386,25 @@ export function Git(props: { repo: string; data: MemData }): JSX.Element | null 
     } catch (e) { setErr(failWords(e)); }
     setBusy(false);
   };
+  const stuck = g.stuck?.n ?? 0;
+  // Throwing the stuck drafts away shows «было → стало» for each, like any change; what git has stays.
+  const askDiscard = async (): Promise<void> => {
+    setBusy(true);
+    setErr('');
+    try { setDcard(await previewDiscardStuck(props.repo)); } catch (e) { toast(failWords(e), { icon: 'failed' }); }
+    setBusy(false);
+  };
+  const confirmDiscard = async (): Promise<void> => {
+    if (!dcard) return;
+    setBusy(true);
+    setErr('');
+    try {
+      await discardStuck(props.repo, dcard.token);
+      toast(t('mem.stuckDiscarded'));
+      setDcard(null);
+    } catch (e) { setErr(failWords(e)); }
+    setBusy(false);
+  };
   // What a board task has and the checkout has not yet: kept by the planner, so it survives a reload.
   const sentNote = g.sent.map((b) => (
     <div class="hint ok mm-sent" id="mem-sent" key={b.task} data-task={b.id ?? ''}>
@@ -381,12 +416,25 @@ export function Git(props: { repo: string; data: MemData }): JSX.Element | null 
   return (
     <div class="mm-git" id="mem-git">
       {g.drafts > 0 && <div class="hint warn" id="mem-drafts">{tn('mem.gitDrafts', g.drafts)}</div>}
+      {stuck > 0 && (
+        <div class="mm-stuck" id="mem-stuck" data-n={stuck}>
+          <div class="hint warn" id="mem-stuck-text">{tn('mem.stuck', stuck, { since: dayKey(g.stuck?.since ?? 0), days: daysSince(g.stuck?.since ?? 0) })}</div>
+          {dcard ? (
+            <ChangeCard p={dcard} busy={busy} error={err} onConfirm={() => void confirmDiscard()} onCancel={() => { setDcard(null); setErr(''); }} confirmLabel={t('mem.stuckDiscard')} />
+          ) : !card && (
+            <div class="row">
+              <button class="btn sm primary" type="button" id="mem-stuck-send" disabled={busy} onClick={() => void ask()}>{t('mem.send')}</button>
+              <button class="btn sm danger" type="button" id="mem-stuck-discard" disabled={busy} onClick={() => void askDiscard()}>{t('mem.stuckDiscard')}</button>
+            </div>
+          )}
+        </div>
+      )}
       {g.dirty.length > 0 && <div class="hint warn">{tn('mem.gitDirty', g.dirty.length)}</div>}
       {g.dirty.length > 0 && <ul class="mm-files">{g.dirty.map((d) => <li key={d.file}><code>{d.state || 'M'}</code> <code>{d.file}</code></li>)}</ul>}
       {g.dirty.length > 0 && <div class="hint" id="mem-dirty-own">{t('mem.gitDirtyOwn')}</div>}
       {card ? (
         <ChangeCard p={card} busy={busy} error={err} onConfirm={(a) => void confirm(a)} onCancel={() => { setCard(null); setErr(''); }} confirmLabel={t('mem.send')} />
-      ) : g.drafts > 0 && (
+      ) : g.drafts > 0 && stuck === 0 && (
         <div class="row">
           <button class="btn sm" type="button" id="mem-send" disabled={busy} onClick={() => void ask()}>{t('mem.send')}</button>
         </div>
@@ -456,6 +504,8 @@ export function MemoryPanel(props: { repo: string }): JSX.Element {
           <span class="mm-stat" id="mem-stat-all">{tn('mem.statEntries', entries.length)}</span>
           {waiting > 0 && <span class="mm-stat warn" id="mem-stat-waiting">{t('mem.statWaiting', { n: waiting })}</span>}
           {drafts > 0 && <span class="mm-stat warn" id="mem-stat-drafts">{t('mem.statDrafts', { n: drafts })}</span>}
+          {stuckOf(entries).n > 0 && <span class="mm-stat warn" id="mem-stat-stuck">{t('mem.statStuck', { n: stuckOf(entries).n })}</span>}
+          {marked(entries).length > 0 && <span class="mm-stat warn" id="mem-stat-review">{t('mem.statReview', { n: marked(entries).length })}</span>}
           {foreign.map((f) => <span class="mm-stat" key={f.program} data-foreign-stat={f.program}>{t('mem.statForeign', { p: f.label, n: f.entries.length })}</span>)}
         </div>
         {data && entries.length === 0 && foreign.length === 0 && <div class="hint mm-empty">{repo ? t('mem.emptyUniverse') : t('mem.emptyGalaxy')}</div>}
