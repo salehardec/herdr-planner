@@ -4913,6 +4913,81 @@ section('memory guard', async () => {
   await resetUi();
 });
 
+// The lint of the memory (marks, never a removal) and the drafts that lie unsent for days.
+section('memory review', async () => {
+  await resetUi();
+  await evalJs('planner.goHome()');
+  await quasarOf();
+  const entry = (id, title, desc, kind, body, extra = '') => `---\nname: ${id}\ntitle: ${title}\ndescription: ${desc}\ntype: ${kind}\n${extra}---\n\n${body}\n`;
+  const files = {
+    'lint-srok': entry('lint-srok', 'Порты проб', 'Какие порты слушает стенд проб', 'pitfall', 'Стенд проб слушает 8081.', 'review: 2026-01-01\n'),
+    'lint-razovoe': entry('lint-razovoe', 'Без далёких проб', 'Решение о других машинах', 'decision', 'Далёкие пробы не нужны (удаляются задачей PLN-31).'),
+    'lint-chistoe': entry('lint-chistoe', 'Формат отчётов', 'Отчёты пишутся в Markdown', 'convention', 'Отчёт — один файл Markdown, без вложений.'),
+    'lint-dubl-1': entry('lint-dubl-1', 'Кэш сборки живёт на верфи', 'Кэш cargo лежит в томе верфи', 'pitfall', 'Том не чистим.'),
+    'lint-dubl-2': entry('lint-dubl-2', 'Кэш сборки живёт на верфи', 'Кэш cargo лежит в томе верфи', 'pitfall', 'Том держим.'),
+  };
+  for (const [id, text] of Object.entries(files)) writeFileSync(join(memDir, `${id}.md`), text);
+  check('the Galaxy panel counts what is marked for a second look', await waitFor('/К пересмотру: [1-9]/.test(document.querySelector("#mem-stat-review")?.innerText || "")', 30000), await text('#mem-summary'));
+  await openMem();
+  await waitFor('!!document.querySelector(\'#mem-list [data-mem="lint-dubl-2"]\')', 15000);
+  const marks = (id) => evalJs(`[...document.querySelectorAll('#mem-list [data-mem="${id}"] [data-lint]')].map((x) => x.dataset.lint).join(',')`);
+  check('an entry whose review date has come is marked «срок пересмотра»', await waitFor('!!document.querySelector(\'#mem-list [data-mem="lint-srok"] [data-lint="overdue"]\')', 10000), await marks('lint-srok'));
+  check('one that reads like a one-off (a task number) is marked «разовое?»', (await marks('lint-razovoe')).includes('oneoff'), await marks('lint-razovoe'));
+  check('the same title twice: both are «дубль?»', (await marks('lint-dubl-1')).includes('duplicate') && (await marks('lint-dubl-2')).includes('duplicate'));
+  check('a clean entry has no mark', (await marks('lint-chistoe')) === '', await marks('lint-chistoe'));
+  await shot('memory-review.png');
+  await typeIn('#mem-f-lint', 'lint');
+  check('the filter «к пересмотру» keeps the marked entries only', await waitFor('!document.querySelector(\'#mem-list [data-mem="lint-chistoe"]\') && !!document.querySelector(\'#mem-list [data-mem="lint-razovoe"]\')', 6000), await text('#mem-shown'));
+  await click('#mem-list [data-mem="lint-razovoe"] .mm-line');
+  check('an opened entry says why, and only suggests: update or delete, nothing goes by itself', await waitFor('(document.querySelector(\'[data-mem="lint-razovoe"] [data-lint-note]\')?.innerText || "").includes("PLN-31")', 6000) && (await text('[data-mem="lint-razovoe"] [data-lint-note]')).includes('Ничего не удаляется само'), await text('[data-mem="lint-razovoe"] [data-lint-note]'));
+  await click('[data-mem="lint-razovoe"] [data-act="mem-edit"]');
+  await waitFor('!!document.querySelector("#mem-review")', 3000);
+  await typeIn('#mem-review', '2099-01-01');
+  await click('#mem-save');
+  await waitCard();
+  check('the card shows the new review line in the file', (await text('#mem-chg .mm-now')).includes('review: 2099-01-01'), await text('#mem-chg'));
+  await sayYes();
+  check('with a review date ahead the one-off mark is gone, the file is kept with the date', await waitLog(() => readFile(join(memDir, 'lint-razovoe.md')).includes('review: 2099-01-01'), 8000) && await waitFor('!document.querySelector(\'#mem-list [data-mem="lint-razovoe"] [data-lint="oneoff"]\')', 8000));
+  await typeIn('#mem-f-lint', '');
+  check('nothing was removed by the lint: every file is still there', Object.keys(files).every((id) => existsSync(join(memDir, `${id}.md`))));
+  await closeMem();
+  for (const id of Object.keys(files)) rmSync(join(memDir, `${id}.md`), { force: true });
+
+  // drafts that have lain unsent: the page says so and offers to send or throw them away
+  const dd = draftsOf('alpha');
+  mkdirSync(dd, { recursive: true });
+  const old = new Date(Date.now() - 6 * 86400000);
+  const lay = () => {
+    for (const id of ['zastryal-1', 'zastryal-2']) {
+      const f = join(dd, `${id}.md`);
+      writeFileSync(f, entry(id, `Застрявший ${id}`, `Лежит давно ${id}`, 'decision', `Черновик ${id} не отправлен.`));
+      utimesSync(f, old, old);
+    }
+  };
+  lay();
+  await universeOf('alpha');
+  check('the universe panel counts the stuck drafts', await waitFor('/Застряло: [2-9]/.test(document.querySelector("#mem-stat-stuck")?.innerText || "")', 15000), await text('#mem-summary'));
+  await openMem();
+  check('the window says how many lie unsent and since when, with the two ways out', await waitFor('Number(document.querySelector("#mem-stuck")?.dataset.n) >= 2', 10000) && (await text('#mem-stuck-text')).includes('неотправленными') && /\d{2}\.\d{2}\.\d{4}/.test(await text('#mem-stuck-text')) && (await text('#mem-stuck-send')) === 'Отправить в репозиторий задачей' && (await text('#mem-stuck-discard')) === 'Отбросить застрявшие', await text('#mem-stuck'));
+  check('the stuck drafts carry a badge in the list', await waitFor('!!document.querySelector(\'#mem-list [data-mem="zastryal-1"] [data-stuck-badge]\')', 6000));
+  await shot('memory-stuck.png');
+  await click('#mem-stuck-send');
+  check('«Отправить» shows the send card (a board task), nothing is sent yet', await waitCard() && (await text('#mem-chg-dest')).includes('задачу') && existsSync(join(dd, 'zastryal-1.md')), await text('#mem-chg-dest'));
+  await click('#mem-chg-cancel');
+  await click('#mem-stuck-discard');
+  check('«Отбросить застрявшие» shows was → now for each, and throws away nothing yet', await waitCard() && (await text('#mem-chg-dest')).includes('ерновик') && (await evalJs('document.querySelectorAll("#mem-chg .mm-chg-one").length')) >= 2 && existsSync(join(dd, 'zastryal-1.md')), await text('#mem-chg'));
+  await click('#mem-chg-cancel');
+  check('cancelling keeps them', existsSync(join(dd, 'zastryal-1.md')) && existsSync(join(dd, 'zastryal-2.md')));
+  await click('#mem-stuck-discard');
+  await waitCard();
+  await sayYes();
+  check('the yes throws them away together', await waitLog(() => !existsSync(join(dd, 'zastryal-1.md')) && !existsSync(join(dd, 'zastryal-2.md')), 8000) && await waitFor('!document.querySelector(\'#mem-list [data-mem="zastryal-1"]\')', 8000));
+  const left = await api('/api/memory?repo=alpha');
+  check('the planner reports no stuck drafts any more', (left?.[1]?.git?.stuck?.n ?? -1) === 0, JSON.stringify(left?.[1]?.git?.stuck));
+  await closeMem();
+  await resetUi();
+});
+
 // ── run ──────────────────────────────────────────────────────────────────
 
 await waitForChrome();

@@ -21,6 +21,7 @@ mod history;
 mod memory;
 mod memory_api;
 mod memory_guard;
+mod memory_lint;
 mod menu;
 mod menu_api;
 mod load;

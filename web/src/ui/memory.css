@@ -127,3 +127,12 @@ button.mm-draft:hover,button.mm-draft:focus-visible{background:color-mix(in srgb
 :root.bp900 .scrim.memory-scrim{padding:0.75rem}
 :root.bp900 .memory-win{width:calc(100vw - 1.5rem);height:calc(100vh - 1.5rem);max-width:none;max-height:none}
 :root.bp900 .mmw-count{margin-left:0}
+
+/* The lint of the memory (marks only; nothing is removed) and the drafts that lie unsent. */
+.mm-lint,.mm-stuckbadge{flex:none;max-width:100%;overflow:hidden;text-overflow:ellipsis;font-size:0.625rem;letter-spacing:.04em;text-transform:uppercase;border:1px solid var(--pl-line);color:var(--pl-dim);border-radius:0.5625rem;padding:0 0.4375rem;margin-top:0.4375rem;white-space:nowrap;line-height:1.5}
+.mm-lint.k-overdue,.mm-lint.k-bad_review,.mm-stuckbadge{border-color:var(--c-yellow);color:var(--c-yellow)}
+.mm-lint.k-oneoff,.mm-lint.k-duplicate{border-style:dashed}
+.mm-lintnote{display:grid;gap:0.25rem;padding:0.375rem 0.5rem;border:1px solid var(--pl-line);border-left:3px solid var(--c-yellow);border-radius:5px;font-size:0.75rem;color:var(--pl-dim)}
+.mm-lintnote ul{margin:0;padding:0;list-style:none;display:grid;gap:0.125rem;overflow-wrap:break-word}
+.mm-lintnote b{color:var(--pl-title);font-weight:600}
+.mm-stuck{display:grid;gap:0.3125rem;padding:0.4375rem 0.5rem;border:1px solid var(--c-yellow);border-radius:7px}
