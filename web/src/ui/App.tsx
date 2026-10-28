@@ -18,6 +18,7 @@ import { Toasts } from './Toasts';
 import { Lightbox } from './Lightbox';
 import { Banner, FlightHud, HerdrPop, HintCard, LinkNotice, NoGl } from './Overlays';
 import { Dialogs } from './Dialogs';
+import { TunnelGuide } from './TunnelGuide';
 import { Cockpit } from './Cockpit';
 import { Station, StationAuto } from './Station';
 import { Ship } from './Ship';
@@ -74,6 +75,7 @@ export function App(): JSX.Element {
       <Banner />
       <NoGl />
       <Dialogs />
+      <TunnelGuide />
       <Station />
       <Ship />
       <MemoryWindow />

@@ -1,0 +1,125 @@
+/* The gate (Шлюз): the plaque in the top bar, right of the subscription chip, its card and the guide. Colours are the theme's
+   semantic ones (green: open, yellow: waiting or coming up, red: failed); the state is also written in words, never colour alone. */
+.tn-wrap{position:relative;flex:none}
+.gatechip{--gc:var(--pl-faint);height:1.875rem;border-radius:0.9375rem;gap:0.4375rem;flex:none;white-space:nowrap}
+.gatechip .dot{width:0.5rem;height:0.5rem;border-radius:50%;background:var(--gc);flex:none}
+.gatechip .st{color:var(--pl-faint);font-size:0.6562rem;font-weight:600}
+.gatechip .n{display:inline-grid;place-items:center;min-width:1.1rem;height:1.1rem;padding:0 0.25rem;border-radius:0.6rem;background:var(--gc);color:var(--pl-on-accent);font-size:0.625rem;font-weight:700}
+.gatechip[data-s="closed"] .dot,.gatechip[data-s="closing"] .dot{background:transparent;border:1.5px solid var(--pl-faint)}
+.gatechip[data-s="starting"]{--gc:var(--c-yellow);border-color:color-mix(in srgb,var(--c-yellow) 45%,var(--pl-line))}
+.gatechip[data-s="starting"] .dot{animation:tn-blink 1s steps(2) infinite}
+.gatechip[data-s="open"]{--gc:var(--c-green);border-color:color-mix(in srgb,var(--c-green) 50%,var(--pl-line));background:color-mix(in srgb,var(--c-green) 9%,var(--pl-panel-solid))}
+.gatechip[data-s="open"] .dot{animation:tn-ping 2.2s ease-out infinite}
+.gatechip[data-s="pending"]{--gc:var(--c-yellow);border-color:color-mix(in srgb,var(--c-yellow) 60%,var(--pl-line));background:color-mix(in srgb,var(--c-yellow) 10%,var(--pl-panel-solid));animation:waitpulse 2.2s ease-in-out infinite}
+.gatechip[data-s="reconnecting"]{--gc:var(--c-yellow);border-color:color-mix(in srgb,var(--c-yellow) 45%,var(--pl-line))}
+.gatechip[data-s="reconnecting"] .dot{animation:tn-blink .7s steps(2) infinite}
+.gatechip[data-s="failed"]{--gc:var(--c-red);border-color:color-mix(in srgb,var(--c-red) 55%,var(--pl-line));color:var(--pl-danger)}
+.gatechip[data-s="missing"],.gatechip[data-s="external"]{--gc:var(--c-muted);border-style:dashed}
+.gatechip[data-s="missing"] .dot,.gatechip[data-s="external"] .dot{background:transparent;border:1.5px dashed var(--c-muted)}
+@keyframes tn-blink{50%{opacity:.25}}
+@keyframes tn-ping{0%{box-shadow:0 0 0 0 color-mix(in srgb,var(--c-green) 55%,transparent)}70%,100%{box-shadow:0 0 0 0.45rem transparent}}
+@media (prefers-reduced-motion:reduce){.gatechip,.gatechip *{animation:none!important}}
+/* a narrow top bar: the icon and the dot stay, the words are in the tooltip and the aria-label (LoadBar.tsx sets data-form) */
+.gatechip[data-form="icon"] .nm,.gatechip[data-form="icon"] .st{display:none}
+.gatechip[data-form="icon"]{padding:0 0.5rem}
+
+/* the card under the chip */
+.tn-pop{position:absolute;top:2.375rem;left:0;transform:translateX(var(--tn-dx,0px));width:25.5rem;max-width:calc(100vw - 1rem);max-height:calc(100vh - 5rem);overflow:auto;z-index:60;padding:0.75rem;display:grid;gap:0.625rem;scrollbar-width:thin;outline:none;background:var(--pl-panel-solid)}
+.tn-pop>*{min-width:0}
+:root.bp900 .tn-pop{position:fixed;left:0.5rem;right:0.5rem;top:auto;bottom:0.5rem;width:auto;max-width:none;max-height:70vh;transform:none}
+.tn-head{display:flex;align-items:center;gap:0.5rem;color:var(--pl-title)}
+.tn-head .btn{flex:none}
+.tn-head b{font-size:0.8438rem}
+.tn-head>span{color:var(--pl-faint);font-size:0.6875rem;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.tn-head>span.grow{flex:1;min-width:0}
+.tn-pop .note,.tg .note{color:var(--pl-dim);font-size:0.7188rem;margin:0;text-wrap:pretty}
+.tn-pop .note.faint,.tg .note.faint{color:var(--pl-faint)}
+.tn-pop small,.tg small{display:block;color:var(--pl-faint);font-size:0.6562rem}
+.tn-pop a,.tg a{color:var(--pl-accent-ink)}
+.tn-pop code,.tg code{color:var(--pl-accent-ink);word-break:break-all}
+.tn-row{display:flex;gap:0.5rem;align-items:center;flex-wrap:wrap}
+.tn-row.gap{gap:0.375rem}
+.tn-row .grow{flex:1;min-width:0}
+.tn-box{border:1px solid var(--pl-line);border-radius:0.4375rem;background:var(--pl-tile);padding:0.5rem 0.625rem;display:grid;gap:0.375rem}
+.tn-box .ttl{color:var(--pl-title)}
+.tn-box.warn{border-color:color-mix(in srgb,var(--c-yellow) 55%,var(--pl-line));background:color-mix(in srgb,var(--c-yellow) 8%,var(--pl-tile))}
+.tn-box.bad{border-color:color-mix(in srgb,var(--c-red) 55%,var(--pl-line));background:color-mix(in srgb,var(--c-red) 8%,var(--pl-tile))}
+.tn-box.ok{border-color:color-mix(in srgb,var(--c-green) 45%,var(--pl-line));background:color-mix(in srgb,var(--c-green) 7%,var(--pl-tile))}
+.tn-pop hr{border:0;border-top:1px solid var(--pl-line);margin:0;width:100%}
+
+/* mode and the fields of a named tunnel */
+.tn-setup{display:grid;gap:0.5rem}
+.tn-mode{display:flex;border:1px solid var(--pl-line);border-radius:1rem;overflow:hidden;background:var(--pl-panel-solid);width:max-content;max-width:100%}
+.tn-mode button{border:0;background:none;padding:0.25rem 0.75rem;height:1.75rem;font-size:0.7188rem}
+.tn-mode button.on{background:var(--pl-accent);color:var(--pl-on-accent);font-weight:700}
+.tn-named{display:grid;gap:0.5rem}
+.tn-f{display:grid;gap:0.1875rem;font-size:0.6562rem;color:var(--pl-faint)}
+.tn-f .field{font-size:0.7188rem;color:var(--pl-text)}
+.tn-checks{list-style:none;margin:0;padding:0;display:grid;gap:0.25rem;font-size:0.7188rem}
+.tn-checks li{display:grid;grid-template-columns:1rem 1fr;gap:0.375rem;color:var(--pl-dim)}
+.tn-checks .m{text-align:center;font-weight:700}
+.tn-checks li.ok .m{color:var(--c-green)}
+.tn-checks li.warn .m{color:var(--c-yellow)}
+.tn-checks li.bad .m{color:var(--pl-danger)}
+.tn-checks li.bad{color:var(--pl-title)}
+
+/* options */
+.tn-opts{display:grid;gap:0.375rem}
+.tn-opt{display:grid;grid-template-columns:auto 1fr;gap:0.5rem;align-items:start;font-size:0.7188rem;color:var(--pl-text)}
+.tn-opt input{margin:0.15rem 0 0;accent-color:var(--pl-accent)}
+.tn-opt.off{opacity:.6}
+label.tn-row{display:flex}
+.tn-opts .tn-row{flex-wrap:nowrap}
+.tn-row select.field{width:auto;min-height:1.5rem;font-size:0.7188rem}
+
+/* starting */
+.tn-steps{display:grid;gap:0.3125rem;margin:0;padding:0;list-style:none}
+.tn-steps li{display:flex;gap:0.5rem;align-items:center;color:var(--pl-faint)}
+.tn-steps li.done{color:var(--pl-dim)}
+.tn-steps li.now{color:var(--pl-title)}
+.tn-steps .m{width:1rem;text-align:center;flex:none}
+.tn-steps li.now .m{animation:tn-blink 1s steps(2) infinite}
+
+/* the link, the code, the devices */
+.tn-link{display:flex;gap:0.375rem;align-items:center}
+.tn-link code{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;padding:0.3125rem 0.5rem;border:1px solid var(--pl-line);border-radius:0.375rem;background:var(--c-bg-darker);color:var(--pl-title);font-size:0.7188rem;word-break:normal}
+.tn-link code .tk{color:var(--pl-faint)}
+.tn-link .btn.icon{background:var(--pl-raised);color:var(--pl-title)}
+.tn-qrbox{display:grid;grid-template-columns:auto 1fr;gap:0.75rem;align-items:center}
+.tn-qr{width:8.5rem;height:8.5rem;padding:0.25rem;background:#fff;border-radius:0.4375rem;line-height:0}
+.tn-qr svg{width:100%;height:100%;shape-rendering:crispEdges}
+.tn-qrbox .cnt{font-size:1.125rem;font-weight:700;color:var(--pl-title);font-variant-numeric:tabular-nums}
+.tn-qrbox .mt{margin-top:0.5rem}
+.tn-dev{display:grid;grid-template-columns:auto 1fr auto;gap:0.5rem;align-items:center;padding:0.4375rem 0.5rem;border:1px solid var(--pl-line);border-radius:0.4375rem;background:var(--pl-tile)}
+.tn-dev.bare{padding:0;border:0;background:transparent}
+.tn-dev .ic{width:1.75rem;height:1.75rem;border-radius:0.4375rem;display:grid;place-items:center;background:var(--pl-raised);color:var(--pl-dim)}
+.tn-dev .tt{color:var(--pl-title)}
+.tn-dev .ss{color:var(--pl-faint);font-size:0.6562rem}
+.tn-badge{display:inline-block;padding:0 0.375rem;border:1px solid var(--pl-line);border-radius:0.5rem;font-size:0.625rem;color:var(--pl-faint);white-space:nowrap}
+.tn-badge.lite{color:var(--c-cyan);border-color:color-mix(in srgb,var(--c-cyan) 40%,var(--pl-line))}
+.tn-badge.full{color:var(--c-magenta);border-color:color-mix(in srgb,var(--c-magenta) 40%,var(--pl-line))}
+.tn-log{margin:0;padding:0.5rem;border-radius:0.375rem;background:var(--c-bg-darker);color:var(--pl-dim);font:inherit;font-size:0.6562rem;overflow:auto;max-height:7.5rem;white-space:pre-wrap;word-break:break-all}
+.tn-cmd{display:flex;gap:0.375rem;align-items:center}
+.tn-cmd code{flex:1;min-width:0;padding:0.3125rem 0.5rem;border-radius:0.375rem;background:var(--c-bg-darker);color:var(--pl-title);font-size:0.7188rem;overflow:auto;white-space:nowrap;word-break:normal;scrollbar-width:thin}
+.tn-cmd.block{align-items:flex-start}
+.tn-cmd.block pre{flex:1;min-width:0;margin:0;overflow:auto;border-radius:0.375rem;background:var(--c-bg-darker);scrollbar-width:thin}
+.tn-cmd.block code{display:block;background:none;white-space:pre;overflow:visible}
+
+/* the guide */
+.dlg.tg{width:min(44rem,100%)}
+.dlg.tg .bd{gap:0.625rem;outline:none}
+.tg{outline:none}
+.tg-steps{list-style:none;margin:0;padding:0;display:grid;gap:0.75rem}
+.tg-step{display:grid;grid-template-columns:1.5rem minmax(0,1fr);gap:0.625rem;align-items:start}
+.tg-step .num{display:grid;place-items:center;width:1.5rem;height:1.5rem;border-radius:50%;border:1px solid var(--pl-line);background:var(--pl-tile);color:var(--pl-title);font-size:0.7188rem;font-weight:700}
+.tg-body{display:grid;grid-template-columns:minmax(0,1fr);gap:0.375rem;min-width:0}
+.tg-h{color:var(--pl-title);font-size:0.8125rem}
+.tg-install{display:grid;gap:0.25rem}
+.tg-list{margin:0;padding-left:1.125rem;display:grid;gap:0.25rem;color:var(--pl-dim);font-size:0.7188rem}
+.dlg label.tg-uuid{display:grid;gap:0.1875rem;font-size:0.6562rem;color:var(--pl-faint);margin:0.25rem 0 0;text-transform:none;letter-spacing:0}
+.dlg label.tg-uuid .field{text-transform:none;letter-spacing:0;font-size:0.7188rem;color:var(--pl-text)}
+.tg-trouble{display:grid;gap:0.5rem;border-top:1px solid var(--pl-line);padding-top:0.625rem}
+.tg-trouble h3{margin:0;font-size:0.8125rem;color:var(--pl-title)}
+.tg-t{display:grid;gap:0.25rem}
+.tg-t b{color:var(--pl-title);font-size:0.75rem}
+.tg .tn-mode{margin-bottom:0.25rem}

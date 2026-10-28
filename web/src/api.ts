@@ -45,6 +45,9 @@ const chatListeners = new Set<Listener>();
 export const onChatEvent = (fn: Listener): (() => void) => { chatListeners.add(fn); return () => chatListeners.delete(fn); };
 const progressListeners = new Set<(p: any) => void>();
 export const onProgress = (fn: (p: any) => void): (() => void) => { progressListeners.add(fn); return () => progressListeners.delete(fn); };
+const tunnelListeners = new Set<Listener>();
+/** The gate changed (its state, or who is knocking): the plaque asks again. Also when the stream comes back. */
+export const onTunnelEvent = (fn: Listener): (() => void) => { tunnelListeners.add(fn); return () => tunnelListeners.delete(fn); };
 let stateListener: ((s: Snapshot) => void) | null = null;
 export const onState = (fn: (s: Snapshot) => void): void => { stateListener = fn; };
 
@@ -87,6 +90,9 @@ export function connect(): void {
       try { setLoad(JSON.parse((e as MessageEvent).data)); } catch { /* a broken frame */ }
     });
     es.addEventListener('chat', () => chatListeners.forEach((fn) => fn()));
+    es.addEventListener('tunnel', () => tunnelListeners.forEach((fn) => fn()));
+    es.addEventListener('devices', () => tunnelListeners.forEach((fn) => fn()));
+    es.onopen = () => tunnelListeners.forEach((fn) => fn());
     es.addEventListener('progress', (e) => {
       try { const p = JSON.parse((e as MessageEvent).data); progressListeners.forEach((fn) => fn(p)); } catch { /* a broken frame */ }
     });

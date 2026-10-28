@@ -51,4 +51,7 @@ export const SPRITE = `
 <symbol id="g-user" viewBox="0 0 16 16"><circle cx="8" cy="5.5" r="2.8"/><path d="M2.8 13.5a5.2 5.2 0 0 1 10.4 0"/></symbol>
 <symbol id="g-event" viewBox="0 0 16 16"><circle cx="8" cy="8" r="2.4"/><path d="M8 1.8v2.4M8 11.8v2.4M1.8 8h2.4M11.8 8h2.4"/></symbol>
 <symbol id="g-image" viewBox="0 0 16 16"><rect x="2" y="3" width="12" height="10" rx="1.5"/><path d="m2.5 11.5 3.5-3.5 2.5 2.5 2-2 3 3"/><circle cx="10.5" cy="6.5" r="1"/></symbol>
+<symbol id="g-gate" viewBox="0 0 16 16"><path d="M2 14V4.5L8 2l6 2.5V14M5.5 14V8.5h5V14M2 14h12"/></symbol>
+<symbol id="g-phone" viewBox="0 0 16 16"><rect x="4.5" y="1.5" width="7" height="13" rx="1.5"/><path d="M7 12.5h2"/></symbol>
+<symbol id="g-pc" viewBox="0 0 16 16"><rect x="1.5" y="2.5" width="13" height="8.5" rx="1"/><path d="M5.5 14h5M8 11v3"/></symbol>
 </defs></svg>`;

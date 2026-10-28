@@ -3,6 +3,7 @@
 import { signal } from '@preact/signals';
 import { closeStation, shipDlg, stationDlg } from './ui/station-api';
 import { memoryWin, rememberDlg } from './ui/memory-api';
+import { tunnelGuide } from './ui/tunnel-api';
 import { snap } from './store';
 import type { SavedFile } from './attach';
 import { closeLightbox, lightbox } from './lightbox';
@@ -47,7 +48,7 @@ export function openNewTask(id: string, repo: string): void {
 
 export const dialogOpen = (): boolean =>
   addDialogs.universe.value || addDialogs.runner.value || addDialogs.firstRun.value || !!addDialogs.popover.value || !!addDialogs.tell.value
-  || !!addDialogs.summary.value || !!addDialogs.screen.value || !!addDialogs.ctlLogs.value || !!addDialogs.ctlAct.value || !!stationDlg.value || shipDlg.value || !!rememberDlg.value || !!memoryWin.value
+  || !!addDialogs.summary.value || !!addDialogs.screen.value || !!addDialogs.ctlLogs.value || !!addDialogs.ctlAct.value || !!stationDlg.value || shipDlg.value || !!rememberDlg.value || !!memoryWin.value || !!tunnelGuide.value
   || !!lightbox.value;
 
 export function closeDialogs(): void {
@@ -56,6 +57,7 @@ export function closeDialogs(): void {
   if (addDialogs.ctlLogs.value) { addDialogs.ctlLogs.value = null; return; }
   if (addDialogs.screen.value) { addDialogs.screen.value = null; return; }
   if (memoryWin.value) { memoryWin.value = null; return; }
+  if (tunnelGuide.value) { tunnelGuide.value = null; (document.getElementById('gate-chip') as HTMLElement | null)?.focus(); return; }
   if (addDialogs.summary.value) { addDialogs.summary.value = null; return; }
   if (rememberDlg.value) { rememberDlg.value = null; return; }
   if (addDialogs.popover.value) { addDialogs.popover.value = null; return; }

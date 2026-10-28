@@ -9,6 +9,7 @@ import { t } from '../i18n';
 import { LimitsChip } from './Limits';
 import { Menu } from './Menu';
 import { LoadBar } from './LoadBar';
+import { Tunnel } from './Tunnel';
 import './top.css';
 
 function Crumbs(): JSX.Element {
@@ -81,6 +82,7 @@ export function Top(): JSX.Element {
         <div class="mon" id="mon">
           <LoadBar />
           <LimitsChip />
+          <Tunnel />
         </div>
       </div>
       <Search />

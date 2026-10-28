@@ -48,11 +48,16 @@ function useTier(box: { current: HTMLElement | null }): void {
     const menu = row?.querySelector('.menu') as HTMLElement | null;
     const chip = mon?.querySelector('.limchip') as HTMLElement | null;
     if (!el || !mon || !row || !crumbs || !menu) return;
+    let mo: MutationObserver | null = null;
     const measure = (): void => {
+      // the gate's chip comes after the subscription chip, once the server has said this is the owner's machine
+      const gate = mon.querySelector('.gatechip') as HTMLElement | null;
+      if (gate) mo?.observe(gate, { childList: true, characterData: true, subtree: true });
       // a phone-sized window puts the group on the second row, beside the search: always the narrowest forms
       if (document.documentElement.classList.contains('bp900')) {
         el.dataset.tier = 'sum';
         if (chip) chip.dataset.form = 'pct';
+        if (gate) gate.dataset.form = 'icon';
         return;
       }
       const px = rootPx();
@@ -68,19 +73,34 @@ function useTier(box: { current: HTMLElement | null }): void {
         chip.dataset.form = 'full'; full = chip.offsetWidth;
         chip.dataset.form = 'pct'; short = chip.offsetWidth;
       }
-      const fit = monFit((row.clientWidth - menu.offsetWidth - natural - 2 * rowGap) / px, full / px, short / px, monGap / px);
+      let gateFull = 0;
+      let gateIcon = 0;
+      if (gate) {
+        gate.dataset.form = 'full'; gateFull = gate.offsetWidth;
+        gate.dataset.form = 'icon'; gateIcon = gate.offsetWidth;
+      }
+      const room = (row.clientWidth - menu.offsetWidth - natural - 2 * rowGap) / px;
+      // the gate keeps its words while the subscription chip still keeps its own; else it is only an icon and a dot
+      let fit = monFit(room - (gate ? (gateFull + monGap) / px : 0), full / px, short / px, monGap / px);
+      let gateForm: 'full' | 'icon' = 'full';
+      if (gate && fit.chip !== 'full') {
+        gateForm = 'icon';
+        fit = monFit(room - (gateIcon + monGap) / px, full / px, short / px, monGap / px);
+      }
       el.dataset.tier = fit.tier;
       if (chip) chip.dataset.form = fit.chip;
+      if (gate) gate.dataset.form = gateForm;
     };
     measure();
     if (typeof ResizeObserver === 'undefined') return;
     const ro = new ResizeObserver(measure);
     ro.observe(row);
     ro.observe(document.getElementById('top') ?? row);
-    const mo = new MutationObserver(measure);
+    mo = new MutationObserver(measure);
+    mo.observe(mon, { childList: true });
     mo.observe(crumbs, { childList: true, characterData: true, subtree: true });
     if (chip) mo.observe(chip, { childList: true, characterData: true, subtree: true });
-    return () => { ro.disconnect(); mo.disconnect(); };
+    return () => { ro.disconnect(); mo?.disconnect(); };
   }, []);
 }
 

@@ -83,6 +83,8 @@ describe('the Russian dictionary is Russian', () => {
   const SAME = new Set([
     'lang.ru', 'lang.en', 'ship.tls', 'ship.version', 'load.cpu', 'load.mem', 'load.gpu',
     'ctl.shell', 'runner.connect.postgres', 'runner.connect.redis',
+    // the gate: names of systems and of a service, and a config line, are the same in both languages
+    'tun.chk.tunnel.ok', 'tun.miss.arch', 'tun.miss.mac', 'tg.install.arch', 'tg.install.mac', 'tg.install.deb', 'tg.t.access.link',
   ]);
   const words = (v: string): boolean => /\p{L}{3,}/u.test(v.replace(/\{\w+\}/g, ''));
   it('no Russian string is English (the buttons «Compact» and «New» stood in English in the Russian page)', () => {

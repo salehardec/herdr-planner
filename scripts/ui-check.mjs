@@ -2615,7 +2615,7 @@ section('load', async () => {
 const topRects = () => evalJs(`(() => {
   const r = (s) => { const e = document.querySelector(s); if (!e || getComputedStyle(e).display === 'none') return null; const b = e.getBoundingClientRect(); return b.width > 0 ? { l: b.left, t: b.top, r: b.right, b: b.bottom, w: b.width, h: b.height } : null; };
   const chip = document.querySelector('#hud-limits');
-  return { menu: r('#menu-btn'), crumbs: r('#crumbs'), load: r('#load-chip'), lim: r('#hud-limits'), q: r('#q'), wait: r('#wait-btn'), mode: r('#mode'),
+  return { menu: r('#menu-btn'), crumbs: r('#crumbs'), load: r('#load-chip'), lim: r('#hud-limits'), gate: r('#gate-chip'), q: r('#q'), wait: r('#wait-btn'), mode: r('#mode'),
     form: chip?.dataset.form, tier: document.querySelector('#loadbar')?.dataset.tier, limText: chip ? chip.innerText.trim() : '', limTip: chip ? chip.getAttribute('aria-label') || '' : '',
     limClipped: chip ? chip.scrollWidth > chip.clientWidth + 1 || [...chip.querySelectorAll('.lim-ag')].some((e) => e.offsetParent && e.scrollWidth > e.clientWidth + 1) : false, sw: document.documentElement.scrollWidth, phone: document.documentElement.classList.contains('bp900') };
 })()`);
@@ -2625,7 +2625,7 @@ section('top bar', async () => {
   loadGone();
   check('the menu button is the first element of the top bar, before the crumbs', await waitFor('!!document.querySelector("#topl > .menu #menu-btn")', 8000)
     && await evalJs('document.querySelector("#topl").firstElementChild === document.querySelector("#topl > .menu") && document.querySelector("#topl > .menu").nextElementSibling === document.querySelector("#crumbs")'));
-  check('right of the crumbs stand the bars and then the subscriptions, in one group', await evalJs(`[...document.querySelector('#mon').children].map((e) => e.id).join() === 'loadbar,hud-limits' && document.querySelector('#mon').previousElementSibling === document.querySelector('#crumbs')`));
+  check('right of the crumbs stand the bars, then the subscriptions, then the gate, in one group', await evalJs(`[...document.querySelector('#mon').children].map((e) => e.id).join() === 'loadbar,hud-limits,gate' && document.querySelector('#mon').previousElementSibling === document.querySelector('#crumbs')`));
   check('the right side holds only «Ждёт тебя» and the mode', await evalJs(`[...document.querySelector('#right').children].map((e) => e.id).join() === 'wait-btn,mode'`));
   check('the top bar has no station chip, no gear and no «своя станция»; the menu button and the subscriptions are not at the right',
     !(await exists('#station-chip')) && !(await exists('#station-open')) && !(await text('#top')).includes('своя станция') && !(await exists('#right #menu-btn')) && !(await exists('#right #hud-limits')), await text('#top'));
@@ -2661,7 +2661,7 @@ section('top bar', async () => {
       check(`${at}: nothing in the top bar overlaps, everything is inside the window`, clear && shown.every(([, a]) => a.l >= -1 && a.r <= w + 1) && m.sw <= w + 1, JSON.stringify(m));
       check(`${at}: the menu, the crumbs and the search are always there, and the right side keeps its two buttons`, ['menu', 'crumbs', 'q', 'wait', 'mode'].every((k) => names.includes(k)), names.join());
       if (!m.phone) {
-        const order = ['menu', 'crumbs', 'load', 'lim', 'q', 'wait', 'mode'].filter((k) => m[k]);
+        const order = ['menu', 'crumbs', 'load', 'lim', 'gate', 'q', 'wait', 'mode'].filter((k) => m[k]);
         check(`${at}: left to right: ${order.join(' › ')}`, order.every((k, i) => i === 0 || m[order[i - 1]].r <= m[k].l + 1), JSON.stringify(m));
       } else {
         check(`${at}: a phone-sized window: the menu and the crumbs above, the search and the monitoring below`, m.menu.r <= m.crumbs.l + 1 && m.crumbs.r <= m.wait.l + 1 && m.q.t >= m.menu.b - 1 && (!m.lim || m.q.r <= m.lim.l + 1), JSON.stringify(m));
@@ -2957,6 +2957,205 @@ section('top cards', async () => {
   await evalJs('document.activeElement?.blur(); true');
   await navigate(base + '/?noauto&nocoach&bloom=0');
 }, { retry: true });
+
+// The gate (Шлюз) in the top bar: the plaque, its card, the way a device is let in, the settings and the guide «Как настроить».
+// The tunnel is the stand-in of the tunnel's tests (bin/cloudflared of the fixture; tunnel/scenario says what it does); the
+// «phone» is a request of this script with the headers Cloudflare adds, so the server takes it for one that came through the tunnel.
+section('gate', async () => {
+  await resetUi();
+  await send('Emulation.setDeviceMetricsOverride', { width: 1500, height: 950, deviceScaleFactor: 1, mobile: false });
+  const scenario = join(fixture, 'tunnel', 'scenario');
+  const namedConfig = join(fixture, 'tunnel', 'named.yml');
+  const UUID = '6ff42ae2-765d-4adf-8112-31c55c1551ef';
+  const IPHONE = 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1';
+  const gate = (s) => waitFor(`document.querySelector('#gate-chip')?.dataset.s === ${JSON.stringify(s)}`, 20000);
+  const view = async () => (await api('/api/tunnel'))[1];
+  const typeInto = (sel, value) => evalJs(`(() => { const e = document.querySelector(${JSON.stringify(sel)}); if (!e) return false; e.focus(); e.value = ${JSON.stringify(value)}; e.dispatchEvent(new Event('input', { bubbles: true })); return true; })()`);
+  const phone = (key) => fetch(`${base}/g/redeem`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'user-agent': IPHONE, 'cf-ray': 'ui-check', 'cf-connecting-ip': '203.0.113.9', 'cf-ipcountry': 'RU' },
+    body: JSON.stringify({ key, touch: true }),
+  }).then(async (r) => [r.status, await r.json().catch(() => null)]);
+  const openCard = async () => {
+    if (!(await exists('#tn-pop'))) await click('#gate-chip');
+    return waitFor('!!document.querySelector("#tn-pop")', 3000);
+  };
+  const inWindow = (sel) => evalJs(`(() => { const r = document.querySelector(${JSON.stringify(sel)})?.getBoundingClientRect(); return !!r && r.left >= -1 && r.top >= -1 && r.right <= innerWidth + 1 && r.bottom <= innerHeight + 1; })()`);
+  writeFileSync(scenario, '');
+
+  // closed
+  check('the plaque «Шлюз» is in the top bar, right of the subscriptions, closed', await gate('closed')
+    && await evalJs(`document.querySelector('#hud-limits').nextElementSibling === document.querySelector('#gate')`));
+  const label = await evalJs(`document.querySelector('#gate-chip').getAttribute('aria-label')`);
+  check('the chip says its name and state in words, and is a button that is not expanded', /Шлюз/.test(label) && /закрыт/.test(label)
+    && (await evalJs(`document.querySelector('#gate-chip').getAttribute('aria-expanded')`)) === 'false', label);
+  await click('#gate-chip');
+  check('a click opens the card: a dialog under the chip, inside the window', await waitFor('!!document.querySelector("#tn-pop[role=dialog]")', 3000) && await inWindow('#tn-pop')
+    && (await evalJs(`document.querySelector('#gate-chip').getAttribute('aria-expanded')`)) === 'true');
+  const closedText = (await text('#tn-pop')).replace(/\s+/g, ' ');
+  check('closed: two modes, the options, the guide button and «Открыть шлюз»', await evalJs(`document.querySelectorAll('#tn-pop .tn-mode button').length === 2`)
+    && /Быстрый/.test(closedText) && /Свой домен/.test(closedText) && /Спрашивать здесь/.test(closedText) && /Открыть шлюз/.test(closedText) && (await exists('#tn-help')), closedText.slice(0, 300));
+  check('without a password «the full planner» cannot be switched on and says why', await evalJs(`document.querySelector('#tn-full').disabled === true`) && /Нужен пароль/.test(closedText));
+  await shot('gate-closed.png');
+  await press('Escape');
+  check('Esc closes the card and the focus goes back to the chip', await waitFor('!document.querySelector("#tn-pop")', 3000) && (await evalJs(`document.activeElement?.id`)) === 'gate-chip');
+
+  // a quick tunnel: open → link, QR, countdown
+  await click('#gate-chip');
+  await waitFor('!!document.querySelector("#tn-open")', 3000);
+  await click('#tn-open');
+  check('«Открыть шлюз»: the chip goes to «открыт» (the tunnel is the stand-in)', await gate('open'));
+  const v = await view();
+  const key = (v.link || '').split('#k=')[1] || '';
+  check('the server gives the link with a 22-sign key, the address of the stand-in and an inline QR', v.state === 'open' && v.host === 'fake-quick-tunnel.trycloudflare.com'
+    && /^https:\/\/fake-quick-tunnel\.trycloudflare\.com\/#k=[\w-]{22}$/.test(v.link) && /^<svg/.test(v.qr_svg || '') && v.link_state === 'fresh', JSON.stringify({ link: v.link, state: v.state, link_state: v.link_state }));
+  check('the card shows the address with the key hidden, a QR as a picture with a name, and the time the link has left', await waitFor('!!document.querySelector("#tn-link")', 3000)
+    && /fake-quick-tunnel\.trycloudflare\.com\/#k=••••/.test(await text('#tn-link')) && !(await text('#tn-pop')).includes(key)
+    && await evalJs(`(() => { const q = document.querySelector('.tn-qr'); const r = q?.getBoundingClientRect(); return !!q && q.getAttribute('role') === 'img' && !!q.getAttribute('aria-label') && !!q.querySelector('svg path') && r.width > 100 && Math.abs(r.width - r.height) < 2; })()`)
+    && /^(9|10):\d\d$/.test((await text('#tn-left')).trim()), await text('#tn-pop'));
+  check('the QR is not drawn by an outside service: the page asked nobody else for it', !(await evalJs(`[...document.querySelectorAll('#tn-pop img, #tn-pop iframe')].length`)));
+  await clearToasts();
+  await click('#tn-copy');
+  check('«Копировать» answers with the toast', await waitFor('(document.querySelector("#toasts")?.innerText || "").includes("Скопировано")', 3000));
+  await shot('gate-open.png');
+
+  // a phone comes in with the link: it waits for «Пустить»
+  const [st, body] = await phone(key);
+  check('a phone redeems the link and waits for the owner', st === 200 && body?.state === 'pending', JSON.stringify([st, body]));
+  check('the chip turns to «новое устройство · 1» and the card asks, naming the device', await gate('pending') && /1/.test(await text('#gate-chip .n'))
+    && await hasText('#tn-pop', 'iPhone · Safari 17') && await exists('#tn-pop [data-act=allow]') && await exists('#tn-pop [data-act=deny]'), await text('#tn-pop'));
+  await shot('gate-pending.png');
+  await click('#tn-pop [data-act=allow]');
+  check('«Пустить» lets the device in: the chip is «открыт» with 1, the card lists the device as «лёгкая»', await gate('open') && await hasText('#tn-pop', 'iPhone · Safari 17') && await hasText('#tn-pop', 'лёгкая')
+    && /1/.test(await text('#gate-chip .n')), await text('#tn-pop'));
+  check('the used link has no QR any more and says it was used', !(await exists('.tn-qr')) && await hasText('#tn-pop', 'уже использована') && (await view()).link_state === 'used');
+  check('the page never receives the key after use: the link is the bare address', !((await view()).link || '').includes('#k='));
+  await click('#tn-rotate');
+  check('«Новая ссылка» brings a new key and a QR', await waitFor('!!document.querySelector(".tn-qr svg")', 5000) && ((await view()).link || '').split('#k=')[1] !== key);
+  await click('#tn-pop [data-act=revoke]');
+  check('«Отключить» removes the device', await waitFor('!document.querySelector("#tn-pop .tn-dev")', 5000) && (await view()).sessions.length === 0);
+  const second = ((await view()).link || '').split('#k=')[1];
+  const [st2] = await phone(second);
+  await gate('pending');
+  await click('#tn-pop [data-act=deny]');
+  check('«Отклонить» turns a device away', st2 === 200 && await waitFor('!document.querySelector("#tn-pop [data-act=allow]")', 5000) && (await view()).sessions.length === 0);
+
+  // settings
+  await click('#tn-confirm');
+  check('«Спрашивать о новых устройствах» is saved on the server', await waitApi('/api/tunnel', (x) => x.settings.confirm_devices === false, 5000));
+  await evalJs(`(() => { const s = document.querySelector('#tn-idle'); s.value = '12'; s.dispatchEvent(new Event('change', { bubbles: true })); return true; })()`);
+  check('the idle time is saved: 12 hours', await waitApi('/api/tunnel', (x) => x.settings.idle_close_h === 12, 5000));
+  await click('#tn-confirm');
+  await evalJs(`(() => { const s = document.querySelector('#tn-idle'); s.value = '4'; s.dispatchEvent(new Event('change', { bubbles: true })); return true; })()`);
+  await waitApi('/api/tunnel', (x) => x.settings.idle_close_h === 4 && x.settings.confirm_devices === true, 5000);
+
+  // closing
+  await click('#tn-close');
+  check('«Закрыть доступ» closes the gate and the key is gone', await gate('closed') && (await view()).link === null);
+
+  // a stand-in that dies: the card says what happened and keeps the log
+  writeFileSync(scenario, 'ready=100,die=700');
+  await openCard();
+  await click('#tn-open');
+  check('a tunnel that leaves: the chip is «ошибка» and the card has the reason, the log and «Повторить»', await gate('failed') && await waitFor('!!document.querySelector("#tn-pop .tn-box.bad")', 3000)
+    && await exists('.tn-log') && await hasText('#tn-pop', 'cloudflared завершился') && await hasText('#tn-pop', 'Повторить'), await text('#tn-pop'));
+  await shot('gate-failed.png');
+  writeFileSync(scenario, '');
+
+  // a named tunnel: fields, «Проверить», the checks
+  await click('#tn-pop .tn-mode button[data-mode=named]');
+  check('«Свой домен»: the fields of the config and the address appear, «Открыть» waits for a path', await waitFor('!!document.querySelector("#tn-config")', 5000) && (await view()).mode === 'named'
+    && await evalJs(`document.querySelector('#tn-open').disabled === true`));
+  const named = (tunnel, cred) => `tunnel: ${tunnel}\ncredentials-file: /nonexistent/${cred}.json\n\ningress:\n  - hostname: planner.ui-check.test\n    service: http://127.0.0.1:${new URL(base).port}\n  - service: http_status:404\n`;
+  writeFileSync(namedConfig, named(UUID, '0a1b2c3d-1111-2222-3333-444455556666'));
+  await typeInto('#tn-config', namedConfig);
+  await typeInto('#tn-host', 'planner.ui-check.test');
+  await click('#tn-check');
+  check('«Проверить» finds a credentials file of another tunnel by its name alone', await waitFor('!!document.querySelector("#tn-pop .tn-checks li.bad")', 5000)
+    && await hasText('#tn-pop', 'от другого туннеля') && await hasText('#tn-pop', '0a1b2c3d-1111-2222-3333-444455556666'), await text('#tn-pop'));
+  check('the other lines pass: the file, the address, the port, the last rule', await evalJs(`document.querySelectorAll('#tn-pop .tn-checks li.ok').length >= 4`));
+  await shot('gate-checks.png');
+  writeFileSync(namedConfig, named(UUID, UUID));
+  await click('#tn-check');
+  check('the right file name: the credentials line passes', await waitFor('!!document.querySelector("#tn-pop .tn-checks") && !document.querySelector("#tn-pop .tn-checks li.bad")', 5000)
+    && await hasText('#tn-pop', 'совпадает с туннелем'));
+  check('the config and the address were saved on the server', (await view()).config === namedConfig && (await view()).hostname === 'planner.ui-check.test');
+
+  // the guide, with the typed values put in
+  await click('#tn-help');
+  check('«Как настроить» opens the guide as a dialog on the mode in use', await waitFor('!!document.querySelector("#tunnel-guide[role=dialog]")', 3000) && !(await exists('#tn-pop'))
+    && (await evalJs(`document.querySelector('#tunnel-guide .tn-mode button.on').dataset.mode`)) === 'named' && await inWindow('#tunnel-guide'));
+  const guide = (await text('#tunnel-guide')).replace(/\s+/g, ' ');
+  check('named: login, create, the file, route dns with the typed address and config, the check', guide.includes('cloudflared tunnel login') && guide.includes('cloudflared tunnel create herdr-planner')
+    && guide.includes(`cloudflared --config ${namedConfig} tunnel route dns --overwrite-dns ${UUID} planner.ui-check.test`) && guide.includes('planner.ui-check.test') && /Проверить конфиг/.test(guide), guide.slice(0, 400));
+  check('the file shows the tunnel of the config, the host and the planner\'s port', guide.includes(`tunnel: ${UUID}`) && guide.includes(`service: http://127.0.0.1:${new URL(base).port}`) && guide.includes('http_status:404'));
+  check('the common problems are listed: route dns without --config, another tunnel\'s credentials, QUIC behind a TUN proxy with http2, Access', ['--config', 'credentials-file', 'protocol: http2', 'no recent network activity', 'stream canceled by remote', 'Zero Trust'].every((w) => guide.includes(w)), guide.slice(-600));
+  await typeInto('#tg-uuid', '11111111-2222-3333-4444-555555555555');
+  check('a UUID typed in the guide goes into the commands', await waitFor(`(document.querySelector('#tunnel-guide')?.innerText || '').includes('--overwrite-dns 11111111-2222-3333-4444-555555555555 planner.ui-check.test')`, 3000));
+  check('every command has a copy button', await evalJs(`document.querySelectorAll('#tunnel-guide .tn-cmd').length >= 6 && [...document.querySelectorAll('#tunnel-guide .tn-cmd')].every((c) => !!c.querySelector('button'))`));
+  await shot('gate-guide-named.png');
+  await click('#tunnel-guide .tn-mode button[data-mode=quick]');
+  check('the quick tab: installing cloudflared for pacman, brew and apt, the releases link, the warnings', await waitFor(`(document.querySelector('#tunnel-guide')?.innerText || '').includes('sudo pacman -S cloudflared')`, 3000)
+    && await hasText('#tunnel-guide', 'brew install cloudflared') && await hasText('#tunnel-guide', 'sudo apt install cloudflared')
+    && await evalJs(`!![...document.querySelectorAll('#tunnel-guide a')].find((a) => a.href.includes('github.com/cloudflare/cloudflared/releases'))`)
+    && await hasText('#tunnel-guide', 'Адрес меняется при каждом запуске') && await hasText('#tunnel-guide', 'только лёгкая страница'));
+  await shot('gate-guide-quick.png');
+  await press('Escape');
+  check('Esc closes the guide and the focus goes back to the chip', await waitFor('!document.querySelector("#tunnel-guide")', 3000) && (await evalJs(`document.activeElement?.id`)) === 'gate-chip');
+
+  // a named tunnel opens at the owner's address
+  await openCard();
+  await waitFor('!!document.querySelector("#tn-open")', 3000);
+  await click('#tn-open');
+  check('the named tunnel opens at the owner\'s address', await gate('open') && (await view()).host === 'planner.ui-check.test' && (await view()).sse === true);
+  check('its card shows that address', await hasText('#tn-link', 'planner.ui-check.test'));
+  await click('#tn-close');
+  await gate('closed');
+  await click('#tn-pop .tn-mode button[data-mode=quick]');
+  await waitApi('/api/tunnel', (x) => x.mode === 'quick', 5000);
+
+  // the light theme
+  const colors = join(fixture, 'theme', 'colors.toml');
+  const dark = readFileSync(colors, 'utf8');
+  writeFileSync(colors, dark.replace('mode = "dark"', 'mode = "light"').replace('background = "#1a120c"', 'background = "#f9f1e8"').replace('foreground = "#ecded6"', 'foreground = "#372b1f"'));
+  check('the light theme is on', await waitFor('document.documentElement.dataset.mode === "light"', 20000));
+  await openCard();
+  check('light: the card is drawn on a light ground with dark words', await evalJs(`(() => {
+    const dark = (c) => { const m = c.match(/[\\d.]+/g).map(Number); return m.slice(0, 3).every((v) => v < (m[0] > 1 || m[1] > 1 || m[2] > 1 ? 128 : 0.5)); };
+    const pop = document.querySelector('#tn-pop'); const note = pop.querySelector('.note');
+    return !!pop && !!note && dark(getComputedStyle(note).color) && !dark(getComputedStyle(pop).backgroundColor);
+  })()`));
+  // the theme changes colour over a moment: the picture is taken when the title has stopped changing
+  await evalJs(`new Promise((done) => { const c = () => getComputedStyle(document.querySelector('#tn-pop .tn-head b')).color; let last = c(); let same = 0; const f = () => { const now = c(); same = now === last ? same + 1 : 0; last = now; if (same >= 5) done(true); else setTimeout(f, 100); }; setTimeout(f, 100); setTimeout(() => done(false), 8000); })`);
+  await shot('gate-light.png');
+  await press('Escape');
+  writeFileSync(colors, dark);
+  await waitFor('document.documentElement.dataset.mode === "dark"', 20000);
+
+  // English
+  await openCard();
+  await evalJs('setLang("en"); true');
+  check('English: the chip and the card speak English', await waitFor(`/Gate/.test(document.querySelector('#gate-chip')?.getAttribute('aria-label') || '')`, 3000)
+    && await hasText('#tn-pop', 'Open the gate') && await hasText('#tn-pop', 'How to set up'), await text('#tn-pop'));
+  await evalJs('setLang("ru"); true');
+  await press('Escape');
+
+  // a narrow window: the chip is an icon and a dot, the card is a sheet at the bottom
+  await send('Emulation.setDeviceMetricsOverride', { width: 430, height: 900, screenWidth: 430, screenHeight: 900, deviceScaleFactor: 1, mobile: false });
+  await navigate(base + '/?noauto&nocoach&bloom=0');
+  await resized();
+  check('narrow: the chip keeps the icon and the dot, the words go to the label', await waitFor(`document.querySelector('#gate-chip')?.dataset.form === 'icon'`, 5000)
+    && !(await evalJs(`(() => { const e = document.querySelector('#gate-chip .st'); return !!e && e.offsetParent !== null; })()`)) && /Шлюз/.test(await evalJs(`document.querySelector('#gate-chip').getAttribute('aria-label')`)));
+  await click('#gate-chip');
+  check('narrow: the card is inside the window', await waitFor('!!document.querySelector("#tn-pop")', 3000) && await inWindow('#tn-pop'));
+  const sideways = await evalJs('document.documentElement.scrollWidth <= innerWidth + 1');
+  check('narrow: the page does not scroll sideways', sideways);
+  await shot('gate-narrow.png');
+  await press('Escape');
+  await send('Emulation.setDeviceMetricsOverride', { width: 1500, height: 950, deviceScaleFactor: 1, mobile: false });
+  writeFileSync(scenario, '');
+  await navigate(base + '/?noauto&nocoach&bloom=0');
+});
 
 section('lag', async () => {
   await resetUi();
