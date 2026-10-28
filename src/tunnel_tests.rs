@@ -534,7 +534,8 @@ async fn the_owners_credentials_are_not_in_the_log_nor_in_what_the_page_gets() {
     assert!(text.contains("Starting tunnel"), "the rest of the log is kept: {text}");
     assert!(!text.contains("secret.json") && !text.to_lowercase().contains("credentials-file"), "{text}");
     let json = serde_json::to_string(&view(&r.app).await).unwrap();
-    assert!(!json.contains("secret.json") && !json.contains("credentials") && !json.contains("6ff42ae2"), "{json}");
+    // the checks name the file's UUID (the tunnel's id, public in its DNS record) but never the path of the secret
+    assert!(!json.contains("secret.json") && !json.contains("/nonexistent"), "{json}");
 }
 
 /* ───────── what a crash leaves, and the planner's own stop ───────── */
@@ -1186,4 +1187,107 @@ async fn a_device_can_withdraw_its_request() {
     // a page of another site cannot do it for the device
     let (status, _, _) = call_head(addr, "POST", "/g/cancel", &[("Host", QUICK), ("Cf-Ray", "x"), ("Origin", "https://evil.example")], "{}").await;
     assert_eq!(status, 403);
+}
+
+/* ───────── «Check» of a named tunnel's config, and the QR code ───────── */
+
+const UUID: &str = "6ff42ae2-765d-4adf-8112-31c55c1551ef";
+
+fn good_config() -> String {
+    format!("tunnel: {UUID}\ncredentials-file: /home/me/.cloudflared/{UUID}.json\nprotocol: http2\n\ningress:\n  - hostname: planner.example.org\n    service: http://127.0.0.1:7117\n  - service: http_status:404\n")
+}
+
+fn failed(checks: &[Check]) -> Vec<&'static str> {
+    checks.iter().filter(|c| !c.ok).map(|c| c.id).collect()
+}
+
+#[test]
+fn a_good_config_passes_every_check() {
+    let checks = checks_of(&good_config(), Some("planner.example.org"), 7117, &|_| true);
+    assert!(failed(&checks).is_empty(), "{checks:?}");
+    let ids: Vec<_> = checks.iter().map(|c| c.id).collect();
+    assert_eq!(ids, ["file", "hostname", "tunnel", "credentials", "credentials-file", "service", "catch-all"]);
+}
+
+#[test]
+fn the_credentials_file_of_another_tunnel_is_found_by_its_name_alone() {
+    let other = good_config().replace(&format!("{UUID}.json"), "0a1b2c3d-1111-2222-3333-444455556666.json");
+    let checks = checks_of(&other, Some("planner.example.org"), 7117, &|_| true);
+    assert_eq!(failed(&checks), ["credentials"]);
+    let c = checks.iter().find(|c| c.id == "credentials").unwrap();
+    assert_eq!(c.have.as_deref(), Some("0a1b2c3d-1111-2222-3333-444455556666"));
+    assert_eq!(c.want.as_deref(), Some(UUID));
+    assert!(!c.warn, "a file of another tunnel stops the tunnel: an error");
+}
+
+#[test]
+fn the_other_slips_of_a_config_are_named() {
+    // no credentials-file, no tunnel
+    let bare = "ingress:\n  - hostname: planner.example.org\n    service: http://127.0.0.1:7117\n  - service: http_status:404\n";
+    assert_eq!(failed(&checks_of(bare, None, 7117, &|_| true)), ["tunnel", "credentials"]);
+    // the planner is on another port than the tunnel leads to
+    let port = good_config().replace("7117", "8080");
+    let checks = checks_of(&port, None, 7117, &|_| true);
+    assert_eq!(failed(&checks), ["service"]);
+    let c = checks.iter().find(|c| c.id == "service").unwrap();
+    assert!(c.warn && c.have.as_deref() == Some("8080") && c.want.as_deref() == Some("7117"));
+    // a last rule that answers 200 is not the catch-all that refuses
+    let ok200 = good_config().replace("http_status:404", "http_status:200");
+    assert_eq!(failed(&checks_of(&ok200, None, 7117, &|_| true)), ["catch-all"]);
+    // no last rule: cloudflared would not start without it, but it is a warning here (the version may differ)
+    let open = good_config().replace("  - service: http_status:404\n", "");
+    assert_eq!(failed(&checks_of(&open, None, 7117, &|_| true)), ["catch-all"]);
+    // the file named in the config is not there
+    assert_eq!(failed(&checks_of(&good_config(), None, 7117, &|_| false)), ["credentials-file"]);
+    // the address typed in the page is not among the config's
+    assert_eq!(failed(&checks_of(&good_config(), Some("other.example.org"), 7117, &|_| true)), ["hostname"]);
+    // a comment is not a value
+    let commented = good_config().replace("tunnel: ", "# tunnel: ");
+    assert!(failed(&checks_of(&commented, None, 7117, &|_| true)).contains(&"tunnel"));
+}
+
+#[test]
+fn a_tunnel_named_instead_of_numbered_has_nothing_to_compare_the_file_with() {
+    let by_name = good_config().replace(&format!("tunnel: {UUID}"), "tunnel: herdr-planner");
+    assert!(failed(&checks_of(&by_name, None, 7117, &|_| true)).is_empty());
+}
+
+#[tokio::test]
+async fn check_reads_the_config_and_never_the_credentials() {
+    let r = named_rig("", None);
+    let creds = r.path(&format!("{UUID}.json"));
+    std::fs::write(&creds, "SECRET-DO-NOT-READ").unwrap();
+    std::fs::write(r.path("planner.yml"), good_config().replace(&format!("/home/me/.cloudflared/{UUID}.json"), &creds.display().to_string())).unwrap();
+    let v = view(&r.app).await;
+    let check = v.config_check.unwrap();
+    assert!(check.ok);
+    assert!(failed(&check.checks).is_empty() || failed(&check.checks) == ["service"], "{:?}", check.checks);
+    let json = serde_json::to_string(&check).unwrap();
+    assert!(!json.contains("SECRET"), "the credentials are not in the answer: {json}");
+    // no file at all: one failed check, and it says which file
+    std::fs::remove_file(r.path("planner.yml")).unwrap();
+    let v = view(&r.app).await;
+    let checks = v.config_check.unwrap().checks;
+    assert_eq!(failed(&checks), ["file"]);
+    assert_eq!(checks[0].have.as_deref(), Some(r.path("planner.yml").display().to_string().as_str()));
+}
+
+#[test]
+fn the_qr_code_is_an_inline_svg_made_here() {
+    let svg = qr_svg("https://planner.example.org/#k=AAAAAAAAAAAAAAAAAAAAAA").unwrap();
+    assert!(svg.starts_with("<svg") && svg.contains("viewBox") && !svg.contains("<?xml"), "{svg}");
+    assert!(!svg.contains("<script") && !svg.contains("href"), "a picture, nothing to run or to follow");
+}
+
+#[tokio::test]
+async fn the_page_gets_a_qr_only_while_the_link_has_a_good_key() {
+    let r = rig("");
+    open(&r.app).await;
+    r.until("open", |s| s == Phase::Open).await;
+    let v = view(&r.app).await;
+    assert!(v.qr_svg.as_deref().is_some_and(|s| s.starts_with("<svg")), "an open gate with a fresh link has its QR");
+    let key = v.link.as_deref().unwrap().split("#k=").nth(1).unwrap().to_string();
+    assert!(!v.qr_svg.unwrap().contains(&key), "the key is in the picture's modules, not in its text");
+    close(&r.app, Duration::from_secs(2)).await;
+    assert!(view(&r.app).await.qr_svg.is_none(), "a closed gate has none");
 }

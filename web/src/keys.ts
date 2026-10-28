@@ -14,6 +14,7 @@ import { addDialogs, closeDialogs, dialogOpen } from './dialogs';
 import { resetScale, stepScale } from './scale';
 import { chatBack } from './chat-wide';
 import { card, closeCard } from './ui/hovercard';
+import { closeTunnelCard, tunnelCard } from './ui/tunnel-api';
 
 export function setMode(m: 'auto' | 'manual', lock = false): void {
   const w = getWorld();
@@ -126,6 +127,8 @@ export function installKeys(): void {
     if (e.key === 'Escape') {
       // the details card of the top bar goes first: one Esc, one thing
       if (card.value) { e.preventDefault(); closeCard(true); return; }
+      // so does the gate's card (a dialog over it, the guide, goes first: it is closed by escape())
+      if (tunnelCard.value && !dialogOpen()) { e.preventDefault(); closeTunnelCard(); (document.getElementById('gate-chip') as HTMLElement | null)?.focus(); return; }
       const inTodo = !!(target as HTMLElement | null)?.closest?.('#todo');
       if (typing(target) && (target as HTMLElement).id !== 'q' && (target as HTMLElement).id !== 'ask-in') (target as HTMLElement).blur();
       if (locked.value) return;

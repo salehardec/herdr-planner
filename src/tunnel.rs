@@ -247,6 +247,11 @@ pub struct View {
     pub external_pid: Option<u32>,
     /// Whether the server-sent events work through this tunnel (a quick tunnel has none).
     pub sse: bool,
+    /// The QR code of `link` as an SVG, while the link carries a good key (made here: the key goes to nobody else).
+    pub qr_svg: Option<String>,
+    /// The planner's port and this user's home: the page writes them into the commands and the config it shows.
+    pub port: u16,
+    pub home: String,
 }
 
 #[derive(Serialize)]
@@ -256,6 +261,28 @@ pub struct ConfigCheck {
     /// The host names under `ingress` (wildcards included), the address that would be used.
     pub hosts: Vec<String>,
     pub host: Option<String>,
+    /// What «Check» in the page shows: one line per thing the config must have, passed or not. Nothing here comes from
+    /// a secret; the `credentials-file` is only named, never opened.
+    pub checks: Vec<Check>,
+}
+
+/// One thing about the config of a named tunnel. `id` is for the page (it has the words): `file`, `hostname`,
+/// `tunnel`, `credentials`, `credentials-file`, `service`, `catch-all`.
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+pub struct Check {
+    pub id: &'static str,
+    pub ok: bool,
+    /// A check that failed but does not stop the tunnel (it may still run) is a warning, not an error.
+    pub warn: bool,
+    /// What the config has (a file name, an address, a port) and what it should have; either may be empty.
+    pub have: Option<String>,
+    pub want: Option<String>,
+}
+
+impl Check {
+    fn new(id: &'static str, ok: bool, warn: bool, have: Option<String>, want: Option<String>) -> Self {
+        Self { id, ok, warn, have, want }
+    }
 }
 
 pub async fn view(app: &Shared) -> View {
@@ -269,15 +296,23 @@ pub async fn view(app: &Shared) -> View {
         Some(b) => version_of(app, b).await,
         None => None,
     };
-    let config_check = (settings.mode == TunnelMode::Named).then(|| match check_named(&settings) {
-        Ok(n) => ConfigCheck { ok: true, problem: None, hosts: n.hosts, host: Some(n.host) },
-        Err((p, hosts)) => ConfigCheck { ok: false, problem: Some(p), hosts, host: None },
+    let config_check = (settings.mode == TunnelMode::Named).then(|| {
+        let checks = config_checks(&settings, app.cfg.port);
+        match check_named(&settings) {
+            Ok(n) => ConfigCheck { ok: true, problem: None, hosts: n.hosts, host: Some(n.host), checks },
+            Err((p, hosts)) => ConfigCheck { ok: false, problem: Some(p), hosts, host: None, checks },
+        }
     });
     let now = now_ms();
     let link = app.devices.link_at(now);
     let sessions = app.devices.list_at(now);
     let g = app.tunnel.inner.lock().unwrap();
     let up = matches!(g.state, Phase::Open | Phase::Reconnecting);
+    let link_text = g.host.as_ref().filter(|_| up).map(|h| match &link.key {
+        Some(k) => format!("https://{h}/#k={k}"),
+        None => format!("https://{h}"),
+    });
+    let qr_svg = link.key.as_ref().and(link_text.as_deref()).and_then(qr_svg);
     View {
         installed: bin.is_some(),
         bin: bin.map(|b| b.display().to_string()),
@@ -289,10 +324,7 @@ pub async fn view(app: &Shared) -> View {
         state: g.state,
         since_ms: g.since,
         host: g.host.clone(),
-        link: g.host.as_ref().filter(|_| up).map(|h| match &link.key {
-            Some(k) => format!("https://{h}/#k={k}"),
-            None => format!("https://{h}"),
-        }),
+        link: link_text,
         link_state: link.state,
         link_expires_ms: link.expires_ms.filter(|_| up),
         settings: app.devices.settings(),
@@ -302,7 +334,19 @@ pub async fn view(app: &Shared) -> View {
         error: g.problem.clone(),
         external_pid: g.external,
         sse: settings.mode == TunnelMode::Named,
+        qr_svg,
+        port: app.cfg.port,
+        home: crate::config::home().display().to_string(),
     }
+}
+
+/// The QR code of a link as an SVG: one path of modules and a four-module quiet zone, no program and no network.
+pub fn qr_svg(text: &str) -> Option<String> {
+    use qrcode::{render::svg, EcLevel, QrCode};
+    let code = QrCode::with_error_correction_level(text.as_bytes(), EcLevel::M).ok()?;
+    let svg = code.render::<svg::Color>().min_dimensions(1, 1).quiet_zone(true).dark_color(svg::Color("#000")).light_color(svg::Color("#fff")).build();
+    // the XML header is not for a page that holds the picture inline
+    svg.find("<svg").map(|i| svg[i..].to_string())
 }
 
 /* ───────── the program ───────── */
@@ -436,6 +480,122 @@ fn check_named(settings: &Settings) -> Result<Named, (Problem, Vec<String>)> {
             }
         },
     }
+}
+
+/// The value of a key at the top of a `cloudflared` config (`tunnel: …`), without comments and quotes.
+fn top_value(text: &str, key: &str) -> Option<String> {
+    for raw in text.lines() {
+        if raw.starts_with([' ', '\t', '#', '-']) {
+            continue;
+        }
+        let line = match raw.find(" #") {
+            Some(i) => &raw[..i],
+            None => raw,
+        };
+        if let Some(v) = line.trim().strip_prefix(key).and_then(|r| r.strip_prefix(':')) {
+            let v = v.trim().trim_matches(|c| c == '"' || c == '\'');
+            return (!v.is_empty()).then(|| v.to_string());
+        }
+    }
+    None
+}
+
+/// The `service` values under `ingress:`, in order.
+fn ingress_services(text: &str) -> Vec<String> {
+    let mut in_ingress = false;
+    let mut out = Vec::new();
+    for raw in text.lines() {
+        let line = match raw.find(" #") {
+            Some(i) => &raw[..i],
+            None => raw,
+        };
+        let body = line.trim();
+        if body.is_empty() || body.starts_with('#') {
+            continue;
+        }
+        let indent = line.len() - line.trim_start().len();
+        if indent == 0 && !body.starts_with('-') {
+            in_ingress = body.starts_with("ingress:");
+            continue;
+        }
+        if !in_ingress {
+            continue;
+        }
+        if let Some(v) = body.trim_start_matches('-').trim_start().strip_prefix("service:") {
+            out.push(v.trim().trim_matches(|c| c == '"' || c == '\'').to_string());
+        }
+    }
+    out
+}
+
+/// The port of `http://127.0.0.1:7117` (also `localhost`, `[::1]`).
+fn local_port(service: &str) -> Option<u16> {
+    let rest = service.strip_prefix("http://").or_else(|| service.strip_prefix("https://"))?;
+    let hostport = rest.split('/').next()?;
+    let (host, port) = hostport.rsplit_once(':')?;
+    matches!(host, "127.0.0.1" | "localhost" | "[::1]").then(|| port.parse().ok()).flatten()
+}
+
+/// Whether `s` is a tunnel's id (a UUID: 8-4-4-4-12 hex digits).
+fn is_uuid(s: &str) -> bool {
+    let parts: Vec<&str> = s.split('-').collect();
+    parts.len() == 5 && [8, 4, 4, 4, 12].iter().zip(&parts).all(|(n, p)| p.len() == *n && p.chars().all(|c| c.is_ascii_hexdigit()))
+}
+
+/// What the page's «Check» shows for the config of a named tunnel: the file is there, it names the address, the tunnel's id
+/// and the credentials file agree (by the file's *name*; the file itself is not opened), the tunnel leads to the planner's
+/// port and ends with the catch-all rule. `credentials_exist` says whether a path is a file (the planner only asks, it does
+/// not read it).
+pub fn checks_of(text: &str, hostname: Option<&str>, port: u16, credentials_exist: &dyn Fn(&str) -> bool) -> Vec<Check> {
+    let mut out = vec![Check::new("file", true, false, None, None)];
+    let hosts = ingress_hosts(text);
+    let host_ok = match hostname {
+        Some(want) => hosts.iter().any(|r| covers(r, want)),
+        None => hosts.iter().any(|h| !h.starts_with("*.")),
+    };
+    out.push(Check::new("hostname", host_ok, false, hosts.first().cloned(), hostname.map(str::to_string)));
+    let tunnel = top_value(text, "tunnel");
+    out.push(Check::new("tunnel", tunnel.is_some(), false, tunnel.clone(), None));
+    let creds = top_value(text, "credentials-file");
+    let stem = creds.as_deref().map(|c| {
+        let name = c.rsplit('/').next().unwrap_or(c);
+        name.strip_suffix(".json").unwrap_or(name).to_string()
+    });
+    match (&creds, &stem, &tunnel) {
+        (None, ..) => out.push(Check::new("credentials", false, false, None, tunnel.clone())),
+        (Some(_), Some(stem), Some(id)) if is_uuid(id) => out.push(Check::new("credentials", stem.eq_ignore_ascii_case(id), false, Some(stem.clone()), Some(id.clone()))),
+        // the tunnel is named, not given by its id: nothing to compare the file's name with
+        (Some(_), Some(stem), _) => out.push(Check::new("credentials", true, false, Some(stem.clone()), None)),
+        _ => {}
+    }
+    if let Some(c) = &creds {
+        // whether it is there, not where: the path of the owner's secret is not for the page
+        out.push(Check::new("credentials-file", credentials_exist(c), true, None, None));
+    }
+    let services = ingress_services(text);
+    let ports: Vec<u16> = services.iter().filter_map(|s| local_port(s)).collect();
+    out.push(Check::new("service", ports.contains(&port), true, ports.first().map(|p| p.to_string()), Some(port.to_string())));
+    out.push(Check::new("catch-all", services.last().is_some_and(|s| s == "http_status:404"), true, None, None));
+    out
+}
+
+/// `checks_of` for the settings as they stand; a file that cannot be read is the one failed check.
+fn config_checks(settings: &Settings, port: u16) -> Vec<Check> {
+    let Some(path) = &settings.config else {
+        return vec![Check::new("file", false, false, None, None)];
+    };
+    let text = match std::fs::metadata(path) {
+        Ok(m) if m.is_file() && m.len() <= CONFIG_MAX => std::fs::read_to_string(path).ok(),
+        _ => None,
+    };
+    let Some(text) = text else {
+        return vec![Check::new("file", false, false, Some(path.display().to_string()), None)];
+    };
+    checks_of(&text, settings.hostname.as_deref(), port, &|c| {
+        let p = crate::config::expand_home(c);
+        // a relative path is read from wherever cloudflared runs: not ours to judge
+        !p.is_absolute() || p.metadata().is_ok_and(|m| m.is_file())
+    })
 }
 
 /* ───────── the process table ───────── */

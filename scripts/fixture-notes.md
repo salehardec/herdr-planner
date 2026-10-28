@@ -236,3 +236,10 @@ Totals after `--scale 50x500`: 522 rows (`list --all --json`), 56 universes; the
   (`docs` and `omega` are empty) and 3 quiet ones (`beta`, `docs`, `omega`). Those numbers change.
 - `ui-check.mjs` line 12 imports `../web/requests.js`, which this branch no longer has (the page is
   now `web/src/*.ts`). The check does not start on this branch. This predates the fixture.
+
+## The gate's tunnel (PLN-77)
+
+- `bin/cloudflared`: a shell script around `scripts/fake-cloudflared.mjs` (the stand-in of the tunnel's tests). What it does is the
+  content of `tunnel/scenario` (the script's `FAKE_CF`: `ready=MS`, `die=MS`, `never=1`, …); empty, it opens a quick tunnel at
+  `fake-quick-tunnel.trycloudflare.com` in 150 ms. run-checks.sh points the planner at it with `HERDR_PLANNER_CLOUDFLARED`.
+  The `gate` section of `ui-check.mjs` writes the scenario and a named tunnel's config (`tunnel/named.yml`) there.

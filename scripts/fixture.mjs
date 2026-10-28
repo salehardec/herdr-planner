@@ -1502,6 +1502,13 @@ writeBin('gh', ghMain);
 writeBin('glab', glabMain);
 writeBin('ssh', sshMain);
 writeBin('xdg-terminal-exec', xdgMain);
+// cloudflared for the gate's plaque (PLN-77): the stand-in of the tunnel's tests (scripts/fake-cloudflared.mjs). What it does is
+// the content of tunnel/scenario (FAKE_CF of that script: ready=MS, die=MS, never=1, …); empty, it opens a quick tunnel in 150 ms.
+// The planner finds it through HERDR_PLANNER_CLOUDFLARED=DIR/bin/cloudflared.
+fs.mkdirSync(path.join(dir, 'tunnel'), { recursive: true });
+fs.writeFileSync(path.join(dir, 'bin', 'cloudflared'),
+  `#!/bin/sh\nd="$(dirname "$0")/.."\nFAKE_CF="$(cat "$d/tunnel/scenario" 2>/dev/null)" exec node '${path.join(path.dirname(new URL(import.meta.url).pathname), 'fake-cloudflared.mjs')}' "$@"\n`);
+fs.chmodSync(path.join(dir, 'bin', 'cloudflared'), 0o755);
 
 // ---------------------------------------------------------------- the world's state and files
 

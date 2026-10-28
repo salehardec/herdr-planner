@@ -67,7 +67,7 @@ start_server() {
     P=$(free_port "$NEXT_PORT"); NEXT_PORT=$((P + 1))
     # The stand-ins of the other programs: claude (translation), gh/glab, codex sessions.
     env HERDR_PLANNER_HOST=orion HERDR_PLANNER_LOAD_FILE="$D/load/load.json" HERDR_PLANNER_LOAD_MS=400 HERDR_PLANNER_PROC_FILE="$D/load/procs.json" HERDR_PLANNER_WORKTREES="$D/worktrees" HERDR_PLANNER_STRAY_MS=500 HERDR_PLANNER_STRAY_FIRST_MS=200 HERDR_PLANNER_STRAY_GRACE_MS=1500 HERDR_PLANNER_STRAY_TERM_MS=300 CODEX_HOME="$D/codex" HERDR_PLANNER_SSH="$D/bin/ssh" HERDR_PLANNER_CLAUDE="$D/bin/claude" HERDR_PLANNER_GH="$D/bin/gh" \
-      HERDR_PLANNER_GLAB="$D/bin/glab" HERDR_BIN="$D/bin/herdr" HERDR_PLANNER_TERMINAL="$D/bin/xdg-terminal-exec" \
+      HERDR_PLANNER_GLAB="$D/bin/glab" HERDR_PLANNER_CLOUDFLARED="$D/bin/cloudflared" HERDR_BIN="$D/bin/herdr" HERDR_PLANNER_TERMINAL="$D/bin/xdg-terminal-exec" \
       HERDR_PLANNER_OWN_TERMS=bob-the-builder-host,host:app-semantics,host:salehost FIXTURE_DIR="$D" HERDR_PROJECTS_BIN="$D/bin/herdr-projects" HERDR_SOCKET_PATH="$D/herdr.sock" \
       OMARCHY_THEME_DIR="$D/theme" CLAUDE_CONFIG_DIR="$D/claude" PATH="$D/bin:$PATH" \
       XDG_STATE_HOME="$D/$STATE_NAME" XDG_CONFIG_HOME="$D/cfg" XDG_CACHE_HOME="$D/cache" \
@@ -167,7 +167,7 @@ else
               "chat,todo,hints" \
               "lag,universes,framing,remote,scale,runners,menu card" \
               "station,strays,crew,ship,theme,simple,planet states,narrow,top cards" \
-              "focus,agent screen,requests,links,archive,load,top bar,limits,memory,layout narrow" \
+              "focus,agent screen,requests,links,archive,load,top bar,limits,gate,memory,layout narrow" \
               "layout 1280" "layout 1920,layout 1600" "layout 2560" "layout 1366,layout big"; do
     n=$((n + 1))
     want "ui$n" || continue
