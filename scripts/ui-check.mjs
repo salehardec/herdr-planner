@@ -3547,7 +3547,8 @@ section('station', async () => {
   await click('[data-act="st-edit-light"]');
   await waitFor('!!document.querySelector(\'[id="st-prog-light"]\')', 5000);
   await typeIn('[id="st-prog-light"]', 'claude');
-  await waitFor('document.querySelectorAll(\'select[id="st-model-light"] option\').length >= 3', 15000);
+  // on a slow runner the program's model list comes late: wait for the very model that is picked, not for any three
+  await waitFor('[...document.querySelectorAll(\'select[id="st-model-light"] option\')].some((o) => o.value === "claude/claude-haiku-5-5")', 45000);
   await typeIn('[id="st-model-light"]', 'claude/claude-haiku-5-5');
   await click('[id="st-next-light"]');
   await readyCard();
