@@ -3542,6 +3542,7 @@ section('station', async () => {
   await typeIn('#st-repo', 'alpha');
   check('the repository level shows its own value and where it comes from', await waitFor('(document.querySelector(\'[data-role="worker"] [data-value="worker.effort"]\')?.innerText || "") === "max"', 8000)
     && (await evalJs('document.querySelector(\'[data-role="worker"] [data-field="effort"] .src\')?.innerText')) === 'репо', await text('[data-role="worker"]'));
+  check('at the repository level the spares of the Coordinator, the planner and the light tasks say they are shared', await exists('[data-role="coordinator"] [data-field="fallback-global"]') && !(await exists('[data-role="coordinator"] [data-field="fallback"]')) && await exists('[data-role="worker"] [data-field="fallback"]'));
   await click('#st-level-you');
 
   // the light tasks preset: the planner's own, kept in its crew file, not on the board

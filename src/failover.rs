@@ -78,6 +78,10 @@ pub struct Switched {
     /// Otherwise `home` is the human's own value and a return clears the layer instead of pinning `home` into it.
     #[serde(default)]
     pub pinned_home: bool,
+    /// The human's own `coordinator.agent` (plain `show`) when the switch was made; empty when not known. A different
+    /// value later is a new choice made in the Crew window, which the spare pinned in the Coordinator's layer would shadow.
+    #[serde(default)]
+    pub human: String,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -354,6 +358,36 @@ async fn current_agent(app: &Shared, role: &str) -> Result<(String, bool), Fail>
     Ok((it.map(|s| s.value.clone()).unwrap_or_default(), it.is_some_and(|s| s.place.contains("coord") || s.from.contains("coord"))))
 }
 
+/// The human's own `coordinator.agent` (a plain `show`).
+async fn human_agent(app: &Shared) -> Result<String, Fail> {
+    let settings = station::read_settings(&app.cfg, "").await.map_err(Fail::refused)?;
+    Ok(find(&settings, "coordinator.agent").map(|s| s.value.clone()).unwrap_or_default())
+}
+
+/// A new choice of the human's, made while the Coordinator runs on a spare: the spare is pinned in the Coordinator's own
+/// layer and would shadow it. The pin is cleared (the choice takes effect), the switch is forgotten and the journal says so.
+/// Runs under the apply lock the caller holds. `true` when it was so.
+async fn release_if_chosen(app: &Shared, role: &str, sw: &Switched) -> bool {
+    if role != "coordinator" || sw.human.is_empty() {
+        return false;
+    }
+    let Ok(human) = human_agent(app).await else { return false };
+    if human == sw.human {
+        return false;
+    }
+    let cleared = run_commands(app, vec![vec!["unset".into(), "coordinator.agent".into(), "--main-coordinator".into()]]).await;
+    let line = match cleared {
+        Ok(()) => format!("{}: вы выбрали {human}; запасной {} снят, выбор действует со следующего запуска Координатора", role_title(role), sw.to),
+        Err((_, why)) => format!("{}: вы выбрали {human}, а запасной {} не снят: {why}", role_title(role), sw.to),
+    };
+    app::journal_note(app, "crew", "crew", &line).await;
+    let _ = edit_store(&app.cfg, |s| {
+        s.switched.remove(role);
+        Ok(())
+    });
+    true
+}
+
 /// The last failed switch of each role (ms), and the dead ends already told (`role|program`): the loop runs every
 /// minute and does not say or try the same thing again. Keyed by the state folder as well as the role.
 static FAILED: Mutex<BTreeMap<String, u64>> = Mutex::new(BTreeMap::new());
@@ -380,7 +414,7 @@ async fn run_commands(app: &Shared, list: Vec<Vec<String>>) -> Result<(), (usize
     Ok(())
 }
 
-async fn do_switch(app: &Shared, role: &str, to: &str, home: &str, pinned_home: bool, from_program: &str, from_agent: &str, gone: &Gone) {
+async fn do_switch(app: &Shared, role: &str, to: &str, home: &str, pinned_home: bool, human: &str, from_program: &str, from_agent: &str, gone: &Gone) {
     let now = now_ms();
     {
         let failed = FAILED.lock().unwrap_or_else(|e| e.into_inner());
@@ -412,6 +446,7 @@ async fn do_switch(app: &Shared, role: &str, to: &str, home: &str, pinned_home: 
         until: gone.until.clone(),
         offered: false,
         pinned_home,
+        human: human.to_string(),
     };
     let _ = edit_store(&app.cfg, |s| {
         s.switched.insert(role.to_string(), sw);
@@ -432,8 +467,15 @@ async fn do_switch(app: &Shared, role: &str, to: &str, home: &str, pinned_home: 
 }
 
 async fn step(app: &Shared, role: &str, store: &Store, down: &Down) {
-    let Ok((current, own_layer)) = current_agent(app, role).await else { return };
     let sw = store.switched.get(role);
+    if let Some(sw) = sw {
+        let _one_at_a_time = station::APPLY.lock().await;
+        if release_if_chosen(app, role, sw).await {
+            app::refresh(app).await;
+            return;
+        }
+    }
+    let Ok((current, own_layer)) = current_agent(app, role).await else { return };
     match decide(&store.spare(role), &current, sw, down) {
         Decision::Nothing => {
             TOLD.lock().unwrap_or_else(|e| e.into_inner()).remove(&memo(app, role));
@@ -467,7 +509,12 @@ async fn step(app: &Shared, role: &str, store: &Store, down: &Down) {
         }
         Decision::Switch { to, home, from_program, gone } => {
             let pinned_home = sw.map(|s| s.pinned_home).unwrap_or(own_layer);
-            do_switch(app, role, &to, &home, pinned_home, &from_program, &current, &gone).await;
+            let human = match (sw, role) {
+                (Some(s), _) => s.human.clone(),
+                (None, "coordinator") => human_agent(app).await.unwrap_or_default(),
+                _ => String::new(),
+            };
+            do_switch(app, role, &to, &home, pinned_home, &human, &from_program, &current, &gone).await;
         }
         Decision::NoSpare { program, gone } => {
             let key = format!("{program}|{}", gone.kind);
@@ -639,8 +686,12 @@ async fn back_with(app: &Shared, body: BackBody, installed: &[String]) -> Respon
             .get(role)
             .cloned()
             .ok_or_else(|| Fail::new(409, "эта роль не переключена"))?;
+        let _one_at_a_time = station::APPLY.lock().await;
+        if release_if_chosen(&app, role, &sw).await {
+            app::refresh(&app).await;
+            return Err(Fail::new(409, "вы уже выбрали Координатора в окне «Экипаж»: запасной снят, возвращать нечего"));
+        }
         if body.op == "keep" {
-            let _one_at_a_time = station::APPLY.lock().await;
             run_commands(&app, keep_commands(role, &sw.to, sw.pinned_home)).await.map_err(|(_, e)| Fail::new(422, e))?;
             edit_store(&app.cfg, |s| {
                 s.switched.remove(role);
@@ -652,7 +703,6 @@ async fn back_with(app: &Shared, body: BackBody, installed: &[String]) -> Respon
         if body.op != "back" {
             return Err(Fail::new(400, "op: back или keep"));
         }
-        let _one_at_a_time = station::APPLY.lock().await;
         let (current, _) = current_agent(&app, role).await?;
         if current != sw.to {
             edit_store(&app.cfg, |s| {
@@ -696,7 +746,7 @@ mod tests {
     }
 
     fn sw(home: &str, to: &str) -> Switched {
-        Switched { home: home.into(), to: to.into(), at: 1, kind: "limited".into(), until: "17:00".into(), offered: false, pinned_home: false }
+        Switched { home: home.into(), to: to.into(), at: 1, kind: "limited".into(), until: "17:00".into(), offered: false, pinned_home: false, human: String::new() }
     }
 
     #[test]

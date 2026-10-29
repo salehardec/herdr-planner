@@ -375,7 +375,8 @@ function Crew(props: { repo: string; data: StationData; reload: () => void; wiza
             {r.light && (
               <Field {...common} kind="light" name="light" label={t('st.f.light')} value={data.light} from="" suggest={props.suggest.light} />
             )}
-            {FAILOVER.includes(r.id) && (
+            {FAILOVER.includes(r.id) && props.repo && <div class="hint" data-field="fallback-global">{t('st.failGlobal')}</div>}
+            {FAILOVER.includes(r.id) && !props.repo && (
               <>
                 <Field {...common} kind="fallback" name={`${r.id}.fallback`} label={t('st.f.fallback')} value={data.failover?.[r.id]?.chain ?? ''} from="" failover={r.id} />
                 {data.failover?.[r.id] && <Spares role={r.id} f={data.failover[r.id]} reload={props.reload} />}

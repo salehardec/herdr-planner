@@ -461,6 +461,7 @@ export const en: Record<string, string | string[]> = {
   'st.byBoard': 'The board changes it with its own command (set or unset). No file is edited.',
   'st.lightAffects': 'Changes no task: the preset is used when a task is sent as «light».',
   'st.lightWhere': 'Kept by the planner, not on the board.',
+  'st.failGlobal': 'The spares of this role are shared by every universe: change them at the «For me» level.',
   'st.failName': 'Spares: {role}',
   'st.failAffects': 'Changes no task: the planner reads the chain when the role\'s agent is unavailable.',
   'st.failWhere': 'Kept by the planner (the board has no spares for this role): it switches by itself, with the board\'s commands.',

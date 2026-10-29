@@ -1982,4 +1982,62 @@ esac"#,
         let layer = crate::station::read_coordinator_settings(&app.cfg).await.unwrap();
         assert_eq!(find(&layer, "coordinator.agent").unwrap().value, "omp/deepseek/deepseek-v4-flash");
     }
+
+    /// The human picks a Coordinator in the Crew window: a plain `set coordinator.agent` (the human's layer).
+    fn human_picks_coordinator(dir: &FsPath, agent: &str) {
+        let show = dir.join("show.json");
+        let text = std::fs::read_to_string(&show).unwrap();
+        let from = r#"{"name":"coordinator.agent","kind":"work","value":"claude/claude-opus-5-5""#;
+        assert!(text.contains(from));
+        std::fs::write(&show, text.replace(from, &format!(r#"{{"name":"coordinator.agent","kind":"work","value":"{agent}""#))).unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_coordinator_the_human_picks_while_a_spare_runs_is_not_shadowed_by_the_pinned_spare() {
+        let dir = tempfile::tempdir().unwrap();
+        let (app, log) = app_with_board(dir.path(), "");
+        keep_chain(&app, "coordinator", "omp/deepseek/deepseek-v4-flash", true);
+        claude_limited(&app, true).await;
+        wait_models(&app, &["claude", "codex", "omp"]).await;
+        failover::tick_with(&app, &installed()).await;
+        assert_eq!(failover::read_store(&app.cfg).switched["coordinator"].human, "claude/claude-opus-5-5");
+        // the human picks another one in the Crew window
+        human_picks_coordinator(dir.path(), "claude/claude-sonnet-5-5");
+        failover::tick_with(&app, &installed()).await;
+        assert_eq!(
+            board_commands(&log),
+            vec![
+                "set coordinator.agent omp/deepseek/deepseek-v4-flash --main-coordinator",
+                "unset coordinator.agent --main-coordinator"
+            ],
+            "the pin is cleared: the human's choice takes effect"
+        );
+        assert!(failover::read_store(&app.cfg).switched.is_empty());
+        let layer = crate::station::read_coordinator_settings(&app.cfg).await.unwrap();
+        assert_eq!(find(&layer, "coordinator.agent").unwrap().value, "claude/claude-sonnet-5-5");
+        assert!(all_calls(&log).iter().filter(|l| *l == "coordinator new").count() == 1, "no new Coordinator for it");
+    }
+
+    #[tokio::test]
+    async fn keep_and_return_leave_a_choice_the_human_made_in_the_crew_window_alone() {
+        for op in ["keep", "back"] {
+            let dir = tempfile::tempdir().unwrap();
+            let (app, log) = app_with_board(dir.path(), "");
+            keep_chain(&app, "coordinator", "omp/deepseek/deepseek-v4-flash", true);
+            claude_limited(&app, true).await;
+            wait_models(&app, &["claude", "codex", "omp"]).await;
+            failover::tick_with(&app, &installed()).await;
+            claude_limited(&app, false).await;
+            human_picks_coordinator(dir.path(), "claude/claude-sonnet-5-5");
+            let (code, said) = json_of(failover::back_for_test(&app, failover::BackBody::test(op, "coordinator"), &installed()).await).await;
+            assert_eq!(code, StatusCode::CONFLICT, "{op}: {said}");
+            assert_eq!(
+                board_commands(&log).last().unwrap(),
+                "unset coordinator.agent --main-coordinator",
+                "{op}: the choice is not overwritten with the spare or the old home"
+            );
+            assert!(!board_commands(&log).iter().any(|c| c == "set coordinator.agent omp/deepseek/deepseek-v4-flash"), "{op}: {:?}", board_commands(&log));
+            assert!(failover::read_store(&app.cfg).switched.is_empty());
+        }
+    }
 }
