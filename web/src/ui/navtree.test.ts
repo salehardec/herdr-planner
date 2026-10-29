@@ -106,4 +106,13 @@ describe('navigator tree', () => {
     expect(planets.find((p) => p.entity?.id === 'alpha/2')?.seat).toBeUndefined();
     expect(planets.find((p) => p.entity?.id === 'alpha/3')?.seat).toBeUndefined();
   });
+
+  it('gives a planet the crew roles put on it (PLN-90), and none to a planet that has none', () => {
+    const mark = { role: 'r1', name: 'Дизайнер', how: 'worker' as const, by: 'rule' as const, rule: 'репозиторий alpha', of: '' };
+    const t = [task(1, day(20, 9), 'working', { crew_roles: [mark] }), task(2, day(20, 10), 'working', { crew_roles: [] }), task(3, day(20, 11), 'working')];
+    const planets = build(view(t)).filter((r) => r.kind === 'planet');
+    expect(planets.find((p) => p.entity?.id === 'alpha/1')?.roles).toEqual([mark]);
+    expect(planets.find((p) => p.entity?.id === 'alpha/2')?.roles).toBeUndefined();
+    expect(planets.find((p) => p.entity?.id === 'alpha/3')?.roles).toBeUndefined();
+  });
 });

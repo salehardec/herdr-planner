@@ -25,9 +25,9 @@ export function closeStation(): void {
   stationDlg.value = null;
 }
 
-/** Closes the crew window; the first-run wizard counts as seen however it is closed. */
+/** Closes the crew window; the first run counts as seen however the window was opened and however it is closed. */
 export function closeCrew(): void {
-  if (crewDlg.value?.wizard) markCrewSeen();
+  markCrewSeen();
   crewDlg.value = null;
 }
 

@@ -62,7 +62,7 @@ async function startPut(role: string, task: string, how: string, key: string): P
 }
 
 /** The card: what the board will be told (each command with was → now), the checks, and the two presses. */
-function PutCard(props: { place: string; reload: () => void }): JSX.Element | null {
+function PutCard(props: { place: string; reload: () => void; onDone?: () => void }): JSX.Element | null {
   const f = putFor.value;
   if (!f || f.key !== props.place) return null;
   const p = putPrev.value;
@@ -78,6 +78,7 @@ function PutCard(props: { place: string; reload: () => void }): JSX.Element | nu
         toast(t('cr.put.done', { role: r.role, task: p.task.tag || p.task.id }));
         closePut();
         props.reload();
+        props.onDone?.();
       } catch (e) {
         putErr.value = callError(e).message;
       } finally {
@@ -156,7 +157,7 @@ export function PutForm(props: { role: CrewRole; place: string; taskId?: string;
         <button class="btn primary sm" type="button" id={`cr-put-show-${role.id}`} disabled={!task} onClick={showCard}>{t('cr.put.show')}</button>
         {props.onClose && <button class="btn sm" type="button" onClick={() => { closePut(); props.onClose?.(); }}>{t('cancel')}</button>}
       </div>
-      <PutCard place={props.place} reload={props.reload} />
+      <PutCard place={props.place} reload={props.reload} onDone={props.onClose} />
     </div>
   );
 }

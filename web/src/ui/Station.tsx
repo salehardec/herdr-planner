@@ -213,6 +213,8 @@ function EffortForm(props: { agent: string; current: string; dlid: string; onPic
 function Field(props: {
   repo: string; kind: 'agent' | 'effort' | 'fallback' | 'light'; name: string; label: string; value: string; from: string;
   programs: StationProgram[]; agent: string; reload: () => void; suggest?: string;
+  /** The level has its own entry for the setting: it can be taken away (the board's `unset`). */
+  own?: boolean;
 }): JSX.Element {
   const [open, setOpen] = useState(false);
   const light = props.kind === 'light';
@@ -229,6 +231,7 @@ function Field(props: {
         <b class="v" data-value={props.name}>{shown(props.value)}</b>
         {props.from && !light && <span class="src">{fromLabel(props.from)}</span>}
         <button class="btn sm" type="button" data-act={`st-edit-${props.name}`} aria-expanded={open} onClick={() => setOpen(!open)}>{t('st.change')}</button>
+        {props.own && !light && <button class="btn sm danger" type="button" data-unset={props.name} onClick={() => { setOpen(false); void startEdit({ name: props.name, repo: props.repo, value: null }); }}>{t('st.reset')}</button>}
       </div>
       {props.suggest && props.suggest !== props.value && (
         <div class="sugline">{t('st.suggest')} <code>{props.suggest}</code>
@@ -320,14 +323,14 @@ export function Crew(props: { repo: string; data: StationData; reload: () => voi
             <div class="rh"><b>{t(r.title)}</b><span class="hint">{t(r.hint)}</span></div>
             <RoleFacts role={r} />
             {r.agent && (
-              <Field {...common} kind="agent" name={r.agent} label={t('st.f.agent')} value={agentValue} from={agent?.from ?? ''}
+              <Field {...common} kind="agent" name={r.agent} label={t('st.f.agent')} value={agentValue} from={agent?.from ?? ''} own={agent?.own}
                 suggest={props.suggest[r.agent]} />
             )}
             {r.effort && (
-              <Field {...common} kind="effort" name={r.effort} label={t('st.f.effort')} value={val(r.effort)?.value ?? ''} from={val(r.effort)?.from ?? ''} />
+              <Field {...common} kind="effort" name={r.effort} label={t('st.f.effort')} value={val(r.effort)?.value ?? ''} from={val(r.effort)?.from ?? ''} own={val(r.effort)?.own} />
             )}
             {r.fallback && (
-              <Field {...common} kind="fallback" name={r.fallback} label={t('st.f.fallback')} value={val(r.fallback)?.value ?? ''} from={val(r.fallback)?.from ?? ''} />
+              <Field {...common} kind="fallback" name={r.fallback} label={t('st.f.fallback')} value={val(r.fallback)?.value ?? ''} from={val(r.fallback)?.from ?? ''} own={val(r.fallback)?.own} />
             )}
             {r.light && (
               <Field {...common} kind="light" name="light" label={t('st.f.light')} value={data.light} from="" suggest={props.suggest.light} />
