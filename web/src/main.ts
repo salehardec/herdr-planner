@@ -22,6 +22,9 @@ import { chatWide, installChatWide, installWideRoom } from './chat-wide';
 import { installPanelWidths } from './panel-width';
 import { connectTasks } from './actions';
 import { taskOpener } from './task-open';
+import { installRoomInput } from './restroom/input';
+import './restroom/open';
+import { game, origin, roomOpen, wallId } from './restroom/state';
 import { installTodoDnD } from './ui/Todo';
 import { toast } from './toast';
 import { warpSound } from './sound';
@@ -210,6 +213,7 @@ onState((s: Snapshot) => {
 
 installChatWide();
 installKeys();
+installRoomInput();
 installCard();
 installTodoDnD($('scene'));
 const onResize = (): void => { narrow.value = effectiveWidth() < 900; };
@@ -235,6 +239,8 @@ w.plannerDebug = () => ({
   armed: armed.value,
 });
 w.setLang = setLang;
+w.restroomGame = game;
+w.restroomState = () => ({ open: roomOpen.value, wall: wallId.value, origin: origin.value });
 w.plannerGate = gate;
 w.plannerSnap = () => snap.value;
 /* the page's own commands, for the checks */

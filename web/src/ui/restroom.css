@@ -1,0 +1,97 @@
+/* The rest room: a layer over the world with a wallpaper, a console to play on and the notices of «Ждёт тебя».
+   The panels take the Omarchy tokens of the page (--pl-*); the console and the wallpapers do not: they are things in the room. */
+.rm{position:absolute;inset:0;z-index:120;visibility:hidden;color:var(--pl-text);
+  /* the console is as wide as the window leaves it between the two columns of panels (the wallpapers at the left, the notices at the right) and within its height */
+  --rm-w:min(37.5rem,92vw,calc((100vh - 9.375rem) / 1.04),calc(100vw - 40rem))}
+.rm.on{visibility:visible}
+.rm-wall{position:absolute;inset:-2%;background:#000;animation:rmdrift 60s ease-in-out infinite alternate}
+.rm-wall>div{position:absolute;inset:0;background:#000 center/cover no-repeat;animation:rmfade .5s var(--m-ease)}
+@keyframes rmdrift{to{transform:scale(1.04) translate(-1%,0)}}
+@keyframes rmfade{from{opacity:0}}
+.rm-vig{position:absolute;inset:0;background:radial-gradient(ellipse at 50% 55%,transparent 45%,rgba(0,0,0,.55) 100%);pointer-events:none}
+
+/* panels of the room: opaque enough to read over any picture, in the light theme too */
+.rm-panel{background:var(--pl-panel-solid);border:1px solid var(--pl-line);border-radius:var(--pl-r);box-shadow:0 0.75rem 2.125rem rgba(0,0,0,.32);color:var(--pl-text)}
+.rm-btn{background:var(--pl-panel-solid);color:var(--pl-title);height:2rem;font-size:0.75rem}
+.rm-btn:hover{background:var(--pl-raised)}
+.rm-btn.pri{background:var(--pl-accent);border-color:var(--pl-accent);color:var(--pl-on-accent)}
+.rm-btn.pri:hover{background:var(--pl-accent);filter:brightness(1.08)}
+#rm-exit{position:absolute;left:1rem;top:1rem}
+#rm-exit .rm-btn{padding:0 0.75rem}
+
+/* wallpapers */
+/* the panel of wallpapers grows by rows, never into the console: it ends before the console starts */
+#rm-wp{position:absolute;left:1rem;bottom:1rem;padding:0.625rem;width:max-content;max-width:calc((100vw - var(--rm-w)) / 2 - 1.5rem)}
+#rm-wp header{display:flex;align-items:center;gap:0.5rem;margin-bottom:0.5rem;padding:0;border:0;font-size:0.75rem;letter-spacing:0;text-transform:none;color:var(--pl-title)}
+#rm-wp header b{flex:1;color:var(--pl-title);font-weight:600}
+#rm-wp.min .thumbs{display:none}
+#rm-wp.min header{margin:0}
+.rm .thumbs{display:flex;gap:0.5rem;flex-wrap:wrap}
+.rm-thumb{width:5.75rem;padding:0;border:2px solid transparent;border-radius:0.375rem;background:none;text-align:center;font-size:0.6875rem}
+.rm-thumb .im{display:block;height:3.5rem;border-radius:0.25rem;overflow:hidden;background:#222 center/cover no-repeat;border:1px solid var(--pl-line)}
+.rm-thumb span{display:block;padding:0.1875rem 0 0.0625rem;color:var(--pl-dim)}
+.rm-thumb[aria-pressed="true"]{border-color:var(--pl-accent)}
+.rm-thumb[aria-pressed="true"] span{color:var(--pl-title)}
+.rm-thumb.browse .im{display:grid;place-items:center;border-style:dashed;background:transparent;font-size:1.25rem;color:var(--pl-dim)}
+
+/* notices */
+#rm-notes{position:absolute;right:1rem;top:1rem;width:17.5rem;max-width:calc(100vw - 2rem);display:flex;flex-direction:column;gap:0.5rem}
+.rm-note{padding:0.625rem 0.75rem;animation:rmslide var(--m-med) var(--m-ease)}
+@keyframes rmslide{from{opacity:0;transform:translateX(1.875rem)}}
+.rm-note .k{font-size:0.6875rem;display:flex;gap:0.375rem;align-items:center;color:var(--pl-dim)}
+.rm-note .k i{width:0.5rem;height:0.5rem;border-radius:50%;background:var(--s,var(--c-yellow));box-shadow:0 0 0 0.1875rem color-mix(in srgb,var(--s,var(--c-yellow)) 25%,transparent);flex:none}
+.rm-note .k b{color:var(--pl-title);font-weight:600}
+.rm-note p{margin:0.25rem 0 0.5rem;color:var(--pl-title);overflow-wrap:anywhere}
+.rm-note .row{display:flex;gap:0.375rem;justify-content:flex-end}
+
+/* the console: between the panels, and within the window's height */
+#rm-console{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);width:var(--rm-w)}
+/* a narrow window: no corners, a column. Exit, notices, console and wallpapers follow one another, so nothing can cover another; what does not fit scrolls */
+:root.bp900 .rm{--rm-w:min(37.5rem,100%,calc((100vh - 16rem) / 1.04));display:flex;flex-direction:column;align-items:center;gap:0.75rem;padding:1rem;overflow-y:auto}
+:root.bp900 .rm-wall,:root.bp900 .rm-vig{position:fixed}
+:root.bp900 #rm-exit{position:relative;inset:auto;z-index:1;align-self:flex-start;flex:none}
+:root.bp900 #rm-notes{position:relative;inset:auto;z-index:1;width:100%;max-width:26rem;flex:none}
+:root.bp900 #rm-console{position:relative;left:auto;top:auto;transform:none;width:var(--rm-w);margin:auto 0;flex:none;z-index:1}
+:root.bp900 #rm-wp{position:relative;inset:auto;z-index:1;max-width:100%;flex:none}
+.rm-shell{position:relative;background:linear-gradient(#d9d2c3,#bfb6a4);border-radius:1.125rem 1.125rem 2.875rem 1.125rem;padding:1.375rem 1.375rem 1.625rem;box-shadow:0 1.875rem 3.75rem rgba(0,0,0,.55),inset 0 2px 0 #f2ede2,inset 0 -4px 0 #9d9483;color:#3b3530;font-size:0.8125rem}
+.rm-brand{display:flex;justify-content:space-between;align-items:baseline;margin-bottom:0.625rem;font:italic 700 0.9375rem/1 Georgia,serif;letter-spacing:.04em;color:#38306a}
+.rm-brand small{font:0.625rem var(--font);font-style:normal;color:#6d665b;letter-spacing:.12em}
+.rm-bezel{background:#4a4650;border-radius:0.625rem 0.625rem 1.75rem 0.625rem;padding:0.625rem 1rem 0.75rem;box-shadow:inset 0 3px 6px rgba(0,0,0,.5)}
+.rm-led{display:flex;align-items:center;gap:0.375rem;font-size:0.5625rem;color:#aaa3b3;margin-bottom:0.5rem;letter-spacing:.1em}
+.rm-led i{width:0.4375rem;height:0.4375rem;border-radius:50%;background:#3a1010}
+.rm-led i.on{background:#ff3b3b;box-shadow:0 0 6px #ff3b3b}
+#rm-screen{display:block;width:100%;aspect-ratio:240/224;image-rendering:pixelated;background:#0b1a12;border-radius:3px;box-shadow:inset 0 0 20px rgba(0,0,0,.8)}
+.rm-ctl{display:grid;grid-template-columns:auto 1fr auto;align-items:center;margin-top:0.75rem;gap:0.625rem}
+.rm-dpad{position:relative;width:6rem;height:6rem}
+.rm-dpad button,.rm-ab button,.rm-pill button{border:0;padding:0}
+.rm-dpad button{position:absolute;width:2rem;height:2rem;background:#2c2a2e;border-radius:0.25rem;box-shadow:0 3px 0 #141315}
+.rm-dpad button:active,.rm-dpad button.dn{transform:translateY(2px);box-shadow:0 1px 0 #141315}
+.rm-dpad .u{left:2rem;top:0}.rm-dpad .d{left:2rem;bottom:0}.rm-dpad .l{left:0;top:2rem}.rm-dpad .r{right:0;top:2rem}
+.rm-dpad::after{content:"";position:absolute;left:2rem;top:2rem;width:2rem;height:2rem;background:#2c2a2e}
+.rm-mid{display:flex;justify-content:center;gap:0.875rem;align-self:end;padding-bottom:0.375rem}
+.rm-pill{display:flex;flex-direction:column;align-items:center;gap:0.25rem;font-size:0.5625rem;letter-spacing:.1em;color:#6d665b}
+.rm-pill button{width:2.75rem;height:0.75rem;border-radius:0.375rem;background:#77706a;transform:rotate(-24deg);box-shadow:0 2px 0 #55504b}
+.rm-ab{display:flex;gap:0.75rem;transform:rotate(-24deg)}
+.rm-ab div{display:flex;flex-direction:column;align-items:center;gap:0.25rem;font:700 0.6875rem var(--font);color:#38306a}
+.rm-ab button{width:2.75rem;height:2.75rem;border-radius:50%;background:#a3245a;box-shadow:0 4px 0 #6b1439}
+.rm-ab button:active,.rm-ab button.dn{transform:translateY(3px);box-shadow:0 1px 0 #6b1439}
+.rm-speaker{position:absolute;right:1.625rem;bottom:1.375rem;display:flex;gap:0.375rem;transform:rotate(-24deg)}
+.rm-speaker i{width:0.25rem;height:1.875rem;border-radius:2px;background:#9d9483;box-shadow:inset 0 1px 2px rgba(0,0,0,.4)}
+.rm-hint{margin:0.625rem auto 0;width:fit-content;max-width:100%;padding:0.25rem 0.625rem;border-radius:0.375rem;background:rgba(0,0,0,.6);text-align:center;font-size:0.6875rem;color:rgba(255,255,255,.88);text-shadow:0 1px 2px #000}
+.rm-hint kbd{color:#fff;border-color:rgba(255,255,255,.4);background:transparent}
+
+/* the airlock between the cabin and the room */
+#rm-iris{position:fixed;inset:0;z-index:130;pointer-events:none;visibility:hidden}
+#rm-iris.on{visibility:visible}
+#rm-iris .l,#rm-iris .r{position:absolute;top:0;bottom:0;width:50.5%;background:repeating-linear-gradient(90deg,#1d1814 0 2.5rem,#241e19 2.5rem 2.625rem);transition:transform .45s var(--m-ease)}
+#rm-iris .l{left:0;transform:translateX(-101%);border-right:3px solid var(--c-green)}
+#rm-iris .r{right:0;transform:translateX(101%);border-left:3px solid var(--c-green)}
+#rm-iris.shut .l,#rm-iris.shut .r{transform:none}
+#rm-iris .lbl{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);color:var(--c-green);font-size:0.75rem;letter-spacing:.2em;opacity:0;transition:opacity .2s;white-space:nowrap}
+#rm-iris.shut .lbl{opacity:1}
+
+@media (prefers-reduced-motion:reduce){
+  .rm *,.rm *::before,.rm *::after,#rm-iris *{animation:none!important;transition-duration:1ms!important}
+  .rm-wall{animation:none!important}
+}
+.win.calm .rm-wall,.win.calm .rm-wall>div,.win.calm .rm-note{animation:none}
