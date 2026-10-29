@@ -6916,6 +6916,108 @@ section('rvw83z', async () => {
   check('RVW C2 followed', s.dist < 24 && !s.cunread && !s.bchat, JSON.stringify(s));
 }, { retry: false });
 
+
+section('rvw7q', async () => {
+  const READ = 'herdr-planner.chat.read';
+  const folder = realpathSync(join(fixture, 'board', 'coordinator', 'default', 'chat')).replace(/[^A-Za-z0-9]/g, '-');
+  const file = join(fixture, 'claude', 'projects', folder, 'fixture.jsonl');
+  let next = 11;
+  const usage = { input_tokens: 3000, cache_read_input_tokens: 140000, cache_creation_input_tokens: 7000 };
+  const when = (i, k) => new Date(1792389360000 + i * 60000 + k).toISOString();
+  const ask = (text) => { const i = next++; appendFileSync(file, JSON.stringify({ type: 'user', timestamp: when(i, 0), message: { role: 'user', content: text } }) + '\n'); return i - 1; };
+  const say = (lines = 1) => {
+    const i = next++;
+    const body = Array.from({ length: lines }, (_, k) => `Ответ ${i}, строка ${k + 1}: всё идёт по плану.`).join('\n');
+    appendFileSync(file, JSON.stringify({ type: 'user', timestamp: when(i, 0), message: { role: 'user', content: `Вопрос ${i}: что нового?` } }) + '\n'
+      + JSON.stringify({ type: 'assistant', timestamp: when(i, 1000), message: { role: 'assistant', model: 'claude-opus-5-5', content: [{ type: 'text', text: body }], usage } }) + '\n');
+    return i - 1;
+  };
+  const focus = (on) => evalJs(`(() => { document.hasFocus = () => ${on}; window.dispatchEvent(new Event(${JSON.stringify(on ? 'focus' : 'blur')})); return true; })()`);
+  const state = () => evalJs(`JSON.stringify({ dist: (() => { const l = document.querySelector('#clog'); return Math.round(l.scrollHeight - l.scrollTop - l.clientHeight); })(), cunread: document.querySelector('#cunread')?.innerText || null, bchat: document.querySelector('#bchat-n')?.innerText || null, turns: document.querySelectorAll('#clog .turn').length, read: localStorage.getItem('herdr-planner.chat.read') })`);
+  const log = async (label) => { const s = JSON.parse(await state()); console.log(`RVW7 ${label}: ${JSON.stringify(s)}`); return s; };
+  const wheelUp = async (times) => {
+    const r = JSON.parse(await evalJs('JSON.stringify(document.querySelector("#clog").getBoundingClientRect())'));
+    const x = Math.round(r.x + r.width / 2), y = Math.round(r.y + r.height / 2);
+    await send('Input.dispatchMouseEvent', { type: 'mouseMoved', x, y });
+    for (let i = 0; i < times; i++) { await send('Input.dispatchMouseEvent', { type: 'mouseWheel', x, y, deltaX: 0, deltaY: -120 }); await sleep(60); }
+    await sleep(800);
+  };
+  const wheelDown = async (times) => {
+    const r = JSON.parse(await evalJs('JSON.stringify(document.querySelector("#clog").getBoundingClientRect())'));
+    const x = Math.round(r.x + r.width / 2), y = Math.round(r.y + r.height / 2);
+    for (let i = 0; i < times; i++) { await send('Input.dispatchMouseEvent', { type: 'mouseWheel', x, y, deltaX: 0, deltaY: 120 }); await sleep(60); }
+    await sleep(800);
+  };
+
+  await resetUi();
+  await evalJs(`localStorage.removeItem(${JSON.stringify(READ)}); true`);
+  for (let i = 0; i < 5; i++) say(14);
+  await navigate(base + '/?noauto&nocoach&bloom=0');
+  await focus(true);
+  await click('#bchat');
+  await waitFor('!document.querySelector("#chat").classList.contains("off")', 5000);
+  await sleep(2500);
+  let s = await log('1 open at end');
+  check('RVW7 1 at the end: no badge', s.dist < 24 && !s.cunread && !s.bchat, JSON.stringify(s));
+  say(14); say(14);
+  await sleep(3000);
+  s = await log('2 two answers arrive while at end');
+  check('RVW7 2 at the end, answers arrive: followed, no badge', s.dist < 24 && !s.cunread && !s.bchat, JSON.stringify(s));
+  await wheelUp(12);
+  s = await log('3 wheel up');
+  check('RVW7 3 scrolled up by wheel, nothing new: no badge', s.dist > 200 && !s.cunread && !s.bchat, JSON.stringify(s));
+  for (let i = 0; i < 3; i++) ask(`[Уведомление доски] delta/${i + 1} готова`);
+  await sleep(3000);
+  s = await log('4 board lines while scrolled up');
+  check('RVW7 4 board lines while scrolled up: no badge', !s.cunread && !s.bchat, JSON.stringify(s));
+  await send('Network.enable', {});
+  await send('Network.emulateNetworkConditions', { offline: true, latency: 0, downloadThroughput: -1, uploadThroughput: -1 });
+  await sleep(6000);
+  await send('Network.emulateNetworkConditions', { offline: false, latency: 0, downloadThroughput: -1, uploadThroughput: -1 });
+  await sleep(6000);
+  s = await log('5 after offline 6s and back');
+  check('RVW7 5 reconnect while scrolled up, nothing new: no badge', s.dist > 200 && !s.cunread && !s.bchat, JSON.stringify(s));
+  const fresh1 = say(3);
+  await waitFor(`(document.querySelector('#cunread')?.innerText || '').includes('1')`, 10000);
+  s = await log('6 one new answer while scrolled up');
+  check('RVW7 6 scrolled up, one new answer: «1 новое»', (s.cunread || '').includes('1 нов') && s.dist > 200, JSON.stringify(s));
+  await shot('rvw7-6-one-new.png');
+  await click('#cunread');
+  await sleep(3000);
+  s = await log('7 after the badge click');
+  const vis = await evalJs(`(() => { const e = document.querySelector('#clog .turn[data-n="${fresh1}"]'); const l = document.querySelector('#clog'); if (!e) return 'none'; const r = e.getBoundingClientRect(), o = l.getBoundingClientRect(); return r.top >= o.top - 2 && r.top < o.bottom; })()`);
+  check('RVW7 7 click: at the end, the new answer in view, no badge', s.dist < 24 && !s.cunread && !s.bchat && vis === true, JSON.stringify(s) + ' vis=' + vis);
+  await shot('rvw7-7-after-click.png');
+  say(3);
+  await sleep(3000);
+  s = await log('8 another answer after the click');
+  check('RVW7 8 the log follows after the click', s.dist < 24 && !s.cunread && !s.bchat, JSON.stringify(s));
+  await wheelUp(12);
+  say(3); say(3);
+  await waitFor(`(document.querySelector('#cunread')?.innerText || '').includes('2')`, 10000);
+  s = await log('9 two new while scrolled up');
+  check('RVW7 9 two new while scrolled up: «2 новых»', (s.cunread || '').includes('2 нов'), JSON.stringify(s));
+  await navigate(base + '/?noauto&nocoach&bloom=0');
+  await focus(true);
+  await sleep(1500);
+  s = await log('10 after a reload (chat hidden?)');
+  check('RVW7 10 the two unseen survive a reload', s.bchat === '2' || (s.cunread || '').includes('2 нов'), JSON.stringify(s));
+  if (await evalJs('document.querySelector("#chat").classList.contains("off")')) { await click('#bchat'); await waitFor('!document.querySelector("#chat").classList.contains("off")', 5000); }
+  await sleep(3000);
+  s = await log('11 opened after the reload');
+  await wheelDown(60);
+  await sleep(1500);
+  s = await log('12 wheeled down to the end');
+  check('RVW7 12 scrolled to the end by hand after a reload: no badge', s.dist < 24 && !s.cunread && !s.bchat, JSON.stringify(s));
+  await navigate(base + '/?noauto&nocoach&bloom=0');
+  await focus(true);
+  if (await evalJs('document.querySelector("#chat").classList.contains("off")')) { await click('#bchat'); await waitFor('!document.querySelector("#chat").classList.contains("off")', 5000); }
+  await sleep(3000);
+  s = await log('13 reload again, nothing new');
+  check('RVW7 13 reload with nothing new: no badge', !s.cunread && !s.bchat, JSON.stringify(s));
+  await shot('rvw7-13-reload.png');
+}, { retry: false });
+
 // ── the phone's light page: /m (PLN-79) ────────────────────────────────────
 
 const PHONE = [390, 844];
