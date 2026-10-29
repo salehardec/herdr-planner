@@ -9,10 +9,20 @@ import { connectPoll, refreshNow, useLiteApi } from '../api';
 import { lang, setLang } from '../i18n';
 import { armed, attention, requests, snap } from '../store';
 import { taskOpener } from '../task-open';
+import { installRoomInput } from '../restroom/input';
+import { baseKeys } from '../restroom/notes';
+import { game, hooks, noteBase, noteLater, origin, roomOpen, wallId } from '../restroom/state';
 import { App } from './App';
 import { loadSession, session, sheet, tab, themePref } from './state';
 
 useLiteApi();
+installRoomInput();
+hooks.calm = () => true;
+hooks.entered = () => { noteBase.value = baseKeys(requests.value); noteLater.value = new Set(); };
+hooks.fly = (to) => {
+  sheet.value = to.id === 'coordinator' || to.type === 'runner-alert' ? null : { kind: 'task', id: to.id };
+  if (to.id === 'coordinator' || to.type === 'runner-alert') tab.value = 'chat';
+};
 document.body.insertAdjacentHTML('afterbegin', SPRITE);
 // A phone that never chose a language gets the one it speaks.
 try {
@@ -64,3 +74,6 @@ w.mobilePage = true;
 w.plannerSnap = () => snap.value;
 w.plannerDebug = () => ({ armed: armed.value, tab: tab.value, sheet: sheet.value });
 w.mobile = { tab, sheet, session, refresh: refreshNow, setLang };
+
+w.restroomGame = game;
+w.restroomState = () => ({ open: roomOpen.value, wall: wallId.value, origin: origin.value });

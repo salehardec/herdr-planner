@@ -95,3 +95,47 @@
   .rm-wall{animation:none!important}
 }
 .win.calm .rm-wall,.win.calm .rm-wall>div,.win.calm .rm-note{animation:none}
+
+/* Finger input is confined to the console: the room's other panels can still scroll and zoom normally. */
+#rm-console{touch-action:none;user-select:none;-webkit-user-select:none;-webkit-touch-callout:none}
+.rm-touch-hint{display:none}
+.rm-mobile{position:fixed;inset:0;display:flex;flex-direction:column;align-items:center;gap:.75rem;overflow:auto;overscroll-behavior:contain;
+  padding:max(.75rem,env(safe-area-inset-top)) max(.75rem,env(safe-area-inset-right)) max(.75rem,env(safe-area-inset-bottom)) max(.75rem,env(safe-area-inset-left))}
+.rm-mobile .rm-wall,.rm-mobile .rm-vig{position:fixed}
+.rm-mobile #rm-exit{position:relative;inset:auto;z-index:2;align-self:flex-start;flex:none;order:0}
+.rm-mobile #rm-exit kbd,.rm-mobile .rm-hint{display:none}
+.rm-mobile .rm-btn,.rm-mobile #rm-wp button{min-height:2.75rem}
+.rm-mobile #rm-console{position:relative;inset:auto;transform:none;width:100%;max-width:30rem;flex:none;z-index:1;order:1;margin:auto 0}
+.rm-mobile #rm-wp{position:relative;inset:auto;max-width:100%;z-index:1;flex:none;order:2}
+.rm-mobile #rm-notes{position:relative;inset:auto;width:100%;max-width:30rem;z-index:1;flex:none;order:3}
+.rm-mobile #rm-notes:empty{display:none}
+.rm-mobile .rm-shell{padding:.75rem .75rem 1rem}
+.rm-mobile .rm-bezel{padding:.5rem .75rem .75rem}
+.rm-mobile .rm-brand small{letter-spacing:0}
+.rm-mobile .rm-ctl{grid-template-columns:9rem 1fr;gap:.5rem;margin-top:.75rem}
+.rm-mobile .rm-dpad{width:9rem;height:9rem}
+.rm-mobile .rm-dpad button{width:3rem;height:3rem;color:#e9e2d7;font-size:1.125rem}
+.rm-mobile .rm-dpad button::before{content:'↑'}
+.rm-mobile .rm-dpad .d::before{content:'↓'}.rm-mobile .rm-dpad .l::before{content:'←'}.rm-mobile .rm-dpad .r::before{content:'→'}
+.rm-mobile .rm-dpad .u{left:3rem;top:0}.rm-mobile .rm-dpad .d{left:3rem;bottom:0}
+.rm-mobile .rm-dpad .l{left:0;top:3rem}.rm-mobile .rm-dpad .r{right:0;top:3rem}
+.rm-mobile .rm-dpad::after{left:3rem;top:3rem;width:3rem;height:3rem}
+.rm-mobile .rm-ab{grid-column:2;grid-row:1;justify-self:end;gap:.5rem;transform:none}
+.rm-mobile .rm-ab button{width:3rem;height:3rem}
+.rm-mobile .rm-mid{grid-column:1 / -1;grid-row:2;gap:1rem;padding:0;align-self:center}
+.rm-mobile .rm-pill button{width:3rem;height:2.75rem;transform:none;border-radius:.5rem}
+.rm-mobile .rm-pill{font-size:.625rem}
+.rm-mobile .rm-speaker{display:none}
+.rm-mobile .rm-touch-hint{display:block;margin:.5rem 0 0;padding:.375rem .5rem;border-radius:.375rem;background:rgba(0,0,0,.8);color:#fff;text-align:center;font-size:.75rem}
+.rest-icon{font-size:1.25rem;line-height:1}
+@media (orientation:landscape) and (max-height:600px){
+  .rm-mobile #rm-console{max-width:55rem}
+  .rm-mobile .rm-shell{display:grid;grid-template-columns:9rem minmax(0,1fr) 7rem;grid-template-rows:auto 1fr auto;gap:.5rem .75rem}
+  .rm-mobile .rm-brand{grid-column:1 / -1;margin:0}
+  .rm-mobile .rm-bezel{grid-column:2;grid-row:2 / 4;align-self:center;min-width:0}
+  .rm-mobile #rm-screen{width:auto;max-width:100%;height:calc(100vh - 12rem);height:calc(100dvh - 12rem);max-height:20rem;margin:auto}
+  .rm-mobile .rm-ctl{display:contents}
+  .rm-mobile .rm-dpad{grid-column:1;grid-row:2;align-self:center}
+  .rm-mobile .rm-ab{grid-column:3;grid-row:2;align-self:center;justify-self:center}
+  .rm-mobile .rm-mid{grid-column:1;grid-row:3;gap:.5rem}
+}

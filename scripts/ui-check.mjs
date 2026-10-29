@@ -3975,9 +3975,9 @@ section('rest room', async () => {
   await opened();
   await press('KeyM', 'm');
   check('M goes to the menu', await ROOM('g.mode') === 'menu');
-  await evalJs(`(() => { const b = document.querySelector('#rm-console [data-pad="down"]'); const o = { bubbles: true, cancelable: true, pointerId: 1 }; b.dispatchEvent(new PointerEvent('pointerdown', o)); b.dispatchEvent(new PointerEvent('pointerup', o)); return true; })()`);
+  await mouseClick('#rm-console [data-pad="down"]');
   check('the pad on the shell presses the same buttons: ↓ chooses the bricks', await ROOM('g.sel') === 1);
-  await evalJs(`(() => { const b = document.querySelector('#rm-console [data-pad="a"]'); const o = { bubbles: true, cancelable: true, pointerId: 1 }; b.dispatchEvent(new PointerEvent('pointerdown', o)); b.dispatchEvent(new PointerEvent('pointerup', o)); return true; })()`);
+  await mouseClick('#rm-console [data-pad="a"]');
   check('and A starts it: «Кирпичики» are played', await ROOM('g.mode') === 'bricks' && await screenHas('КИРПИЧИКИ'));
   await press('ArrowUp', 'ArrowUp'); await press('Space', ' ');
   check('the piece turns and drops to the floor and locks', await ROOM('g.b.grid[22].some(Boolean)') === true);
@@ -6922,7 +6922,7 @@ section('light page', async () => {
     await openPhone(TABLET, mode);
     const at = `tablet ${TABLET.join('×')} ${mode}`;
     check(`${at}: the list and the chat stand side by side`, await waitFor(`(() => { const a = document.querySelector('#p-wait')?.getBoundingClientRect(); const b = document.querySelector('#p-chat')?.getBoundingClientRect(); return !!a && !!b && a.width > 250 && b.width > 350 && a.right <= b.left + 1 && Math.abs(a.top - b.top) < 4; })()`, 6000));
-    check(`${at}: the nav has the list tabs only and nothing scrolls sideways`, (await evalJs('document.querySelectorAll(".nav button").length')) === 2 && await noSideways(TABLET[0]));
+    check(`${at}: the nav has the list tabs only and nothing scrolls sideways`, (await evalJs('document.querySelectorAll(".nav [data-tab]").length')) === 2 && await noSideways(TABLET[0]));
     check(`${at}: the chat fills the right side down to the line`, await evalJs(`(() => { const r = document.querySelector('#ask').getBoundingClientRect(); return r.bottom <= innerHeight && r.bottom > innerHeight - 140 && r.width > 350; })()`));
     check(`${at}: the buttons are 44 px`, (await smallTargets()).length === 0, JSON.stringify(await smallTargets()));
     await shot(`m-tablet-${mode}.png`);
@@ -6941,6 +6941,83 @@ section('light page', async () => {
   await backToDesk();
   await navigate(base + '/?noauto&nocoach&bloom=0');
 }, { retry: true });
+
+// The same room through /m, driven by actual browser touch events rather than keyboard or element.click().
+section('light page rest room', async () => {
+  await send('Emulation.setTouchEmulationEnabled', { enabled: true, maxTouchPoints: 5 });
+  const point = (sel, id = 1) => evalJs(`(() => { const r = document.querySelector(${JSON.stringify(sel)}).getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2, id: ${id} }; })()`);
+  const touch = (type, points = []) => send('Input.dispatchTouchEvent', { type, touchPoints: points });
+  const tap = async (sel) => { await touch('touchStart', [await point(sel)]); await touch('touchEnd'); await pageTurn(); };
+  const pad = (name) => `#rm [data-pad="${name}"]`;
+  for (const [w, h] of [PHONE, TABLET, [844, 390], [1180, 820], [375, 812]]) {
+    const at = `${w}×${h}`;
+    await openPhone([w, h], 'dark');
+    await tap('#m-rest');
+    check(`${at}: touch opens the shared room over /m`, await waitFor('restroomState().open && document.querySelector(".mob").inert', 4000) && await hasText('#rm-back', '/m'));
+    check(`${at}: the screen and every game button fit and are hit-testable (at least 44×44)`, await evalJs(`(() => {
+      const selectors = ['#rm-back', '#rm-screen', ...[...document.querySelectorAll('#rm [data-pad]')].map((e) => '#rm [data-pad="' + e.dataset.pad + '"]')];
+      return selectors.every((s) => { const e = document.querySelector(s), r = e.getBoundingClientRect(); const hit = document.elementFromPoint(r.x + r.width/2, r.y + r.height/2);
+        return r.left >= 0 && r.right <= innerWidth + 1 && r.top >= 0 && r.bottom <= innerHeight && (s === '#rm-screen' || (r.width >= 44 && r.height >= 44)) && (e === hit || e.contains(hit)); }); })()`));
+    await tap(pad('a'));
+    check(`${at}: A starts the shooter`, await waitFor('restroomGame.mode === "shoot"', 4000));
+    const x = await evalJs('restroomGame.s.x');
+    const left = await point(pad('left'), 1), fire = await point(pad('a'), 2);
+    await touch('touchStart', [left]);
+    await touch('touchStart', [left, fire]);
+    check(`${at}: two fingers move and fire together`, await waitFor(`restroomGame.s.x < ${x} - 15 && (restroomGame.s.bul.length > 0 || restroomGame.s.score > 0)`, 8000));
+    await touch('touchMove', [{ ...left, x: left.x + 12, y: left.y - 25 }, fire]);
+    check(`${at}: dragging a held finger neither scrolls nor zooms`, await evalJs('document.querySelector("#rm").scrollTop === 0 && scrollY === 0 && visualViewport.scale === 1'));
+    await touch('touchEnd');
+    check(`${at}: releasing fingers clears held buttons`, await waitFor('restroomGame.held.size === 0 && !document.querySelector("#rm .dn")', 4000));
+    await tap(pad('start'));
+    check(`${at}: START pauses`, await evalJs('restroomGame.paused'));
+    await tap(pad('start'));
+    check(`${at}: START resumes`, !(await evalJs('restroomGame.paused')));
+    await tap(pad('select')); await tap(pad('down')); await tap(pad('a'));
+    check(`${at}: touch selects and starts bricks`, await waitFor('restroomGame.mode === "bricks"', 4000));
+    const bx = await evalJs('restroomGame.b.p.x');
+    await touch('touchStart', [await point(pad('left'))]);
+    check(`${at}: holding repeats movement in bricks`, await waitFor(`restroomGame.b.p.x < ${bx} - 1`, 8000));
+    await touch('touchCancel');
+    check(`${at}: cancellation releases capture and game input`, await waitFor('restroomGame.held.size === 0 && !document.querySelector("#rm .dn")', 4000));
+    await shot(`m-restroom-${w}-${h}.png`);
+    await tap('#rm-back');
+    check(`${at}: exit returns to the same /m tab and pauses the game`, await waitFor('!restroomState().open && !document.querySelector(".mob").inert', 4000) && await evalJs('location.pathname === "/m" && restroomGame.paused && mobile.tab.value === "wait"'));
+    await tap('#m-rest');
+    check(`${at}: reentry keeps the paused game`, await waitFor('restroomState().open && restroomGame.mode === "bricks" && restroomGame.paused', 4000));
+    await tap('#rm-back');
+  }
+  await openPhone(PHONE, 'light'); await tap('#m-rest');
+  await click('#rm-wp-min');
+  await evalJs('document.querySelector("#rm-wp").scrollIntoView({block:"nearest"}); true');
+  await tap('#rm-thumbs [data-wall="sea"]');
+  check('phone: a wallpaper is chosen and saved locally', await waitFor('restroomState().wall === "sea" && localStorage.getItem("herdr-planner.restroom.wall") === "sea"', 3000));
+  await evalJs(`(async () => { const c = document.createElement('canvas'); c.width = 64; c.height = 36; const x = c.getContext('2d'); x.fillStyle = '#c0392b'; x.fillRect(0, 0, 64, 36);
+    const blob = await new Promise((r) => c.toBlob(r, 'image/png')); const dt = new DataTransfer(); dt.items.add(new File([blob], 'wall.png', { type: 'image/png' }));
+    const i = document.querySelector('#rm-file'); i.files = dt.files; i.dispatchEvent(new Event('change', { bubbles: true })); return true; })()`);
+  check('phone: a custom wallpaper is kept in browser storage', await waitFor('restroomState().wall === "custom" && localStorage.getItem("herdr-planner.restroom.custom").startsWith("data:image/")', 4000));
+  await evalJs('document.querySelector("#rm").scrollTop = 0; true'); await tap('#rm-back');
+  await openPhone(PHONE, 'light'); await tap('#m-rest');
+  check('phone: custom wallpaper survives reload', await waitFor('restroomState().wall === "custom"', 4000));
+  await shot('m-restroom-light.png');
+  // A newly waiting task uses the phone's existing task sheet for «Лететь».
+  const taskFile = join(fixture, 'state', 'board.json');
+  const original = readFileSync(taskFile, 'utf8');
+  try {
+    const board = JSON.parse(original);
+    board.rows = board.rows.filter((r) => r.id !== 'alpha/23');
+    board.rows.push({ id: 'alpha/23', app: 'claude', state: 'blocked', kind: 'question', stage: 'working', title: 'Вопрос с телефона', msg: 'Нужно уточнение с телефона' });
+    writeFileSync(taskFile, JSON.stringify(board));
+    await post('/api/refresh', {});
+    check('phone: a new waiting task appears in the room', await waitFor('!!document.querySelector("#rm-notes [data-note=\"alpha/23\"]")', 20000));
+    await evalJs('document.querySelector("#rm-notes").scrollIntoView({block:"nearest"}); true');
+    await tap('#rm-notes [data-note="alpha/23"] [data-act="fly"]');
+    check('phone: «Лететь» opens the task sheet on /m', await waitFor('!restroomState().open && mobile.sheet.value?.kind === "task" && mobile.sheet.value.id === "alpha/23" && !!document.querySelector("#sheet.on")', 5000) && await evalJs('location.pathname === "/m"'));
+  } finally { writeFileSync(taskFile, original); }
+  await evalJs('localStorage.removeItem("herdr-planner.restroom.wall"); localStorage.removeItem("herdr-planner.restroom.custom"); true');
+  await send('Emulation.setTouchEmulationEnabled', { enabled: false });
+  await backToDesk(); await navigate(base + '/?noauto&nocoach&bloom=0');
+});
 
 section('light page actions', async () => {
   await openPhone(PHONE, 'dark');
