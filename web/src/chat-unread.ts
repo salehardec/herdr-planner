@@ -50,7 +50,6 @@ export function markRead(marks: [number, number][]): void {
 
 /** The reader reached the bottom (or chose the indicator): every current answer is acknowledged at once. */
 export function markReadToEnd(): void {
-  (window as any).__mre = ((window as any).__mre || []).concat([new Error().stack!.split('\n').slice(1, 4).join(' <- ') + ' @' + Date.now() + ' turns=' + chat.peek().turns.length]);
   const c = chat.peek();
   if (c.available !== true) return;
   const next = readToEnd(c.turns, c.total);
