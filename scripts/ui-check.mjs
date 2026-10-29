@@ -7163,6 +7163,7 @@ section('light page', async () => {
     check(`${at}: a failed task offers «Повторить» and a word to the agent`, await evalJs(`(() => { const c = document.querySelector('${phoneCard('failed:alpha/8')}'); return !!c.querySelector('[data-act="retry"]') && !!c.querySelector('[data-act="tell"]'); })()`));
     check(`${at}: nothing the phone may not do is offered: no «всё равно», stop, finish, fix`, !(await exists('[data-act="anyway"], [data-act="stop"], [data-act="finish"], [data-act="fix"], [data-act="keys"]')));
     check(`${at}: a merge past a failed review is the computer's: no approve on it, and it says so`, await evalJs(`(() => { const c = document.querySelector('${phoneCard('permission:alpha/5')}'); return !!c && !c.querySelector('[data-act="approve"]') && c.querySelector('.hintline')?.innerText.includes('на компьютере'); })()`));
+    check(`${at}: a merge refused for the checkout explains the fix and keeps approve for the retry`, await evalJs(`(() => { const c = document.querySelector('${phoneCard('approval:delta/1')}'); const note = c?.querySelector('.hintline')?.innerText || ''; return !!c && !!c.querySelector('[data-act="approve"]') && note.includes('Доска не смогла слить') && note.includes('чекауте') && note.includes('ещё раз') && note.includes('Координатора'); })()`), await text(phoneCard('approval:delta/1')));
     check(`${at}: a finger can hit every button (44 px)`, (await smallTargets()).length === 0, JSON.stringify(await smallTargets()));
     check(`${at}: the cards do not stick out of the screen`, await evalJs(`[...document.querySelectorAll('.card')].every((c) => { const r = c.getBoundingClientRect(); return r.left >= 0 && r.right <= innerWidth + 1; })`));
     await shot(`m-wait-${mode}.png`);
@@ -7359,6 +7360,22 @@ section('light page rest room', async () => {
 section('light page actions', async () => {
   await openPhone(PHONE, 'dark');
   await waitFor('!!document.querySelector("[data-card=\'plan:alpha/3\']")', 8000);
+  // A merge and the card take the same decision from the board's actions; a refusal is said, a success spends the card.
+  const mergeCard = phoneCard('approval:alpha/4');
+  check('a ready merge has approve in the projection and on its card', await evalJs(`plannerSnap().tasks.find((t) => t.id === 'alpha/4')?.actions.includes('approve') && !!document.querySelector('${mergeCard} [data-act="approve"]')`));
+  writeFileSync(join(fixture, 'state', 'refuse'), 'refuse the board command');
+  await twoPresses(`${mergeCard} [data-act="approve"]`);
+  check('a merge refused by the board shows the board words and keeps the card', await hasText('#toasts', 'the merge has a conflict', 10000) && await exists(mergeCard), await text('#toasts'));
+  unlinkSync(join(fixture, 'state', 'refuse'));
+  await twoPresses(`${mergeCard} [data-act="approve"]`);
+  check('a merge approved from «Ждёт тебя» reaches the board', await waitLog(() => calls().some((c) => c.argv[0] === 'approve' && c.argv[1] === 'alpha/4'), 15000), JSON.stringify(lastCall()));
+  check('and its card leaves the list after the projection changes', await waitFor(`!document.querySelector('${mergeCard}')`, 15000));
+  // The board's remedy for a checkout refusal is to fix it and approve again: the phone keeps that way too.
+  const checkoutCard = phoneCard('approval:delta/1');
+  check('a checkout refusal keeps approve in the projection and beside the explanation', await evalJs(`plannerSnap().tasks.find((t) => t.id === 'delta/1')?.actions.includes('approve') && !!document.querySelector('${checkoutCard} [data-act="approve"]') && document.querySelector('${checkoutCard} .hintline')?.innerText.includes('ещё раз')`));
+  await twoPresses(`${checkoutCard} [data-act="approve"]`);
+  check('the repeated merge approval after a checkout fix reaches the board', await waitLog(() => calls().some((c) => c.argv[0] === 'approve' && c.argv[1] === 'delta/1'), 15000), JSON.stringify(lastCall()));
+  check('and the retried card leaves the list', await waitFor(`!document.querySelector('${checkoutCard}')`, 15000));
   // a plan is approved with two presses, like on the computer
   await click(`${phoneCard('plan:alpha/3')} [data-act="approve"]`);
   check('the first press only arms the button', await hasText(`${phoneCard('plan:alpha/3')} [data-act="approve"]`, 'Нажми ещё раз', 2000) && !calls().some((c) => c.argv[0] === 'approve' && c.argv[1] === 'alpha/3'), JSON.stringify(lastCall()));
