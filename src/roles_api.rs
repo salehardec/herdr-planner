@@ -558,7 +558,7 @@ mod tests {
         let log = dir.join("board.log");
         let script = dir.join("board.sh");
         let body = format!(
-            "#!/bin/sh\ncase \"$1\" in\n  list|coordinator) echo '[]';;\n  show) echo '{SHOW}';;\n  models) case \"$2\" in claude) printf 'claude takes a short name.\\n\\nclaude/claude-opus-5-5\\nclaude/claude-sonnet-5-5\\n\\nEffort (worker.effort and the like): low, medium, high (from x).\\n';; *) echo 'unknown' >&2; exit 2;; esac;;\n  add) echo \"$@\" | tr '\\n' ' ' >> {log}; echo >> {log}; echo 'alpha/9: added';;\n  set|unset) echo \"$@\" | tr '\\n' ' ' >> {log}; echo >> {log};;\n  *) exit 1;;\nesac\n",
+            "#!/bin/sh\ncase \"$1\" in\n  list|coordinator) echo '[]';;\n  show) echo '{SHOW}';;\n  models) case \"$2\" in claude) printf 'claude takes a short name.\\n\\nclaude/claude-opus-5-5\\nclaude/claude-sonnet-5-5\\nclaude/claude-haiku-5-5\\n\\nEffort (worker.effort and the like): low, medium, high, xhigh, max (from x).\\n';; *) echo 'unknown' >&2; exit 2;; esac;;\n  add) echo \"$@\" | tr '\\n' ' ' >> {log}; echo >> {log}; echo 'alpha/9: added';;\n  set|unset) echo \"$@\" | tr '\\n' ' ' >> {log}; echo >> {log};;\n  *) exit 1;;\nesac\n",
             log = log.display()
         );
         crate::testutil::write_exec(&script, body);
