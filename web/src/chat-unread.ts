@@ -1,9 +1,9 @@
-/* What the human has not read yet in the Coordinator's chat: the answers (and board notices with their answers) that have not
-   been in the visible part of an open chat while the window was active. «Read» is kept per turn in the browser, so it outlives
-   a reload. A turn is told apart by its position in the transcript (`n`, which only grows). */
+/* What the human has not read yet in the Coordinator's chat: Coordinator answers that have not been in the visible part of
+   an open chat while the window was active. Board notices are status lines, not unread messages. «Read» is kept per turn in
+   the browser, so it outlives a reload. A turn is told apart by its position in the transcript (`n`, which only grows). */
 import { computed, signal } from '@preact/signals';
 import { chat } from './store';
-import { settled, unreadOf, withRead, type ReadState } from './chat-read';
+import { readToEnd, settled, unreadOf, withRead, type ReadState } from './chat-read';
 
 export const READ_KEY = 'herdr-planner.chat.read';
 /** How long a message stays in view before it counts as read (the light fades after that). */
@@ -44,6 +44,17 @@ export function markRead(marks: [number, number][]): void {
   const rs = chatRead.value;
   if (!rs || !marks.length) return;
   const next = withRead(rs, marks, chat.peek().total, chat.peek().turns);
+  chatRead.value = next;
+  save(next);
+}
+
+/** The reader reached the bottom (or chose the indicator): every current answer is acknowledged at once. */
+export function markReadToEnd(): void {
+  const c = chat.peek();
+  if (c.available !== true) return;
+  const next = readToEnd(c.turns, c.total);
+  const current = chatRead.peek();
+  if (current?.base === next.base && JSON.stringify(current.seen) === JSON.stringify(next.seen)) return;
   chatRead.value = next;
   save(next);
 }

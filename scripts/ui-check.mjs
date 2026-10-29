@@ -2382,10 +2382,12 @@ section('requests', async () => {
   await waitFor('window.world && world.debug().planets > 0', 20000);
   await press('Slash', '/');
   check('the chat opens on the last turns after the reload', await waitFor('!document.querySelector("#chat").classList.contains("off") && document.querySelectorAll("#clog .turn[data-n]").length >= 3', 12000), String(await evalJs('document.querySelectorAll("#clog .turn[data-n]").length')));
-  check('after a reload that holds only the last turns, an old notice is not pinned under them',
-    await waitFor('document.querySelectorAll("#clog [data-notice]").length === 0', 5000)
-      && await evalJs(`![...document.querySelectorAll('#clog .turn')].some((e) => e.innerText.includes(${JSON.stringify(noticeLine)}))`),
-    await evalJs(`[...document.querySelectorAll('#clog .turn')].map((e) => (e.hasAttribute('data-notice') ? 'NOTICE ' : '') + (e.innerText || '').replace(/\\s+/g, ' ').slice(0, 40)).join(' | ')`));
+  // The notice was the last turn when the chat was read at its end, so its words are checked again after a reload and it
+  // may come back as a turn of its own, in its place: what must not happen is a notice stuck under the newer turns.
+  const pinned = async () => evalJs(`(() => { const t = [...document.querySelectorAll('#clog .turn')].map((e) => e.innerText); const i = t.findIndex((x) => x.includes(${JSON.stringify(noticeLine)})); const a = t.findLastIndex((x) => x.includes('Ответ 1')); return { n: document.querySelectorAll('#clog [data-notice]').length, i, a, len: t.length, ok: document.querySelectorAll('#clog [data-notice]').length === 0 && (i === -1 || i < a) }; })()`);
+  await waitFor('document.querySelectorAll("#clog [data-notice]").length === 0', 5000);
+  const pin = await pinned();
+  check('after a reload that holds only the last turns, an old notice is not pinned under them', pin.ok, JSON.stringify(pin));
   writeFileSync(transcript, transcriptBefore);
   await navigate(base + '/?noauto&nocoach&bloom=0');
   await waitFor('window.world && world.debug().planets > 0', 20000);
@@ -6787,7 +6789,7 @@ section('chat unread', async () => {
   // has been left is news again.
   const waiting = ask('Что на ревью?') - 1;
   interim(waiting + 1, 'Сейчас посмотрю доску.');
-  check('an interim line is lit', await waitFor(dots(waiting) + ' === 1', 10000));
+  check('an interim line at the end is read at once', await waitFor(dots(waiting) + ' === 0 && !document.querySelector("#bchat-n")', 10000), JSON.stringify(await stored()));
   // PLN-60: the turn has an interim line and a tool call still going: the working line counts from its question and names the call
   writeFileSync(join(fixture, 'state', 'coordinator-busy'), '1');
   // a change of a task record makes the server read the Coordinator's line again now, not at the next minute
@@ -6803,17 +6805,16 @@ section('chat unread', async () => {
   toolDone(waiting + 1); final(waiting + 1, 'alpha/4 на ревью, ждёт тебя.');
   check('the answer that came after it is lit, though the interim line was read', await waitFor(dots(waiting) + ' === 1', 10000));
   check('and counted on the button and in the header', await hasText('#bchat-n', '1', 5000) && await hasText('#cunread', '1 новое', 5000), await text('#bchat'));
-  // A notice that comes next must not carry the unseen answer into «read».
+  // A notice that comes next must not carry the unseen answer into «read» or make a new count itself.
   const afterwards = ask('[Уведомление доски] beta/2 готова') - 1;
-  check('a later turn does not put the unseen answer out', await waitFor(dots(afterwards) + ' === 1', 10000) && (await evalJs(dots(waiting))) === 1 && await hasText('#bchat-n', '2', 5000), await text('#bchat'));
+  check('a later board notice leaves only the unseen answer counted', await waitFor(dots(afterwards) + ' === 0', 10000) && (await evalJs(dots(waiting))) === 1 && await hasText('#bchat-n', '1', 5000), await text('#bchat'));
   await focus(true);
-  check('both go out once seen', await waitFor(dots(waiting) + ' + ' + dots(afterwards) + ' === 0 && !document.querySelector("#bchat-n") && !document.querySelector("#cunread")', 10000));
-  // A notice of the board the Coordinator has not answered in words is a message too.
+  check('the answer goes out once seen', await waitFor(dots(waiting) + ' === 0 && !document.querySelector("#bchat-n") && !document.querySelector("#cunread")', 10000));
+  // A notice of the board the Coordinator has not answered in words is never an unread chat message.
   await focus(false);
   const notice = ask('[Уведомление доски] alpha/5 готова') - 1;
-  check('a notice of the board with no words of the Coordinator\'s is lit and counted', await waitFor(dots(notice) + ' === 1', 10000) && await hasText('#bchat-n', '1', 5000), await text('#bchat'));
+  check('a notice of the board with no words of the Coordinator is not lit or counted', await waitFor(dots(notice) + ' === 0 && !document.querySelector("#bchat-n")', 10000), await text('#bchat'));
   await focus(true);
-  check('and goes out when it has been seen', await waitFor(dots(notice) + ' === 0 && !document.querySelector("#bchat-n")', 10000));
 
   // Many tall answers while the chat is hidden: opening it in a window that is not in front takes it to the first unread,
   // and the button of the header brings it back from the end.
@@ -6828,17 +6829,106 @@ section('chat unread', async () => {
   await click('#tolast');
   await waitFor('(() => { const l = document.querySelector("#clog"); return l.scrollHeight - l.scrollTop - l.clientHeight < 30; })()', 12000);
   await click('#cunread');
-  check('the header button takes it back to the first unread', await waitFor(`(() => { const e = document.querySelector('#clog .turn[data-n="${first}"]'); const l = document.querySelector('#clog'); if (!e) return false; const r = e.getBoundingClientRect(); const o = l.getBoundingClientRect(); return r.top >= o.top - 2 && r.top < o.top + 80; })()`, 15000));
-  check('the «down» button counts the new messages below', await waitFor(`(() => { const b = document.querySelector('#tolast'); return !!b && Number(b.querySelector('.n')?.innerText) >= 1 && /нов/.test(b.innerText); })()`, 5000), await text('#tolast'));
-  check('still six: a window that is not in front reads nothing', await hasText('#bchat-n', '6', 100));
+  check('the header button acknowledges every new answer and clears both counts', await waitFor('!document.querySelector("#bchat-n") && !document.querySelector("#cunread")', 5000), await text('#bchat'));
+  check('the «down» button remains a plain way back to the end after the reset', await waitFor(`(() => { const b = document.querySelector('#tolast'); return !!b && !b.querySelector('.n') && /последним/.test(b.innerText); })()`, 5000), await text('#tolast'));
+  // Opened in the window in front, the chat also takes the reader to the first unread, and what is above the end stays unread.
+  await toggle();
+  await waitFor('document.querySelector("#chat").classList.contains("off")', 5000);
+  await focus(true);
+  const first2 = say(14); for (let i = 0; i < 3; i++) say(14);
+  check('four tall answers come to a hidden chat in the window in front: the count is 4', await hasText('#bchat-n', '4', 10000), await text('#bchat'));
+  await toggle();
+  check('opened in the window in front, the chat stands on the first unread', await waitFor(`(() => { const e = document.querySelector('#clog .turn[data-n="${first2}"]'); const l = document.querySelector('#clog'); if (!e) return false; const r = e.getBoundingClientRect(); const o = l.getBoundingClientRect(); return r.top >= o.top - 2 && r.top < o.top + 80; })()`, 15000), await evalJs('document.querySelector("#clog").scrollTop'));
+  await sleep(2000);
+  check('the answers below it are not read by opening: the header still counts them', await evalJs(`(document.querySelector('#cunread')?.innerText || '').includes('нов')`), await text('#bchat'));
+  await focus(false);
+  await click('#tolast');
+  await waitFor('(() => { const l = document.querySelector("#clog"); return l.scrollHeight - l.scrollTop - l.clientHeight < 30; })()', 12000);
+  await click('#cunread');
+  // (the first answer was in view for a moment on opening and is read: the first unread is the next one)
+  check('the header button takes the reader back to the first unread and clears the counts', await waitFor(`(() => { const e = document.querySelector('#clog .turn[data-n="${first2 + 1}"]'); const l = document.querySelector('#clog'); if (!e) return false; const r = e.getBoundingClientRect(); const o = l.getBoundingClientRect(); return r.top >= o.top - 2 && r.top < o.top + 80; })() && !document.querySelector('#bchat-n') && !document.querySelector('#cunread')`, 15000), await text('#bchat'));
+
+  // The indicator brings the reader to the first unread; when those are the last answers that is the bottom, and from there the
+  // log follows the next answers on its own (and the indicator does not come back for someone who touched nothing).
+  const dist = '(() => { const l = document.querySelector("#clog"); return l.scrollHeight - l.scrollTop - l.clientHeight; })()';
+  await focus(true);
+  await evalJs('(() => { const l = document.querySelector("#clog"); l.scrollTop = l.scrollHeight - l.clientHeight - 700; return true; })()');
+  await sleep(400);
+  say(1);
+  check('scrolled up, one new answer comes: «1 новое»', await hasText('#cunread', '1 новое', 10000), await text('#bchat'));
+  await click('#cunread');
+  await sleep(2800);
+  check('the click takes the log to the end and clears the count', (await evalJs(dist)) < 24 && !(await evalJs('!!document.querySelector("#cunread") || !!document.querySelector("#bchat-n")')), String(await evalJs(dist)));
+  const nextN = say(1);
+  check('the next answer is followed: the end stays in view and nothing is counted', await waitFor(`!!document.querySelector('#clog .turn[data-n="${nextN}"]') && ${dist} < 24 && !document.querySelector("#cunread") && !document.querySelector("#bchat-n")`, 8000), String(await evalJs(dist)) + ' ' + await text('#bchat'));
+  // An answer that comes while the log is still on its way to the end is followed, too.
+  await evalJs('(() => { const l = document.querySelector("#clog"); l.scrollTop = l.scrollHeight - l.clientHeight - 700; return true; })()');
+  await sleep(400);
+  say(1);
+  check('scrolled up again, one new answer comes: «1 новое»', await hasText('#cunread', '1 новое', 10000), await text('#bchat'));
+  await click('#cunread');
+  await sleep(300);
+  await evalJs('window.__sawUnread = false; new MutationObserver(() => { if (document.querySelector("#cunread")) window.__sawUnread = true; }).observe(document.body, { subtree: true, childList: true }); true');
+  const quick = say(1);
+  check('an answer 0.3 s after the click is followed: the end stays in view and nothing is counted', await waitFor(`!!document.querySelector('#clog .turn[data-n="${quick}"]') && ${dist} < 24 && !document.querySelector("#cunread") && !document.querySelector("#bchat-n")`, 8000), String(await evalJs(dist)) + ' ' + await text('#bchat'));
+  await sleep(2000);
+  check('and it stays so after the jump is over', (await evalJs(dist)) < 24 && !(await evalJs('!!document.querySelector("#cunread") || !!document.querySelector("#bchat-n")')), String(await evalJs(dist)) + ' ' + await text('#bchat'));
+  check('and the indicator did not light up for a moment on the way', !(await evalJs('window.__sawUnread')));
+  // A reader who takes the log over while the jump is still going keeps the place they have chosen.
+  await evalJs('(() => { const l = document.querySelector("#clog"); l.scrollTop = l.scrollHeight - l.clientHeight - 700; return true; })()');
+  await sleep(400);
+  say(1);
+  check('scrolled up once more, one new answer comes: «1 новое»', await hasText('#cunread', '1 новое', 10000), await text('#bchat'));
+  await click('#cunread');
+  await sleep(500);
+  const wheel = await evalJs('(() => { const b = document.querySelector("#clog").getBoundingClientRect(); return { x: b.left + b.width / 2, y: b.top + b.height / 2 }; })()');
+  for (let i = 0; i < 4; i++) { await send('Input.dispatchMouseEvent', { type: 'mouseWheel', x: wheel.x, y: wheel.y, deltaX: 0, deltaY: -250 }); await sleep(60); }
+  await sleep(4000);
+  check('a reader who scrolls up during the jump stays there, with the «down» button shown', (await evalJs(dist)) > 200 && (await evalJs('!!document.querySelector("#tolast")')), String(await evalJs(dist)));
+  // The answer that comes after that is counted, and the log is not pulled down to it.
+  const held = await evalJs(dist);
+  say(1);
+  check('an answer after the reader took over during the jump is counted', await hasText('#cunread', '1 новое', 10000), await text('#bchat'));
+  await sleep(3000);
+  check('and the log is not pulled down to it', (await evalJs(dist)) >= held && (await evalJs(dist)) > 200, `${held} -> ${await evalJs(dist)}`);
+  // The same when the reader takes over almost at once and the answer comes right after.
+  await click('#tolast');
+  await waitFor(`${dist} < 24`, 12000);
+  await sleep(1500);
+  await evalJs('(() => { const l = document.querySelector("#clog"); l.scrollTop = l.scrollHeight - l.clientHeight - 700; return true; })()');
+  await sleep(400);
+  say(1);
+  check('scrolled up a third time, one new answer comes: «1 новое»', await hasText('#cunread', '1 новое', 10000), await text('#bchat'));
+  await click('#cunread');
+  await sleep(200);
+  for (let i = 0; i < 4; i++) { await send('Input.dispatchMouseEvent', { type: 'mouseWheel', x: wheel.x, y: wheel.y, deltaX: 0, deltaY: -250 }); await sleep(60); }
+  await sleep(100);
+  say(1);
+  await sleep(4000);
+  check('a reader who takes over at once and gets an answer stays there, with it counted', (await evalJs(dist)) > 200 && await hasText('#cunread', '1 новое', 3000), `${await evalJs(dist)} ${await text('#bchat')}`);
+  await click('#tolast');
+  await waitFor(`${dist} < 24`, 12000);
+  await focus(false);
 
   // The wide chat is restored open by a reload: it waits for the history and then goes to the first unread, too.
   await click('#cwide');
   check('the wide chat', await waitFor('!!document.querySelector("#chat.wide")', 5000));
   const away = (await send('Page.addScriptToEvaluateOnNewDocument', { source: 'document.hasFocus = () => false;' })).result.identifier;
   await navigate(base + '/?noauto&nocoach&bloom=0');
-  check('after a reload the wide chat is open again and goes to the first unread', await waitFor(`(() => { const e = document.querySelector('#clog .turn[data-n="${first}"]'); const l = document.querySelector('#clog'); if (!e || !document.querySelector('#chat:not(.off)')) return false; const r = e.getBoundingClientRect(); const o = l.getBoundingClientRect(); return r.top >= o.top - 2 && r.top < o.top + 80; })()`, 20000), await evalJs(`JSON.stringify({ turns: [...document.querySelectorAll('#clog .turn')].map((e) => e.dataset.n), top: document.querySelector('#clog').scrollTop, header: document.querySelector('#cunread')?.innerText })`));
+  check('after a reload the wide chat is open and the acknowledged queue stays cleared', await waitFor('!!document.querySelector("#chat.wide:not(.off)") && !document.querySelector("#bchat-n") && !document.querySelector("#cunread")', 20000), await evalJs(`JSON.stringify({ turns: [...document.querySelectorAll('#clog .turn')].map((e) => e.dataset.n), top: document.querySelector('#clog').scrollTop, header: document.querySelector('#cunread')?.innerText })`));
+  // A slow network: the last turns come first and hold no answer (only board lines), the covering of the history comes after.
+  // The jump to the first unread waits for it, and the end of the chat reads nothing before that.
+  const first3 = say(14);
+  for (let i = 0; i < 30; i++) ask(`[Уведомление доски] gamma/${i + 1} готова`);
+  check('a tall answer and thirty board lines after it: one is counted', await hasText('#bchat-n', '1', 10000), await text('#bchat'));
   await send('Page.removeScriptToEvaluateOnNewDocument', { identifier: away });
+  const front = (await send('Page.addScriptToEvaluateOnNewDocument', { source: 'document.hasFocus = () => true;' })).result.identifier;
+  await send('Network.enable', {});
+  await send('Network.emulateNetworkConditions', { offline: false, latency: 150, downloadThroughput: -1, uploadThroughput: -1 });
+  await navigate(base + '/?noauto&nocoach&bloom=0');
+  check('after a slow reload the wide chat stands on the answer nobody has seen', await waitFor(`(() => { const e = document.querySelector('#clog .turn[data-n="${first3}"]'); const l = document.querySelector('#clog'); if (!e || !document.querySelector('#chat:not(.off)')) return false; const r = e.getBoundingClientRect(); const o = l.getBoundingClientRect(); return r.top >= o.top - 2 && r.top < o.top + 80; })()`, 30000), await evalJs(`JSON.stringify({ n: document.querySelector('#bchat-n')?.innerText || null, top: document.querySelector('#clog').scrollTop, at: document.querySelector('#clog .turn[data-n="${first3}"]')?.getBoundingClientRect().top, room: document.querySelector('#clog').getBoundingClientRect().top, turns: document.querySelectorAll('#clog .turn').length, read: localStorage.getItem('herdr-planner.chat.read') })`));
+  await send('Network.emulateNetworkConditions', { offline: false, latency: 0, downloadThroughput: -1, uploadThroughput: -1 });
+  await send('Page.removeScriptToEvaluateOnNewDocument', { identifier: front });
   await evalJs('delete document.hasFocus; localStorage.removeItem("herdr-planner.chatWide"); true');
 
   // The changed answer survives a reload that holds only the last turns: three notices come after it, the page starts anew.
@@ -6847,19 +6937,18 @@ section('chat unread', async () => {
   await toggle();
   const kept = ask('Что с beta/2?') - 1;
   interim(kept + 1, 'Смотрю.');
-  check('the interim line is read', await waitFor(dots(kept) + ' === 1', 10000) && await waitFor(dots(kept) + ' === 0', 10000), JSON.stringify(await stored()));
+  check('the interim line at the end is read immediately', await waitFor(dots(kept) + ' === 0 && !document.querySelector("#bchat-n")', 10000), JSON.stringify(await stored()));
   await focus(false);
   toolDone(kept + 1); final(kept + 1, 'beta/2 готова, жду решения.');
   check('the answer is lit', await waitFor(dots(kept) + ' === 1', 10000));
   for (let i = 0; i < 3; i++) ask(`[Уведомление доски] beta/${i + 3} готова`);
-  check('and the three notices with it: 4', await hasText('#bchat-n', '4', 10000), await text('#bchat'));
+  check('the three notices do not add to the one answer', await hasText('#bchat-n', '1', 10000), await text('#bchat'));
   await toggle();
   const away2 = (await send('Page.addScriptToEvaluateOnNewDocument', { source: 'document.hasFocus = () => false;' })).result.identifier;
   await navigate(base + '/?noauto&nocoach&bloom=0');
-  check('after a reload that holds the last turns only, the answer is still counted: 4', await hasText('#bchat-n', '4', 15000), await text('#bchat') + JSON.stringify(await stored()));
+  check('after a reload that holds only board lines, the answer before them is still counted: 1', await hasText('#bchat-n', '1', 15000), await text('#bchat') + JSON.stringify(await stored()));
   await send('Page.removeScriptToEvaluateOnNewDocument', { identifier: away2 });
 }, { retry: false });
-
 
 // ── the phone's light page: /m (PLN-79) ────────────────────────────────────
 
