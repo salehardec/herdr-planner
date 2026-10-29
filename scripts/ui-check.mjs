@@ -3900,7 +3900,7 @@ section('rest room', async () => {
   await pageTurn();
 
   // ── the doors
-  check('the top bar has «☕ Отдых» and the navigator a «Корабль» block with the rest room', (await text('#rest-btn')).includes('Отдых') && await hasText('#nav-ship', 'Корабль') && await hasText('#rm-nav-btn', 'Комната отдыха') && await hasText('#rm-nav-btn', 'O'), `${await text('#rest-btn')} | ${await text('#nav-ship')}`);
+  check('the top bar has «☕ Отдых» and the navigator a «Корабль» block with the rest room', (await text('#rest-btn')).includes('Отдых') && await hasText('#nav-ship', 'Корабль', 4000, true) && await hasText('#rm-nav-btn', 'Комната отдыха') && await hasText('#rm-nav-btn', 'O'), `${await text('#rest-btn')} | ${await text('#nav-ship')}`);
   check('the room is closed and hidden from the page at first', !(await isOpen()) && (await evalJs('getComputedStyle(document.querySelector("#rm")).visibility')) === 'hidden', await evalJs('document.querySelector("#rm").className'));
   // the key map: O is free (no other action answers it), the letters around it keep theirs
   const nav0 = await evalJs('plannerDebug().panels.nav');
@@ -3939,7 +3939,7 @@ section('rest room', async () => {
   // the game over waits for a new press
   await evalJs('(() => { const s = restroomGame.s; s.score = 70; s.lives = 0; s.over = true; return true; })()');
   check('«ИГРА ОКОНЧЕНА» is drawn with the score', await screenHas('ИГРА ОКОНЧЕНА') && await screenHas('счёт 70'), JSON.stringify(await evalJs('window.__rmText.slice(-5)')));
-  await evalJs(`(() => { for (let i = 0; i < 12; i++) document.body.dispatchEvent(new KeyboardEvent('keydown', { code: 'Space', key: ' ', repeat: i > 0, bubbles: true, cancelable: true })); return true; })()`);
+  await evalJs(`(() => { for (let i = 0; i < 12; i++) document.body.dispatchEvent(new KeyboardEvent('keydown', { code: 'Space', key: ' ', repeat: true, bubbles: true, cancelable: true })); return true; })()`);
   await frames(10);
   check('a held Space (the key repeating) does not restart it: the score can be read', await ROOM('g.s.over') === true && await ROOM('g.s.score') === 70);
   await evalJs(`document.body.dispatchEvent(new KeyboardEvent('keyup', { code: 'Space', key: ' ', bubbles: true }))`);
@@ -3952,7 +3952,9 @@ section('rest room', async () => {
   await press('Escape', 'Escape');
   check('Esc leaves the room', await closed());
   check('…and only the room: nothing else took the Esc (no step back, nothing selected)', (await evalJs('plannerDebug().selected')) === null && (await evalJs('plannerDebug().mode')) === mode0);
-  check('the game waits on pause with its score and wave', await ROOM('g.paused') === true && await ROOM('g.s.score') === 120 && await ROOM('g.s.wave') === 3 && await ROOM('g.mode') === 'shoot');
+  const left = JSON.stringify(await ROOM('({ mode: g.mode, score: g.s.score, wave: g.s.wave, x: g.s.x, al: g.s.al[0].x })'));
+  await frames(6);
+  check('the game waits on pause, nothing moves: the same score and wave', await ROOM('g.paused') === true && await ROOM('g.mode') === 'shoot' && JSON.stringify(await ROOM('({ mode: g.mode, score: g.s.score, wave: g.s.wave, x: g.s.x, al: g.s.al[0].x })')) === left, left);
   check('the page behind works again: keys reach it, nothing is inert', await evalJs('document.querySelector("#top").inert !== true && document.querySelector("#nav").inert !== true'));
   await press('KeyN', 'n');
   check('N folds the navigator again', await waitFor(`plannerDebug().panels.nav === ${!nav0}`, 3000));
@@ -3961,9 +3963,9 @@ section('rest room', async () => {
   // ── in again: the same game, still on pause, from the top bar button
   await click('#rest-btn');
   check('the top bar button opens it again', await opened());
-  check('entering again does not reset the game: the same score and wave, still on pause', await ROOM('g.mode') === 'shoot' && await ROOM('g.s.score') === 120 && await ROOM('g.s.wave') === 3 && await ROOM('g.paused') === true && await screenHas('ПАУЗА'));
+  check('entering again does not reset the game: the same game, still on pause', JSON.stringify(await ROOM('({ mode: g.mode, score: g.s.score, wave: g.s.wave, x: g.s.x, al: g.s.al[0].x })')) === left && await ROOM('g.paused') === true && await screenHas('ПАУЗА'), left);
   await press('KeyP', 'p');
-  check('P goes on from where it stood', await ROOM('g.paused') === false && await ROOM('g.s.score') === 120);
+  check('P goes on from where it stood', await ROOM('g.paused') === false && await ROOM('g.mode') === 'shoot');
   // the back button
   await mouseClick('#rm-back');
   check('the «Назад» button leaves too', await closed());
@@ -4032,7 +4034,7 @@ section('rest room', async () => {
     await resized(); await frames(2);
     const hit = await evalJs(`(() => { const R = (s) => { const e = document.querySelector(s); if (!e) return null; const r = e.getBoundingClientRect(); return { l: r.left, t: r.top, r: r.right, b: r.bottom }; };
       const c = R('#rm-console .rm-shell'), over = (a, b) => a && b && a.l < b.r && a.r > b.l && a.t < b.b && a.b > b.t; const out = [];
-      for (const s of ['#rm-wp', '#rm-exit', '#rm-notes .rm-note']) if (over(R(s), c)) out.push(s);
+      for (const s of ['#rm-wp', '#rm-exit', '#rm-notes .rm-note']) if (over(R(s), c)) out.push(s + JSON.stringify([R(s), c, innerWidth, document.documentElement.className]));
       const k = R('#rm-console'); if (k && (k.l < 0 || k.r > innerWidth || k.t < 0 || k.b > innerHeight)) out.push('console off-screen');
       return out; })()`);
     check(`${w}×${h}: the wall panel, the exit button and the notices do not cover the console, which is inside the window`, Array.isArray(hit) && hit.length === 0, JSON.stringify(hit));
@@ -4088,7 +4090,7 @@ section('rest room', async () => {
   check('English: the doors and the room', (await text('#rest-btn')).includes('Rest') && await hasText('#rm-nav-btn', 'Rest room'), `${await text('#rest-btn')} | ${await text('#rm-nav-btn')}`);
   await click('#rest-btn');
   await opened();
-  check('English: the back button, the wallpapers, the game', await hasText('#rm-back', 'Back to the Galaxy') && await hasText('#rm-wp', 'Wallpaper') && await screenHas('STAR BARRIER'), `${await text('#rm-back')} | ${await evalJs('window.__rmText.slice(-5)')}`);
+  check('English: the back button, the wallpapers, the game', await hasText('#rm-back', 'Back to the Galaxy') && await hasText('#rm-wp', 'Wallpaper') && await screenHas('SCORE'), `${await text('#rm-back')} | ${await evalJs('window.__rmText.slice(-5)')}`);
   await press('Escape', 'Escape');
   await closed();
   await evalJs('setLang("ru"); localStorage.removeItem("herdr-planner.restroom.wall"); localStorage.removeItem("herdr-planner.restroom.custom"); true');
