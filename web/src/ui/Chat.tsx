@@ -268,7 +268,8 @@ export function Chat(): JSX.Element {
     const el = logRef.current;
     if (!el) return;
     const atEnd = el.scrollHeight - el.scrollTop - el.clientHeight < 24;
-    stuck.value = atEnd;
+    // (the first frames of a scroll away from the end still look like the end: they must not pin the log to it again)
+    stuck.value = atEnd && Date.now() > navUntil.current;
     // Reaching the end acknowledges every answer, rather than waiting for an observer timer to fire.
     if (open && active && readsEnd(el)) markReadToEnd();
     if (open && showTurns && el.scrollTop < 40) void older();
