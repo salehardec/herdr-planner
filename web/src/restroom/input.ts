@@ -1,7 +1,7 @@
 /* The room's keyboard. While the room is open it owns every key: the game gets its buttons, Esc leaves, and nothing reaches
    the page behind (P would otherwise switch the flight, N close the navigator). It listens first (capture) and stops the
    others; a key-up is let through so that the ship never keeps a key that went down before the room opened. */
-import { game, leave, roomOpen } from './state';
+import { game, leave, roomOpen, touch } from './state';
 import { PANEL_BUTTONS, padOf } from './keymap';
 
 function down(e: KeyboardEvent): void {
@@ -24,6 +24,7 @@ function up(e: KeyboardEvent): void {
 
 /** The window lost the screen: the game waits and no button stays held. */
 function away(): void {
+  touch.clear();
   game.releaseAll();
   game.pause(true);
 }

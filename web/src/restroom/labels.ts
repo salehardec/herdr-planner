@@ -5,6 +5,7 @@ import type { IrisLabel, Origin } from './state';
 /** «Назад в навигатор» — the button that leaves the room names the place it leads to. */
 export function backLabel(o: Origin): string {
   switch (o.kind) {
+    case 'mobile': return t('restroom.back.mobile');
     case 'nav': return t('restroom.back.nav');
     case 'quasar': return t('restroom.back.quasar');
     case 'task': return t('restroom.back.task', { tag: o.tag });
@@ -15,6 +16,7 @@ export function backLabel(o: Origin): string {
 
 function where(o: Origin): string {
   switch (o.kind) {
+    case 'mobile': return t('m.brand');
     case 'nav': return t('restroom.where.nav');
     case 'quasar': return t('restroom.where.quasar');
     case 'task': return o.tag;
