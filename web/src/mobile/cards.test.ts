@@ -28,6 +28,25 @@ describe('the phone\'s cards', () => {
     expect(ok.approve).toBe(true);
   });
 
+  it('a GitLab merge that needs a clean checkout says why and what to do instead of offering a dead approve', () => {
+    const blocked = task({
+      id: 'all-gis-services-next/3', repo: 'all-gis-services-next', n: 3, tag: 'AGSVN-3',
+      status: 'waiting', kind: 'permission', stage: 'approval', msg: 'Review: Pass · 1 minor · Merge needs a clean checkout',
+      merge_blocked: true, actions: ['tell'], pr: '',
+    });
+    const p = planOf(reqOf(blocked));
+    expect(p).toMatchObject({ block: 'approval', approve: false, note: 'm.note.mergeBlockedCheckout', pr: '' });
+    expect(can(blocked, 'approve')).toBe(false);
+  });
+
+  it('other merge blocks keep the board reason and offer the computer or the Coordinator', () => {
+    const p = planOf(reqOf(task({
+      status: 'waiting', kind: 'permission', stage: 'approval', msg: 'The pull request checks fail',
+      merge_blocked: true, actions: ['tell'],
+    })));
+    expect(p).toMatchObject({ block: 'approval', approve: false, note: 'm.note.mergeBlocked' });
+  });
+
   it('a merge the board asks as a «permission» (the review failed) is still the merge', () => {
     const p = planOf(reqOf(task({ status: 'waiting', kind: 'permission', stage: 'approval', review_failed: true, actions: ['review', 'anyway', 'tell'] })));
     expect(p).toMatchObject({ block: 'approval', approve: false, screen: false, note: 'm.note.approval' });

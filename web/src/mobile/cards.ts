@@ -68,8 +68,13 @@ export function planOf(r: Request): CardPlan {
     case 'approval':
       plan.approve = can(task, 'approve');
       plan.pr = safeUrl(task?.pr ?? '');
-      // a merge past a failed review, a hand on the branch: the computer
-      if (!plan.approve) plan.note = 'm.note.approval';
+      // A merge past a failed review is the computer's. A board-side merge block needs its own reason and a next step:
+      // in particular, the Coordinator may still merge a GitLab MR even when the board cannot use the human's checkout.
+      if (!plan.approve) {
+        plan.note = task?.merge_blocked
+          ? /merge needs a clean checkout/i.test(task.msg) ? 'm.note.mergeBlockedCheckout' : 'm.note.mergeBlocked'
+          : 'm.note.approval';
+      }
       break;
     case 'failed':
       plan.retry = can(task, 'retry');

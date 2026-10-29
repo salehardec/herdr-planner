@@ -313,7 +313,7 @@ task('alpha', 22, { state: 'blocked', stage: 'working', title: 'Диалог б�
 task('beta', 1, { state: 'done', stage: 'done', title: 'Единственное сделанное', msg: 'Merged into main.' });
 task('gamma', 1, { app: 'pi', state: 'working', stage: 'working', title: 'Идёт работа', msg: 'Writing', progress: 30 });
 task('gamma', 2, { state: 'done', stage: 'done', title: 'Архивная задача', msg: 'Merged into main.', archivedAt: 1792407710774 });
-task('delta', 1, { app: 'codex', state: 'blocked', kind: 'permission', stage: 'approval', title: 'Проверки PR не прошли', msg: "The pull request's checks fail", pr: 'https://github.com/o/delta/pull/5', review: passed, reviewRound: 1 });
+task('delta', 1, { app: 'codex', state: 'blocked', kind: 'permission', stage: 'approval', title: 'Чекаут не готов к слиянию', msg: 'Review: Pass · 1 minor · Merge needs a clean checkout', pr: '', review: passed, reviewRound: 1 });
 task('delta', 2, { state: 'blocked', stage: 'pick', title: 'Три варианта', msg: 'Pick one of 3' });
 task('delta', 3, {
   state: 'blocked', stage: 'pick', title: 'Как кешировать', msg: 'Pick one of 3: память, диск или оба',
@@ -355,7 +355,7 @@ const META = {
   'beta/1': { ago: 9 * DAY, desc: 'Initial beta bootstrap: CI config and the first smoke test.' },
   'gamma/1': { ago: 27 * HOUR, desc: 'Writing the pricing notes for the gamma service; the color tokens come from alpha/4.', afterDone: [{ id: 'gamma/2', title: 'Архивная задача' }] },
   'gamma/2': { ago: 3 * DAY, desc: 'Archived: old gamma CLI cleanup.' },
-  'delta/1': { ago: 6 * HOUR, desc: 'Open a PR for the delta cache rewrite; the checks fail on the lint step. Codex agent.', worker: 'codex/gpt-5-codex', model: 'gpt-5-codex' },
+  'delta/1': { ago: 6 * HOUR, desc: 'GitLab task without a PR: the review passed, but the human checkout on dev has uncommitted files. Codex agent.', worker: 'codex/gpt-5-codex', model: 'gpt-5-codex' },
   'delta/2': { ago: 30 * HOUR, desc: 'Выбрать один из трёх вариантов интерфейса импорта.' },
   'delta/3': { ago: 3 * DAY, desc: 'Как кешировать: в памяти, на диске или оба. Три попытки, выбрать одну.' },
   'sigma/1': { ago: 7 * HOUR, desc: 'Перенести конфиг сборки на новый формат; агент остановился без итога.', noSettings: true },
