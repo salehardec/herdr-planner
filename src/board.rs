@@ -271,7 +271,6 @@ pub fn says_merge_blocked(msg: &str) -> bool {
         "could not merge",
         "did not go through",
         "not up to date",
-        "merge needs a clean checkout",
     ]
     .iter()
     .any(|w| m.contains(w))
@@ -940,11 +939,11 @@ mod tests {
         );
         assert_eq!(
             (checkout.status, checkout.board_label.as_str()),
-            (Status::Waiting, "нельзя влить"),
-            "a GitLab task without a PR still cannot be merged into a dirty checkout on dev",
+            (Status::Ready, "готова к одобрению"),
+            "the board's remedy is to clean the checkout and approve again",
         );
-        assert!(checkout.merge_blocked && !checkout.review_failed);
-        assert_eq!(checkout.actions, vec!["anyway", "review", "tell"]);
+        assert!(!checkout.merge_blocked && !checkout.review_failed);
+        assert_eq!(checkout.actions, vec!["approve", "anyway", "review", "tell"]);
 
         let plain = task(
             json!({"id":"p/1","state":"blocked","kind":"permission","stage":"approval","msg":"Pass · 1 minor"}),
