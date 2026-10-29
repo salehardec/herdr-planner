@@ -454,7 +454,10 @@ plugin_probe() {
 }
 
 plugin_is_v2() { # Shepherdr by name, or a major version of 2 and up
-  case $p_name$p_text in *[Ss]hepherdr*) return 0 ;; esac
+  # p_text is "- herdr-projects (<name>) enabled [github:<owner>/<repo>@<commit>]": only what comes before the
+  # source counts, the repo may be the renamed one (eliasstravik/shepherdr) with v1 in it.
+  case $p_name in *[Ss]hepherdr*) return 0 ;; esac
+  case ${p_text%%\[*} in *[Ss]hepherdr*) return 0 ;; esac
   major=${p_version%%.*}
   case $major in '' | *[!0-9]*) return 1 ;; esac
   [ "$major" -ge 2 ]
@@ -464,8 +467,7 @@ plugin_refuse_v2() {
   say "install.sh: плагин $plugin_name на этой машине — Shepherdr 2, а не доска v1 (herdr сообщает: ${p_name:-?} ${p_version:-?})." >&2
   say "Herdr Planner работает с доской v1: у Shepherdr другие команды (shepherdr вместо herdr-projects) и данные" >&2
   say "(~/.shepherdr), задач доски он не видит. Плагин не тронут, ничего не установлено." >&2
-  say "Вернуть v1 (herdr остановит Shepherdr сам, когда плагин заменят; если нет — сначала" >&2
-  say "herdr plugin action invoke $plugin_name.stop):" >&2
+  say "Вернуть v1 (Shepherdr лучше остановить сначала: herdr plugin action invoke $plugin_name.stop):" >&2
   plugin_pin_cmd >&2
   say "Потом запустите установку снова. Подробности: README, раздел «Shepherdr v2»." >&2
   exit 1

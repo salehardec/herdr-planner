@@ -101,8 +101,9 @@ curl -fsSL …/install.sh | sh -s -- uninstall      # снять планиро�
   ```
 
   Данные v2 остаются в `~/.shepherdr`, данные доски v1 в `~/.herdr-projects` не менялись; работа, сделанная в v2, в доску v1 не
-  попадает. Блок `sidebar` в `~/.config/herdr/config.toml` и навык `herdr-projects` Shepherdr при первом запуске убирает сам:
-  после возврата доска вернёт навык сама, а блок возьмите из `~/.herdr-projects-backup-<дата>/`;
+  попадает. Если Shepherdr успел запуститься, он убрал блок `sidebar` из `~/.config/herdr/config.toml` и навык `herdr-projects`.
+  Остальные шаги отката — по `docs/upgrading.md` Shepherdr (скрипт их не делает): вернуть `config.toml` из
+  `~/.herdr-projects-backup-<дата>/`, выполнить `herdr server reload-config` и удалить `~/.shepherdr/took-over-herdr-projects.json`;
 - после установки скрипт проверяет, что стоит **v1** (версия `1.x`), что лаунчер `~/.herdr-projects/data/bin/herdr-projects`
   запускает программу из **текущего** каталога плагина (его называет `herdr plugin list --json`) и что
   `~/.local/bin/herdr-projects` ведёт на лаунчер. Ссылку скрипт чинит сам, лаунчер — командой самого плагина

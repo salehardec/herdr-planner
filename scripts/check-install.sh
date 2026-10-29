@@ -135,11 +135,12 @@ case "$1" in
         case " $* " in *" --json "*) json=1 ;; esac
         if [ -e "$ST/plugin" ] && { [ -z "$only" ] || [ "$only" = herdr-projects ]; }; then
           name=$(cat "$ST/plugin-name"); ver=$(cat "$ST/plugin-ver"); root=$(cat "$ST/plugin-root"); commit=$(cat "$ST/plugin-commit")
+          src=$(cat "$ST/plugin-source" 2>/dev/null || echo eliasstravik/herdr-projects)
           if [ "$json" -eq 1 ]; then
-            printf '{"id":"cli:plugin","result":{"plugins":[{"actions":[{"id":"open","title":"Open"}],"description":"x","enabled":true,"min_herdr_version":"0.9.0","name":"%s","plugin_id":"herdr-projects","plugin_root":"%s","source":{"kind":"github","owner":"eliasstravik","repo":"herdr-projects","resolved_commit":"%s"},"version":"%s"}],"type":"plugin_list"}}\n' "$name" "$root" "$commit" "$ver"
+            printf '{"id":"cli:plugin","result":{"plugins":[{"actions":[{"id":"open","title":"Open"}],"description":"x","enabled":true,"min_herdr_version":"0.9.0","name":"%s","plugin_id":"herdr-projects","plugin_root":"%s","source":{"kind":"github","owner":"eliasstravik","repo":"%s","resolved_commit":"%s"},"version":"%s"}],"type":"plugin_list"}}\n' "$name" "$root" "${src#*/}" "$commit" "$ver"
           else
             echo "1 plugin installed:"
-            echo "- herdr-projects ($name) enabled [github:eliasstravik/herdr-projects@$commit]"
+            echo "- herdr-projects ($name) enabled [github:$src@$commit]"
             echo "  config: $HOME/.config/herdr/plugins/config/herdr-projects"
           fi
         elif [ "$json" -eq 1 ]; then
@@ -423,6 +424,15 @@ has "$LAST" 'herdr plugin install eliasstravik/herdr-projects --ref legacy-herdr
 printf 'c1\n' >"$ST/remote-commit"
 env HOME="$H" "$FB/herdr" plugin install eliasstravik/herdr-projects --ref legacy-herdr-projects --yes   # back to v1
 ok "a ref that gives Shepherdr 2: failed with the way back"
+
+# 3h. v1 installed from the renamed repo (upstream's own rollback command): the word in the source is no Shepherdr 2.
+echo eliasstravik/shepherdr >"$ST/plugin-source"
+printf 'c10\n' >"$ST/remote-commit"
+inst install --yes --version "v$V1" || fail "v1 from the renamed repo must not be refused"
+if has "$LAST" 'Shepherdr 2'; then fail "v1 from the renamed repo was taken for Shepherdr 2"; fi
+inst install --dry-run --version "v$V1" || fail "v1 from the renamed repo, --dry-run"
+rm -f "$ST/plugin-source"
+ok "v1 installed from eliasstravik/shepherdr: not refused"
 
 # 4. a new version: updated, service restarted, the old release kept.
 rs_before=$(grep -c -- '--user restart' "$ST/systemctl.log" || true)
