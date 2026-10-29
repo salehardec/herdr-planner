@@ -74,6 +74,10 @@ pub struct Switched {
     /// The offer to go back has been made (a toast, once).
     #[serde(default)]
     pub offered: bool,
+    /// The Coordinator had its own `coordinator.agent` in its layer before the first switch (`home` is that value).
+    /// Otherwise `home` is the human's own value and a return clears the layer instead of pinning `home` into it.
+    #[serde(default)]
+    pub pinned_home: bool,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -188,6 +192,27 @@ pub fn commands(role: &str, agent: &str) -> Vec<Vec<String>> {
         "plan" => vec![v(&["set", "plan.agent", agent])],
         _ => Vec::new(),
     }
+}
+
+/// The commands of a return to `home`. The switch pinned `coordinator.agent` in the Coordinator's own layer; unless
+/// that layer held `home` before, the return clears it (`unset … --main-coordinator`), so that the Coordinator follows
+/// the human's own value again and a later choice in the Crew window is not shadowed.
+pub fn return_commands(role: &str, home: &str, pinned_home: bool) -> Vec<Vec<String>> {
+    if role == "coordinator" && !pinned_home {
+        let v = |a: &[&str]| a.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        return vec![v(&["unset", "coordinator.agent", "--main-coordinator"]), v(&["coordinator", "new"])];
+    }
+    commands(role, home)
+}
+
+/// «Оставить так»: the spare stays, and the Coordinator's agent moves from its own layer into the human's own, so
+/// that the Crew window shows what runs (no new Coordinator: it already runs on the spare). Nothing for the plan.
+pub fn keep_commands(role: &str, to: &str, pinned_home: bool) -> Vec<Vec<String>> {
+    if role == "coordinator" && !pinned_home {
+        let v = |a: &[&str]| a.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        return vec![v(&["set", "coordinator.agent", to]), v(&["unset", "coordinator.agent", "--main-coordinator"])];
+    }
+    Vec::new()
 }
 
 /// The agent a light task starts on, and the spares it carries as its own `worker.fallback`.
@@ -315,16 +340,18 @@ fn installed() -> Vec<String> {
     station::available()
 }
 
-/// The agent a role has now. The Coordinator's own layer is read with `show --main-coordinator` (that is where
-/// `set coordinator.agent … --main-coordinator` writes; a plain `show` does not see it); the plan's with a plain `show`.
-async fn current_agent(app: &Shared, role: &str) -> Result<String, Fail> {
+/// The agent a role has now, and whether it stands in the Coordinator's own layer. The Coordinator's own layer is read
+/// with `show --main-coordinator` (that is where `set coordinator.agent … --main-coordinator` writes; a plain `show`
+/// does not see it); the plan's with a plain `show`.
+async fn current_agent(app: &Shared, role: &str) -> Result<(String, bool), Fail> {
     let settings = if role == "coordinator" {
         station::read_coordinator_settings(&app.cfg).await
     } else {
         station::read_settings(&app.cfg, "").await
     }
     .map_err(Fail::refused)?;
-    Ok(find(&settings, &format!("{role}.agent")).map(|s| s.value.clone()).unwrap_or_default())
+    let it = find(&settings, &format!("{role}.agent"));
+    Ok((it.map(|s| s.value.clone()).unwrap_or_default(), it.is_some_and(|s| s.place.contains("coord") || s.from.contains("coord"))))
 }
 
 /// The last failed switch of each role (ms), and the dead ends already told (`role|program`): the loop runs every
@@ -343,8 +370,8 @@ async fn say(app: &Shared, line: &str, toast: Value) {
 
 /// Runs the commands that put `agent` on `role`. The first refusal stops the run: the error says which command it was
 /// (0 is the first; after a later one the setting has already changed).
-async fn run_commands(app: &Shared, role: &str, agent: &str) -> Result<(), (usize, String)> {
-    for (i, args) in commands(role, agent).into_iter().enumerate() {
+async fn run_commands(app: &Shared, list: Vec<Vec<String>>) -> Result<(), (usize, String)> {
+    for (i, args) in list.into_iter().enumerate() {
         let out = station::board_run(&app.cfg, &args, BOARD_WAIT).await;
         if !out.ok() {
             return Err((i, format!("herdr-projects {}: {}", args.join(" "), out.words())));
@@ -353,7 +380,7 @@ async fn run_commands(app: &Shared, role: &str, agent: &str) -> Result<(), (usiz
     Ok(())
 }
 
-async fn do_switch(app: &Shared, role: &str, to: &str, home: &str, from_program: &str, from_agent: &str, gone: &Gone) {
+async fn do_switch(app: &Shared, role: &str, to: &str, home: &str, pinned_home: bool, from_program: &str, from_agent: &str, gone: &Gone) {
     let now = now_ms();
     {
         let failed = FAILED.lock().unwrap_or_else(|e| e.into_inner());
@@ -363,7 +390,7 @@ async fn do_switch(app: &Shared, role: &str, to: &str, home: &str, from_program:
     }
     let _one_at_a_time = station::APPLY.lock().await;
     let mut half_done = false;
-    if let Err((at, why)) = run_commands(app, role, to).await {
+    if let Err((at, why)) = run_commands(app, commands(role, to)).await {
         FAILED.lock().unwrap_or_else(|e| e.into_inner()).insert(memo(app, role), now);
         app::journal_note(app, "crew", "crew", &format!("{}: не удалось перейти на {to}: {why}", role_title(role))).await;
         // The agent is already set when only a later command failed: the switch is kept, so that it can be taken back.
@@ -384,6 +411,7 @@ async fn do_switch(app: &Shared, role: &str, to: &str, home: &str, from_program:
         kind: gone.kind.clone(),
         until: gone.until.clone(),
         offered: false,
+        pinned_home,
     };
     let _ = edit_store(&app.cfg, |s| {
         s.switched.insert(role.to_string(), sw);
@@ -404,7 +432,7 @@ async fn do_switch(app: &Shared, role: &str, to: &str, home: &str, from_program:
 }
 
 async fn step(app: &Shared, role: &str, store: &Store, down: &Down) {
-    let Ok(current) = current_agent(app, role).await else { return };
+    let Ok((current, own_layer)) = current_agent(app, role).await else { return };
     let sw = store.switched.get(role);
     match decide(&store.spare(role), &current, sw, down) {
         Decision::Nothing => {
@@ -438,7 +466,8 @@ async fn step(app: &Shared, role: &str, store: &Store, down: &Down) {
             .await;
         }
         Decision::Switch { to, home, from_program, gone } => {
-            do_switch(app, role, &to, &home, &from_program, &current, &gone).await;
+            let pinned_home = sw.map(|s| s.pinned_home).unwrap_or(own_layer);
+            do_switch(app, role, &to, &home, pinned_home, &from_program, &current, &gone).await;
         }
         Decision::NoSpare { program, gone } => {
             let key = format!("{program}|{}", gone.kind);
@@ -611,6 +640,8 @@ async fn back_with(app: &Shared, body: BackBody, installed: &[String]) -> Respon
             .cloned()
             .ok_or_else(|| Fail::new(409, "эта роль не переключена"))?;
         if body.op == "keep" {
+            let _one_at_a_time = station::APPLY.lock().await;
+            run_commands(&app, keep_commands(role, &sw.to, sw.pinned_home)).await.map_err(|(_, e)| Fail::new(422, e))?;
             edit_store(&app.cfg, |s| {
                 s.switched.remove(role);
                 Ok(())
@@ -622,7 +653,7 @@ async fn back_with(app: &Shared, body: BackBody, installed: &[String]) -> Respon
             return Err(Fail::new(400, "op: back или keep"));
         }
         let _one_at_a_time = station::APPLY.lock().await;
-        let current = current_agent(&app, role).await?;
+        let (current, _) = current_agent(&app, role).await?;
         if current != sw.to {
             edit_store(&app.cfg, |s| {
                 s.switched.remove(role);
@@ -635,7 +666,7 @@ async fn back_with(app: &Shared, body: BackBody, installed: &[String]) -> Respon
         if let Some(g) = down.get(program_of(&sw.home)) {
             return Err(Fail::new(409, format!("{} ещё недоступен: {}", sw.home, why_words(program_of(&sw.home), g))));
         }
-        run_commands(&app, role, &sw.home).await.map_err(|(_, e)| Fail::new(422, e))?;
+        run_commands(&app, return_commands(role, &sw.home, sw.pinned_home)).await.map_err(|(_, e)| Fail::new(422, e))?;
         edit_store(&app.cfg, |s| {
             s.switched.remove(role);
             Ok(())
@@ -665,7 +696,7 @@ mod tests {
     }
 
     fn sw(home: &str, to: &str) -> Switched {
-        Switched { home: home.into(), to: to.into(), at: 1, kind: "limited".into(), until: "17:00".into(), offered: false }
+        Switched { home: home.into(), to: to.into(), at: 1, kind: "limited".into(), until: "17:00".into(), offered: false, pinned_home: false }
     }
 
     #[test]
@@ -756,6 +787,27 @@ mod tests {
         );
         assert_eq!(commands("plan", "codex/gpt-6-astra"), vec![vec!["set", "plan.agent", "codex/gpt-6-astra"]]);
         assert!(commands("light", "x").is_empty(), "light tasks have no setting to switch");
+    }
+
+    #[test]
+    fn a_return_clears_the_coordinators_own_layer_unless_it_held_the_home_agent_before() {
+        let v = |a: &[&str]| a.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert_eq!(
+            return_commands("coordinator", "claude/claude-opus-5-5", false),
+            vec![v(&["unset", "coordinator.agent", "--main-coordinator"]), v(&["coordinator", "new"])],
+            "the human's own value shows again; nothing is pinned"
+        );
+        assert_eq!(
+            return_commands("coordinator", "claude/claude-opus-5-5", true),
+            vec![v(&["set", "coordinator.agent", "claude/claude-opus-5-5", "--main-coordinator"]), v(&["coordinator", "new"])],
+            "a value the layer held before is put back"
+        );
+        assert_eq!(return_commands("plan", "claude/claude-opus-5-5", false), vec![v(&["set", "plan.agent", "claude/claude-opus-5-5"])]);
+        assert_eq!(
+            keep_commands("coordinator", "omp/x/y", false),
+            vec![v(&["set", "coordinator.agent", "omp/x/y"]), v(&["unset", "coordinator.agent", "--main-coordinator"])]
+        );
+        assert!(keep_commands("coordinator", "omp/x/y", true).is_empty() && keep_commands("plan", "omp", false).is_empty());
     }
 
     #[test]

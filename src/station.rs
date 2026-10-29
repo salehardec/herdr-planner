@@ -1436,6 +1436,8 @@ case "$1" in
       *) echo "models: unknown program $2" >&2; exit 2;;
     esac;;
   set|unset) if [ "$2" = "{refuse}" ]; then echo "$2: refused by the stand-in" >&2; exit 3; fi
+    if [ "$1" = unset ] && [ "$3" = "--main-coordinator" ]; then cp {show} {main}; fi
+    if [ "$1" = set ] && [ "$2" = coordinator.agent ] && [ -z "$4" ]; then sed -i "s|\"name\":\"coordinator.agent\",\"kind\":\"work\",\"value\":\"[^\"]*\"|\"name\":\"coordinator.agent\",\"kind\":\"work\",\"value\":\"$3\"|" {show}; fi
     if [ "$1" = set ] && [ "$4" = "--main-coordinator" ]; then sed -i "s|\"name\":\"$2\",\"kind\":\"work\",\"value\":\"[^\"]*\"|\"name\":\"$2\",\"kind\":\"work\",\"value\":\"$3\"|" {main}; fi;;
   add) ;;
   coordinator) if [ "$2" = new ] && [ "{fail_new}" = yes ]; then echo "coordinator new: failed in the stand-in" >&2; exit 4; fi; echo "[]";;
@@ -1781,7 +1783,13 @@ esac"#,
         let back = |op: &str| failover::BackBody::test(op, "coordinator");
         let (code, done) = json_of(failover::back_for_test(&app, back("back"), &installed()).await).await;
         assert_eq!(code, StatusCode::OK, "{done}");
-        assert_eq!(board_commands(&log).last().unwrap(), "set coordinator.agent claude/claude-opus-5-5 --main-coordinator");
+        assert_eq!(
+            board_commands(&log).last().unwrap(),
+            "unset coordinator.agent --main-coordinator",
+            "the return clears the Coordinator's own layer: the human's value shows again, a later choice is not shadowed"
+        );
+        let layer = crate::station::read_coordinator_settings(&app.cfg).await.unwrap();
+        assert_eq!(find(&layer, "coordinator.agent").unwrap().value, "claude/claude-opus-5-5");
         assert_eq!(all_calls(&log).iter().filter(|l| *l == "coordinator new").count(), 2);
         assert!(failover::read_store(&app.cfg).switched.is_empty());
     }
@@ -1924,5 +1932,54 @@ esac"#,
             "{}",
             lines[2]
         );
+    }
+
+    /// The Coordinator's layer in the stand-in board, with `coordinator.agent` standing in it (`place: coord`).
+    fn pin_coordinator_layer(dir: &FsPath, agent: &str) {
+        let main = dir.join("main-coordinator.json");
+        let text = std::fs::read_to_string(&main).unwrap();
+        let from = r#"{"name":"coordinator.agent","kind":"work","value":"claude/claude-opus-5-5","from":"you","place":"you","own":true"#;
+        assert!(text.contains(from));
+        let to = format!(r#"{{"name":"coordinator.agent","kind":"work","value":"{agent}","from":"coordinator","place":"coord","own":true"#);
+        std::fs::write(&main, text.replace(from, &to)).unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_value_the_coordinators_layer_held_before_is_put_back_by_the_return() {
+        let dir = tempfile::tempdir().unwrap();
+        let (app, log) = app_with_board(dir.path(), "");
+        pin_coordinator_layer(dir.path(), "claude/claude-opus-5-5");
+        keep_chain(&app, "coordinator", "omp/deepseek/deepseek-v4-flash", true);
+        claude_limited(&app, true).await;
+        wait_models(&app, &["claude", "codex", "omp"]).await;
+        failover::tick_with(&app, &installed()).await;
+        assert!(failover::read_store(&app.cfg).switched["coordinator"].pinned_home);
+        claude_limited(&app, false).await;
+        failover::tick_with(&app, &installed()).await;
+        let (code, done) = json_of(failover::back_for_test(&app, failover::BackBody::test("back", "coordinator"), &installed()).await).await;
+        assert_eq!(code, StatusCode::OK, "{done}");
+        assert_eq!(board_commands(&log).last().unwrap(), "set coordinator.agent claude/claude-opus-5-5 --main-coordinator");
+    }
+
+    #[tokio::test]
+    async fn staying_on_the_spare_moves_the_agent_from_the_coordinators_layer_to_the_humans() {
+        let dir = tempfile::tempdir().unwrap();
+        let (app, log) = app_with_board(dir.path(), "");
+        keep_chain(&app, "coordinator", "omp/deepseek/deepseek-v4-flash", true);
+        claude_limited(&app, true).await;
+        wait_models(&app, &["claude", "codex", "omp"]).await;
+        failover::tick_with(&app, &installed()).await;
+        let news = all_calls(&log).iter().filter(|l| *l == "coordinator new").count();
+        let (code, done) = json_of(failover::back_for_test(&app, failover::BackBody::test("keep", "coordinator"), &installed()).await).await;
+        assert_eq!(code, StatusCode::OK, "{done}");
+        assert_eq!(
+            board_commands(&log)[1..],
+            ["set coordinator.agent omp/deepseek/deepseek-v4-flash", "unset coordinator.agent --main-coordinator"],
+            "the Crew window shows what runs, nothing stays pinned"
+        );
+        assert_eq!(all_calls(&log).iter().filter(|l| *l == "coordinator new").count(), news, "it already runs on the spare");
+        assert!(failover::read_store(&app.cfg).switched.is_empty());
+        let layer = crate::station::read_coordinator_settings(&app.cfg).await.unwrap();
+        assert_eq!(find(&layer, "coordinator.agent").unwrap().value, "omp/deepseek/deepseek-v4-flash");
     }
 }
