@@ -117,7 +117,11 @@ function useTier(box: { current: HTMLElement | null }): void {
       const { fit, gateForm } = chosen;
       if (search && extraUsed > 0) top?.style.setProperty('--search-w', `${Math.round(searchWas - 2 * extraUsed * px)}px`);
       el.dataset.tier = fit.tier;
-      if (chip) widthOf(fit.chip, fit.words);
+      if (chip) {
+        widthOf(fit.chip, fit.words);
+        // what the choice was made of (for the checks and for whoever wonders why the row has the form it has)
+        chip.dataset.fit = JSON.stringify({ room: +room.toFixed(1), extra: +(extraUsed).toFixed(1), gate: gateForm, steps: steps.map((st) => `${st.form}${st.words}:${st.w.toFixed(1)}`), worst: +worstW.toFixed(1) });
+      }
       if (gate) gate.dataset.form = gateForm;
     };
     measure();

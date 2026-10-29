@@ -2634,7 +2634,7 @@ const topRects = () => evalJs(`(() => {
   const chip = document.querySelector('#hud-limits');
   return { menu: r('#menu-btn'), crumbs: r('#crumbs'), load: r('#load-chip'), lim: r('#hud-limits'), gate: r('#gate-chip'), q: r('#q'), wait: r('#wait-btn'), mode: r('#mode'),
     form: chip?.dataset.form, tier: document.querySelector('#loadbar')?.dataset.tier, limText: chip ? chip.innerText.trim() : '', limTip: chip ? chip.getAttribute('aria-label') || '' : '',
-    provs: document.querySelectorAll('#hud-limits .lp').length, bars: [...document.querySelectorAll('#hud-limits .lp-bar')].filter((e) => e.offsetParent).length, provIcons: document.querySelectorAll('#hud-limits .lp svg').length,
+    fit: chip?.dataset.fit, provs: document.querySelectorAll('#hud-limits .lp').length, bars: [...document.querySelectorAll('#hud-limits .lp-bar')].filter((e) => e.offsetParent).length, provIcons: document.querySelectorAll('#hud-limits .lp svg').length,
     limClipped: chip ? chip.scrollWidth > chip.clientWidth + 1 || [...chip.querySelectorAll('.lim-ag')].some((e) => e.offsetParent && e.scrollWidth > e.clientWidth + 1) : false, sw: document.documentElement.scrollWidth, phone: document.documentElement.classList.contains('bp900') };
 })()`);
 
@@ -2688,7 +2688,7 @@ section('top bar', async () => {
       check(`${at}: the crumbs are whole unless the window is a phone's`, await evalJs(`[...document.querySelectorAll('#crumbs button')].every((b) => b.scrollWidth <= b.clientWidth + 1) || document.documentElement.classList.contains('bp900')`), JSON.stringify(m));
       check(`${at}: the subscription chip (${m.form}) is whole; shortened to its percentage it keeps the words in its tooltip`, !m.limClipped
         && (m.form === 'none' ? !m.lim : !!m.lim) && ((m.form !== 'pct' && m.form !== 'worst') || (/^[\d\s%$.]+$/.test(m.limText) && m.limText.includes('%') && m.limTip.includes(' · ') && /\d/.test(m.limTip))) && (m.form === 'pct' || m.form === 'worst' || m.form === 'none' || /^\d+\s*%\s+\S/.test(m.limText)), JSON.stringify(m));
-      if (!m.phone && w >= 1920 && scale === 'auto') check(`${at}: with a task selected (the longest crumbs) the row still has a gauge for every provider and the words of the leading one`, ['full', 'one', 'mix'].includes(m.form) && /\d+\s*%\s+исп\.\s+\S/.test(m.limText) && m.bars >= 3 && !m.limClipped, JSON.stringify({ form: m.form, text: m.limText, bars: m.bars, provs: m.provs, lim: m.lim, load: m.load, q: m.q }));
+      if (!m.phone && w >= 1920 && scale === 'auto') check(`${at}: with a task selected (the longest crumbs) the row still has a gauge for every provider and the words of the leading one`, ['full', 'one', 'mix'].includes(m.form) && /\d+\s*%\s+исп\.\s+\S/.test(m.limText) && m.bars >= 3 && !m.limClipped, JSON.stringify({ form: m.form, fit: m.fit, bars: m.bars, lim: m.lim, load: m.load, q: m.q }));
       if (m.phone || scale === 200) check(`${at}: narrow: the chip is a percentage and the bars the worst one`, m.form === 'pct' || m.form === 'worst' || m.form === 'none', JSON.stringify(m));
       check(`${at}: the row has a provider after provider, each with its icon (${m.provs})`, m.form === 'none' || m.provs >= 4, JSON.stringify(m));
       if (w >= 1920 && scale === 'auto') {
