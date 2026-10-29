@@ -32,10 +32,10 @@
 
 /* ───────── PLN-84: the bar's providers and the card with tabs ───────── */
 .limchip.lim-row{gap:0.75rem;padding:0 0.625rem}
-.lp{display:inline-flex;align-items:center;gap:0.3125rem;min-width:0}
+.lp{display:inline-flex;align-items:center;gap:0.25rem;min-width:0}
 .lp.stale{opacity:.68}
 .lp-ico{width:0.875rem;height:0.875rem;color:var(--pl-dim)}
-.lp-bar{width:2rem;height:0.25rem;border-radius:2px;background:var(--pl-line);overflow:hidden;flex:none}
+.lp-bar{width:1.75rem;height:0.25rem;border-radius:2px;background:var(--pl-line);overflow:hidden;flex:none}
 .lp-bar i{display:block;height:100%;width:max(var(--w,0),3%);background:var(--pl-accent);border-radius:inherit}
 .lp-warn .lp-bar i{background:var(--c-yellow)}
 .lp-crit .lp-bar i{background:var(--c-red)}
@@ -57,7 +57,7 @@
 .limchip[data-form="pct"] .lp-s,.limchip[data-form="worst"] .lp-s{display:inline}
 .limchip[data-form="pct"] .lp-bar{width:1rem}
 .limchip[data-form="worst"] .lp-bar{display:none}
-.limchip[data-form="pct"].lim-row,.limchip[data-form="mix"].lim-row{gap:0.5rem;padding:0 0.5rem}
+.limchip[data-form="pct"].lim-row,.limchip[data-form="mix"].lim-row{gap:0.375rem;padding:0 0.4rem}
 .limchip[data-form="worst"] .lp:not([data-urgent]){display:none}
 
 .lc-body{display:grid;gap:0.375rem}

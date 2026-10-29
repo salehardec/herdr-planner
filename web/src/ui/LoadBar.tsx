@@ -38,7 +38,7 @@ function summaryText(ms: Meter[], st: State): string {
 }
 
 /** The least the search is squeezed to (rem) when the subscription row needs its room. */
-const SEARCH_LEAST_REM = 14;
+const SEARCH_LEAST_REM = 12;
 
 /** The monitoring group (the bars, then the subscription chip) sits right of the menu and the crumbs, which come first: the form of the bars
  *  (data-tier) and of the chip (data-form) is the one that fits in what they leave. */
