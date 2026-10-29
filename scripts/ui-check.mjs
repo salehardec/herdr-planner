@@ -4029,15 +4029,18 @@ section('rest room', async () => {
   check('a request that comes while resting is a notice in the corner, with the words', await waitFor('!!document.querySelector("#rm-notes .rm-note[data-note=\\"alpha/23\\"]")', 15000) && await hasText('#rm-notes', 'Оставить старый файл'), await text('#rm-notes'));
   check('with «Позже» and «Лететь →»', await exists('#rm-notes [data-act="later"]') && await hasText('#rm-notes [data-act="fly"]', 'Лететь'));
   // the panels do not cover the console, at three window sizes (the wall panel open, a notice shown)
-  for (const [w, h] of [[1500, 950], [1280, 720], [1024, 700]]) {
+  for (const [w, h] of [[1500, 950], [1280, 720], [1024, 700], [600, 700], [390, 700]]) {
     await send('Emulation.setDeviceMetricsOverride', { width: w, height: h, deviceScaleFactor: 1, mobile: false });
     await resized(); await frames(2);
     const hit = await evalJs(`(() => { const R = (s) => { const e = document.querySelector(s); if (!e) return null; const r = e.getBoundingClientRect(); return { l: r.left, t: r.top, r: r.right, b: r.bottom }; };
       const c = R('#rm-console .rm-shell'), over = (a, b) => a && b && a.l < b.r && a.r > b.l && a.t < b.b && a.b > b.t; const out = [];
-      for (const s of ['#rm-wp', '#rm-exit', '#rm-notes .rm-note']) if (over(R(s), c)) out.push(s + JSON.stringify([R(s), c, innerWidth, document.documentElement.className]));
-      const k = R('#rm-console'); if (k && (k.l < 0 || k.r > innerWidth || k.t < 0 || k.b > innerHeight)) out.push('console off-screen');
+      const parts = { wp: R('#rm-wp'), exit: R('#rm-exit'), note: R('#rm-notes .rm-note'), console: c, hint: R('#rm-console .rm-hint') };
+      const names = Object.keys(parts).filter((k) => parts[k]);
+      for (const [i, x] of names.entries()) for (const y of names.slice(i + 1)) if (over(parts[x], parts[y])) out.push(x + ' over ' + y + JSON.stringify([parts[x], parts[y], innerWidth, document.documentElement.className]));
+      const narrow = document.documentElement.classList.contains('bp900');
+      const k = R('#rm-console'); if (k && (k.l < 0 || k.r > innerWidth || k.t < 0 || (!narrow && k.b > innerHeight))) out.push('console off-screen ' + JSON.stringify(k));
       return out; })()`);
-    check(`${w}×${h}: the wall panel, the exit button and the notices do not cover the console, which is inside the window`, Array.isArray(hit) && hit.length === 0, JSON.stringify(hit));
+    check(`${w}×${h}: the wall panel, the exit button, the notices and the console do not cover one another, and the console is inside the window`, Array.isArray(hit) && hit.length === 0, JSON.stringify(hit));
   }
   await send('Emulation.setDeviceMetricsOverride', { width: 1500, height: 950, deviceScaleFactor: 1, mobile: false });
   await resized();
