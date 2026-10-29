@@ -264,6 +264,17 @@ pub fn readings() -> Vec<Reading> {
     store().lock().map(|s| s.readings()).unwrap_or_default()
 }
 
+/// The providers with no sign-in here (and not hidden by the config): the page names them and what to do. Before the first look
+/// at them (the first seconds) the list is empty rather than a guess.
+pub fn unconnected(readings: &[Reading]) -> Vec<String> {
+    let looked = store().lock().map(|s| IDS.iter().all(|id| s.entries.contains_key(id))).unwrap_or(false);
+    if !looked {
+        return Vec::new();
+    }
+    let hidden = Sources::from_env().hidden;
+    IDS.iter().filter(|id| !readings.iter().any(|r| r.id == **id) && !hidden.iter().any(|h| h == *id)).map(|id| id.to_string()).collect()
+}
+
 /// The Refresh button. Returns whether a read was asked for (not when the last ask was under ten seconds ago).
 pub fn refresh_now() -> bool {
     let asked = store().lock().map(|mut s| s.refresh_now(crate::config::now_ms())).unwrap_or(false);

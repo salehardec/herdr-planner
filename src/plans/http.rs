@@ -49,6 +49,7 @@ impl fmt::Debug for Secret {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Fail {
     /// No sign-in found for a provider the planner was told about.
+    #[allow(dead_code)]
     NoLogin,
     /// The sign-in is there but expired and only its own program renews it (Kimi's access token lives 15 minutes).
     Expired,

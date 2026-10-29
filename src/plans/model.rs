@@ -12,6 +12,8 @@ pub const MONTH: u64 = 30 * DAY;
 
 /// Which limit a window measures. A named window is one the service names itself, such as a weekly limit scoped to one
 /// model. The order is the order a card lists them in.
+/// Daily and monthly windows come with the providers that have them (Kimi's monthly pool is a named one for now).
+#[allow(dead_code)]
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Kind {
     Session,
@@ -44,6 +46,7 @@ impl Kind {
     }
 
     /// How long the window usually runs, for judging its pace.
+    #[allow(dead_code)]
     pub fn length(&self) -> Option<u64> {
         match self {
             Self::Session => Some(SESSION),
@@ -81,6 +84,7 @@ impl Window {
     }
 
     /// Nothing until a hundredth of the window has passed: an early estimate swings too far to be useful.
+    #[allow(dead_code)]
     pub fn pace(&self, now: u64) -> Option<Pace> {
         pace(self.used, self.resets_at_ms?, self.length_ms?, now)
     }

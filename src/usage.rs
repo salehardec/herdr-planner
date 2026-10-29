@@ -34,6 +34,9 @@ pub struct Usage {
     pub at: u64,
     pub stale_after_secs: u64,
     pub agents: Vec<AgentUsage>,
+    /// The providers the planner reads itself that have no sign-in on this machine (ids), so the page can say what is missing
+    /// and how to connect it instead of leaving them out without a word.
+    pub unconnected: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Default)]
@@ -159,7 +162,9 @@ pub fn read() -> Usage {
     let now = now_ms();
     let (state, cache) = (state_home().join("omarchy/agents/usage"), cache_home().join("omarchy/agent-usage"));
     let mut usage = read_at(now, &state, &cache);
-    merge_live(&mut usage, &crate::plans::readings(), now, &state, &cache);
+    let readings = crate::plans::readings();
+    merge_live(&mut usage, &readings, now, &state, &cache);
+    usage.unconnected = crate::plans::unconnected(&readings);
     usage
 }
 
@@ -330,6 +335,7 @@ pub fn read_at(now: u64, state_dir: &Path, cache_dir: &Path) -> Usage {
         at: now,
         stale_after_secs: STALE_AFTER_MS / 1000,
         agents,
+        unconnected: Vec::new(),
     }
 }
 

@@ -68,9 +68,11 @@ function useTier(box: { current: HTMLElement | null }): void {
       const rowGap = parseFloat(getComputedStyle(row).columnGap) || 0;
       const monGap = parseFloat(getComputedStyle(mon).columnGap) || 0;
       let full = 0;
+      let one = 0;
       let short = 0;
       if (chip) {
         chip.dataset.form = 'full'; full = chip.offsetWidth;
+        chip.dataset.form = 'one'; one = chip.offsetWidth;
         chip.dataset.form = 'pct'; short = chip.offsetWidth;
       }
       let gateFull = 0;
@@ -81,11 +83,18 @@ function useTier(box: { current: HTMLElement | null }): void {
       }
       const room = (row.clientWidth - menu.offsetWidth - natural - 2 * rowGap) / px;
       // the gate keeps its words while the subscription chip still keeps its own; else it is only an icon and a dot
-      let fit = monFit(room - (gate ? (gateFull + monGap) / px : 0), full / px, short / px, monGap / px);
+      // the subscriptions keep all their words, else the tightest window of each provider, else only its share (the chip of one agent has the first and the last)
+      const pick = (r: number): { chip: 'full' | 'one' | 'pct' | 'none'; tier: ReturnType<typeof monFit>['tier'] } => {
+        const a = monFit(r, full / px, short / px, monGap / px);
+        if (a.chip === 'full' || one >= full) return a;
+        const b = monFit(r, one / px, short / px, monGap / px);
+        return b.chip === 'full' ? { chip: 'one', tier: b.tier } : a;
+      };
+      let fit = pick(room - (gate ? (gateFull + monGap) / px : 0));
       let gateForm: 'full' | 'icon' = 'full';
-      if (gate && fit.chip !== 'full') {
+      if (gate && (fit.chip === 'pct' || fit.chip === 'none')) {
         gateForm = 'icon';
-        fit = monFit(room - (gateIcon + monGap) / px, full / px, short / px, monGap / px);
+        fit = pick(room - (gateIcon + monGap) / px);
       }
       el.dataset.tier = fit.tier;
       if (chip) chip.dataset.form = fit.chip;

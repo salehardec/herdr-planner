@@ -77,10 +77,17 @@ export const cardAnchor = (id: CardId): Pick<JSX.HTMLAttributes<HTMLButtonElemen
   },
 });
 
-/** Tab or Shift+Tab on the card's link leaves the card: back to its element, with the card closed (the next Tab goes on from there). */
+/** Tab and Shift+Tab move through the card's own controls; past its last (or before its first) they leave the card: back to its
+ *  element, with the card closed (the next Tab goes on from there). A card with a single link (the machine's) leaves at once. */
 export const cardKeys = {
   onKeyDown: (e: KeyboardEvent) => {
-    if (e.key === 'Tab') { e.preventDefault(); closeCard(true); }
+    if (e.key !== 'Tab') return;
+    const all = [...document.querySelectorAll<HTMLElement>('#top-card button:not([disabled]), #top-card a[href]')].filter((el) => el.tabIndex >= 0);
+    const at = all.indexOf(document.activeElement as HTMLElement);
+    const leaving = all.length === 0 || (e.shiftKey ? at <= 0 : at === all.length - 1);
+    if (!leaving) return;
+    e.preventDefault();
+    closeCard(true);
   },
 };
 
