@@ -154,6 +154,10 @@ pub fn valid_name(name: &str) -> Result<String, String> {
     if n.chars().any(char::is_control) {
         return Err("в имени роли не может быть управляющих знаков".into());
     }
+    if n.starts_with('-') {
+        // the name starts the title of a check task, which the board would take for a flag
+        return Err("имя роли не может начинаться с «-»".into());
+    }
     Ok(n)
 }
 
@@ -188,7 +192,7 @@ fn clean_fields(input: &RoleInput) -> Result<CustomRole, String> {
         agent_program(&agent)?;
     }
     let effort = input.effort.trim().to_string();
-    if effort.len() > 24 || !effort.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') {
+    if effort.len() > 24 || effort.starts_with('-') || !effort.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') {
         return Err(format!("«{effort}»: так усилие не называется"));
     }
     let fallback = input.fallback.trim().to_string();
@@ -851,6 +855,9 @@ mod tests {
         assert!(add_role(&mut s, &long).is_err());
         let dash = RoleInput { name: "Другая".into(), instructions: "- ключ".into(), ..designer() };
         assert!(add_role(&mut s, &dash).unwrap_err().contains("«-»"));
+        // nothing that starts with «-» reaches the board as an argument: it would be read as a flag
+        assert!(add_role(&mut s, &input("-флаг", "worker")).is_err());
+        assert!(add_role(&mut s, &RoleInput { name: "Четвёртая".into(), effort: "--help".into(), ..designer() }).is_err());
         let bad_fallback = RoleInput { name: "Третья".into(), fallback: "codex, codex".into(), ..designer() };
         assert!(add_role(&mut s, &bad_fallback).is_err());
         assert_eq!(s.roles.len(), 1);

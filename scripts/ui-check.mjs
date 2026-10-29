@@ -7098,10 +7098,12 @@ section('crew roles', async () => {
   await waitFor('!!document.querySelector("#cr-rule-role")', 8000);
   await typeIn('#cr-rule-role', rid);
   await typeIn('#cr-rule-repo', 'gamma');
+  await waitFor('!document.querySelector("#cr-rule-add").disabled', 5000);   // the page draws the typed value a moment later on a loaded machine
   await click('#cr-rule-add');
   check('a rule «for the repository gamma» is added', await waitFor('!!document.querySelector(\'[data-rule-role="Дизайнер"]\') && (document.querySelector("#cr-rules-list")?.innerText || "").includes("gamma")', 8000), await text('#st-rules'));
   await typeIn('#cr-rule-role', sid);
   await typeIn('#cr-rule-title', '*безопас*');
+  await waitFor('document.querySelector("#cr-rule-role").value === ' + JSON.stringify(sid) + ' && !document.querySelector("#cr-rule-add").disabled', 5000);
   await click('#cr-rule-add');
   check('and a rule «if the title is like *безопас*»', await waitFor('document.querySelectorAll("#cr-rules-list li").length === 2', 8000), await text('#cr-rules-list'));
   check('a rule without a condition is refused', (await post('/api/crew/roles', { op: 'rule_add', rule: { role: rid, repo: '', title: '', branch: '', how: '' } }))[0] === 422);
@@ -7123,6 +7125,33 @@ section('crew roles', async () => {
   const c5 = calls().length;
   await post('/api/action', { action: 'todo-create', id: t2, repo: 'gamma', crew_role: 'none' });
   check('«no role» gives the task nothing, whatever the rules say', !argvOf(calls().slice(c5).find((c) => c.argv?.[0] === 'add') || {}).includes('--worker.effort'), JSON.stringify(calls().slice(c5).map((c) => c.argv)));
+
+  // the window «куда и кем» of a list item dropped on a universe: the role by the rules (and which they give now), none, or one picked
+  await resetUi();
+  await evalJs(MK);
+  await evalJs('planner.goOverview(); true');
+  await waitFor('world.debug().flight === "idle" && plannerDebug().selected === null', 15000);
+  check('a todo for the drop', (await addTodo('Кнопка выхода', [])) === 200);
+  await click('#btodo');
+  await waitFor('document.querySelector("#todo").classList.contains("open")', 4000);
+  await todoShown('Кнопка выхода');
+  const tidp = await todoIdByText('Кнопка выхода');
+  await evalJs(`planner.navigateTo({kind:'universe',id:'gamma'}); true`);
+  await waitFor('world.debug().flight === "idle"', 12000);
+  const gpos = await evalJs(`world.screenOf({kind:'universe',id:'gamma'})`);
+  await dragToScene(tidp, gpos.x + 3, gpos.y + 3);
+  check('the new task\'s window offers a crew role, and says which one the rules give for gamma', await waitFor('!!document.querySelector("#pop #pop-role")', 8000)
+    && await waitFor('document.querySelector("#pop-role-match")?.dataset.match === "Дизайнер"', 8000) && (await evalJs('document.querySelector("#pop-role").value')) === 'auto', await text('#pop-role-box'));
+  await shot('crew-role-pop.png');
+  await typeIn('#pop-role', sid);
+  check('picking a reviewer role offers the way, with the role\'s own chosen', await waitFor('!!document.querySelector("#pop-role-how")', 4000) && (await evalJs('document.querySelector("#pop-role-how").value')) === 'after', await text('#pop-role-box'));
+  const c7 = calls().length;
+  await click('#pop-go');
+  check('the task is added plainly, and the role goes after it as a research check', await waitLog(() => calls().slice(c7).some((c) => c.argv?.[0] === 'add' && c.argv[1] === 'Кнопка выхода' && !argvOf(c).includes('--research'))
+    && calls().slice(c7).some((c) => c.argv?.[0] === 'add' && argvOf(c).includes('--research') && argvOf(c).includes('--delegate') && argvOf(c).some((a) => /^gamma\/\d+$/.test(a))), 15000), JSON.stringify(calls().slice(c7).map((c) => (c.argv || []).slice(0, 2))));
+  await resetUi();
+  await menuPick('Экипаж');
+  await waitFor('!!document.querySelector("#st-roles")', 40000);
 
   // a preset holds the own roles: applying it changes the roles (the planner's), not the board
   const [, cap] = await post('/api/station/presets', { op: 'capture', name: 'С ролями' });
