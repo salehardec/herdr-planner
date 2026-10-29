@@ -3888,8 +3888,9 @@ section('rest room', async () => {
   const opened = () => waitFor('document.querySelector("#rm").classList.contains("on") && !document.querySelector("#rm-iris").classList.contains("shut")', 10000);
   const closed = () => waitFor('!document.querySelector("#rm").classList.contains("on") && !document.querySelector("#rm-iris").classList.contains("shut")', 10000);
   // the words the screen drew (the canvas has no text to read): the last strings handed to fillText on its context
-  await evalJs(`(() => { if (window.__rmText) return true; window.__rmText = []; const f = CanvasRenderingContext2D.prototype.fillText;
+  const tapScreen = () => evalJs(`(() => { if (window.__rmText) return true; window.__rmText = []; const f = CanvasRenderingContext2D.prototype.fillText;
     CanvasRenderingContext2D.prototype.fillText = function (s, ...a) { if (this.canvas && this.canvas.id === 'rm-screen') { window.__rmText.push(String(s)); if (window.__rmText.length > 80) window.__rmText.shift(); } return f.call(this, s, ...a); }; return true; })()`);
+  await tapScreen();
   const screenHas = (str) => waitFor(`window.__rmText.some((s) => s.includes(${JSON.stringify(str)}))`, 6000);
 
   await resetUi();
@@ -4008,6 +4009,7 @@ section('rest room', async () => {
   // the wall is remembered across a reload
   await navigate(base + '/?noauto&nocoach&bloom=0');
   await waitFor('window.world && world.debug().planets > 0', 20000);
+  await tapScreen();
   await press('KeyO', 'o');
   await opened();
   check('after a reload the wall is the same picture of one\'s own', await ROOM('s.wall') === 'custom' && await evalJs('document.querySelector("#rm-thumbs [data-wall=\\"custom\\"]").getAttribute("aria-pressed") === "true"'));
