@@ -2412,8 +2412,8 @@ section('links', async () => {
   await evalJs('world.connect("alpha/11", "gamma/2")');
   check('a wait on an archived task keeps its id and is drawn as a far star', await waitFor(`plannerSnap().links.some((l) => l.from === 'gamma/2' && l.to === 'alpha/11' && l.kind === 'far' && l.label === 'GAM-2')`, 15000), JSON.stringify((await debug())?.links));
   await evalJs('world.connect("alpha/11", "alpha/9")');
-  check('a later link edit keeps the archived wait', await waitFor(`plannerSnap().links.some((l) => l.from === 'alpha/9' && l.to === 'alpha/11') && plannerSnap().links.some((l) => l.from === 'gamma/2' && l.to === 'alpha/11')`, 15000));
-  check('the after call carries the archived id, not its tag', await waitLog(() => calls().some((c) => c.argv[0] === 'after' && c.argv[1] === 'alpha/11' && String(c.argv[2]).includes('gamma/2')), 8000), JSON.stringify(lastCall()));
+  check('a later link edit keeps the archived wait', await waitFor(`plannerSnap().links.some((l) => l.from === 'alpha/9' && l.to === 'alpha/11') && plannerSnap().links.some((l) => l.from === 'gamma/2' && l.to === 'alpha/11')`, 15000), JSON.stringify({ links: (await debug())?.links, call: lastCall() }));
+  check('the after call carries the archived id, not its tag', await waitLog(() => calls().some((c) => c.argv[0] === 'after' && c.argv[1] === 'alpha/11' && String(c.argv[2]).includes('gamma/2') && String(c.argv[2]).includes('alpha/9')), 8000), JSON.stringify(lastCall()));
   // A task may wait for a task of another machine (`vm-a:OMG-1`): the board keeps it, the page lists it and does not fly there.
   const hasFar = await post('/api/action', { action: 'after', id: 'alpha/10', after: ['alpha/9', 'vm-a:OMG-1'] });
   check('a task of this machine can wait for a task of another (vm-a:OMG-1): it is a link of the board', hasFar[0] === 200 && await waitFor(`plannerSnap().links.some((l) => l.to === 'alpha/10' && l.kind === 'far' && String(l.from).includes('vm-a:'))`, 15000), JSON.stringify(hasFar).slice(0, 200));
