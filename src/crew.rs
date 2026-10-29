@@ -984,7 +984,7 @@ pub fn clean_roles(roles: &BTreeMap<String, RoleSet>) -> Result<BTreeMap<String,
             agent_program(&agent)?;
         }
         let effort = set.effort.trim().to_string();
-        if effort.len() > 24 || !effort.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') {
+        if effort.len() > 24 || effort.starts_with('-') || !effort.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') {
             return Err(format!("«{effort}»: так усилие не называется"));
         }
         let fallback = set.fallback.trim().to_string();
@@ -1313,6 +1313,7 @@ mod tests {
         assert!(plan(&own, &crew(), "", "").is_empty());
         assert!(clean_roles(&own.roles).is_ok());
         assert!(clean_roles(&roles(&[("role:../x", "", "", "")])).is_err());
+        assert!(clean_roles(&roles(&[("worker", "", "--help", "")])).is_err(), "an effort that starts with «-» would reach `set` as a flag");
     }
 
     #[test]
