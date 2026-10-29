@@ -12,7 +12,7 @@ export const en: Record<string, string | string[]> = {
   'stage.queue': 'Queue', 'stage.work': 'Plan & work', 'stage.review': 'Review', 'stage.appr': 'To approve', 'stage.done': 'Done',
   'kanban.aria': 'Task stages', 'kanban.waits': '{n} waiting',
   'nav.title': 'Navigator', 'nav.aria': 'Galaxy navigator', 'nav.today': 'Today', 'nav.quiet': 'Quiet universes',
-  'nav.thisMachine': 'this machine', 'nav.addUniverse': 'Add a universe to {galaxy}…',
+  'nav.addUniverse': 'Add a universe to {galaxy}…',
   'grip.label': 'Width of the {panel} panel', 'grip.tip': 'Drag to change the width; double click for the default',
   'crumbs.aria': 'Where am I',
   'search.aria': 'Space search', 'search.placeholder': 'Space search: task, project, todo, chat…',
