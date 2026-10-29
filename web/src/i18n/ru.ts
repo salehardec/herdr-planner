@@ -1065,7 +1065,7 @@ export const ru: Record<string, string | string[]> = {
   'm.full.local': 'Планировщик целиком, как на компьютере.',
   // комната отдыха
   'restroom.title': 'Комната отдыха', 'restroom.top': 'Отдых', 'restroom.tip': 'Комната отдыха · O', 'restroom.ship': 'Корабль',
-  'restroom.back.mobile': 'Назад на /m',
+  'restroom.back.mobile': 'Назад в планировщик',
   'restroom.hint.touch': '↑↓ — выбор · A — огонь / выбор · СТАРТ — пауза · МЕНЮ — игры',
   'restroom.screen': 'Экран приставки',
   'restroom.back.nav': 'Назад в навигатор', 'restroom.back.galaxy': 'Назад в Галактику', 'restroom.back.quasar': 'Назад к Квазару',

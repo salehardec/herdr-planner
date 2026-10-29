@@ -1,7 +1,7 @@
 /* ───────────────────────────────────────────────────────────────
    Tokens of the page: shared by the Galaxy (base.css) and the phone's light page (mobile/mobile.css).
    Слой 1 · --c-*  : цвета текущей темы Omarchy (подставляются из снимка).
-   Слой 2 · --pl-* : токены окна, выведенные из слоя 1. Живут на `.win` (Галактика) и `.mob` (лёгкая страница).
+   Слой 2 · --pl-* : токены окна, выведенные из слоя 1. Живут на `.win` (Галактика), `.mob` и `.rm-mobile` (лёгкая страница).
    Слой 3 · --m-*  : движение.
    ─────────────────────────────────────────────────────────────── */
 :root{
@@ -16,7 +16,7 @@
 }
 :root[data-mode="light"]{color-scheme:light}
 
-.win,.mob{
+.win,.mob,.rm-mobile{
   --pl-bg:var(--c-bg);
   --pl-text:var(--c-fg);
   --pl-title:var(--c-fg-bright);
@@ -36,7 +36,7 @@
   --pl-panel-solid:color-mix(in srgb,var(--pl-bg) 97%,transparent);
   --pl-r:0.4375rem;
 }
-:root[data-mode="light"] .win,:root[data-mode="light"] .mob{
+:root[data-mode="light"] .win,:root[data-mode="light"] .mob,:root[data-mode="light"] .rm-mobile{
   --pl-dim:color-mix(in srgb,var(--c-fg) 96%,var(--c-bg));
   --pl-faint:color-mix(in srgb,var(--c-fg) 88%,var(--c-bg));
   --pl-accent-ink:color-mix(in srgb,var(--c-accent) 55%,var(--c-fg));

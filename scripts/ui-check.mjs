@@ -6949,11 +6949,11 @@ section('light page rest room', async () => {
   const touch = (type, points = []) => send('Input.dispatchTouchEvent', { type, touchPoints: points });
   const tap = async (sel) => { await touch('touchStart', [await point(sel)]); await touch('touchEnd'); await pageTurn(); };
   const pad = (name) => `#rm [data-pad="${name}"]`;
-  for (const [w, h] of [PHONE, TABLET, [844, 390], [1180, 820], [375, 812]]) {
+  for (const [w, h] of [PHONE, TABLET, [844, 390], [1180, 820], [375, 812], [320, 568], [360, 640], [667, 375]]) {
     const at = `${w}×${h}`;
     await openPhone([w, h], 'dark');
     await tap('#m-rest');
-    check(`${at}: touch opens the shared room over /m`, await waitFor('restroomState().open && document.querySelector(".mob").inert', 4000) && await hasText('#rm-back', '/m'));
+    check(`${at}: touch opens the shared room over /m`, await waitFor('restroomState().open && document.querySelector(".mob").inert', 4000) && await hasText('#rm-back', 'Назад в планировщик'));
     check(`${at}: the screen and every game button fit and are hit-testable (at least 44×44)`, await evalJs(`(() => {
       const selectors = ['#rm-back', '#rm-screen', ...[...document.querySelectorAll('#rm [data-pad]')].map((e) => '#rm [data-pad="' + e.dataset.pad + '"]')];
       return selectors.every((s) => { const e = document.querySelector(s), r = e.getBoundingClientRect(); const hit = document.elementFromPoint(r.x + r.width/2, r.y + r.height/2);
@@ -7000,19 +7000,47 @@ section('light page rest room', async () => {
   await openPhone(PHONE, 'light'); await tap('#m-rest');
   check('phone: custom wallpaper survives reload', await waitFor('restroomState().wall === "custom"', 4000));
   await shot('m-restroom-light.png');
-  // A newly waiting task uses the phone's existing task sheet for «Лететь».
+  // A new notice must be visible and actionable during play, without knowing to scroll the room.
   const taskFile = join(fixture, 'state', 'board.json');
   const original = readFileSync(taskFile, 'utf8');
   try {
-    const board = JSON.parse(original);
-    board.rows = board.rows.filter((r) => r.id !== 'alpha/23');
-    board.rows.push({ id: 'alpha/23', app: 'claude', state: 'blocked', kind: 'question', stage: 'working', title: 'Вопрос с телефона', msg: 'Нужно уточнение с телефона' });
-    writeFileSync(taskFile, JSON.stringify(board));
-    await post('/api/refresh', {});
-    check('phone: a new waiting task appears in the room', await waitFor(`!!document.querySelector('#rm-notes [data-note="alpha/23"]')`, 20000));
-    await evalJs('document.querySelector("#rm-notes").scrollIntoView({block:"nearest"}); true');
-    await tap('#rm-notes [data-note="alpha/23"] [data-act="fly"]');
-    check('phone: «Лететь» opens the task sheet on /m', await waitFor('!restroomState().open && mobile.sheet.value?.kind === "task" && mobile.sheet.value.id === "alpha/23" && !!document.querySelector("#sheet.on")', 5000) && await evalJs('location.pathname === "/m"'));
+    for (const [w, h, mode = 'dark'] of [PHONE, [844, 390], TABLET, [320, 568], [390, 844, 'light']]) {
+      const id = 'alpha/923';
+      await openPhone([w, h], mode); await tap('#m-rest'); await tap(pad('a'));
+      check(`${w}×${h}: playing before a notice arrives`, await waitFor('restroomGame.mode === "shoot" && !restroomGame.paused', 4000));
+      const board = JSON.parse(original);
+      board.rows.push({ id, app: 'claude', state: 'blocked', kind: 'question', stage: 'working', title: 'Вопрос с телефона', msg: 'Нужно уточнение с телефона' });
+      writeFileSync(taskFile, JSON.stringify(board));
+      await post('/api/refresh', {});
+      check(`${w}×${h}: a new waiting task appears during play`, await waitFor(`!!document.querySelector('#rm-notes [data-note="${id}"]')`, 20000));
+      const noticeVisible = () => waitFor(`(() => {
+        const note = document.querySelector('#rm-notes [data-note="${id}"]');
+        return !!note && Number(getComputedStyle(note).opacity) >= .99 && document.querySelector('#rm').scrollTop === 0 && [note, note.querySelector('[data-act="fly"]'), note.querySelector('[data-act="later"]'), document.querySelector('#rm-back'), ...document.querySelectorAll('#rm [data-pad]')].every((e) => {
+          const r = e.getBoundingClientRect(), hit = document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2);
+          return r.top >= 0 && r.bottom <= innerHeight && r.left >= 0 && r.right <= innerWidth && (hit === e || e.contains(hit));
+        }); })()`, 4000);
+      check(`${w}×${h}: notice, actions, exit and game controls are visible without scrolling`, await noticeVisible());
+      check(`${w}×${h}: notice has a readable panel background`, await evalJs(`(() => {
+        const c = getComputedStyle(document.querySelector('#rm-notes .rm-note')).backgroundColor;
+        const canvas = document.createElement('canvas'), g = canvas.getContext('2d'); g.fillStyle = c; g.fillRect(0, 0, 1, 1);
+        return g.getImageData(0, 0, 1, 1).data[3] >= 240;
+      })()`));
+      await shot(`m-restroom-notice-${w}-${h}-${mode}.png`);
+      await tap('#rm-notes [data-act="later"]');
+      check(`${w}×${h}: «Позже» dismisses the notice and leaves the game playable`, await waitFor('!document.querySelector("#rm-notes .rm-note") && restroomGame.mode === "shoot" && !restroomGame.paused', 4000));
+      // Reenter so this request can arrive as new again; then fly directly from the overlay.
+      await tap('#rm-back');
+      writeFileSync(taskFile, original); await post('/api/refresh', {});
+      await waitFor(`!plannerSnap().tasks.some((t) => t.id === "${id}")`, 15000);
+      await tap('#m-rest'); await tap(pad('start'));
+      writeFileSync(taskFile, JSON.stringify(board)); await post('/api/refresh', {});
+      await waitFor(`!!document.querySelector('#rm-notes [data-note="${id}"]')`, 20000);
+      check(`${w}×${h}: a subsequent notice stays in view too`, await noticeVisible());
+      await tap('#rm-notes [data-act="fly"]');
+      check(`${w}×${h}: «Лететь» opens the task sheet directly from play`, await waitFor(`!restroomState().open && mobile.sheet.value?.kind === "task" && mobile.sheet.value.id === "${id}" && !!document.querySelector("#sheet.on")`, 5000) && await evalJs('location.pathname === "/m"'));
+      writeFileSync(taskFile, original); await post('/api/refresh', {});
+      await waitFor(`!plannerSnap().tasks.some((t) => t.id === "${id}")`, 15000);
+    }
   } finally { writeFileSync(taskFile, original); }
   await evalJs('localStorage.removeItem("herdr-planner.restroom.wall"); localStorage.removeItem("herdr-planner.restroom.custom"); true');
   await send('Emulation.setTouchEmulationEnabled', { enabled: false });

@@ -1050,7 +1050,7 @@ export const en: Record<string, string | string[]> = {
   'm.full.local': 'The whole planner, as on the computer.',
   // rest room
   'restroom.title': 'Rest room', 'restroom.top': 'Rest', 'restroom.tip': 'Rest room · O', 'restroom.ship': 'Ship',
-  'restroom.back.mobile': 'Back to /m',
+  'restroom.back.mobile': 'Back to planner',
   'restroom.hint.touch': '↑↓ choose · A fire / choose · START pause · MENU games',
   'restroom.screen': 'The console screen',
   'restroom.back.nav': 'Back to the navigator', 'restroom.back.galaxy': 'Back to the Galaxy', 'restroom.back.quasar': 'Back to the Quasar',
