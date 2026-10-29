@@ -5,7 +5,7 @@ import {
   chat, panels, persist, snap, screens,
 } from '../store';
 import {
-  addFiles, draftRequest, draftTodos, hasOlder, loadLatest, loadOlder, notePending, openChatAt, optimistic, pendingFiles, pendingMessage, reconcile, removeFile, scrollTo,
+  addFiles, draftRequest, draftTodos, hasOlder, loadLatest, loadOlder, loadOlderWait, notePending, openChatAt, optimistic, pendingFiles, pendingMessage, reconcile, removeFile, scrollTo,
   searchChat, send, sending,
 } from '../chat';
 import { hasFiles, pastedFiles } from '../attach';
@@ -229,7 +229,7 @@ export function Chat(): JSX.Element {
   const toUnread = async (onlyIfHidden: boolean, first = unreadTurns.peek()[0]): Promise<void> => {
     if (first === undefined) return;
     for (let i = 0; i < 40 && !chat.peek().turns.some((x) => x.n === first) && hasOlder(); i++) {
-      if (!(await loadOlder())) break;
+      if (!(await loadOlderWait())) break;
     }
     const log = logRef.current;
     const el = log?.querySelector<HTMLElement>(`[data-n="${first}"]`);

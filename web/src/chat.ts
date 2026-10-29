@@ -46,7 +46,7 @@ export async function loadLatest(limit = 3): Promise<void> {
       merge(r.turns);
       if (gap) {
         for (let i = 0; i < 40 && chat.value.turns[0]?.n > have + 1 && hasOlder(); i++) {
-          if (!(await loadOlder(100))) break;
+          if (!(await loadOlderWait(100))) break;
         }
       }
       settleRead();
@@ -74,10 +74,16 @@ async function coverRead(): Promise<void> {
   if (lowest === Infinity) return;
   let got = false;
   for (let i = 0; i < 20 && chat.value.turns.length && chat.value.turns[0].n > lowest && hasOlder(); i++) {
-    if (!(await loadOlder(100))) break;
+    if (!(await loadOlderWait(100))) break;
     got = true;
   }
   if (got) settleRead();
+}
+
+/** Like `loadOlder`, but a load that is already going (the reader scrolled to the top) is waited for, not taken for «nothing more». */
+export async function loadOlderWait(limit = 5): Promise<boolean> {
+  for (let i = 0; i < 100 && chat.value.loading; i++) await new Promise((r) => setTimeout(r, 100));
+  return loadOlder(limit);
 }
 
 /** Older turns, five at a time. Returns true when something was added. */
