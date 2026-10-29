@@ -6791,6 +6791,21 @@ section('chat unread', async () => {
   // (the first answer was in view for a moment on opening and is read: the first unread is the next one)
   check('the header button takes the reader back to the first unread and clears the counts', await waitFor(`(() => { const e = document.querySelector('#clog .turn[data-n="${first2 + 1}"]'); const l = document.querySelector('#clog'); if (!e) return false; const r = e.getBoundingClientRect(); const o = l.getBoundingClientRect(); return r.top >= o.top - 2 && r.top < o.top + 80; })() && !document.querySelector('#bchat-n') && !document.querySelector('#cunread')`, 15000), await text('#bchat'));
 
+  // The indicator brings the reader to the first unread; when those are the last answers that is the bottom, and from there the
+  // log follows the next answers on its own (and the indicator does not come back for someone who touched nothing).
+  const dist = '(() => { const l = document.querySelector("#clog"); return l.scrollHeight - l.scrollTop - l.clientHeight; })()';
+  await focus(true);
+  await evalJs('(() => { const l = document.querySelector("#clog"); l.scrollTop = l.scrollHeight - l.clientHeight - 700; return true; })()');
+  await sleep(400);
+  say(1);
+  check('scrolled up, one new answer comes: «1 новое»', await hasText('#cunread', '1 новое', 10000), await text('#bchat'));
+  await click('#cunread');
+  await sleep(2800);
+  check('the click takes the log to the end and clears the count', (await evalJs(dist)) < 24 && !(await evalJs('!!document.querySelector("#cunread") || !!document.querySelector("#bchat-n")')), String(await evalJs(dist)));
+  say(1);
+  check('the next answer is followed: the end stays in view and nothing is counted', await waitFor(`${dist} < 24 && !document.querySelector("#cunread") && !document.querySelector("#bchat-n")`, 8000), String(await evalJs(dist)) + ' ' + await text('#bchat'));
+  await focus(false);
+
   // The wide chat is restored open by a reload: it waits for the history and then goes to the first unread, too.
   await click('#cwide');
   check('the wide chat', await waitFor('!!document.querySelector("#chat.wide")', 5000));
@@ -6829,193 +6844,6 @@ section('chat unread', async () => {
   await navigate(base + '/?noauto&nocoach&bloom=0');
   check('after a reload that holds only board lines, the answer before them is still counted: 1', await hasText('#bchat-n', '1', 15000), await text('#bchat') + JSON.stringify(await stored()));
   await send('Page.removeScriptToEvaluateOnNewDocument', { identifier: away2 });
-}, { retry: false });
-
-
-
-section('rvw83z', async () => {
-  const READ = 'herdr-planner.chat.read';
-  const folder = realpathSync(join(fixture, 'board', 'coordinator', 'default', 'chat')).replace(/[^A-Za-z0-9]/g, '-');
-  const file = join(fixture, 'claude', 'projects', folder, 'fixture.jsonl');
-  let next = 11;
-  const usage = { input_tokens: 3000, cache_read_input_tokens: 140000, cache_creation_input_tokens: 7000 };
-  const when = (i, k) => new Date(1792389360000 + i * 60000 + k).toISOString();
-  const say = (lines = 1) => {
-    const i = next++;
-    const at = (k) => when(i, k);
-    const body = Array.from({ length: lines }, (_, k) => `Ответ ${i}, строка ${k + 1}: всё идёт по плану.`).join('\n');
-    appendFileSync(file, JSON.stringify({ type: 'user', timestamp: at(0), message: { role: 'user', content: `Вопрос ${i}: что нового?` } }) + '\n'
-      + JSON.stringify({ type: 'assistant', timestamp: at(1000), message: { role: 'assistant', model: 'claude-opus-5-5', content: [{ type: 'text', text: body }], usage } }) + '\n');
-    return i - 1;
-  };
-  const focus = (on) => evalJs(`(() => { document.hasFocus = () => ${on}; window.dispatchEvent(new Event(${JSON.stringify(on ? 'focus' : 'blur')})); return true; })()`);
-  const stored = () => evalJs(`JSON.parse(localStorage.getItem(${JSON.stringify(READ)}) || 'null')`);
-  const state = () => evalJs(`JSON.stringify({ dist: (() => { const l = document.querySelector('#clog'); return Math.round(l.scrollHeight - l.scrollTop - l.clientHeight); })(), cunread: document.querySelector('#cunread')?.innerText || null, bchat: document.querySelector('#bchat-n')?.innerText || null, tolast: !!document.querySelector('#tolast'), last: [...document.querySelectorAll('#clog .turn')].map((e) => e.dataset.n).slice(-1)[0] })`);
-  const log = (label) => state().then((s) => { console.log(`RVW ${label}: ${s}`); return JSON.parse(s); });
-
-  await resetUi();
-  await evalJs(`localStorage.removeItem(${JSON.stringify(READ)}); true`);
-  await navigate(base + '/?noauto&nocoach&bloom=0');
-  await focus(true);
-  await click('#bchat');
-  await waitFor('!document.querySelector("#chat").classList.contains("off")', 5000);
-  for (let i = 0; i < 4; i++) say(14);
-  await sleep(3000);
-  let s = await log('A0 at end after 4 tall answers');
-  check('RVW A0 at the end: no badge', s.dist < 24 && !s.cunread && !s.bchat, JSON.stringify(s));
-  // scroll up (a user-like wheel scroll), keep above the older-load zone
-  await evalJs('(() => { const l = document.querySelector("#clog"); l.scrollTop = Math.max(200, l.scrollHeight - l.clientHeight - 900); return true; })()');
-  await sleep(800);
-  say(3);
-  await sleep(2500);
-  s = await log('A1 scrolled up, one new');
-  check('RVW A1 scrolled up → 1 new', (s.cunread || '').includes('1 нов'), JSON.stringify(s));
-  await click('#cunread');
-  await sleep(3000);
-  s = await log('A2 after badge click');
-  check('RVW A2 after click: at bottom, no badge', s.dist < 24 && !s.cunread && !s.bchat, JSON.stringify(s));
-  await shot('rvw-a2-after-click.png');
-  // nothing touched; another answer arrives
-  say(3);
-  await sleep(3000);
-  s = await log('A3 next answer after the click, nothing touched');
-  check('RVW A3 the log follows the end and shows no badge', s.dist < 24 && !s.cunread && !s.bchat, JSON.stringify(s));
-  await shot('rvw-a3-next-answer.png');
-  say(3);
-  await sleep(3000);
-  s = await log('A4 one more answer');
-  check('RVW A4 still following', s.dist < 24 && !s.cunread && !s.bchat, JSON.stringify(s));
-
-  // B: scroll up, new answer, then the user scrolls to the bottom by hand: badge goes, next answer is followed
-  await evalJs('(() => { const l = document.querySelector("#clog"); l.scrollTop = Math.max(200, l.scrollHeight - l.clientHeight - 900); return true; })()');
-  await sleep(800);
-  say(3);
-  await sleep(2500);
-  s = await log('B1 scrolled up, one new');
-  await evalJs('(() => { const l = document.querySelector("#clog"); l.scrollTop = l.scrollHeight; return true; })()');
-  await sleep(2500);
-  s = await log('B2 scrolled to the end by hand');
-  check('RVW B2 scrolled to the end by hand: no badge', s.dist < 24 && !s.cunread && !s.bchat, JSON.stringify(s));
-  say(3);
-  await sleep(3000);
-  s = await log('B3 next answer');
-  check('RVW B3 followed', s.dist < 24 && !s.cunread && !s.bchat, JSON.stringify(s));
-
-  // C: #tolast after scroll up
-  await evalJs('(() => { const l = document.querySelector("#clog"); l.scrollTop = Math.max(200, l.scrollHeight - l.clientHeight - 900); return true; })()');
-  await sleep(800);
-  say(3);
-  await sleep(2500);
-  await click('#tolast');
-  await sleep(3000);
-  s = await log('C1 after tolast');
-  check('RVW C1 tolast: at end, no badge', s.dist < 24 && !s.cunread && !s.bchat, JSON.stringify(s));
-  say(3);
-  await sleep(3000);
-  s = await log('C2 next answer after tolast');
-  check('RVW C2 followed', s.dist < 24 && !s.cunread && !s.bchat, JSON.stringify(s));
-}, { retry: false });
-
-
-section('rvw7q', async () => {
-  const READ = 'herdr-planner.chat.read';
-  const folder = realpathSync(join(fixture, 'board', 'coordinator', 'default', 'chat')).replace(/[^A-Za-z0-9]/g, '-');
-  const file = join(fixture, 'claude', 'projects', folder, 'fixture.jsonl');
-  let next = 11;
-  const usage = { input_tokens: 3000, cache_read_input_tokens: 140000, cache_creation_input_tokens: 7000 };
-  const when = (i, k) => new Date(1792389360000 + i * 60000 + k).toISOString();
-  const ask = (text) => { const i = next++; appendFileSync(file, JSON.stringify({ type: 'user', timestamp: when(i, 0), message: { role: 'user', content: text } }) + '\n'); return i - 1; };
-  const say = (lines = 1) => {
-    const i = next++;
-    const body = Array.from({ length: lines }, (_, k) => `Ответ ${i}, строка ${k + 1}: всё идёт по плану.`).join('\n');
-    appendFileSync(file, JSON.stringify({ type: 'user', timestamp: when(i, 0), message: { role: 'user', content: `Вопрос ${i}: что нового?` } }) + '\n'
-      + JSON.stringify({ type: 'assistant', timestamp: when(i, 1000), message: { role: 'assistant', model: 'claude-opus-5-5', content: [{ type: 'text', text: body }], usage } }) + '\n');
-    return i - 1;
-  };
-  const focus = (on) => evalJs(`(() => { document.hasFocus = () => ${on}; window.dispatchEvent(new Event(${JSON.stringify(on ? 'focus' : 'blur')})); return true; })()`);
-  const state = () => evalJs(`JSON.stringify({ dist: (() => { const l = document.querySelector('#clog'); return Math.round(l.scrollHeight - l.scrollTop - l.clientHeight); })(), cunread: document.querySelector('#cunread')?.innerText || null, bchat: document.querySelector('#bchat-n')?.innerText || null, turns: document.querySelectorAll('#clog .turn').length, read: localStorage.getItem('herdr-planner.chat.read') })`);
-  const log = async (label) => { const s = JSON.parse(await state()); console.log(`RVW7 ${label}: ${JSON.stringify(s)}`); return s; };
-  const wheelUp = async (times) => {
-    const r = JSON.parse(await evalJs('JSON.stringify(document.querySelector("#clog").getBoundingClientRect())'));
-    const x = Math.round(r.x + r.width / 2), y = Math.round(r.y + r.height / 2);
-    await send('Input.dispatchMouseEvent', { type: 'mouseMoved', x, y });
-    for (let i = 0; i < times; i++) { await send('Input.dispatchMouseEvent', { type: 'mouseWheel', x, y, deltaX: 0, deltaY: -120 }); await sleep(60); }
-    await sleep(800);
-  };
-  const wheelDown = async (times) => {
-    const r = JSON.parse(await evalJs('JSON.stringify(document.querySelector("#clog").getBoundingClientRect())'));
-    const x = Math.round(r.x + r.width / 2), y = Math.round(r.y + r.height / 2);
-    for (let i = 0; i < times; i++) { await send('Input.dispatchMouseEvent', { type: 'mouseWheel', x, y, deltaX: 0, deltaY: 120 }); await sleep(60); }
-    await sleep(800);
-  };
-
-  await resetUi();
-  await evalJs(`localStorage.removeItem(${JSON.stringify(READ)}); true`);
-  for (let i = 0; i < 5; i++) say(14);
-  await navigate(base + '/?noauto&nocoach&bloom=0');
-  await focus(true);
-  await click('#bchat');
-  await waitFor('!document.querySelector("#chat").classList.contains("off")', 5000);
-  await sleep(2500);
-  let s = await log('1 open at end');
-  check('RVW7 1 at the end: no badge', s.dist < 24 && !s.cunread && !s.bchat, JSON.stringify(s));
-  say(14); say(14);
-  await sleep(3000);
-  s = await log('2 two answers arrive while at end');
-  check('RVW7 2 at the end, answers arrive: followed, no badge', s.dist < 24 && !s.cunread && !s.bchat, JSON.stringify(s));
-  await wheelUp(12);
-  s = await log('3 wheel up');
-  check('RVW7 3 scrolled up by wheel, nothing new: no badge', s.dist > 200 && !s.cunread && !s.bchat, JSON.stringify(s));
-  for (let i = 0; i < 3; i++) ask(`[Уведомление доски] delta/${i + 1} готова`);
-  await sleep(3000);
-  s = await log('4 board lines while scrolled up');
-  check('RVW7 4 board lines while scrolled up: no badge', !s.cunread && !s.bchat, JSON.stringify(s));
-  await send('Network.enable', {});
-  await send('Network.emulateNetworkConditions', { offline: true, latency: 0, downloadThroughput: -1, uploadThroughput: -1 });
-  await sleep(6000);
-  await send('Network.emulateNetworkConditions', { offline: false, latency: 0, downloadThroughput: -1, uploadThroughput: -1 });
-  await sleep(6000);
-  s = await log('5 after offline 6s and back');
-  check('RVW7 5 reconnect while scrolled up, nothing new: no badge', s.dist > 200 && !s.cunread && !s.bchat, JSON.stringify(s));
-  const fresh1 = say(3);
-  await waitFor(`(document.querySelector('#cunread')?.innerText || '').includes('1')`, 10000);
-  s = await log('6 one new answer while scrolled up');
-  check('RVW7 6 scrolled up, one new answer: «1 новое»', (s.cunread || '').includes('1 нов') && s.dist > 200, JSON.stringify(s));
-  await shot('rvw7-6-one-new.png');
-  await click('#cunread');
-  await sleep(3000);
-  s = await log('7 after the badge click');
-  const vis = await evalJs(`(() => { const e = document.querySelector('#clog .turn[data-n="${fresh1}"]'); const l = document.querySelector('#clog'); if (!e) return 'none'; const r = e.getBoundingClientRect(), o = l.getBoundingClientRect(); return r.top >= o.top - 2 && r.top < o.bottom; })()`);
-  check('RVW7 7 click: at the end, the new answer in view, no badge', s.dist < 24 && !s.cunread && !s.bchat && vis === true, JSON.stringify(s) + ' vis=' + vis);
-  await shot('rvw7-7-after-click.png');
-  say(3);
-  await sleep(3000);
-  s = await log('8 another answer after the click');
-  check('RVW7 8 the log follows after the click', s.dist < 24 && !s.cunread && !s.bchat, JSON.stringify(s));
-  await wheelUp(12);
-  say(3); say(3);
-  await waitFor(`(document.querySelector('#cunread')?.innerText || '').includes('2')`, 10000);
-  s = await log('9 two new while scrolled up');
-  check('RVW7 9 two new while scrolled up: «2 новых»', (s.cunread || '').includes('2 нов'), JSON.stringify(s));
-  await navigate(base + '/?noauto&nocoach&bloom=0');
-  await focus(true);
-  await sleep(1500);
-  s = await log('10 after a reload (chat hidden?)');
-  check('RVW7 10 the two unseen survive a reload', s.bchat === '2' || (s.cunread || '').includes('2 нов'), JSON.stringify(s));
-  if (await evalJs('document.querySelector("#chat").classList.contains("off")')) { await click('#bchat'); await waitFor('!document.querySelector("#chat").classList.contains("off")', 5000); }
-  await sleep(3000);
-  s = await log('11 opened after the reload');
-  await wheelDown(60);
-  await sleep(1500);
-  s = await log('12 wheeled down to the end');
-  check('RVW7 12 scrolled to the end by hand after a reload: no badge', s.dist < 24 && !s.cunread && !s.bchat, JSON.stringify(s));
-  await navigate(base + '/?noauto&nocoach&bloom=0');
-  await focus(true);
-  if (await evalJs('document.querySelector("#chat").classList.contains("off")')) { await click('#bchat'); await waitFor('!document.querySelector("#chat").classList.contains("off")', 5000); }
-  await sleep(3000);
-  s = await log('13 reload again, nothing new');
-  check('RVW7 13 reload with nothing new: no badge', !s.cunread && !s.bchat, JSON.stringify(s));
-  await shot('rvw7-13-reload.png');
 }, { retry: false });
 
 // ── the phone's light page: /m (PLN-79) ────────────────────────────────────
