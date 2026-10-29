@@ -4040,7 +4040,8 @@ section('rest room', async () => {
       const narrow = document.documentElement.classList.contains('bp900');
       const k = R('#rm-console'); if (k && (k.l < 0 || k.r > innerWidth || k.t < 0 || (!narrow && k.b > innerHeight))) out.push('console off-screen ' + JSON.stringify(k));
       // what is drawn must be seen: the centre of each is its own, not the wall's
-      for (const q of ['#rm-exit', '#rm-wp', '#rm-console .rm-shell']) { const e = document.querySelector(q); const r = e.getBoundingClientRect(); const top = document.elementFromPoint(Math.min(innerWidth - 1, r.left + r.width / 2), Math.min(innerHeight - 1, Math.max(0, r.top + Math.min(r.height / 2, 20)))); if (!top || !e.contains(top)) out.push(q + ' is covered by ' + (top && (top.id || top.className))); }
+      for (const q of ['#rm-exit', '#rm-wp', '#rm-console .rm-shell']) { const e = document.querySelector(q); e.scrollIntoView({ block: 'nearest' }); const r = e.getBoundingClientRect(); const top = document.elementFromPoint(Math.min(innerWidth - 1, r.left + r.width / 2), Math.min(innerHeight - 1, Math.max(0, r.top + Math.min(r.height / 2, 20)))); if (!top || !e.contains(top)) out.push(q + ' is covered by ' + (top && (top.id || top.className))); }
+      document.querySelector('#rm').scrollTop = 0;
       return out; })()`);
     if (w < 700) await evalJs('document.querySelector("#rm").scrollTop = 0; true');
     if (w < 700) await shot(`restroom-narrow-${w}.png`);
