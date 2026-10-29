@@ -68,8 +68,13 @@ export function planOf(r: Request): CardPlan {
     case 'approval':
       plan.approve = can(task, 'approve');
       plan.pr = safeUrl(task?.pr ?? '');
-      // a merge past a failed review, a hand on the branch: the computer
-      if (!plan.approve) plan.note = 'm.note.approval';
+      // A checkout refusal is retried with `approve` after it is fixed: keep the button and explain beside it.
+      // Failed reviews and the other merge blocks stay on the computer, with their own reason.
+      if (task && /merge needs a clean checkout|your checkout is on another branch|task is on the wrong branch/i.test(task.msg)) {
+        plan.note = 'm.note.mergeBlockedCheckout';
+      } else if (!plan.approve) {
+        plan.note = task?.merge_blocked ? 'm.note.mergeBlocked' : 'm.note.approval';
+      }
       break;
     case 'failed':
       plan.retry = can(task, 'retry');
