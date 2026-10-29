@@ -1,6 +1,6 @@
 /* The navigator's tree: Galaxy → Universe → planets grouped by the day they were made → moons.
    Pure: the component only draws and handles keys. */
-import type { Entity, GalaxyView, Runner, Seat, Status, Task } from '../types';
+import type { Entity, GalaxyView, RoleMark, Runner, Seat, Status, Task } from '../types';
 import { ATTENTION, STATUS_ORDER } from '../types';
 import { groupByDate } from '../util/dates';
 import { t } from '../i18n';
@@ -21,6 +21,8 @@ export interface NavNode {
   attention?: boolean;
   /** A planet: who is on the task now. */
   seat?: Seat;
+  /** A planet: the crew's own roles put on it. */
+  roles?: RoleMark[];
 }
 
 export interface NavInput {
@@ -63,6 +65,7 @@ function planetNodes(
         key: pkey, depth: depth + 1, kind: 'planet', label: `${task.tag} ${task.title}`, sub: task.board_label || task.label,
         status: task.status, entity: { kind: 'planet', id: task.id }, expandable: moons.length > 0, open: mopen,
         dim: task.status === 'done', attention: ATTENTION.includes(task.status), seat: task.seat ?? undefined,
+        roles: task.crew_roles?.length ? task.crew_roles : undefined,
       });
       if (mopen) {
         for (const m of moons) {

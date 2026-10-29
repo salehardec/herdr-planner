@@ -4,12 +4,15 @@ import { signal } from '@preact/signals';
 import { api, ApiError, post } from '../api';
 import { t } from '../i18n';
 
-/** The Station screen; `wizard` is the first-run «Экипаж корабля». */
-export const stationDlg = signal<{ wizard?: boolean } | null>(null);
+/** The Station screen. */
+export const stationDlg = signal<Record<string, never> | null>(null);
+/** The crew window («Экипаж»): the roles, the presets, the subscriptions and the limits in one place; `wizard` is the first run. */
+export const crewDlg = signal<{ wizard?: boolean } | null>(null);
 /** The ship's computer («Бортовой компьютер»). */
 export const shipDlg = signal(false);
 
-export function openStation(wizard = false): void { stationDlg.value = { wizard }; }
+export function openStation(): void { stationDlg.value = {}; }
+export function openCrew(wizard = false): void { crewDlg.value = { wizard }; }
 export function openShip(): void { shipDlg.value = true; }
 
 /** The first-run wizard is seen once (set by «Готово», «Пропустить» and closing it). */
@@ -17,10 +20,15 @@ export const CREW_SEEN_KEY = 'herdr-planner.crew-seen';
 export const crewSeen = (): boolean => { try { return localStorage.getItem(CREW_SEEN_KEY) === '1'; } catch { return true; } };
 export function markCrewSeen(): void { try { localStorage.setItem(CREW_SEEN_KEY, '1'); } catch { /* private mode */ } }
 
-/** Closes the Station screen; the wizard counts as seen however it is closed. */
+/** Closes the Station screen. */
 export function closeStation(): void {
-  if (stationDlg.value?.wizard) markCrewSeen();
   stationDlg.value = null;
+}
+
+/** Closes the crew window; the first run counts as seen however the window was opened and however it is closed. */
+export function closeCrew(): void {
+  markCrewSeen();
+  crewDlg.value = null;
 }
 
 /* ───────── types ───────── */
@@ -86,7 +94,7 @@ export interface PresetsData { list: PresetItem[]; active: PresetActive | null }
 export interface PresetStep {
   role: string;
   field: 'agent' | 'effort' | 'fallback';
-  /** The board's setting (`worker.agent`), or `light` (the planner's own preset). */
+  /** The board's setting (`worker.agent`), or `light` (the planner's own preset), or `role:<id>` (an own role). */
   setting: string;
   was: string;
   was_from: string;
@@ -94,6 +102,9 @@ export interface PresetStep {
   now: string | null;
   error: string;
   command: string;
+  /** An own role (then `role` is `custom`): its id and name. The planner changes the role; the board is not asked. */
+  custom?: string;
+  label?: string;
 }
 
 export interface PresetPreview {
@@ -105,6 +116,8 @@ export interface PresetPreview {
   /** Programs whose models are still being read: their steps are not checked yet. */
   loading: string[];
   light_skipped: boolean;
+  /** The preset holds own roles and this is a repository's level: roles are not kept per repository. */
+  roles_skipped: boolean;
   affects: { running: Affect[]; waiting: Affect[] };
 }
 
@@ -284,7 +297,7 @@ export const shipPost = (b: Record<string, unknown>): Promise<ShipResult> => pos
 /** The roles of the crew, as the settings name them. */
 export const ROLE_SETTINGS = [
   'coordinator.agent', 'coordinator.effort', 'plan.agent', 'reviewer.agent', 'reviewer.effort', 'reviewer.fallback',
-  'worker.agent', 'worker.effort', 'worker.fallback',
+  'worker.agent', 'worker.effort', 'worker.fallback', 'watcher.agent',
 ];
 
 /** Where a value comes from, in words. */

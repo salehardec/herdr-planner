@@ -166,7 +166,7 @@ fn only_the_doors_the_plan_names_are_open_to_the_tunnel() {
     // …and whatever is a terminal, a file, a yard, the station, the ship, the memory, a clone, a translation or the tunnel itself stays out
     for (pattern, access) in POLICY {
         let p = *pattern;
-        let machine = ["/api/runner", "/api/runners", "/api/strays", "/api/station", "/api/ship", "/api/memory", "/api/universe", "/api/fs/", "/api/hints/files", "/api/task/terminal", "/api/translate", "/api/tunnel", "/api/limits"];
+        let machine = ["/api/runner", "/api/runners", "/api/strays", "/api/station", "/api/crew", "/api/ship", "/api/memory", "/api/universe", "/api/fs/", "/api/hints/files", "/api/task/terminal", "/api/translate", "/api/tunnel", "/api/limits"];
         if machine.iter().any(|m| p == *m || p.starts_with(&format!("{m}/"))) {
             assert_eq!(*access, Access::Local, "{p}");
         }

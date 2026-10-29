@@ -8,7 +8,7 @@ use crate::db::{Db, SearchDoc};
 use crate::events::Bus;
 use crate::theme::{self, Theme};
 use crate::usage::{self, Usage};
-use crate::{gitlag, history, subagents, taskmeta};
+use crate::{gitlag, history, roles, subagents, taskmeta};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::process::Stdio;
@@ -918,6 +918,7 @@ async fn refresh_inner(app: &Shared) {
                 v
             };
             let crews = crews_for(app, busy_repos, now).await;
+            let marks = roles::marks_of(&roles::read_store(cfg));
             let tasks = tokio::task::spawn_blocking(move || {
                 let mut tasks = tasks;
                 let mut metas_local: HashMap<String, taskmeta::TaskMeta> = HashMap::new();
@@ -925,6 +926,7 @@ async fn refresh_inner(app: &Shared) {
                     let meta = taskmeta::read_task(&data_dir, &t.repo, t.n);
                     let key = keys2.get(&t.repo).cloned().unwrap_or_default();
                     apply_meta(t, meta.as_ref(), &key);
+                    t.crew_roles = marks.get(&t.id).cloned().unwrap_or_default();
                     if let Some(m) = &meta {
                         t.seat = crate::seat::of(t, m, &crews.get(&t.repo).cloned().unwrap_or_default());
                     }

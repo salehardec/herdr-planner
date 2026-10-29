@@ -1,6 +1,6 @@
 import { signal } from '@preact/signals';
 import type { JSX } from 'preact';
-import { attention, currentView, navFolds, panels, persist, runners, selected, snap } from '../store';
+import { attention, currentView, navFolds, panels, persist, runners, selected, snap, tasksIndex } from '../store';
 import { sameEntity } from '../types';
 import { buildTree, type NavNode } from './navtree';
 import { Gl } from './Gl';
@@ -8,6 +8,7 @@ import { t } from '../i18n';
 import { navigateTo } from '../nav';
 import { openTerminal } from '../actions';
 import { seatLabel, seatTip } from '../seat';
+import { markLabel, markTip } from './crew-roles';
 import { Grip } from './Grip';
 import { openAddUniverse } from './AddUniverse';
 import { openAddRunner } from './AddRunner';
@@ -47,6 +48,8 @@ function icon(n: NavNode): JSX.Element {
 }
 
 /** The tooltip of a row: the whole name (the row shows it as far as it fits) and the whole status. */
+const tagOfTask = (id: string): string => tasksIndex.value.get(id)?.tag ?? id;
+
 function tip(n: NavNode): string {
   if (n.kind === 'planet') return n.sub && n.sub !== n.label ? `${n.label}\n${n.sub}` : n.label;
   if (n.kind === 'moon') return [n.label, n.sub].filter(Boolean).join('\n');
@@ -116,6 +119,9 @@ export function Navigator(): JSX.Element {
                   onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') e.stopPropagation(); }}
                 >{seatLabel(n.seat)}</button>
               ) : n.kind === 'planet' && n.status && n.status !== 'done' ? <span class="meta st">{shortStatus(n)}</span> : null}
+              {n.kind === 'planet' && n.roles?.length ? (
+                <span class="meta role-mark" data-role-mark={n.roles[0].name} data-role-marks={n.roles.length} title={n.roles.map((m) => markTip(m, tagOfTask)).join('\n')}>{markLabel(n.roles[0], tagOfTask)}{n.roles.length > 1 ? ` +${n.roles.length - 1}` : ''}</span>
+              ) : null}
               {n.kind === 'moon' && n.sub ? <span class="meta">{n.sub}</span> : null}
               {n.kind === 'galaxy' && n.sub ? <span class="meta">{n.sub}</span> : null}
             </div>
