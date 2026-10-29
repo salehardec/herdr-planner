@@ -3646,8 +3646,9 @@ section('station', async () => {
   await click('[id="st-next-light"]');
   await readyCard();
   check('the light preset shows was → now, and says it is kept by the planner', await hasText('#st-change', 'Лёгкие задачи') && await hasText('#st-change', 'не на доске'), await text('#st-change'));
-  await twoPresses('#st-confirm');
-  check('the planner keeps the preset', await waitFor('fetch("/api/station").then((r) => r.json()).then((d) => d.light === "claude/claude-haiku-5-5")', 45000));
+  const lightLook = '({ card: document.querySelector("#st-change")?.innerText, armed: plannerDebug().armed, pending: window.__net?.pending, bad: window.__net?.bad?.slice(-3) })';
+  const lightKept = await untilDone('the light preset confirmation', () => twoPresses('#st-confirm'), 'fetch("/api/station").then((r) => r.json()).then((d) => d.light === "claude/claude-haiku-5-5")', 15000, lightLook);
+  check('the planner keeps the preset', lightKept, JSON.stringify(await evalJs(lightLook)));
   check('and the board is not asked to change anything for it', !calls().some((c) => c.argv?.[0] === 'set' && c.argv.some((a) => String(a).includes('light'))));
 
   // PLN-89: every one of the five roles has a «Запасной»; the Coordinator, the planner and the light tasks keep theirs in
