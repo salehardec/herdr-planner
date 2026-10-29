@@ -13,7 +13,7 @@ use crate::config::{home, AppConfig};
 use crate::db::{chat_row_hash, ChatHit, ChatTurnRow, Db};
 use serde::Serialize;
 use serde_json::Value;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 use std::time::SystemTime;
@@ -74,6 +74,7 @@ pub fn parse(text: &str) -> Vec<Turn> {
     // The Coordinator is in the middle of a run: it began with a message and has not
     // ended its turn yet. What is queued meanwhile reaches the same run.
     let mut running = false;
+    let mut seen = HashSet::new();
     for (line_no, line) in text.lines().enumerate() {
         // Skip the big records (requests, snapshots) without parsing them.
         let wanted = line.contains("\"type\":\"user\"")
@@ -85,6 +86,15 @@ pub fn parse(text: &str) -> Vec<Turn> {
         let Ok(v) = serde_json::from_str::<Value>(line) else {
             continue;
         };
+        // Native logs can repeat a record when a session resumes. GPUI also deduplicates by UUID.
+        if v.get("isSidechain").and_then(Value::as_bool) == Some(true) {
+            continue;
+        }
+        if let Some(uuid) = v.get("uuid").and_then(Value::as_str).filter(|s| !s.is_empty()) {
+            if !seen.insert(uuid.to_string()) {
+                continue;
+            }
+        }
         let at = v
             .get("timestamp")
             .and_then(Value::as_str)
@@ -143,22 +153,15 @@ pub fn parse(text: &str) -> Vec<Turn> {
     turns
 }
 
-/// A message that reaches a Coordinator in the middle of a run is queued and read
-/// together with the one that started it; one final answer covers them all. So
-/// a notice is dropped and a human's words are added to the turn of the run.
+/// Keep each human record at its own transcript position, including mid-turn input.
+/// Board notices inside a run stay folded into that run, as before.
 fn open_turn(turns: &mut Vec<Turn>, q: String, images: Vec<String>, line: usize, at: u64, queued: bool, running: &mut bool) {
     let from = if q.starts_with(BOARD_PREFIX) || q.starts_with(ACTION_PREFIX) {
         "board"
     } else {
         "human"
     };
-    if queued && *running {
-        if from == "human" {
-            if let Some(turn) = turns.last_mut() {
-                turn.from = "human";
-                turn.q = clip(&format!("{}\n{}", turn.q, q), MAX_QUESTION);
-            }
-        }
+    if queued && *running && from == "board" {
         return;
     }
     *running = true;
@@ -244,7 +247,7 @@ fn human_text(content: Option<&Value>) -> Option<(String, Vec<String>)> {
         _ => return None,
     };
     let text = text.trim();
-    if text.is_empty() || text.starts_with('<') {
+    if (text.is_empty() && images.is_empty()) || text.starts_with('<') {
         return None;
     }
     Some((text.to_string(), images))
@@ -613,7 +616,7 @@ mod tests {
     }
 
     #[test]
-    fn a_human_word_queued_in_a_run_joins_its_turn() {
+    fn a_human_word_queued_in_a_run_keeps_its_position() {
         let text = [
             r#"{"type":"user","timestamp":"2026-10-19T09:00:00.000Z","message":{"content":"давай 1"}}"#,
             r#"{"type":"assistant","timestamp":"2026-10-19T09:00:05.000Z","message":{"stop_reason":"tool_use","content":[{"type":"text","text":"Now the next one."},{"type":"tool_use","name":"Bash","input":{}}]}}"#,
@@ -622,9 +625,12 @@ mod tests {
         ]
         .join("\n");
         let t = parse(&text);
-        assert_eq!(t.len(), 1);
-        assert_eq!(t[0].q, "давай 1\nещё и таймаут 600");
-        assert_eq!(t[0].a, "Готово обе.", "the final answer, not the line between the calls");
+        assert_eq!(t.len(), 2);
+        assert_eq!(t[0].q, "давай 1");
+        assert_eq!(t[0].a, "Now the next one.");
+        assert_eq!(t[1].q, "ещё и таймаут 600");
+        assert_eq!(t[1].a, "Готово обе.");
+        assert_eq!(t[1].line, 2);
     }
 
     #[test]
@@ -684,6 +690,46 @@ mod tests {
         assert_eq!(json["images"], serde_json::json!(["image/png"]));
         assert!(json.get("file").is_none() && json.get("line").is_none(), "where the record is stays inside");
         assert!(serde_json::to_value(&t[0]).unwrap().get("images").is_none());
+    }
+
+    #[test]
+    fn mid_turn_images_keep_their_own_record_and_all_blocks() {
+        let source = r#"{"type":"base64","media_type":"image/png","data":"AQID"}"#;
+        let queued = format!(r#"{{"type":"attachment","uuid":"queued","attachment":{{"type":"queued_command","prompt":[{{"type":"text","text":"[Image #1] [Image #2]ещё мысль"}},{{"type":"image","source":{source}}},{{"type":"image","source":{source}}}]}}}}"#);
+        let text = [
+            r#"{"type":"user","uuid":"first","message":{"content":"первый"}}"#,
+            r#"{"type":"assistant","message":{"stop_reason":"tool_use","content":[{"type":"text","text":"Работаю"},{"type":"tool_use","name":"Bash"}]}}"#,
+            &queued,
+            &queued, // resumed logs can repeat a UUID
+            r#"{"type":"user","isSidechain":true,"message":{"content":"чужой поток"}}"#,
+            r#"{"type":"attachment","attachment":{"type":"queued_command","prompt":"третья мысль"}}"#,
+            r#"{"type":"assistant","message":{"stop_reason":"end_turn","content":[{"type":"text","text":"Сделал все три"}]}}"#,
+            r#"{"type":"user","message":{"content":"Запускай"}}"#,
+        ].join("\n");
+        let turns = parse(&text);
+        assert_eq!(turns.len(), 4);
+        assert_eq!(turns[0].a, "Работаю");
+        assert_eq!(turns[1].q, "[Image #1] [Image #2]ещё мысль");
+        assert_eq!(turns[1].line, 2);
+        assert_eq!(turns[1].images, vec!["image/png", "image/png"]);
+        assert!(turns[1].a.is_empty());
+        assert_eq!(turns[2].q, "третья мысль");
+        assert_eq!(turns[2].a, "Сделал все три");
+        assert_eq!(turns[3].q, "Запускай");
+        assert!(turns[3].a.is_empty());
+        for i in 0..2 {
+            assert_eq!(image_block(text.lines().nth(turns[1].line).unwrap(), i), Some(("image/png".into(), vec![1, 2, 3])));
+        }
+        assert!(image_block(&queued, 2).is_none());
+    }
+
+    #[test]
+    fn image_only_messages_are_not_lost() {
+        let text = r#"{"type":"user","message":{"content":[{"type":"image","source":{"media_type":"image/png"}}]}}"#;
+        let turns = parse(text);
+        assert_eq!(turns.len(), 1);
+        assert!(turns[0].q.is_empty());
+        assert_eq!(turns[0].images, vec!["image/png"]);
     }
 
     #[test]
