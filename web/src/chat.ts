@@ -50,11 +50,12 @@ export async function loadLatest(limit = 3): Promise<void> {
         }
       }
       settleRead();
+      // Still part of this load: whoever waits for the history (the jump to the first unread) waits for the covering, too.
+      await coverRead();
     }
   } catch { /* the compact tail stays */ } finally {
     update({ loadingLatest: false });
   }
-  await coverRead();
 }
 
 /**

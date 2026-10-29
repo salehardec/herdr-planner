@@ -245,13 +245,15 @@ export function Chat(): JSX.Element {
   };
 
   // Opening the chat shows what is new in it. A chat that is open from the start (the wide one is restored open) waits for the history.
-  const ready = c.available !== null;
+  const ready = c.available !== null && !c.loadingLatest;
   useEffect(() => {
     if (!open) { jumped.current = false; opened.current = false; return; }
     if (!ready || jumped.current) return;
     jumped.current = true;
-    const id = requestAnimationFrame(() => { void toUnread(true).finally(() => { opened.current = true; }); });
-    return () => cancelAnimationFrame(id);
+    let ran = false;
+    const id = requestAnimationFrame(() => { ran = true; void toUnread(true).finally(() => { opened.current = true; }); });
+    // A history that starts loading again before the frame cancels the jump: it is made when the history is there.
+    return () => { cancelAnimationFrame(id); if (!ran) jumped.current = false; };
   }, [open, ready]);
 
   const older = async (): Promise<void> => {

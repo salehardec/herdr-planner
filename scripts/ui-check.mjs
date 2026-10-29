@@ -6797,7 +6797,19 @@ section('chat unread', async () => {
   const away = (await send('Page.addScriptToEvaluateOnNewDocument', { source: 'document.hasFocus = () => false;' })).result.identifier;
   await navigate(base + '/?noauto&nocoach&bloom=0');
   check('after a reload the wide chat is open and the acknowledged queue stays cleared', await waitFor('!!document.querySelector("#chat.wide:not(.off)") && !document.querySelector("#bchat-n") && !document.querySelector("#cunread")', 20000), await evalJs(`JSON.stringify({ turns: [...document.querySelectorAll('#clog .turn')].map((e) => e.dataset.n), top: document.querySelector('#clog').scrollTop, header: document.querySelector('#cunread')?.innerText })`));
+  // A slow network: the last turns come first and hold no answer (only board lines), the covering of the history comes after.
+  // The jump to the first unread waits for it, and the end of the chat reads nothing before that.
+  const first3 = say(14);
+  for (let i = 0; i < 4; i++) ask(`[Уведомление доски] gamma/${i + 1} готова`);
+  check('a tall answer and four board lines after it: one is counted', await hasText('#bchat-n', '1', 10000), await text('#bchat'));
   await send('Page.removeScriptToEvaluateOnNewDocument', { identifier: away });
+  const front = (await send('Page.addScriptToEvaluateOnNewDocument', { source: 'document.hasFocus = () => true;' })).result.identifier;
+  await send('Network.enable', {});
+  await send('Network.emulateNetworkConditions', { offline: false, latency: 150, downloadThroughput: -1, uploadThroughput: -1 });
+  await navigate(base + '/?noauto&nocoach&bloom=0');
+  check('after a slow reload the wide chat stands on the answer nobody has seen', await waitFor(`(() => { const e = document.querySelector('#clog .turn[data-n="${first3}"]'); const l = document.querySelector('#clog'); if (!e || !document.querySelector('#chat:not(.off)')) return false; const r = e.getBoundingClientRect(); const o = l.getBoundingClientRect(); return r.top >= o.top - 2 && r.top < o.top + 80; })()`, 30000), await evalJs(`JSON.stringify({ turns: [...document.querySelectorAll('#clog .turn')].map((e) => e.dataset.n), top: document.querySelector('#clog').scrollTop, n: document.querySelector('#bchat-n')?.innerText })`));
+  await send('Network.emulateNetworkConditions', { offline: false, latency: 0, downloadThroughput: -1, uploadThroughput: -1 });
+  await send('Page.removeScriptToEvaluateOnNewDocument', { identifier: front });
   await evalJs('delete document.hasFocus; localStorage.removeItem("herdr-planner.chatWide"); true');
 
   // The changed answer survives a reload that holds only the last turns: three notices come after it, the page starts anew.
