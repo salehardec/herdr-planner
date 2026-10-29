@@ -13,7 +13,7 @@ const program = (name: string, a: Partial<ProgramAvail> = {}, installed = true):
 const setting = (name: string, value: string): StationSetting => ({ name, kind: 'work', value, from: 'you', place: 'you', own: true, note: '' });
 
 const data = (programs: StationProgram[]): StationData => ({
-  ok: true, level: 'you', repo: '', repos: [], version: '1', programs, light: 'omp/deepseek/deepseek-v4-flash',
+  ok: true, level: 'you', repo: '', repos: [], version: '1', programs, light: 'omp/deepseek/deepseek-v4-flash', failover: {},
   presets: { list: [], active: null },
   settings: [
     setting('coordinator.agent', 'claude/opus'), setting('plan.agent', 'none'), setting('reviewer.agent', 'claude/opus'),

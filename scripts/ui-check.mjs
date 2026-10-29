@@ -3628,6 +3628,7 @@ section('station', async () => {
   await typeIn('#st-repo', 'alpha');
   check('the repository level shows its own value and where it comes from', await waitFor('(document.querySelector(\'[data-role="worker"] [data-value="worker.effort"]\')?.innerText || "") === "max"', 8000)
     && (await evalJs('document.querySelector(\'[data-role="worker"] [data-field="effort"] .src\')?.innerText')) === 'репо', await text('[data-role="worker"]'));
+  check('at the repository level the spares of the Coordinator, the planner and the light tasks say they are shared', await exists('[data-role="coordinator"] [data-field="fallback-global"]') && !(await exists('[data-role="coordinator"] [data-field="fallback"]')) && await exists('[data-role="worker"] [data-field="fallback"]'));
   await click('#st-level-you');
 
   // the light tasks preset: the planner's own, kept in its crew file, not on the board
@@ -3644,6 +3645,28 @@ section('station', async () => {
   await twoPresses('#st-confirm');
   check('the planner keeps the preset', await waitFor('fetch("/api/station").then((r) => r.json()).then((d) => d.light === "claude/claude-haiku-5-5")', 45000));
   check('and the board is not asked to change anything for it', !calls().some((c) => c.argv?.[0] === 'set' && c.argv.some((a) => String(a).includes('light'))));
+
+  // PLN-89: every one of the five roles has a «Запасной»; the Coordinator, the planner and the light tasks keep theirs in
+  // the planner (the board has no such setting for them), edited with the same chain editor
+  const spares = await evalJs('["coordinator","plan","reviewer","worker","light"].map((r) => !!document.querySelector(`[data-role="${r}"] [data-field="fallback"]`))');
+  check('all five roles have a «Запасной»', JSON.stringify(spares) === JSON.stringify([true, true, true, true, true]), JSON.stringify(spares));
+  await click('[data-act="st-edit-coordinator.fallback"]');
+  await waitFor('!!document.querySelector(\'[id="st-prog-coordinator.fallback-add"]\')', 5000);
+  await typeIn('[id="st-prog-coordinator.fallback-add"]', 'omp');
+  await waitFor('document.querySelectorAll(\'select[id="st-model-coordinator.fallback-add"] option\').length >= 2', 40000);
+  await waitFor('!document.querySelector("[data-chain-add]").disabled', 5000);
+  await click('[data-chain-add]');
+  await click('[id="st-next-coordinator.fallback"]');
+  await readyCard();
+  check('the Coordinator\'s chain shows was → now, and says the planner keeps it', await waitFor('(document.querySelector("#st-now")?.innerText || "") === "omp"', 6000) && await hasText('#st-change', 'планировщик'), await text('#st-change'));
+  await twoPresses('#st-confirm');
+  check('the planner keeps the chain, with the switching on', await waitFor('fetch("/api/station").then((r) => r.json()).then((d) => d.failover.coordinator.chain === "omp" && d.failover.coordinator.auto === true)', 45000));
+  check('and the board is not asked for a setting it does not have', !calls().some((c) => c.argv?.[0] === 'set' && c.argv.some((a) => String(a).includes('coordinator.fallback'))));
+  check('the switching mark is shown for the role', await waitFor('!!document.querySelector("#st-auto-coordinator")', 15000) && await evalJs('document.querySelector("#st-auto-coordinator").checked'));
+  await evalJs('document.querySelector(\'[data-role="coordinator"]\').scrollIntoView({ block: "start" }); true');
+  await shot('station-spares.png');
+  // the chain goes again, so that the later sections' limits do not make the planner switch the fixture's Coordinator
+  check('the chain can be cleared', (await post('/api/station/failover', { role: 'coordinator', chain: 'none', confirm: true }))[0] === 200);
   await resetUi();
 });
 
