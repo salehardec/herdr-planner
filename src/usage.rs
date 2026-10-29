@@ -906,6 +906,7 @@ mod tests {
             at: NOW,
             stale_after_secs: 1800,
             agents: vec![claude],
+            ..Usage::default()
         };
         let alert = alert_at(&usage, NOW);
         assert_eq!(alert.level, "crit");
