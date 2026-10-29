@@ -34,8 +34,8 @@
 .limchip .lim-ag{color:var(--pl-faint);font-size:0.6562rem;max-width:18rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .limchip .lim-pc.nd{display:none}
 /* the chip shrinks to its percentage (the words stay in the tooltip) or steps aside (LoadBar.tsx measures it, data-form) */
-.limchip[data-form="pct"] .lim-ag{display:none}
-.limchip[data-form="pct"] .lim-pc.nd{display:inline}
+.limchip[data-form="pct"] .lim-ag,.limchip[data-form="worst"] .lim-ag{display:none}
+.limchip[data-form="pct"] .lim-pc.nd,.limchip[data-form="worst"] .lim-pc.nd{display:inline}
 .limchip[data-form="none"]{display:none}
 
   :root.bp900 .top{grid-template-columns:auto minmax(0,1fr) auto;grid-template-areas:"menu crumbs right" "search search mon";height:5.75rem;row-gap:0.375rem;padding-top:0.375rem}

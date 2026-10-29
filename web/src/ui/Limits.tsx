@@ -5,7 +5,7 @@ import { t, locale } from '../i18n';
 import { post, refreshNow } from '../api';
 import { dayTimeOf } from '../util/dates';
 import { money } from '../util/format';
-import { ago, barAgents, countdown, expectedLeft, hasNumbers, leftPct, level, paceLine, PROVIDER_ORDER, tabAgents, tightest, usedPct } from '../util/limits';
+import { ago, barAgents, countdown, expectedLeft, hasNumbers, leftPct, level, paceLine, PROVIDER_NAMES, PROVIDER_ORDER, tabAgents, tightest, usedPct } from '../util/limits';
 import type { AgentUsage, LimitWindow, UsageSection } from '../types';
 import { Gl } from './Gl';
 import { cardAnchor, closeCard } from './hovercard';
@@ -185,7 +185,7 @@ export function LimitAgent(props: { a: AgentUsage }): JSX.Element {
 function Unconnected(): JSX.Element | null {
   const ids = snap.value?.limits?.unconnected ?? [];
   if (!ids.length) return null;
-  const name = (id: string): string => (id === 'kimi' ? 'Kimi Code' : id === 'deepseek' ? 'DeepSeek' : id === 'codex' ? 'Codex' : id === 'claude' ? 'Claude' : id);
+  const name = (id: string): string => PROVIDER_NAMES[id] ?? id;
   return (
     <div class="lim-unc" id="limits-unconnected" title={ids.map((id) => `${name(id)}: ${t(`limits.hint.${id}`)}`).join('\n')}>
       {t('limits.unconnected', { list: ids.map(name).join(', ') })}

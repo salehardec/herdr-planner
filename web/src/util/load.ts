@@ -44,11 +44,19 @@ export const worstMeter = (ms: Meter[]): Meter => ms.reduce((a, b) => (RANK[b.le
 export const tierFor = (rem: number): 'host' | 'full' | 'stack' | 'sum' | 'dot' | 'none' =>
   rem >= 31 ? 'host' : rem >= 22 ? 'full' : rem >= 12.5 ? 'stack' : rem >= 5.6 ? 'sum' : rem >= 3.8 ? 'dot' : 'none';
 
-/** The top bar's monitoring group (the bars, then the subscription chip) in the room (rem) the menu and the crumbs leave: the chip keeps its
- *  words (the agent and the window) while the bars still get the full form, else it shrinks to its percentage, and with no room at all
- *  it steps aside. `gap` is the space between the two. */
-export function monFit(room: number, chipFull: number, chipPct: number, gap: number): { chip: 'full' | 'pct' | 'none'; tier: ReturnType<typeof tierFor> } {
-  if (room - chipFull - gap >= 12.5) return { chip: 'full', tier: tierFor(room - chipFull - gap) };
-  if (room >= chipPct) return { chip: 'pct', tier: tierFor(room - chipPct - gap) };
+/** The forms of the subscription row, widest first: every provider with the two tightest windows (`full`), with the tightest one
+ *  (`one`), with only its share (`pct`), only the provider closest to its limit and only its share (`worst`), or nothing. */
+export type RowForm = 'full' | 'one' | 'pct' | 'worst' | 'none';
+
+/** The top bar's monitoring group (the bars, then the subscription row) in the room (rem) the menu and the crumbs leave: the row keeps
+ *  all its words while the bars still get the stack form, the tightest window of each provider or their shares while the bars keep at
+ *  least their summary, the one provider closest to its limit while there is room at all, and steps aside with none. `w` holds the width
+ *  of each form and `gap` is the space between the two. */
+export function rowFit(room: number, w: Record<Exclude<RowForm, 'none'>, number>, gap: number): { chip: RowForm; tier: ReturnType<typeof tierFor> } {
+  const left = (x: number): number => room - x - gap;
+  if (left(w.full) >= 12.5) return { chip: 'full', tier: tierFor(left(w.full)) };
+  if (left(w.one) >= 5.6) return { chip: 'one', tier: tierFor(left(w.one)) };
+  if (left(w.pct) >= 5.6) return { chip: 'pct', tier: tierFor(left(w.pct)) };
+  if (room >= w.worst) return { chip: 'worst', tier: tierFor(left(w.worst)) };
   return { chip: 'none', tier: 'none' };
 }

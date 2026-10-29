@@ -6,7 +6,7 @@ import { t, tn, locale } from '../i18n';
 import { goHome } from '../nav';
 import { cardAnchor, closeCard } from './hovercard';
 import { rootPx } from '../scale';
-import { gb, levelOf, meters, monFit, pct, staleLoad, worstMeter, type LoadLevel, type Meter } from '../util/load';
+import { gb, levelOf, meters, pct, rowFit, staleLoad, worstMeter, type LoadLevel, type Meter } from '../util/load';
 import './loadbar.css';
 
 /** What time it is for the bars: they go grey when a reading is too old. */
@@ -56,7 +56,7 @@ function useTier(box: { current: HTMLElement | null }): void {
       // a phone-sized window puts the group on the second row, beside the search: always the narrowest forms
       if (document.documentElement.classList.contains('bp900')) {
         el.dataset.tier = 'sum';
-        if (chip) chip.dataset.form = 'pct';
+        if (chip) chip.dataset.form = 'worst';
         if (gate) gate.dataset.form = 'icon';
         return;
       }
@@ -67,13 +67,9 @@ function useTier(box: { current: HTMLElement | null }): void {
       const natural = kids.reduce((a, c) => a + (c.tagName === 'BUTTON' ? c.scrollWidth : c.offsetWidth), 0) + gap * Math.max(0, kids.length - 1);
       const rowGap = parseFloat(getComputedStyle(row).columnGap) || 0;
       const monGap = parseFloat(getComputedStyle(mon).columnGap) || 0;
-      let full = 0;
-      let one = 0;
-      let short = 0;
+      const widths = { full: 0, one: 0, pct: 0, worst: 0 };
       if (chip) {
-        chip.dataset.form = 'full'; full = chip.offsetWidth;
-        chip.dataset.form = 'one'; one = chip.offsetWidth;
-        chip.dataset.form = 'pct'; short = chip.offsetWidth;
+        for (const form of ['full', 'one', 'pct', 'worst'] as const) { chip.dataset.form = form; widths[form] = chip.offsetWidth / px; }
       }
       let gateFull = 0;
       let gateIcon = 0;
@@ -83,18 +79,12 @@ function useTier(box: { current: HTMLElement | null }): void {
       }
       const room = (row.clientWidth - menu.offsetWidth - natural - 2 * rowGap) / px;
       // the gate keeps its words while the subscription chip still keeps its own; else it is only an icon and a dot
-      // the subscriptions keep all their words, else the tightest window of each provider, else only its share (the chip of one agent has the first and the last)
-      const pick = (r: number): { chip: 'full' | 'one' | 'pct' | 'none'; tier: ReturnType<typeof monFit>['tier'] } => {
-        const a = monFit(r, full / px, short / px, monGap / px);
-        if (a.chip === 'full' || one >= full) return a;
-        const b = monFit(r, one / px, short / px, monGap / px);
-        return b.chip === 'full' ? { chip: 'one', tier: b.tier } : a;
-      };
-      let fit = pick(room - (gate ? (gateFull + monGap) / px : 0));
+      // the subscriptions keep all their words, else the tightest window of each provider, else their shares, else only the provider closest to its limit
+      let fit = rowFit(room - (gate ? (gateFull + monGap) / px : 0), widths, monGap / px);
       let gateForm: 'full' | 'icon' = 'full';
-      if (gate && (fit.chip === 'pct' || fit.chip === 'none')) {
+      if (gate && (fit.chip === 'pct' || fit.chip === 'worst' || fit.chip === 'none')) {
         gateForm = 'icon';
-        fit = pick(room - (gateIcon + monGap) / px);
+        fit = rowFit(room - (gateIcon + monGap) / px, widths, monGap / px);
       }
       el.dataset.tier = fit.tier;
       if (chip) chip.dataset.form = fit.chip;

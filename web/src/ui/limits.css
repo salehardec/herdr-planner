@@ -44,12 +44,13 @@
 .lp-bal{display:inline;color:var(--pl-title);font-weight:700}
 .lp-crit .lp-t,.lp-crit .lp-s{color:var(--pl-danger)}
 .lp-warn .lp-t,.lp-warn .lp-s{color:var(--c-yellow)}
-/* the forms: all the words, the tightest window only, its share only (LoadBar.tsx picks one by the room) */
+/* the forms: all the words, the tightest window only, the shares only, the one provider closest to its limit (LoadBar.tsx picks one by the room) */
 .limchip[data-form="one"] .lp-t2{display:none}
-.limchip[data-form="pct"] .lp-t{display:none}
-.limchip[data-form="pct"] .lp-s{display:inline}
-.limchip[data-form="pct"] .lp-bar{width:1.5rem}
-.limchip[data-form="pct"].lim-row{gap:0.5rem}
+.limchip[data-form="pct"] .lp-t,.limchip[data-form="worst"] .lp-t{display:none}
+.limchip[data-form="pct"] .lp-s,.limchip[data-form="worst"] .lp-s{display:inline}
+.limchip[data-form="pct"] .lp-bar,.limchip[data-form="worst"] .lp-bar{display:none}
+.limchip[data-form="pct"].lim-row{gap:0.5rem;padding:0 0.5rem}
+.limchip[data-form="worst"] .lp:not(:first-child){display:none}
 
 .lc-body{display:grid;gap:0.375rem}
 .lc-head,.lc-sub{display:flex;justify-content:space-between;align-items:baseline;gap:0.75rem;min-width:0}
