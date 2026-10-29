@@ -6807,7 +6807,7 @@ section('chat unread', async () => {
   await send('Network.enable', {});
   await send('Network.emulateNetworkConditions', { offline: false, latency: 150, downloadThroughput: -1, uploadThroughput: -1 });
   await navigate(base + '/?noauto&nocoach&bloom=0');
-  check('after a slow reload the wide chat stands on the answer nobody has seen', await waitFor(`(() => { const e = document.querySelector('#clog .turn[data-n="${first3}"]'); const l = document.querySelector('#clog'); if (!e || !document.querySelector('#chat:not(.off)')) return false; const r = e.getBoundingClientRect(); const o = l.getBoundingClientRect(); return r.top >= o.top - 2 && r.top < o.top + 80; })()`, 30000), await evalJs(`JSON.stringify({ turns: [...document.querySelectorAll('#clog .turn')].map((e) => e.dataset.n), top: document.querySelector('#clog').scrollTop, n: document.querySelector('#bchat-n')?.innerText })`));
+  check('after a slow reload the wide chat stands on the answer nobody has seen', await waitFor(`(() => { const e = document.querySelector('#clog .turn[data-n="${first3}"]'); const l = document.querySelector('#clog'); if (!e || !document.querySelector('#chat:not(.off)')) return false; const r = e.getBoundingClientRect(); const o = l.getBoundingClientRect(); return r.top >= o.top - 2 && r.top < o.top + 80; })()`, 30000), await evalJs(`JSON.stringify({ turns: [...document.querySelectorAll('#clog .turn')].map((e) => e.dataset.n), top: document.querySelector('#clog').scrollTop, n: document.querySelector('#bchat-n')?.innerText, first: ${first3}, read: localStorage.getItem('herdr-planner.chat.read'), mre: window.__mre })`));
   await send('Network.emulateNetworkConditions', { offline: false, latency: 0, downloadThroughput: -1, uploadThroughput: -1 });
   await send('Page.removeScriptToEvaluateOnNewDocument', { identifier: front });
   await evalJs('delete document.hasFocus; localStorage.removeItem("herdr-planner.chatWide"); true');
@@ -6831,6 +6831,90 @@ section('chat unread', async () => {
   await send('Page.removeScriptToEvaluateOnNewDocument', { identifier: away2 });
 }, { retry: false });
 
+
+
+section('rvw83z', async () => {
+  const READ = 'herdr-planner.chat.read';
+  const folder = realpathSync(join(fixture, 'board', 'coordinator', 'default', 'chat')).replace(/[^A-Za-z0-9]/g, '-');
+  const file = join(fixture, 'claude', 'projects', folder, 'fixture.jsonl');
+  let next = 11;
+  const usage = { input_tokens: 3000, cache_read_input_tokens: 140000, cache_creation_input_tokens: 7000 };
+  const when = (i, k) => new Date(1792389360000 + i * 60000 + k).toISOString();
+  const say = (lines = 1) => {
+    const i = next++;
+    const at = (k) => when(i, k);
+    const body = Array.from({ length: lines }, (_, k) => `Ответ ${i}, строка ${k + 1}: всё идёт по плану.`).join('\n');
+    appendFileSync(file, JSON.stringify({ type: 'user', timestamp: at(0), message: { role: 'user', content: `Вопрос ${i}: что нового?` } }) + '\n'
+      + JSON.stringify({ type: 'assistant', timestamp: at(1000), message: { role: 'assistant', model: 'claude-opus-5-5', content: [{ type: 'text', text: body }], usage } }) + '\n');
+    return i - 1;
+  };
+  const focus = (on) => evalJs(`(() => { document.hasFocus = () => ${on}; window.dispatchEvent(new Event(${JSON.stringify(on ? 'focus' : 'blur')})); return true; })()`);
+  const stored = () => evalJs(`JSON.parse(localStorage.getItem(${JSON.stringify(READ)}) || 'null')`);
+  const state = () => evalJs(`JSON.stringify({ dist: (() => { const l = document.querySelector('#clog'); return Math.round(l.scrollHeight - l.scrollTop - l.clientHeight); })(), cunread: document.querySelector('#cunread')?.innerText || null, bchat: document.querySelector('#bchat-n')?.innerText || null, tolast: !!document.querySelector('#tolast'), last: [...document.querySelectorAll('#clog .turn')].map((e) => e.dataset.n).slice(-1)[0] })`);
+  const log = (label) => state().then((s) => { console.log(`RVW ${label}: ${s}`); return JSON.parse(s); });
+
+  await resetUi();
+  await evalJs(`localStorage.removeItem(${JSON.stringify(READ)}); true`);
+  await navigate(base + '/?noauto&nocoach&bloom=0');
+  await focus(true);
+  await click('#bchat');
+  await waitFor('!document.querySelector("#chat").classList.contains("off")', 5000);
+  for (let i = 0; i < 4; i++) say(14);
+  await sleep(3000);
+  let s = await log('A0 at end after 4 tall answers');
+  check('RVW A0 at the end: no badge', s.dist < 24 && !s.cunread && !s.bchat, JSON.stringify(s));
+  // scroll up (a user-like wheel scroll), keep above the older-load zone
+  await evalJs('(() => { const l = document.querySelector("#clog"); l.scrollTop = Math.max(200, l.scrollHeight - l.clientHeight - 900); return true; })()');
+  await sleep(800);
+  say(3);
+  await sleep(2500);
+  s = await log('A1 scrolled up, one new');
+  check('RVW A1 scrolled up → 1 new', (s.cunread || '').includes('1 нов'), JSON.stringify(s));
+  await click('#cunread');
+  await sleep(3000);
+  s = await log('A2 after badge click');
+  check('RVW A2 after click: at bottom, no badge', s.dist < 24 && !s.cunread && !s.bchat, JSON.stringify(s));
+  await shot('rvw-a2-after-click.png');
+  // nothing touched; another answer arrives
+  say(3);
+  await sleep(3000);
+  s = await log('A3 next answer after the click, nothing touched');
+  check('RVW A3 the log follows the end and shows no badge', s.dist < 24 && !s.cunread && !s.bchat, JSON.stringify(s));
+  await shot('rvw-a3-next-answer.png');
+  say(3);
+  await sleep(3000);
+  s = await log('A4 one more answer');
+  check('RVW A4 still following', s.dist < 24 && !s.cunread && !s.bchat, JSON.stringify(s));
+
+  // B: scroll up, new answer, then the user scrolls to the bottom by hand: badge goes, next answer is followed
+  await evalJs('(() => { const l = document.querySelector("#clog"); l.scrollTop = Math.max(200, l.scrollHeight - l.clientHeight - 900); return true; })()');
+  await sleep(800);
+  say(3);
+  await sleep(2500);
+  s = await log('B1 scrolled up, one new');
+  await evalJs('(() => { const l = document.querySelector("#clog"); l.scrollTop = l.scrollHeight; return true; })()');
+  await sleep(2500);
+  s = await log('B2 scrolled to the end by hand');
+  check('RVW B2 scrolled to the end by hand: no badge', s.dist < 24 && !s.cunread && !s.bchat, JSON.stringify(s));
+  say(3);
+  await sleep(3000);
+  s = await log('B3 next answer');
+  check('RVW B3 followed', s.dist < 24 && !s.cunread && !s.bchat, JSON.stringify(s));
+
+  // C: #tolast after scroll up
+  await evalJs('(() => { const l = document.querySelector("#clog"); l.scrollTop = Math.max(200, l.scrollHeight - l.clientHeight - 900); return true; })()');
+  await sleep(800);
+  say(3);
+  await sleep(2500);
+  await click('#tolast');
+  await sleep(3000);
+  s = await log('C1 after tolast');
+  check('RVW C1 tolast: at end, no badge', s.dist < 24 && !s.cunread && !s.bchat, JSON.stringify(s));
+  say(3);
+  await sleep(3000);
+  s = await log('C2 next answer after tolast');
+  check('RVW C2 followed', s.dist < 24 && !s.cunread && !s.bchat, JSON.stringify(s));
+}, { retry: false });
 
 // ── the phone's light page: /m (PLN-79) ────────────────────────────────────
 
