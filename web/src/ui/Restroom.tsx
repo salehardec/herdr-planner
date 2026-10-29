@@ -7,13 +7,14 @@ import { t } from '../i18n';
 import { toast } from '../toast';
 import { effectiveWidth } from '../scale';
 import { backLabel, irisText } from '../restroom/labels';
+import { bindPad } from '../restroom/touch';
 import { drawScreen } from '../restroom/draw';
 import { H, W, type Pad } from '../restroom/game';
 import { readWallpaper } from '../restroom/image';
 import { freshNotes } from '../restroom/notes';
 import { WALLS, wallCss } from '../restroom/walls';
 import {
-  customWall, game, iris, leave, noteLater, noteBase, origin, roomOpen, setCustomWall, setWall, wallId,
+  customWall, game, iris, leave, noteLater, noteBase, origin, roomOpen, setCustomWall, setWall, touch, wallId,
 } from '../restroom/state';
 import './restroom.css';
 
@@ -22,37 +23,29 @@ const SHELL: [string, Pad, string][] = [['u', 'up', 'restroom.pad.up'], ['l', 'l
 
 function PadButton(props: { pad: Pad; label: string; cls?: string }): JSX.Element {
   const ref = useRef<HTMLButtonElement>(null);
-  const on = (v: boolean) => (e: PointerEvent): void => {
-    e.preventDefault();
-    ref.current?.classList.toggle('dn', v);
-    if (v) game.down(props.pad); else game.up(props.pad);
-  };
-  return (
-    <button
-      ref={ref} type="button" class={props.cls} tabIndex={-1} data-pad={props.pad} aria-label={props.label}
-      onPointerDown={on(true)} onPointerUp={on(false)} onPointerLeave={(e) => { if (ref.current?.classList.contains('dn')) on(false)(e); }} onPointerCancel={on(false)}
-    />
-  );
+  useEffect(() => ref.current ? bindPad(ref.current, props.pad, touch) : undefined, [props.pad]);
+  return <button ref={ref} type="button" class={props.cls} tabIndex={-1} data-pad={props.pad} aria-label={props.label} />;
 }
 
-function Screen(): JSX.Element {
+function Screen(props: { mobile?: boolean }): JSX.Element {
   const ref = useRef<HTMLCanvasElement>(null);
   const open = roomOpen.value;
   useEffect(() => {
     const g = ref.current?.getContext('2d');
     if (!g) return;
     g.imageSmoothingEnabled = false;
-    drawScreen(g, game, performance.now());
+    drawScreen(g, game, performance.now(), props.mobile);
     if (!open) return;
     let last = performance.now();
     let id = requestAnimationFrame(function frame(now) {
       id = requestAnimationFrame(frame);
+      touch.advance(now - last);
       game.advance(now - last);
       last = now;
-      drawScreen(g, game, now);
+      drawScreen(g, game, now, props.mobile);
     });
     return () => cancelAnimationFrame(id);
-  }, [open]);
+  }, [open, props.mobile]);
   return <canvas id="rm-screen" ref={ref} width={W} height={H} role="img" aria-label={t('restroom.screen')} />;
 }
 
@@ -122,7 +115,7 @@ function Notes(): JSX.Element {
 /** While the room is open nothing behind it takes the focus or is read out. */
 function useInertBehind(room: { current: HTMLElement | null }, on: boolean): void {
   useEffect(() => {
-    const win = document.getElementById('win');
+    const win = document.getElementById('win') ?? document.getElementById('app');
     if (!win || !room.current) return;
     const others = [...win.children].flatMap((c) => (c.id === 'app' ? [...c.children] : [c])).filter((c) => c !== room.current && c.id !== 'rm-iris') as HTMLElement[];
     others.forEach((c) => { c.inert = on; });
@@ -130,17 +123,17 @@ function useInertBehind(room: { current: HTMLElement | null }, on: boolean): voi
   }, [on]);
 }
 
-export function Restroom(): JSX.Element {
+export function Restroom(props: { mobile?: boolean } = {}): JSX.Element {
   const room = useRef<HTMLElement>(null);
   const open = roomOpen.value;
   const ir = iris.value;
   useInertBehind(room, open);
   // a narrow window scrolls the room: it opens from the top
-  useEffect(() => { if (open && room.current) room.current.scrollTop = 0; }, [open]);
+  useEffect(() => { if (open && room.current) { room.current.scrollTop = 0; room.current.focus({ preventScroll: true }); } }, [open]);
   const wall = wallId.value === 'custom' && customWall.value ? `url("${customWall.value}")` : wallCss(WALLS.find((w) => w.id === wallId.value) ?? WALLS[0]);
   return (
     <>
-      <section id="rm" class={`rm ${open ? 'on' : ''}`} ref={room} aria-label={t('restroom.title')} aria-hidden={!open}>
+      <section id="rm" class={`rm ${props.mobile ? 'rm-mobile' : ''} ${open ? 'on' : ''}`} ref={room} tabIndex={-1} inert={!open} aria-label={t('restroom.title')} aria-hidden={!open}>
         <div class="rm-wall"><div id="rm-wall-img" key={wallId.value} style={`background-image:${wall}`} data-wall={wallId.value} /></div>
         <div class="rm-vig" />
         <div id="rm-exit">
@@ -152,7 +145,7 @@ export function Restroom(): JSX.Element {
             <div class="rm-brand"><span>{t('restroom.brand')}</span><small>{t('restroom.brand.tag')}</small></div>
             <div class="rm-bezel">
               <div class="rm-led"><i class={open ? 'on' : ''} />{t('restroom.power')}</div>
-              <Screen />
+              <Screen mobile={props.mobile} />
             </div>
             <div class="rm-ctl">
               <div class="rm-dpad">{SHELL.map(([c, pad, label]) => <PadButton key={pad} pad={pad} cls={c} label={t(label)} />)}</div>
@@ -164,6 +157,7 @@ export function Restroom(): JSX.Element {
             </div>
             <div class="rm-speaker"><i /><i /><i /><i /><i /></div>
           </div>
+          <div class="rm-touch-hint">{t('restroom.hint.touch')}</div>
           <div class="rm-hint">
             <kbd>←</kbd><kbd>→</kbd> {t('restroom.hint.move')} · <kbd>{t('restroom.key.space')}</kbd> {t('restroom.hint.fire')} · <kbd>P</kbd> {t('restroom.hint.pause')} · <kbd>M</kbd> {t('restroom.hint.menu')} · <kbd>Esc</kbd> {t('restroom.hint.exit')}
           </div>

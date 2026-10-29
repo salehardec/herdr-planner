@@ -66,12 +66,16 @@ export const onState = (fn: (s: Snapshot) => void): void => { stateListener = fn
 
 let es: EventSource | null = null;
 let fallback: number | null = null;
-let polling = false;
+let polling: Promise<void> | null = null;
 
 /** The `chat_rev` of the last projection (the light page's long-poll has no `chat` event: the number says the transcript grew). */
 let chatRev: number | null = null;
 
 function accept(s: Snapshot): void {
+  // A GET started before a state event can finish after it. Never roll the page (and the next link edit) back to that
+  // older reading. The time allows a restarted server to reset seq; seq orders readings in the same millisecond.
+  const current = snap.value;
+  if (current && (s.at < current.at || (s.at === current.at && s.seq < current.seq))) return;
   snap.value = s;
   if (typeof s.chat_rev === 'number' && s.chat_rev !== chatRev) {
     const first = chatRev === null;
@@ -83,9 +87,7 @@ function accept(s: Snapshot): void {
   stateListener?.(s);
 }
 
-async function pollOnce(): Promise<void> {
-  if (polling) return;
-  polling = true;
+async function readState(): Promise<void> {
   try {
     accept(await api<Snapshot>('/api/state'));
     if (!lite) setLoad(await api<LoadInfo>('/api/load'));
@@ -95,9 +97,13 @@ async function pollOnce(): Promise<void> {
     if (gate.value === 'poll') live.value = false;
     // the device lost the full version (the owner took it away): the planner's address leads on to the light page
     if (gate.value && (e as ApiError).status === 403) location.href = '/';
-  } finally {
-    polling = false;
   }
+}
+
+function pollOnce(): Promise<void> {
+  // Actions await refreshNow before reading the current links. Share the read itself, so another caller cannot
+  // continue with stale state just because a poll is already in flight.
+  return polling ??= readState().finally(() => { polling = null; });
 }
 
 export const refreshNow = pollOnce;
