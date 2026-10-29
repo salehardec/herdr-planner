@@ -7009,7 +7009,7 @@ section('light page rest room', async () => {
     board.rows.push({ id: 'alpha/23', app: 'claude', state: 'blocked', kind: 'question', stage: 'working', title: 'Вопрос с телефона', msg: 'Нужно уточнение с телефона' });
     writeFileSync(taskFile, JSON.stringify(board));
     await post('/api/refresh', {});
-    check('phone: a new waiting task appears in the room', await waitFor('!!document.querySelector("#rm-notes [data-note=\"alpha/23\"]")', 20000));
+    check('phone: a new waiting task appears in the room', await waitFor(`!!document.querySelector('#rm-notes [data-note="alpha/23"]')`, 20000));
     await evalJs('document.querySelector("#rm-notes").scrollIntoView({block:"nearest"}); true');
     await tap('#rm-notes [data-note="alpha/23"] [data-act="fly"]');
     check('phone: «Лететь» opens the task sheet on /m', await waitFor('!restroomState().open && mobile.sheet.value?.kind === "task" && mobile.sheet.value.id === "alpha/23" && !!document.querySelector("#sheet.on")', 5000) && await evalJs('location.pathname === "/m"'));
