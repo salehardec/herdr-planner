@@ -6788,7 +6788,8 @@ section('chat unread', async () => {
   await click('#tolast');
   await waitFor('(() => { const l = document.querySelector("#clog"); return l.scrollHeight - l.scrollTop - l.clientHeight < 30; })()', 12000);
   await click('#cunread');
-  check('the header button takes the reader back to the first unread and clears the counts', await waitFor(`(() => { const e = document.querySelector('#clog .turn[data-n="${first2}"]'); const l = document.querySelector('#clog'); if (!e) return false; const r = e.getBoundingClientRect(); const o = l.getBoundingClientRect(); return r.top >= o.top - 2 && r.top < o.top + 80; })() && !document.querySelector('#bchat-n') && !document.querySelector('#cunread')`, 15000), await text('#bchat'));
+  // (the first answer was in view for a moment on opening and is read: the first unread is the next one)
+  check('the header button takes the reader back to the first unread and clears the counts', await waitFor(`(() => { const e = document.querySelector('#clog .turn[data-n="${first2 + 1}"]'); const l = document.querySelector('#clog'); if (!e) return false; const r = e.getBoundingClientRect(); const o = l.getBoundingClientRect(); return r.top >= o.top - 2 && r.top < o.top + 80; })() && !document.querySelector('#bchat-n') && !document.querySelector('#cunread')`, 15000), await text('#bchat'));
 
   // The wide chat is restored open by a reload: it waits for the history and then goes to the first unread, too.
   await click('#cwide');
