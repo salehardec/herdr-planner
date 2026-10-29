@@ -22,6 +22,8 @@ import { chatWide, installChatWide, installWideRoom } from './chat-wide';
 import { installPanelWidths } from './panel-width';
 import { connectTasks } from './actions';
 import { taskOpener } from './task-open';
+import { installRoomInput } from './restroom/input';
+import './restroom/open';
 import { installTodoDnD } from './ui/Todo';
 import { toast } from './toast';
 import { warpSound } from './sound';
@@ -210,6 +212,7 @@ onState((s: Snapshot) => {
 
 installChatWide();
 installKeys();
+installRoomInput();
 installCard();
 installTodoDnD($('scene'));
 const onResize = (): void => { narrow.value = effectiveWidth() < 900; };

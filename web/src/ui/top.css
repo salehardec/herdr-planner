@@ -9,7 +9,7 @@
 .right{display:flex;justify-content:flex-end;gap:0.5rem;align-items:center;min-width:0}
 .waitbtn .short{display:none}
 .mon{flex:none;min-width:0;display:flex;align-items:center;gap:0.5rem}
-.waitbtn{border-radius:1rem;height:1.875rem}
+.waitbtn,.restbtn{border-radius:1rem;height:1.875rem}
 .waitbtn.hot{border-color:color-mix(in srgb,var(--c-yellow) 60%,var(--pl-line));color:var(--c-yellow);background:color-mix(in srgb,var(--c-yellow) 10%,var(--pl-panel-solid))}
 /* Something waits: the same slow breath as a working task's glyph (`beat`, 2.2 s), as a soft halo; calm at zero. */
 .waitbtn.hot{animation:waitpulse 2.2s ease-in-out infinite}
@@ -43,5 +43,5 @@
   :root.bp900 .top .menu{grid-area:menu}:root.bp900 .top .crumbs{grid-area:crumbs}:root.bp900 .top .right{grid-area:right}:root.bp900 .top .top-search{grid-area:search}
   :root.bp900 .top .mon{grid-area:mon;justify-self:end}
   :root.bp900 .modeswitch button{padding:0.3125rem 0.5rem}
-  :root.bp900 .waitbtn .long{display:none}
+  :root.bp900 .waitbtn .long,:root.bp900 .restbtn .long{display:none}
   :root.bp900 .waitbtn .short{display:inline}

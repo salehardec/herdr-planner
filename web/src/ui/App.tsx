@@ -22,6 +22,7 @@ import { TunnelGuide } from './TunnelGuide';
 import { Cockpit } from './Cockpit';
 import { Station, StationAuto } from './Station';
 import { Ship } from './Ship';
+import { Restroom } from './Restroom';
 import { RememberDialog } from './MemoryPanel';
 import { MemoryWindow } from './MemoryWindow';
 import { Gl } from './Gl';
@@ -84,6 +85,7 @@ export function App(): JSX.Element {
       <StationAuto />
       <Toasts />
       <Lightbox />
+      <Restroom />
     </>
   );
 }

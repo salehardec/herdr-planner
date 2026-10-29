@@ -11,6 +11,7 @@ import { seatLabel, seatTip } from '../seat';
 import { Grip } from './Grip';
 import { openAddUniverse } from './AddUniverse';
 import { openAddRunner } from './AddRunner';
+import { openRestroom } from '../restroom/open';
 import './navigator.css';
 
 const focusKey = signal<string>('');
@@ -120,6 +121,12 @@ export function Navigator(): JSX.Element {
             </div>
           );
         })}
+      </div>
+      <div class="nav-ship" id="nav-ship">
+        <h4>{t('restroom.ship')}</h4>
+        <button id="rm-nav-btn" type="button" title={t('restroom.tip')} onClick={(e) => openRestroom(e.detail === 0 ? e.currentTarget : null, true)}>
+          <span>☕ {t('restroom.title')}</span><kbd>O</kbd>
+        </button>
       </div>
       <Grip panel="nav" side="right" />
     </aside>

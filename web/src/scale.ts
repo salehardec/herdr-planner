@@ -34,7 +34,7 @@ export const scaleTick = signal(0);
    the width of the window as the interface sees it is innerWidth / (rootPx / 16), so a raised scale on a small
    window gets the narrow layouts a smaller window would. The classes bp440 … bp1700 sit on <html> (base.css and
    the panels' sheets use them). */
-export const BREAKPOINTS = [440, 900, 1000, 1100, 1400, 1700];
+export const BREAKPOINTS = [440, 900, 1000, 1100, 1400, 1499, 1700];
 /** The window's width in design pixels (16 px to the rem). */
 export const effectiveWidth = (): number => innerWidth / (rootPx() / 16);
 
