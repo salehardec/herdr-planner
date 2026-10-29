@@ -10,7 +10,8 @@ import { confirmStep } from '../actions';
 import { t, tn } from '../i18n';
 import { toast } from '../toast';
 import { AgentPick, ChainEditor, EffortPick } from './CrewPick';
-import { ROLE_IDS, ROLE_SETTING, RoleId, rolesOrEmpty, sameRoles } from './crew-view';
+import { presetKey, presetKeys, ROLE_IDS, ROLE_SETTING, RoleId, rolesOrEmpty, sameRoles } from './crew-view';
+import type { CrewRole } from './crew-roles-api';
 import {
   callError, CallError, PresetItem, PresetPreview, PresetRole, presetApply, presetPreview, presetsPost, StationData,
 } from './station-api';
@@ -42,7 +43,7 @@ async function startApply(id: string, repo: string): Promise<void> {
   }
 }
 
-const fieldTitle = (role: string, field: string): string => `${t(`st.r.${role}`)} · ${t(`st.f.${field}`)}`;
+const fieldTitle = (s: { role: string; field: string; label?: string }): string => `${s.label || t(`st.r.${s.role}`)} · ${t(`st.f.${s.field}`)}`;
 const shown = (v: string | null | undefined): string => (v ? v : t('st.empty'));
 
 function ApplyCard(props: { repo: string; reload: () => void }): JSX.Element | null {
@@ -84,8 +85,8 @@ function ApplyCard(props: { repo: string; reload: () => void }): JSX.Element | n
             : (
               <ol class="pv-steps" id="st-pv-steps">
                 {p.steps.map((s) => (
-                  <li key={s.setting} data-step={s.setting} class={s.error ? 'bad' : ''}>
-                    <div class="pv-name">{fieldTitle(s.role, s.field)}</div>
+                  <li key={`${s.setting}|${s.field}`} data-step={s.setting} data-step-field={s.field} class={s.error ? 'bad' : ''}>
+                    <div class="pv-name">{fieldTitle(s)}</div>
                     <div class="ba">
                       <code class="was">{shown(s.was)}</code>
                       <span class="arr" aria-hidden="true">→</span>
@@ -98,6 +99,7 @@ function ApplyCard(props: { repo: string; reload: () => void }): JSX.Element | n
               </ol>
             )}
           {p.light_skipped && <div class="hint" id="st-pv-light">{t('st.pv.lightSkipped')}</div>}
+          {p.roles_skipped && <div class="hint" id="st-pv-roles">{t('cr.pv.rolesSkipped')}</div>}
           {p.loading.length > 0 && <div class="hint" id="st-pv-loading">{t('st.pv.loading', { list: p.loading.join(', ') })}</div>}
           <div class="pv-affects" id="st-pv-affects" data-running={running.length} data-waiting={waiting.length}>
             {running.length + waiting.length === 0 && <div class="hint">{t('st.pv.noTasks')}</div>}
@@ -130,9 +132,10 @@ function ApplyCard(props: { repo: string; reload: () => void }): JSX.Element | n
 
 /* ───────── the editor of one preset ───────── */
 
-function PresetEditor(props: { preset: PresetItem; programs: StationData['programs']; onDone: () => void }): JSX.Element {
-  const { preset, programs } = props;
-  const saved = rolesOrEmpty(preset.roles);
+function PresetEditor(props: { preset: PresetItem; programs: StationData['programs']; own: CrewRole[]; onDone: () => void }): JSX.Element {
+  const { preset, programs, own } = props;
+  const ids = own.map((r) => r.id);
+  const saved = rolesOrEmpty(preset.roles, ids);
   const [roles, setRoles] = useState<Record<string, PresetRole>>(saved);
   const [err, setErr] = useState('');
   const [busy, setBusy] = useState(false);
@@ -152,13 +155,14 @@ function PresetEditor(props: { preset: PresetItem; programs: StationData['progra
   };
   return (
     <div class="pe" data-preset-editor={preset.id}>
-      {ROLE_IDS.map((role: RoleId) => {
+      {presetKeys(ids).map((role: string) => {
         const r = roles[role];
-        const sets = ROLE_SETTING[role];
-        const agentId = `pe-${role}`;
+        const mine = own.find((x) => presetKey(x.id) === role);
+        const sets = mine ? { effort: 'effort', fallback: 'fallback' } : ROLE_SETTING[role as RoleId];
+        const agentId = `pe-${role.replace(':', '-')}`;
         return (
           <div class="pe-role" key={role} data-pe-role={role}>
-            <div class="rh"><b>{t(`st.r.${role}`)}</b></div>
+            <div class="rh"><b>{mine ? mine.name : t(`st.r.${role}`)}</b>{mine && <span class="hint">{t('cr.own')}</span>}</div>
             <AgentPick programs={programs} value={r.agent} onChange={(v) => set(role, { agent: v, ...(v ? {} : { effort: '' }) })} id={agentId} emptyLabel={t('st.peUnset')} />
             {sets.effort && <EffortPick agent={r.agent} value={r.effort} onChange={(v) => set(role, { effort: v })} id={agentId} emptyLabel={t('st.effortDefault')} />}
             {sets.fallback && (
@@ -179,7 +183,7 @@ function PresetEditor(props: { preset: PresetItem; programs: StationData['progra
       })}
       {err && <div class="hint bad" id="st-pe-err">{err}</div>}
       <div class="act">
-        <button class="btn primary sm" type="button" id="st-pe-save" disabled={busy || sameRoles(saved, roles)} onClick={() => void save()}>{t('st.peSave')}</button>
+        <button class="btn primary sm" type="button" id="st-pe-save" disabled={busy || sameRoles(saved, roles, ids)} onClick={() => void save()}>{t('st.peSave')}</button>
         <button class="btn sm" type="button" id="st-pe-cancel" onClick={props.onDone}>{t('cancel')}</button>
       </div>
     </div>
@@ -189,16 +193,21 @@ function PresetEditor(props: { preset: PresetItem; programs: StationData['progra
 /* ───────── the list ───────── */
 
 /** One line of what a preset gives each role. */
-function brief(p: PresetItem): string {
-  return ROLE_IDS.map((role) => {
+function brief(p: PresetItem, own: CrewRole[]): string {
+  const std = ROLE_IDS.map((role) => {
     const r = p.roles[role];
     return r?.agent ? `${t(`st.r.${role}`)}: ${r.agent}` : '';
-  }).filter(Boolean).join(' · ');
+  });
+  const mine = own.map((x) => {
+    const r = p.roles[presetKey(x.id)];
+    return r?.agent ? `${x.name}: ${r.agent}` : '';
+  });
+  return [...std, ...mine].filter(Boolean).join(' · ');
 }
 
 const TEMPLATES = ['economy', 'max', 'claude', 'noclaude'] as const;
 
-export function Presets(props: { data: StationData; repo: string; reload: () => void }): JSX.Element {
+export function Presets(props: { data: StationData; repo: string; own: CrewRole[]; reload: () => void }): JSX.Element {
   const { data, repo } = props;
   const { list, active } = data.presets;
   const [name, setName] = useState('');
@@ -265,7 +274,7 @@ export function Presets(props: { data: StationData; repo: string; reload: () => 
                   {armed.value?.key === `pdel:${p.id}` ? t('st.confirm') : t('st.pr.delete')}
                 </button>
               </div>
-              <div class="hint pr-brief">{brief(p) || t('st.pr.briefEmpty')}</div>
+              <div class="hint pr-brief">{brief(p, props.own) || t('st.pr.briefEmpty')}</div>
               {renaming === p.id && (
                 <form class="sedit" onSubmit={(ev) => { ev.preventDefault(); void rename(p); }}>
                   <input class="field" id={`st-pr-rename-${p.id}`} value={newName} maxLength={40} aria-label={t('st.pr.name')} onInput={(e) => setNewName((e.target as HTMLInputElement).value)} />
@@ -273,7 +282,7 @@ export function Presets(props: { data: StationData; repo: string; reload: () => 
                   <button class="btn sm" type="button" onClick={() => setRenaming('')}>{t('cancel')}</button>
                 </form>
               )}
-              {editing === p.id && <PresetEditor preset={p} programs={data.programs} onDone={() => { setEditing(''); props.reload(); }} />}
+              {editing === p.id && <PresetEditor preset={p} programs={data.programs} own={props.own} onDone={() => { setEditing(''); props.reload(); }} />}
               {applyFor.value?.id === p.id && <ApplyCard repo={repo} reload={props.reload} />}
             </li>
           );

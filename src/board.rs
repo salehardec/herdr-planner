@@ -137,6 +137,8 @@ pub struct Task {
     pub subagents_note: String,
     /// Who is on the task now (the reviewer under review, the working agent while it works); see `seat`.
     pub seat: Option<crate::seat::Seat>,
+    /// The crew's own roles put on the task (PLN-90): the planner's record, not the board's.
+    pub crew_roles: Vec<crate::roles::RoleMark>,
 }
 
 impl Default for Status {

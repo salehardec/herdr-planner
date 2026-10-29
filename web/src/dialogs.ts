@@ -1,7 +1,7 @@
 /* Modal-ish dialogs the Esc key must be able to close: add a universe, the todo pop-overs, the Station,
    the ship's computer. The arrival notice is not modal: it closes with its own buttons, not with Esc. */
 import { signal } from '@preact/signals';
-import { closeStation, shipDlg, stationDlg } from './ui/station-api';
+import { closeCrew, closeStation, crewDlg, shipDlg, stationDlg } from './ui/station-api';
 import { memoryWin, rememberDlg } from './ui/memory-api';
 import { tunnelGuide } from './ui/tunnel-api';
 import { snap } from './store';
@@ -48,7 +48,7 @@ export function openNewTask(id: string, repo: string): void {
 
 export const dialogOpen = (): boolean =>
   addDialogs.universe.value || addDialogs.runner.value || addDialogs.firstRun.value || !!addDialogs.popover.value || !!addDialogs.tell.value
-  || !!addDialogs.summary.value || !!addDialogs.screen.value || !!addDialogs.ctlLogs.value || !!addDialogs.ctlAct.value || !!stationDlg.value || shipDlg.value || !!rememberDlg.value || !!memoryWin.value || !!tunnelGuide.value
+  || !!addDialogs.summary.value || !!addDialogs.screen.value || !!addDialogs.ctlLogs.value || !!addDialogs.ctlAct.value || !!stationDlg.value || !!crewDlg.value || shipDlg.value || !!rememberDlg.value || !!memoryWin.value || !!tunnelGuide.value
   || !!lightbox.value;
 
 export function closeDialogs(): void {
@@ -63,6 +63,7 @@ export function closeDialogs(): void {
   if (addDialogs.popover.value) { addDialogs.popover.value = null; return; }
   if (addDialogs.tell.value) { addDialogs.tell.value = null; return; }
   if (stationDlg.value) { closeStation(); return; }
+  if (crewDlg.value) { closeCrew(); return; }
   if (shipDlg.value) { shipDlg.value = false; return; }
   if (addDialogs.runner.value) { addDialogs.runner.value = false; return; }
   if (addDialogs.universe.value) { addDialogs.universe.value = false; return; }

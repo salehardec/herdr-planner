@@ -3,7 +3,7 @@
 import { locale } from '../i18n';
 import type { ModelsData, PresetRole, ProgramAvail, StationData, StationProgram } from './station-api';
 
-export const ROLE_IDS = ['coordinator', 'plan', 'reviewer', 'worker', 'light'] as const;
+export const ROLE_IDS = ['coordinator', 'plan', 'reviewer', 'worker', 'watcher', 'light'] as const;
 export type RoleId = typeof ROLE_IDS[number];
 
 /** The board's settings of each role (`light` is the planner's own preset). */
@@ -12,6 +12,7 @@ export const ROLE_SETTING: Record<RoleId, { agent?: string; effort?: string; fal
   plan: { agent: 'plan.agent' },
   reviewer: { agent: 'reviewer.agent', effort: 'reviewer.effort', fallback: 'reviewer.fallback' },
   worker: { agent: 'worker.agent', effort: 'worker.effort', fallback: 'worker.fallback' },
+  watcher: { agent: 'watcher.agent' },
   light: {},
 };
 
@@ -80,15 +81,21 @@ export function untilLabel(a: Pick<ProgramAvail, 'until' | 'until_ms'>, now = Da
 /** The role fields of a preset that are set, in the order the screen reads them. */
 export const emptyRole = (): PresetRole => ({ agent: '', effort: '', fallback: '' });
 
-export function rolesOrEmpty(roles: Record<string, PresetRole> | undefined): Record<string, PresetRole> {
+/** The key a preset holds an own role under (`role:<id>`). */
+export const presetKey = (id: string): string => `role:${id}`;
+
+/** The keys a preset may hold: the built-in roles and the ids of the own roles. */
+export const presetKeys = (own: string[] = []): string[] => [...ROLE_IDS, ...own.map(presetKey)];
+
+export function rolesOrEmpty(roles: Record<string, PresetRole> | undefined, own: string[] = []): Record<string, PresetRole> {
   const out: Record<string, PresetRole> = {};
-  for (const r of ROLE_IDS) out[r] = { ...emptyRole(), ...(roles?.[r] ?? {}) };
+  for (const r of presetKeys(own)) out[r] = { ...emptyRole(), ...(roles?.[r] ?? {}) };
   return out;
 }
 
 /** Whether a preset (as the editor holds it) differs from the saved one. */
-export function sameRoles(a: Record<string, PresetRole>, b: Record<string, PresetRole>): boolean {
-  return ROLE_IDS.every((r) => {
+export function sameRoles(a: Record<string, PresetRole>, b: Record<string, PresetRole>, own: string[] = []): boolean {
+  return presetKeys(own).every((r) => {
     const x = { ...emptyRole(), ...(a[r] ?? {}) };
     const y = { ...emptyRole(), ...(b[r] ?? {}) };
     return x.agent === y.agent && x.effort === y.effort && x.fallback === y.fallback;

@@ -1,11 +1,12 @@
-/* The Station («Станция»): the crew (who runs the Coordinator, the planner, the reviewer, the workers,
-   the light tasks and the spares) and the settings of the board. Every change goes the same way: a preview
-   («было → стало», the tasks it touches), then two presses (confirmStep), then the board's own command.
-   The first-run wizard («Экипаж корабля») is this same screen in wizard mode. */
+/* The Station («Станция»): the settings of this machine's board, the shipyards and the strays. The crew (who runs the
+   Coordinator, the planner, the reviewer, the workers, the light tasks and the spares), the crew's own roles, the presets
+   and the subscriptions are in the «Экипаж» window (CrewWindow.tsx), which builds on the pieces exported here. Every
+   change goes the same way: a preview («было → стало», the tasks it touches), then two presses (confirmStep), then
+   the board's own command. */
 import { signal } from '@preact/signals';
 import type { JSX } from 'preact';
 import { useEffect, useState } from 'preact/hooks';
-import { armed, snap } from '../store';
+import { armed, currentView, snap } from '../store';
 import { confirmStep } from '../actions';
 import { t, tn } from '../i18n';
 import { toast } from '../toast';
@@ -14,12 +15,10 @@ import { dialogOpen } from '../dialogs';
 import { Gl } from './Gl';
 import { Strays } from './Strays';
 import { AgentPick, ChainEditor, programMark, useModels } from './CrewPick';
-import { CrewSummary, Programs } from './CrewPrograms';
-import { Presets } from './CrewPresets';
 import { chainOf, chainValue } from './crew-view';
 import { coachShown, firstRunShown } from './FirstRun';
 import {
-  callError, CallError, closeStation, failoverBack, failoverSet, FailoverRole, crewSeen, fromLabel, isBool, openStation, PROGRAM_ORDER, programOf,
+  callError, CallError, closeStation, crewDlg, failoverBack, failoverSet, FailoverRole, crewSeen, fromLabel, isBool, openCrew, PROGRAM_ORDER, programOf,
   Preview, ROLE_SETTINGS, stationDlg, stationGet, stationLight, stationModels, stationPreview, stationSet, StationData,
   StationProgram, StationSetting,
 } from './station-api';
@@ -46,7 +45,7 @@ const prevErr = signal<CallError | null>(null);
 const setErr = signal<CallError | null>(null);
 const saving = signal(false);
 
-const resetEdit = (): void => {
+export const resetEdit = (): void => {
   edit.value = null;
   prev.value = null;
   prevErr.value = null;
@@ -221,6 +220,8 @@ function EffortForm(props: { agent: string; current: string; dlid: string; onPic
 function Field(props: {
   repo: string; kind: 'agent' | 'effort' | 'fallback' | 'light'; name: string; label: string; value: string; from: string;
   programs: StationProgram[]; agent: string; reload: () => void; suggest?: string; failover?: string;
+  /** The level has its own entry for the setting: it can be taken away (the board's `unset`). */
+  own?: boolean;
 }): JSX.Element {
   const [open, setOpen] = useState(false);
   const light = props.kind === 'light';
@@ -237,6 +238,7 @@ function Field(props: {
         <b class="v" data-value={props.name}>{shown(props.value)}</b>
         {props.from && !light && <span class="src">{fromLabel(props.from)}</span>}
         <button class="btn sm" type="button" data-act={`st-edit-${props.name}`} aria-expanded={open} onClick={() => setOpen(!open)}>{t('st.change')}</button>
+        {props.own && !light && <button class="btn sm danger" type="button" data-unset={props.name} onClick={() => { setOpen(false); void startEdit({ name: props.name, repo: props.repo, value: null }); }}>{t('st.reset')}</button>}
       </div>
       {props.suggest && props.suggest !== props.value && (
         <div class="sugline">{t('st.suggest')} <code>{props.suggest}</code>
@@ -268,6 +270,7 @@ const ROLES: { id: string; title: string; hint: string; agent?: string; effort?:
   { id: 'plan', title: 'st.r.plan', hint: 'st.r.planHint', agent: 'plan.agent' },
   { id: 'reviewer', title: 'st.r.reviewer', hint: 'st.r.reviewerHint', agent: 'reviewer.agent', effort: 'reviewer.effort', fallback: 'reviewer.fallback' },
   { id: 'worker', title: 'st.r.worker', hint: 'st.r.workerHint', agent: 'worker.agent', effort: 'worker.effort', fallback: 'worker.fallback' },
+  { id: 'watcher', title: 'st.r.watcher', hint: 'st.r.watcherHint', agent: 'watcher.agent' },
   { id: 'light', title: 'st.r.light', hint: 'st.r.lightHint', light: true },
 ];
 
@@ -275,7 +278,7 @@ const ROLES: { id: string; title: string; hint: string; agent?: string; effort?:
 const FAILOVER: string[] = ['coordinator', 'plan', 'light'];
 
 /** The first program of the order that is installed and signed in (or needs no sign-in), and a model of it for each role. */
-async function suggestCrew(data: StationData): Promise<Record<string, string>> {
+export async function suggestCrew(data: StationData): Promise<Record<string, string>> {
   const prog = PROGRAM_ORDER.find((p) => data.programs.some((x) => x.name === p && x.installed && ['ok', 'unknown'].includes(x.state.avail.state)));
   if (!prog) return {};
   const m = await stationModels(prog);
@@ -292,6 +295,25 @@ async function suggestCrew(data: StationData): Promise<Record<string, string>> {
   const work = pick(['sonnet', 'gpt-5', 'pro', 'opus']);
   const light = pick(['haiku', 'mini', 'flash', 'lite']);
   return { 'coordinator.agent': big, 'plan.agent': big, 'reviewer.agent': big, 'worker.agent': work, light };
+}
+
+/** What a standard role sets on the board, and on which live tasks it works now (the seat the board gives it). */
+function RoleFacts(props: { role: { id: string; agent?: string; effort?: string; fallback?: string; light?: boolean } }): JSX.Element {
+  const r = props.role;
+  const names = [r.agent, r.effort, r.fallback].filter(Boolean) as string[];
+  const seated = r.id === 'worker' || r.id === 'reviewer'
+    ? currentView.value.tasks.filter((x) => !x.archived && x.seat?.role === r.id)
+    : null;
+  return (
+    <div class="hint cr-std" data-std-sets={r.id}>
+      {r.light ? t('cr.stdLight') : <>{t('cr.stdSets')}: {names.map((n, i) => <span key={n}>{i > 0 ? ', ' : ''}<code>{n}</code></span>)}</>}
+      {seated && (
+        <span data-std-tasks={seated.length}> · {seated.length === 0
+          ? t('cr.usage.none')
+          : <>{t('cr.usage.on')} {seated.slice(0, 6).map((x, i) => <span key={x.id} class="tg">{i > 0 ? ', ' : ''}{x.tag}</span>)}{seated.length > 6 ? ` +${seated.length - 6}` : ''}</>}</span>
+      )}
+    </div>
+  );
 }
 
 /** What the planner does with a role's spares: the «переключать само» mark, the switch it has made, the return. */
@@ -348,12 +370,13 @@ function Spares(props: { role: string; f: FailoverRole; reload: () => void }): J
   );
 }
 
-function Crew(props: { repo: string; data: StationData; reload: () => void; wizard: boolean; suggest: Record<string, string> }): JSX.Element {
+/** The standard roles: the board's own settings of each, changed through «было → стало». */
+export function Crew(props: { repo: string; data: StationData; reload: () => void; wizard: boolean; suggest: Record<string, string> }): JSX.Element {
   const { data } = props;
   const val = (name: string): StationSetting | undefined => data.settings.find((s) => s.name === name);
   return (
     <section class="st-sec" id="st-crew">
-      <h3>{t('st.crew')}</h3>
+      <h3>{props.wizard ? t('st.crew') : t('st.stdRoles')}</h3>
       <p class="hint">{props.wizard ? t('st.crewWizHint') : t('st.crewHint')}</p>
       {ROLES.map((r) => {
         const agent = r.agent ? val(r.agent) : undefined;
@@ -362,15 +385,16 @@ function Crew(props: { repo: string; data: StationData; reload: () => void; wiza
         return (
           <div class="role" data-role={r.id} key={r.id}>
             <div class="rh"><b>{t(r.title)}</b><span class="hint">{t(r.hint)}</span></div>
+            <RoleFacts role={r} />
             {r.agent && (
-              <Field {...common} kind="agent" name={r.agent} label={t('st.f.agent')} value={agentValue} from={agent?.from ?? ''}
+              <Field {...common} kind="agent" name={r.agent} label={t('st.f.agent')} value={agentValue} from={agent?.from ?? ''} own={agent?.own}
                 suggest={props.suggest[r.agent]} />
             )}
             {r.effort && (
-              <Field {...common} kind="effort" name={r.effort} label={t('st.f.effort')} value={val(r.effort)?.value ?? ''} from={val(r.effort)?.from ?? ''} />
+              <Field {...common} kind="effort" name={r.effort} label={t('st.f.effort')} value={val(r.effort)?.value ?? ''} from={val(r.effort)?.from ?? ''} own={val(r.effort)?.own} />
             )}
             {r.fallback && (
-              <Field {...common} kind="fallback" name={r.fallback} label={t('st.f.fallback')} value={val(r.fallback)?.value ?? ''} from={val(r.fallback)?.from ?? ''} />
+              <Field {...common} kind="fallback" name={r.fallback} label={t('st.f.fallback')} value={val(r.fallback)?.value ?? ''} from={val(r.fallback)?.from ?? ''} own={val(r.fallback)?.own} />
             )}
             {r.light && (
               <Field {...common} kind="light" name="light" label={t('st.f.light')} value={data.light} from="" suggest={props.suggest.light} />
@@ -460,7 +484,7 @@ function Board(props: { repo: string; data: StationData; reload: () => void }): 
   );
 }
 
-function ErrorBlock({ err, onRetry }: { err: CallError; onRetry: () => void }): JSX.Element {
+export function ErrorBlock({ err, onRetry }: { err: CallError; onRetry: () => void }): JSX.Element {
   return (
     <div class="chg bad" id="st-error">
       <div class="hint bad">{err.message}</div>
@@ -547,16 +571,17 @@ function Shipyards(): JSX.Element {
   );
 }
 
-function StationBody(props: { wizard: boolean }): JSX.Element {
-  const { wizard } = props;
+/** What the Station and the crew window both read: the level (for me, or one repository), the station's answer and a reload. */
+export function useStationData(): {
+  data: StationData | null; err: CallError | null; loading: boolean; level: 'you' | 'repo'; repo: string; scope: string;
+  chooseLevel: (l: 'you' | 'repo') => void; setRepo: (r: string) => void; reload: () => void;
+} {
   const [data, setData] = useState<StationData | null>(null);
   const [err, setErrState] = useState<CallError | null>(null);
   const [loading, setLoading] = useState(true);
   const [level, setLevel] = useState<'you' | 'repo'>('you');
   const [repo, setRepo] = useState('');
   const [tick, setTick] = useState(0);
-  const [suggest, setSuggest] = useState<Record<string, string>>({});
-  const [sugDone, setSugDone] = useState(false);
   const reload = (): void => setTick((n) => n + 1);
 
   useEffect(() => () => resetEdit(), []);
@@ -569,93 +594,89 @@ function StationBody(props: { wizard: boolean }): JSX.Element {
       .catch((e) => { if (alive) { setErrState(callError(e)); setLoading(false); } });
     return () => { alive = false; };
   }, [level, repo, tick]);
-  useEffect(() => {
-    if (!wizard || !data) return;
-    let alive = true;
-    suggestCrew(data)
-      .then((m) => { if (alive) { setSuggest(m); setSugDone(true); } })
-      .catch(() => { if (alive) setSugDone(true); });
-    return () => { alive = false; };
-  }, [wizard, data]);
 
   const chooseLevel = (l: 'you' | 'repo'): void => {
     setLevel(l);
     if (l === 'you') setRepo('');
     else if (!repo) setRepo(data?.repos[0] ?? '');
   };
+  return { data, err, loading, level, repo, scope: level === 'repo' ? repo : '', chooseLevel, setRepo, reload };
+}
 
+type StationState = ReturnType<typeof useStationData>;
+
+/** «Для меня» / «Для репозитория»: which level the settings below are read and changed at. */
+export function LevelBar({ st }: { st: StationState }): JSX.Element {
+  const { level, repo, data } = st;
+  return (
+    <div class="lvl" role="group" aria-label={t('st.levelAria')}>
+      <span class="kl">{t('st.level')}</span>
+      <button type="button" class={`btn sm ${level === 'you' ? 'on' : ''}`} id="st-level-you" aria-pressed={level === 'you'} onClick={() => st.chooseLevel('you')}>{t('st.levelYou')}</button>
+      <button type="button" class={`btn sm ${level === 'repo' ? 'on' : ''}`} id="st-level-repo" aria-pressed={level === 'repo'} onClick={() => st.chooseLevel('repo')}>{t('st.levelRepo')}</button>
+      {level === 'repo' && (
+        <select class="field sm" id="st-repo" value={repo} aria-label={t('st.levelRepo')} onChange={(e) => st.setRepo((e.target as HTMLSelectElement).value)}>
+          {(data?.repos ?? (repo ? [repo] : [])).map((r) => <option key={r} value={r}>{r}</option>)}
+        </select>
+      )}
+      <span class="hint">{level === 'repo' ? t('st.levelRepoHint', { repo: repo || '—' }) : t('st.levelYouHint')}</span>
+    </div>
+  );
+}
+
+function StationBody(): JSX.Element {
+  const st = useStationData();
+  const { data, err, loading, scope } = st;
   return (
     <div class="bd st-bd">
-      {wizard && <p class="hint" id="st-intro">{t('st.wizIntro')}</p>}
-      {!wizard && (
-        <div class="lvl" role="group" aria-label={t('st.levelAria')}>
-          <span class="kl">{t('st.level')}</span>
-          <button type="button" class={`btn sm ${level === 'you' ? 'on' : ''}`} id="st-level-you" aria-pressed={level === 'you'} onClick={() => chooseLevel('you')}>{t('st.levelYou')}</button>
-          <button type="button" class={`btn sm ${level === 'repo' ? 'on' : ''}`} id="st-level-repo" aria-pressed={level === 'repo'} onClick={() => chooseLevel('repo')}>{t('st.levelRepo')}</button>
-          {level === 'repo' && (
-            <select class="field sm" id="st-repo" value={repo} aria-label={t('st.levelRepo')} onChange={(e) => setRepo((e.target as HTMLSelectElement).value)}>
-              {(data?.repos ?? (repo ? [repo] : [])).map((r) => <option key={r} value={r}>{r}</option>)}
-            </select>
-          )}
-          <span class="hint">{level === 'repo' ? t('st.levelRepoHint', { repo: repo || '—' }) : t('st.levelYouHint')}</span>
-        </div>
-      )}
+      <LevelBar st={st} />
       {loading && !data && <div class="hint" id="st-loading">{t('st.loading')}</div>}
-      {err && <ErrorBlock err={err} onRetry={reload} />}
+      {err && <ErrorBlock err={err} onRetry={st.reload} />}
       {data && (
         <>
-          <CrewSummary data={data} />
-          <Programs programs={data.programs} />
-          {!wizard && <Presets data={data} repo={level === 'repo' ? repo : ''} reload={reload} />}
-          <Crew repo={level === 'repo' ? repo : ''} data={data} reload={reload} wizard={wizard} suggest={suggest} />
-          {wizard && sugDone && Object.keys(suggest).length === 0 && <div class="hint bad">{t('st.wizNone')}</div>}
-          {wizard && (
-            <div class="act">
-              <button class="btn primary" type="button" id="st-done" onClick={closeStation}>{t('st.done')}</button>
-              <button class="btn" type="button" id="st-skip" onClick={closeStation}>{t('st.skip')}</button>
-              <button class="btn" type="button" id="st-all" onClick={() => openStation(false)}>{t('st.allSettings')}</button>
-            </div>
-          )}
-          {!wizard && <Shipyards />}
-          {!wizard && <Strays />}
-          {!wizard && <Board repo={level === 'repo' ? repo : ''} data={data} reload={reload} />}
+          <section class="st-sec" id="st-to-crew">
+            <h3>{t('st.crew')}</h3>
+            <p class="hint">{t('st.toCrewHint')}</p>
+            <div class="act"><button class="btn sm" type="button" id="st-open-crew" onClick={() => { closeStation(); openCrew(); }}>{t('st.openCrew')}</button></div>
+          </section>
+          <Shipyards />
+          <Strays />
+          <Board repo={scope} data={data} reload={st.reload} />
         </>
       )}
     </div>
   );
 }
 
-/** The Station screen. Opened by `openStation(wizard?)`. */
+/** The Station screen. Opened by `openStation()`. */
 export function Station(): JSX.Element | null {
   const d = stationDlg.value;
   if (!d) return null;
   const host = snap.value?.host ?? '';
-  const title = d.wizard ? t('st.wizTitle') : t('st.titleHome', { host });
+  const title = t('st.titleHome', { host });
   return (
     <div class="scrim" onMouseDown={(e) => { if (e.target === e.currentTarget) closeStation(); }}>
-      <section class={`panel dlg wide station ${d.wizard ? 'wizard' : ''}`} id="station" role="dialog" aria-label={title}>
+      <section class="panel dlg wide station" id="station" role="dialog" aria-label={title}>
         <header><b>{title}</b><button class="btn icon sm" type="button" aria-label={t('close')} onClick={closeStation}><Gl n="close" /></button></header>
-        <StationBody key={d.wizard ? 'w' : 'n'} wizard={!!d.wizard} />
+        <StationBody />
       </section>
     </div>
   );
 }
 
 /**
- * The first-run wizard opens by itself once: after the coach tour and the empty galaxy's card
+ * The first-run crew window opens by itself once: after the coach tour and the empty galaxy's card
  * (FirstRun, Coach) are gone, and only with no other dialog open, not with ?nocoach or ?calm. Seen = closed.
  */
 export function StationAuto(): null {
   const s = snap.value;
-  const dlg = stationDlg.value;
+  const dlg = crewDlg.value;
   const coach = coachShown(s);
   const first = firstRunShown(s);
   useEffect(() => {
     if (!s || crewSeen() || dlg || coach || first || dialogOpen()) return;
     const q = new URLSearchParams(location.search);
     if (q.has('nocoach') || q.has('calm')) return;
-    openStation(true);
+    openCrew(true);
   }, [s, dlg, coach, first]);
   return null;
 }
-

@@ -246,9 +246,14 @@ export async function todoSend(id: string): Promise<void> {
   if (r) toast(t('toast.todoSent'));
 }
 
-export async function todoToTask(id: string, repo: string, agent: string): Promise<boolean> {
-  const r = await todoCall('todo-create', { id, repo, agent: agent || undefined });
-  if (r) { toast(t('toast.todoCreated', { repo }), { icon: 'universe' }); setTimeout(() => { void refreshNow(); }, 600); }
+/** A new task from the list. `role` is the crew's own role (PLN-90): `auto` (or nothing) lets the rules decide, `none` gives no role. */
+export async function todoToTask(id: string, repo: string, agent: string, role = 'auto', how = ''): Promise<boolean> {
+  const r = await todoCall('todo-create', { id, repo, agent: agent || undefined, crew_role: role === 'auto' ? undefined : role, crew_how: how || undefined });
+  if (r) {
+    toast(t('toast.todoCreated', { repo }), { icon: 'universe' });
+    if (r.role?.note) toast(r.role.note, { icon: 'failed' });
+    setTimeout(() => { void refreshNow(); }, 600);
+  }
   return !!r;
 }
 
