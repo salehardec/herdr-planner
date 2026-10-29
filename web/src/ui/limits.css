@@ -47,8 +47,9 @@
 .lp-warn .lp-t,.lp-warn .lp-s{color:var(--c-yellow)}
 /* the forms: all the words; the tightest window of each provider; the first providers with their words and the rest as shares; every provider
    as a share with a small gauge; the one provider closest to its limit and only its share (LoadBar.tsx picks one by the room) */
-.limchip[data-form="one"] .lp-t2{display:none}
-.limchip[data-form="mix"] .lp-t2{display:none}
+.lp-onew{display:none}
+.limchip[data-form="one"] .lp-fullw,.limchip[data-form="mix"] .lp-fullw{display:none}
+.limchip[data-form="one"] .lp-onew,.limchip[data-form="mix"] .lp-onew{display:inline}
 .limchip[data-form="mix"] .lp[data-w="0"] .lp-words{display:none}
 .limchip[data-form="mix"] .lp[data-w="0"] .lp-s{display:inline}
 .limchip[data-form="mix"] .lp[data-w="0"] .lp-bar{width:1rem}

@@ -574,11 +574,11 @@ section('panel widths', async () => {
 section('buttons', async () => {
   await resetUi();
   // Every visible button of the interface: its label starts with a capital letter. A value (the
-  // machine's host in the crumbs, a program's name in a picker, the load reading «orion CPU 92%…»,
+  // machine's host in the crumbs, a program's name in a picker, the load reading «orion CPU 92%…», the subscription row «91 % исп. 1д 6ч…»,
   // a runner's id «vm-r», the agent on a task in the navigator «ревью · pi/k3.1-pro») is not a label, so those are left out; a label that starts with an arrow
   // or a digit has no first letter to capitalise.
   const smallLabels = () => evalJs(`(() => {
-    const skip = '#crumbs, [data-prog], .prog, #load-chip, .ti .seat, .rf-task .k, .menu-opt:not(.own)';
+    const skip = '#crumbs, [data-prog], .prog, #load-chip, #hud-limits, .ti .seat, .rf-task .k, .menu-opt:not(.own)';
     const bad = [];
     for (const b of document.querySelectorAll('button')) {
       const r = b.getBoundingClientRect();

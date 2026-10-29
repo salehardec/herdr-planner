@@ -94,7 +94,7 @@ function Segment(props: { a: AgentUsage; urgent: boolean }): JSX.Element {
       {one && <span class="lp-bar"><i style={`--w:${usedPct(one)}%`} /></span>}
       {ws.length ? (
         <>
-          <span class="lp-words"><span class="lp-t lp-t1">{usedText(ws[0])}</span>{ws[1] && <span class="lp-t lp-t2"> · {usedText(ws[1])}</span>}</span>
+          <span class="lp-words"><span class="lp-t lp-fullw">{ws.map(usedText).join(' · ')}</span><span class="lp-t lp-onew">{usedText(one)}</span></span>
           <span class="lp-s">{usedPct(one)}%</span>
         </>
       ) : (
