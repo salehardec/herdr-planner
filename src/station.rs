@@ -6,6 +6,7 @@ use crate::app::{self, run_board, Shared};
 use crate::board::{Status, Task};
 use crate::config::{now_ms, AppConfig};
 use crate::crew;
+use crate::failover;
 use crate::models;
 use crate::server::{clip, error, same_origin};
 use crate::taskmeta;
@@ -386,7 +387,7 @@ fn read_crew(path: &Path) -> Map<String, Value> {
         .unwrap_or_default()
 }
 
-fn read_light(cfg: &AppConfig) -> String {
+pub(crate) fn read_light(cfg: &AppConfig) -> String {
     let _guard = CREW_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     light_of(&read_crew(&crew_file(cfg)))
 }
@@ -453,7 +454,7 @@ async fn read_doctor(cfg: &AppConfig) -> Result<String, Fail> {
 }
 
 /// The crew's programs that are installed here.
-fn available() -> Vec<String> {
+pub(crate) fn available() -> Vec<String> {
     let path = std::env::var("PATH").unwrap_or_default();
     PROGRAMS
         .iter()
@@ -569,6 +570,45 @@ async fn gather(app: &Shared, doctor: &str, installed: &[String]) -> Vec<Gathere
     out
 }
 
+/// The programs that cannot be given work now (out of allowance, signed out, not installed), for the spares.
+fn down_of(gathered: &[Gathered]) -> failover::Down {
+    let now = now_ms();
+    gathered
+        .iter()
+        .filter_map(|g| {
+            let a = &g.state.avail;
+            let kind = match a.state {
+                "limited" | "signed_out" | "missing" => a.state,
+                _ => return None,
+            };
+            let until = if kind != "limited" {
+                String::new()
+            } else if !a.until.is_empty() {
+                a.until.clone()
+            } else if a.until_ms > now {
+                failover::clock(a.until_ms)
+            } else {
+                String::new()
+            };
+            Some((g.program.name.clone(), failover::Gone { kind: kind.to_string(), until }))
+        })
+        .collect()
+}
+
+/// The programs that are down now, read as the page reads them (the doctor, Omarchy's records, the board's lines).
+pub(crate) async fn down_programs(app: &Shared, installed: &[String]) -> Result<failover::Down, Fail> {
+    let doctor = read_doctor(&app.cfg).await?;
+    Ok(down_of(&gather(app, &doctor, installed).await))
+}
+
+/// A chain of spares against the models the programs list (the shape alone when a list cannot be read).
+pub(crate) async fn check_chain(app: &Shared, chain: &str) -> Result<(), String> {
+    match read_settings(&app.cfg, "").await {
+        Ok(settings) => check(app, &settings, "spare.fallback", chain).await,
+        Err(_) => crew::check_fallback(chain, &|_: &str| Vec::new()),
+    }
+}
+
 /// The programs for the page: the doctor's reading plus everything `gather` found.
 fn programs_json(gathered: &[Gathered], settings: &[Setting], light: &str, tasks: &[Task]) -> Vec<Value> {
     gathered
@@ -632,6 +672,7 @@ async fn station_read(app: &Shared, q: StationQuery, installed: &[String]) -> Re
         "settings": settings,
         "programs": programs_json(&gathered, &settings, &light, &tasks),
         "light": light,
+        "failover": failover::page_json(&app.cfg, &light, &down_of(&gathered)),
         "presets": presets_json(&app.cfg, &settings, &light, &repo),
     }))
 }
@@ -900,7 +941,7 @@ pub async fn station_light(
 /* ───────── the crew presets ───────── */
 
 /// One apply at a time: two sets of `set` commands would interleave.
-static APPLY: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+pub(crate) static APPLY: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 fn level_of(repo: Option<String>) -> Result<String, Fail> {
     let repo = repo.unwrap_or_default().trim().to_string();
@@ -1622,5 +1663,179 @@ esac"#,
         assert_eq!(omp["state"]["avail"]["state"], "limited", "{omp}");
         assert_eq!(omp["state"]["avail"]["source"], "board");
         assert!(omp["state"]["avail"]["until_ms"].as_u64().unwrap() > now_ms());
+    }
+
+    /* ───────── the spares of the Coordinator, the planner and the light tasks (PLN-89) ───────── */
+
+    /// A task whose line says claude is out of allowance until 17:00 (or no task at all).
+    async fn claude_limited(app: &Shared, on: bool) {
+        let mut snap = app.snapshot.write().await;
+        snap.tasks.clear();
+        if on {
+            let mut t = crate::board::Task::default();
+            t.id = "planner/7".into();
+            t.repo = "planner".into();
+            t.tag = "PLN-7".into();
+            t.app = "omp".into();
+            t.status = Status::Working;
+            t.msg = "omp took over from claude: out of allowance until 17:00".into();
+            snap.tasks = vec![t];
+        }
+    }
+
+    fn installed() -> Vec<String> {
+        ["claude", "codex", "omp"].map(String::from).to_vec()
+    }
+
+    /// What the board was told to do (not what it was asked to read).
+    fn all_calls(log: &FsPath) -> Vec<String> {
+        std::fs::read_to_string(log)
+            .unwrap_or_default()
+            .lines()
+            .filter(|l| l.starts_with("set ") || l.starts_with("unset ") || l.starts_with("coordinator "))
+            .map(String::from)
+            .collect()
+    }
+
+    /// The stand-in board's `show` now says the role runs on `agent` (it keeps no state of its own).
+    fn board_says(dir: &FsPath, name: &str, agent: &str) {
+        let show = dir.join("show.json");
+        let text = std::fs::read_to_string(&show).unwrap();
+        let from = format!(r#"{{"name":"{name}","kind":"work","value":"claude/claude-opus-5-5""#);
+        assert!(text.contains(&from), "{name} is in the stand-in's settings");
+        std::fs::write(&show, text.replace(&from, &format!(r#"{{"name":"{name}","kind":"work","value":"{agent}""#))).unwrap();
+    }
+
+    fn keep_chain(app: &Shared, role: &str, chain: &str, auto: bool) {
+        failover::edit_store(&app.cfg, |s| {
+            s.roles.insert(role.into(), failover::Spare { chain: chain.into(), auto });
+            Ok(())
+        })
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_coordinator_out_of_allowance_goes_to_the_next_usable_spare_with_the_boards_commands() {
+        let dir = tempfile::tempdir().unwrap();
+        let (app, log) = app_with_board(dir.path(), "");
+        // codex is signed out in the stand-in's doctor, so the chain skips it and lands on omp
+        keep_chain(&app, "coordinator", "codex/gpt-6-luna, omp/deepseek/deepseek-v4-flash", true);
+        claude_limited(&app, true).await;
+        wait_models(&app, &["claude", "codex", "omp"]).await;
+        failover::tick_with(&app, &installed()).await;
+        assert_eq!(board_commands(&log), vec!["set coordinator.agent omp/deepseek/deepseek-v4-flash --main-coordinator"]);
+        assert!(all_calls(&log).iter().any(|l| l == "coordinator new"), "and a new Coordinator is started: {:?}", all_calls(&log));
+        let sw = failover::read_store(&app.cfg).switched["coordinator"].clone();
+        assert_eq!((sw.home.as_str(), sw.to.as_str(), sw.until.as_str()), ("claude/claude-opus-5-5", "omp/deepseek/deepseek-v4-flash", "17:00"));
+        let journal = app.snapshot.read().await.journal.iter().map(|e| e.text.clone()).collect::<Vec<_>>();
+        assert!(
+            journal.iter().any(|t| t == "Координатор: claude/claude-opus-5-5 → omp/deepseek/deepseek-v4-flash, лимит Claude до 17:00"),
+            "{journal:?}"
+        );
+        // the board now says so: the next look changes nothing
+        board_says(dir.path(), "coordinator.agent", "omp/deepseek/deepseek-v4-flash");
+        let before = all_calls(&log).len();
+        failover::tick_with(&app, &installed()).await;
+        assert_eq!(all_calls(&log).len(), before, "a second look changes nothing: {:?}", all_calls(&log));
+    }
+
+    #[tokio::test]
+    async fn the_return_is_only_offered_and_runs_the_commands_when_the_human_says_so() {
+        let dir = tempfile::tempdir().unwrap();
+        let (app, log) = app_with_board(dir.path(), "");
+        keep_chain(&app, "coordinator", "omp/deepseek/deepseek-v4-flash", true);
+        claude_limited(&app, true).await;
+        wait_models(&app, &["claude", "codex", "omp"]).await;
+        failover::tick_with(&app, &installed()).await;
+        board_says(dir.path(), "coordinator.agent", "omp/deepseek/deepseek-v4-flash");
+        assert_eq!(board_commands(&log).len(), 1);
+        // the subscription is back: the planner says so once and changes nothing
+        claude_limited(&app, false).await;
+        failover::tick_with(&app, &installed()).await;
+        failover::tick_with(&app, &installed()).await;
+        assert_eq!(board_commands(&log).len(), 1, "no silent return");
+        let store = failover::read_store(&app.cfg);
+        assert!(store.switched["coordinator"].offered);
+        let told = app.snapshot.read().await.journal.iter().filter(|e| e.text.contains("снова доступен")).count();
+        assert_eq!(told, 1, "the offer is made once");
+        let v = station_read(&app, StationQuery { repo: None }, &installed()).await.unwrap();
+        assert_eq!(v["failover"]["coordinator"]["switched"]["back_ready"], true, "{}", v["failover"]);
+        // «Вернуть»
+        let back = |op: &str| failover::BackBody::test(op, "coordinator");
+        let (code, done) = json_of(failover::back_for_test(&app, back("back"), &installed()).await).await;
+        assert_eq!(code, StatusCode::OK, "{done}");
+        assert_eq!(board_commands(&log).last().unwrap(), "set coordinator.agent claude/claude-opus-5-5 --main-coordinator");
+        assert_eq!(all_calls(&log).iter().filter(|l| *l == "coordinator new").count(), 2);
+        assert!(failover::read_store(&app.cfg).switched.is_empty());
+    }
+
+    #[tokio::test]
+    async fn the_planner_agent_is_switched_with_one_set_and_no_new_coordinator() {
+        let dir = tempfile::tempdir().unwrap();
+        let (app, log) = app_with_board(dir.path(), "");
+        keep_chain(&app, "plan", "omp/deepseek/deepseek-v4-flash", true);
+        claude_limited(&app, true).await;
+        wait_models(&app, &["claude", "codex", "omp"]).await;
+        failover::tick_with(&app, &installed()).await;
+        assert_eq!(board_commands(&log), vec!["set plan.agent omp/deepseek/deepseek-v4-flash"]);
+        assert!(!all_calls(&log).iter().any(|l| l.starts_with("coordinator ")), "the Coordinator is not touched");
+        assert!(failover::read_store(&app.cfg).switched.contains_key("plan"));
+    }
+
+    #[tokio::test]
+    async fn nothing_is_done_without_a_chain_with_the_mark_off_or_when_no_spare_is_usable() {
+        let dir = tempfile::tempdir().unwrap();
+        let (app, log) = app_with_board(dir.path(), "");
+        claude_limited(&app, true).await;
+        wait_models(&app, &["claude", "codex", "omp"]).await;
+        failover::tick_with(&app, &installed()).await;
+        assert!(all_calls(&log).is_empty(), "no chain: nothing is done: {:?}", all_calls(&log));
+        keep_chain(&app, "coordinator", "omp/deepseek/deepseek-v4-flash", false);
+        keep_chain(&app, "plan", "codex/gpt-6-luna", true);
+        failover::tick_with(&app, &installed()).await;
+        assert!(board_commands(&log).is_empty(), "the mark is off for the Coordinator; codex, the only spare of the plan, is signed out");
+        assert!(failover::read_store(&app.cfg).switched.is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_light_task_starts_on_the_first_usable_agent_and_carries_the_rest_as_its_fallback() {
+        let dir = tempfile::tempdir().unwrap();
+        let (app, _log) = app_with_board(dir.path(), "");
+        write_light(&app.cfg, "claude/claude-haiku-5-5").unwrap();
+        keep_chain(&app, "light", "codex/gpt-6-luna, omp/deepseek/deepseek-v4-flash", true);
+        claude_limited(&app, true).await;
+        wait_models(&app, &["claude", "codex", "omp"]).await;
+        let down = down_programs(&app, &installed()).await.unwrap();
+        let pick = failover::pick_light("claude/claude-haiku-5-5", &failover::read_store(&app.cfg).spare("light"), &down).unwrap();
+        assert_eq!((pick.agent.as_str(), pick.fallback.as_str()), ("omp/deepseek/deepseek-v4-flash", ""));
+        let v = station_read(&app, StationQuery { repo: None }, &installed()).await.unwrap();
+        assert_eq!(v["failover"]["light"]["use"], "omp/deepseek/deepseek-v4-flash", "the page says where light tasks would go now");
+        assert_eq!(v["failover"]["light"]["chain"], "codex/gpt-6-luna, omp/deepseek/deepseek-v4-flash");
+    }
+
+    #[tokio::test]
+    async fn the_chain_of_a_role_is_kept_checked_and_cleared_by_the_planner() {
+        let dir = tempfile::tempdir().unwrap();
+        let (app, log) = app_with_board(dir.path(), "");
+        wait_models(&app, &["claude", "codex", "omp"]).await;
+        let body = |role: &str, chain: Option<&str>, auto: Option<bool>| failover::SpareBody::test(role, chain, auto);
+        let (code, _) = json_of(failover::failover_set(State(app.clone()), headers(), Json(failover::SpareBody::unconfirmed("coordinator", Some("omp")))).await).await;
+        assert_eq!(code, StatusCode::BAD_REQUEST, "not without the confirmation");
+        let (code, _) = json_of(failover::failover_set(State(app.clone()), headers(), Json(body("reviewer", Some("omp"), None))).await).await;
+        assert_eq!(code, StatusCode::BAD_REQUEST, "the board keeps the Reviewer's");
+        let (code, err) = json_of(failover::failover_set(State(app.clone()), headers(), Json(body("coordinator", Some("claude/claude-nope"), None))).await).await;
+        assert_eq!(code, StatusCode::UNPROCESSABLE_ENTITY, "{err}");
+        let (code, ok) = json_of(failover::failover_set(State(app.clone()), headers(), Json(body("plan", Some("omp, claude/claude-haiku-5-5"), None))).await).await;
+        assert_eq!(code, StatusCode::OK, "{ok}");
+        let (code, _) = json_of(failover::failover_set(State(app.clone()), headers(), Json(body("plan", None, Some(false)))).await).await;
+        assert_eq!(code, StatusCode::OK);
+        let s = failover::read_store(&app.cfg).spare("plan");
+        assert_eq!((s.chain.as_str(), s.auto), ("omp, claude/claude-haiku-5-5", false));
+        let v = station_read(&app, StationQuery { repo: None }, &installed()).await.unwrap();
+        assert_eq!(v["failover"]["plan"]["auto"], false);
+        let (code, _) = json_of(failover::failover_set(State(app.clone()), headers(), Json(body("plan", Some("none"), Some(true)))).await).await;
+        assert_eq!(code, StatusCode::OK);
+        assert!(failover::read_store(&app.cfg).roles.is_empty(), "an empty chain with the default mark is no entry");
+        assert!(board_commands(&log).is_empty(), "the board is not asked: it has no such setting");
     }
 }

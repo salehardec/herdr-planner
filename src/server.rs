@@ -9,6 +9,7 @@ use crate::config::now_ms;
 use crate::history;
 use crate::mobile;
 use crate::ship;
+use crate::failover;
 use crate::station;
 use crate::usage;
 use axum::extract::{ConnectInfo, DefaultBodyLimit, Multipart, Path, Query, State};
@@ -135,6 +136,8 @@ pub fn router(app: Shared) -> Router {
         .route("/api/station/preview", post(station::station_preview))
         .route("/api/station/set", post(station::station_set))
         .route("/api/station/light", post(station::station_light))
+        .route("/api/station/failover", post(failover::failover_set))
+        .route("/api/station/failover/back", post(failover::failover_back))
         .route("/api/station/presets", post(station::station_presets))
         .route("/api/station/preset/preview", post(station::station_preset_preview))
         .route("/api/station/preset/apply", post(station::station_preset_apply))
@@ -1552,12 +1555,27 @@ pub(crate) async fn perform_action(app: &Shared, body: ActionBody, local: bool) 
                 args.push("--desc");
                 args.push(desc.as_str());
             }
-            if let Some(a) = agent {
+            // A task made from the «Лёгкая» preset starts on the first agent of its spares that can be given work and
+            // carries the rest as its own fallback (PLN-89).
+            let light = match agent {
+                Some(a) => failover::light_start(&app, a).await,
+                None => None,
+            };
+            if let Some(a) = light.as_ref().map(|p| p.agent.as_str()).or(agent) {
                 args.push("--worker.agent");
                 args.push(a);
             }
+            if let Some(p) = light.as_ref().filter(|p| !p.fallback.is_empty()) {
+                args.push("--worker.fallback");
+                args.push(p.fallback.as_str());
+            }
             return match run_board(&app.cfg, &args, Duration::from_secs(60)).await {
                 Ok(out) => {
+                    if let (Some(p), Some(a)) = (light.as_ref(), agent) {
+                        if p.agent != a {
+                            app::journal_note(&app, "crew", "crew", &format!("Лёгкая задача «{title}»: {a} недоступен, начата на {}", p.agent)).await;
+                        }
+                    }
                     app.db.todo_remove(id);
                     refresh(&app).await;
                     let mut reply = todo_json(&app).await;

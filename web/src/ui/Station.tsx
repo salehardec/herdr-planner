@@ -19,7 +19,7 @@ import { Presets } from './CrewPresets';
 import { chainOf, chainValue } from './crew-view';
 import { coachShown, firstRunShown } from './FirstRun';
 import {
-  callError, CallError, closeStation, crewSeen, fromLabel, isBool, openStation, PROGRAM_ORDER, programOf,
+  callError, CallError, closeStation, failoverBack, failoverSet, FailoverRole, crewSeen, fromLabel, isBool, openStation, PROGRAM_ORDER, programOf,
   Preview, ROLE_SETTINGS, stationDlg, stationGet, stationLight, stationModels, stationPreview, stationSet, StationData,
   StationProgram, StationSetting,
 } from './station-api';
@@ -36,6 +36,8 @@ interface Edit {
   /** `null` unsets the setting. */
   value: string | null;
   light?: boolean;
+  /** The role whose spares the planner keeps (`coordinator`, `plan`, `light`): the change is to its chain. */
+  failover?: string;
 }
 
 const edit = signal<Edit | null>(null);
@@ -69,6 +71,8 @@ async function startEdit(e: Edit, lightWas = ''): Promise<void> {
     const p = await stationPreview({
       name: e.name, repo: e.repo || undefined, ...(e.value === null ? { unset: true } : { value: e.value }),
     });
+    /* The board has no such setting: only its check of the chain is taken, the rest is the planner's own. */
+    if (e.failover) Object.assign(p, { was: lightWas, was_from: '', affects: [], note: '' });
     if (edit.value === e) prev.value = p;
   } catch (err) {
     if (edit.value === e) prevErr.value = callError(err);
@@ -85,6 +89,7 @@ function confirmEdit(reload: () => void): void {
     setErr.value = null;
     try {
       if (e.light) await stationLight(e.value ?? '');
+      else if (e.failover) await failoverSet({ role: e.failover, chain: e.value ?? 'none' });
       else await stationSet({ name: e.name, repo: e.repo || undefined, ...(e.value === null ? { unset: true } : { value: e.value }) });
       toast(t('st.saved'));
       resetEdit();
@@ -109,7 +114,7 @@ function ChangeCard(props: { reload: () => void }): JSX.Element | null {
   const on = armed.value?.key === editKey(e);
   return (
     <div class={`chg ${(p && !p.valid) || pe || se ? 'bad' : ''}`} id="st-change" data-edit={e.light ? 'light' : e.name}>
-      <div class="chg-h">{t('st.changeOf')} <code>{e.light ? t('st.lightName') : e.name}</code>{e.repo && <span class="m"> · {e.repo}</span>}</div>
+      <div class="chg-h">{t('st.changeOf')} <code>{e.light ? t('st.lightName') : e.failover ? t('st.failName', { role: t(`st.r.${e.failover}`) }) : e.name}</code>{e.repo && <span class="m"> · {e.repo}</span>}</div>
       {pe && (
         <>
           <div class="hint bad" id="st-prev-err">{pe.message}</div>
@@ -124,11 +129,13 @@ function ChangeCard(props: { reload: () => void }): JSX.Element | null {
             <span class="arr" aria-hidden="true">→</span>
             <span class="kl">{t('st.now')}</span> <code class="now" id="st-now">{p.now === null ? t('st.unsetNow') : shown(p.now)}</code>
           </div>
-          {p.was_from && !e.light && <div class="hint">{t('st.wasFrom', { from: fromLabel(p.was_from) })}</div>}
+          {p.was_from && !e.light && !e.failover && <div class="hint">{t('st.wasFrom', { from: fromLabel(p.was_from) })}</div>}
           {!p.valid && <div class="hint bad" id="st-invalid">{p.error}</div>}
           {e.light
             ? <div class="hint" id="st-affects">{t('st.lightAffects')}</div>
-            : <div class="hint" id="st-affects">{p.affects.length ? tn('st.affects', p.affects.length) : t('st.affectsNone')}</div>}
+            : e.failover
+              ? <div class="hint" id="st-affects">{t('st.failAffects')}</div>
+              : <div class="hint" id="st-affects">{p.affects.length ? tn('st.affects', p.affects.length) : t('st.affectsNone')}</div>}
           {p.affects.length > 0 && (
             <ul class="aff">
               {p.affects.slice(0, 8).map((a) => <li key={a.id}><span class="tg">{a.id}</span> {a.title} <span class="m">{a.status}</span></li>)}
@@ -136,7 +143,7 @@ function ChangeCard(props: { reload: () => void }): JSX.Element | null {
             </ul>
           )}
           {p.note && <div class="hint">{p.note}</div>}
-          <div class="hint">{e.light ? t('st.lightWhere') : t('st.byBoard')}</div>
+          <div class="hint">{e.light ? t('st.lightWhere') : e.failover ? t('st.failWhere') : t('st.byBoard')}</div>
           {se && <div class="hint bad" id="st-set-err">{se.message}</div>}
           <div class="act">
             <button class={`btn primary ${on ? 'arm' : ''}`} type="button" id="st-confirm" disabled={!p.valid || saving.value} onClick={() => confirmEdit(props.reload)}>
@@ -213,7 +220,7 @@ function EffortForm(props: { agent: string; current: string; dlid: string; onPic
 /** One value of a role: the current one, where it comes from, and the change. */
 function Field(props: {
   repo: string; kind: 'agent' | 'effort' | 'fallback' | 'light'; name: string; label: string; value: string; from: string;
-  programs: StationProgram[]; agent: string; reload: () => void; suggest?: string;
+  programs: StationProgram[]; agent: string; reload: () => void; suggest?: string; failover?: string;
 }): JSX.Element {
   const [open, setOpen] = useState(false);
   const light = props.kind === 'light';
@@ -221,7 +228,7 @@ function Field(props: {
   const mine = sameEdit(e, props.name, props.repo, light);
   const start = (value: string): void => {
     setOpen(false);
-    void startEdit({ name: props.name, repo: props.repo, value, light }, props.value);
+    void startEdit({ name: props.name, repo: props.repo, value, light, failover: props.failover }, props.value);
   };
   return (
     <div class="fld" data-field={props.kind}>
@@ -264,6 +271,9 @@ const ROLES: { id: string; title: string; hint: string; agent?: string; effort?:
   { id: 'light', title: 'st.r.light', hint: 'st.r.lightHint', light: true },
 ];
 
+/** The roles whose spares the planner keeps (the board has `fallback` for the Reviewer and the heavy tasks only). */
+const FAILOVER: string[] = ['coordinator', 'plan', 'light'];
+
 /** The first program of the order that is installed and signed in (or needs no sign-in), and a model of it for each role. */
 async function suggestCrew(data: StationData): Promise<Record<string, string>> {
   const prog = PROGRAM_ORDER.find((p) => data.programs.some((x) => x.name === p && x.installed && ['ok', 'unknown'].includes(x.state.avail.state)));
@@ -282,6 +292,60 @@ async function suggestCrew(data: StationData): Promise<Record<string, string>> {
   const work = pick(['sonnet', 'gpt-5', 'pro', 'opus']);
   const light = pick(['haiku', 'mini', 'flash', 'lite']);
   return { 'coordinator.agent': big, 'plan.agent': big, 'reviewer.agent': big, 'worker.agent': work, light };
+}
+
+/** What the planner does with a role's spares: the «переключать само» mark, the switch it has made, the return. */
+function Spares(props: { role: string; f: FailoverRole; reload: () => void }): JSX.Element | null {
+  const { role, f } = props;
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState('');
+  if (!f.chain && !f.switched) return null;
+  const run = async (job: () => Promise<unknown>, done: string): Promise<void> => {
+    setBusy(true);
+    setErr('');
+    try {
+      await job();
+      toast(done);
+      props.reload();
+    } catch (e) {
+      setErr(callError(e).message);
+    } finally {
+      setBusy(false);
+    }
+  };
+  const sw = f.switched;
+  return (
+    <div class="fld spares" data-field="spares" data-spares={role}>
+      {f.chain && (
+        <>
+          <label class="chk">
+            <input type="checkbox" id={`st-auto-${role}`} checked={f.auto} disabled={busy}
+              onChange={(e) => void run(() => failoverSet({ role, auto: (e.target as HTMLInputElement).checked }), t('st.saved'))} />
+            <span>{t('st.failAuto')}</span>
+          </label>
+          <div class="hint">{f.auto ? t(`st.failAutoOn.${role}`) : t('st.failAutoOff')}</div>
+        </>
+      )}
+      {role === 'light' && f.use && <div class="hint" id="st-fail-use">{t('st.failLightUse', { agent: f.use })}</div>}
+      {sw && (
+        <div class="failnow" id={`st-fail-now-${role}`}>
+          <div>{t('st.failNow', { to: sw.to, home: sw.home, words: sw.words })}</div>
+          {sw.back_ready
+            ? (
+              <div class="act">
+                <span class="hint">{t('st.failBackReady', { home: sw.home })}</span>
+                <button class="btn sm primary" type="button" id={`st-fail-back-${role}`} disabled={busy}
+                  onClick={() => void run(() => failoverBack(role, 'back'), t('st.failBackDone', { home: sw.home }))}>{t('st.failBack')}</button>
+                <button class="btn sm" type="button" id={`st-fail-keep-${role}`} disabled={busy}
+                  onClick={() => void run(() => failoverBack(role, 'keep'), t('st.saved'))}>{t('st.failKeep')}</button>
+              </div>
+            )
+            : <div class="hint">{t('st.failBackWait', { home: sw.home })}</div>}
+        </div>
+      )}
+      {err && <div class="hint bad">{err}</div>}
+    </div>
+  );
 }
 
 function Crew(props: { repo: string; data: StationData; reload: () => void; wizard: boolean; suggest: Record<string, string> }): JSX.Element {
@@ -310,6 +374,12 @@ function Crew(props: { repo: string; data: StationData; reload: () => void; wiza
             )}
             {r.light && (
               <Field {...common} kind="light" name="light" label={t('st.f.light')} value={data.light} from="" suggest={props.suggest.light} />
+            )}
+            {FAILOVER.includes(r.id) && (
+              <>
+                <Field {...common} kind="fallback" name={`${r.id}.fallback`} label={t('st.f.fallback')} value={data.failover?.[r.id]?.chain ?? ''} from="" failover={r.id} />
+                {data.failover?.[r.id] && <Spares role={r.id} f={data.failover[r.id]} reload={props.reload} />}
+              </>
             )}
           </div>
         );
