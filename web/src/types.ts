@@ -160,6 +160,10 @@ export interface AgentUsage {
   sections?: UsageSection[];
   dashboard?: string;
   status_page?: string;
+  /** Whose sign-in was asked with (`pi`, `omp`, `claude`, `env`, …), the crew role that runs the provider through it, and the other programs it runs through. */
+  key_from?: string;
+  key_role?: string;
+  key_also?: string[];
 }
 
 /** How loaded this machine is (GET /api/load, the `load` event). Shares are 0..100, memory is in bytes. */

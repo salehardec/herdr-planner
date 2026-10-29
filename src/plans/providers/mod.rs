@@ -63,37 +63,123 @@ pub fn jwt_exp_ms(token: &super::http::Secret) -> Option<u64> {
     v.get("exp")?.as_f64().filter(|e| *e > 0.).map(|e| (e * 1000.) as u64)
 }
 
-/// A token or key found on this machine, and when it stops working (ms), when that is known.
+/// A token or key found on this machine: which program's file it came from (`pi`, `omp`, `claude`, `codex`, `kimi`, `opencode`, or the planner's
+/// own `config` and `env`), the crew role that runs the provider through that program (empty when none does), and when it stops working (ms),
+/// when that is known.
 pub struct Cred {
     pub token: super::http::Secret,
     pub expires_ms: Option<u64>,
+    pub from: &'static str,
+    pub role: String,
 }
 
 impl Cred {
+    pub fn new(token: super::http::Secret, expires_ms: Option<u64>, from: &'static str) -> Self {
+        Self { token, expires_ms, from, role: String::new() }
+    }
+
     pub fn stale(&self, now: u64) -> bool {
         self.expires_ms.is_some_and(|e| e > 0 && e <= now) || (self.expires_ms.is_none() && jwt_exp_ms(&self.token).is_some_and(|e| e <= now))
     }
 }
 
-/// The OAuth sign-in pi keeps for `name` in its `auth.json` (`{"<name>": {"type": "oauth", "access": …, "expires": ms}}`). Read only:
-/// pi renews its own tokens when it runs, and the planner never writes the file or spends the refresh token.
+/// Says where a reading's sign-in came from: on the report, for the card.
+pub fn stamp(report: super::http::Res<super::model::Report>, cred: &Cred) -> super::http::Res<super::model::Report> {
+    report.map(|mut r| {
+        r.from = cred.from.to_string();
+        r.role = cred.role.clone();
+        r
+    })
+}
+
+/// What an agent keeps for a provider: the sign-in, and the account when it says whose it is.
+pub struct Found {
+    pub cred: Cred,
+    pub email: Option<String>,
+    pub account_id: Option<String>,
+}
+
+/// The name an agent keeps a provider's account under.
+fn kept_as(agent: &str, provider: &str) -> Option<&'static str> {
+    Some(match (agent, provider) {
+        ("pi", "deepseek") | ("omp", "deepseek") => "deepseek",
+        ("pi", "kimi") => "kimi-coding",
+        ("omp", "kimi") => "kimi-code",
+        ("pi", "codex") => "openai",
+        ("omp", "codex") => "openai-codex",
+        ("pi", "claude") | ("omp", "claude") => "anthropic",
+        _ => return None,
+    })
+}
+
+/// The key or OAuth sign-in `agent` (pi or omp) holds for `provider`, read and never written: pi's `auth.json`, omp's credential table.
+pub fn agent_login(src: &super::Sources, agent: &'static str, provider: &str) -> Option<Found> {
+    let name = kept_as(agent, provider)?;
+    match agent {
+        "pi" => {
+            let auth = super::http::read_json(&src.pi_auth)?;
+            found_in(auth.get(name)?, "pi")
+        }
+        "omp" => found_in(&omp_entry(&src.omp_db, name)?, "omp"),
+        _ => None,
+    }
+}
+
+/// An entry as pi and omp both keep it: `{"type": "api_key", "key": …}` or `{"type": "oauth", "access": …, "expires": ms, …}`.
+fn found_in(entry: &serde_json::Value, from: &'static str) -> Option<Found> {
+    let kind = super::http::text_at(entry, &["type"]);
+    let (token, expires_ms) = match kind.as_deref() {
+        Some("api_key") => (super::http::secret_at(entry, &["key"])?, None),
+        Some("oauth") | None => (
+            super::http::secret_at(entry, &["access"]).or_else(|| super::http::secret_at(entry, &["key"]))?,
+            entry.get("expires").and_then(|v| v.as_u64()),
+        ),
+        Some(_) => return None,
+    };
+    Some(Found {
+        cred: Cred::new(token, expires_ms, from),
+        email: super::http::text_at(entry, &["email"]),
+        account_id: super::http::text_at(entry, &["accountId"]),
+    })
+}
+
+/// One row of omp's credential table (`agent.db`, `auth_credentials`), as the JSON it keeps, with its type: opened read-only, the newest row
+/// that is not disabled. omp renews its own tokens; nothing is written.
+fn omp_entry(db: &std::path::Path, provider: &str) -> Option<serde_json::Value> {
+    use rusqlite::{Connection, OpenFlags};
+    let conn = Connection::open_with_flags(db, OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX).ok()?;
+    conn.busy_timeout(std::time::Duration::from_millis(500)).ok()?;
+    let (kind, data): (String, String) = conn
+        .query_row(
+            "SELECT credential_type, data FROM auth_credentials WHERE provider = ?1 AND disabled_cause IS NULL ORDER BY updated_at DESC, id DESC LIMIT 1",
+            [provider],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .ok()?;
+    let mut v: serde_json::Value = serde_json::from_str(&data).ok()?;
+    v.as_object_mut()?.insert("type".into(), kind.into());
+    Some(v)
+}
+
+/// The OAuth sign-in pi keeps for `name`. Kept for the readers of pi's file that want it by name.
+#[cfg(test)]
 pub fn pi_oauth(src: &super::Sources, name: &str) -> Option<Cred> {
     let auth = super::http::read_json(&src.pi_auth)?;
     let entry = auth.get(name)?;
     if super::http::text_at(entry, &["type"]).as_deref().is_some_and(|t| t != "oauth") {
         return None;
     }
-    Some(Cred { token: super::http::secret_at(entry, &["access"])?, expires_ms: entry.get("expires").and_then(|v| v.as_u64()) })
+    found_in(entry, "pi").map(|f| f.cred)
 }
 
-/// The API key pi keeps for `name` (`{"<name>": {"type": "api_key", "key": …}}`).
+#[cfg(test)]
 pub fn pi_key(src: &super::Sources, name: &str) -> Option<super::http::Secret> {
     let auth = super::http::read_json(&src.pi_auth)?;
     let entry = auth.get(name)?;
     if super::http::text_at(entry, &["type"]).as_deref().is_some_and(|t| t != "api_key") {
         return None;
     }
-    super::http::secret_at(entry, &["key"])
+    found_in(entry, "pi").map(|f| f.cred.token)
 }
 
 /// The first of the candidates (best first) that still works; when there are some and all have expired, why there is nothing.
@@ -122,6 +208,19 @@ pub mod tests {
         use base64::Engine;
         let b = |v: &serde_json::Value| base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(v.to_string());
         format!("{}.{}.sig", b(&serde_json::json!({"alg": "none"})), b(claims))
+    }
+
+    /// A stand-in for omp's credential table: rows of (provider, type, data, disabled_cause).
+    pub fn omp_db(path: &std::path::Path, rows: &[(&str, &str, &str, Option<&str>)]) {
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let conn = rusqlite::Connection::open(path).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE auth_credentials (id INTEGER PRIMARY KEY AUTOINCREMENT, provider TEXT NOT NULL, credential_type TEXT NOT NULL, data TEXT NOT NULL, disabled_cause TEXT DEFAULT NULL, identity_key TEXT DEFAULT NULL, created_at INTEGER NOT NULL DEFAULT 0, updated_at INTEGER NOT NULL DEFAULT 0);",
+        )
+        .unwrap();
+        for (i, (p, t, d, off)) in rows.iter().enumerate() {
+            conn.execute("INSERT INTO auth_credentials (provider, credential_type, data, disabled_cause, updated_at) VALUES (?1, ?2, ?3, ?4, ?5)", rusqlite::params![p, t, d, off, i as i64]).unwrap();
+        }
     }
 
     /// A stand-in for pi's `auth.json`: fake keys and tokens, the shape pi writes.
@@ -172,11 +271,40 @@ pub mod tests {
 
     #[test]
     fn the_first_working_sign_in_wins_and_when_all_have_expired_that_is_the_reason() {
-        let c = |ms: Option<u64>| Cred { token: crate::plans::http::Secret::new("t").unwrap(), expires_ms: ms };
+        let c = |ms: Option<u64>| Cred::new(crate::plans::http::Secret::new("t").unwrap(), ms, "test");
         assert!(first_fresh::<u8>(vec![], 10).is_none());
         let got = first_fresh(vec![(c(Some(5)), 1), (c(Some(50)), 2), (c(None), 3)], 10).unwrap().unwrap();
         assert_eq!(got.1, 2);
         assert_eq!(first_fresh(vec![(c(Some(5)), 1)], 10).unwrap().err(), Some(crate::plans::http::Fail::Expired));
         assert_eq!(first_fresh(vec![(c(None), 7)], 10).unwrap().unwrap().1, 7, "no expiry known: tried");
+    }
+
+    #[test]
+    fn omps_credential_table_is_read_read_only_and_a_disabled_or_missing_row_is_nothing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let src = Sources::for_tests(tmp.path());
+        assert!(agent_login(&src, "omp", "deepseek").is_none(), "no database: nothing, not a failure");
+        omp_db(
+            &src.omp_db,
+            &[
+                ("deepseek", "api_key", r#"{"key":"old-omp-key"}"#, None),
+                ("deepseek", "api_key", r#"{"key":"new-omp-key"}"#, None),
+                ("anthropic", "oauth", r#"{"access":"a","refresh":"r","expires":4102444800000,"email":"me@x.y"}"#, None),
+                ("openai-codex", "oauth", r#"{"access":"c","refresh":"r","expires":1000,"accountId":"acct-9"}"#, None),
+                ("kimi-code", "oauth", r#"{"access":"k","refresh":"r","expires":4102444800000}"#, Some("revoked")),
+            ],
+        );
+        let before = std::fs::read(&src.omp_db).unwrap();
+        let key = agent_login(&src, "omp", "deepseek").unwrap();
+        assert_eq!((key.cred.from, key.cred.expires_ms), ("omp", None));
+        let claude = agent_login(&src, "omp", "claude").unwrap();
+        assert_eq!(claude.email.as_deref(), Some("me@x.y"));
+        assert!(!claude.cred.stale(1_792_000_000_000));
+        let codex = agent_login(&src, "omp", "codex").unwrap();
+        assert_eq!(codex.account_id.as_deref(), Some("acct-9"));
+        assert!(codex.cred.stale(1_792_000_000_000));
+        assert!(agent_login(&src, "omp", "kimi").is_none(), "a disabled credential is not used");
+        assert!(agent_login(&src, "opencode", "deepseek").is_none() && agent_login(&src, "claude", "claude").is_none());
+        assert_eq!(std::fs::read(&src.omp_db).unwrap(), before, "the database is only read");
     }
 }

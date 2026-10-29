@@ -3,9 +3,10 @@
 //! Platform session token (`platform_token`, `DEEPSEEK_PLATFORM_TOKEN`) read against the dashboard's user summary.
 //! Not ported: the Platform's per-key cost history, and importing the token from a browser.
 
-use super::{number, parse_json};
+use super::{agent_login, number, parse_json, stamp, Cred};
 use crate::plans::http::{self, Fail, Request, Res};
 use crate::plans::model::{Account, Balance, Report, Section};
+use crate::plans::routes::agents_for;
 use crate::plans::Sources;
 use serde::Deserialize;
 
@@ -14,22 +15,30 @@ const BALANCE_URL: &str = "https://api.deepseek.com/user/balance";
 const SUMMARY_URL: &str = "https://platform.deepseek.com/api/v0/users/get_user_summary";
 
 pub async fn fetch(src: &Sources, _now: u64) -> Option<Res<Report>> {
-    if let Some(key) = api_key(src) {
-        let req = Request::get(ID, BALANCE_URL).bearer(&key).header("Accept", "application/json");
-        return Some(http::body(req).await.and_then(|body| parse_balance(&body)));
+    if let Some(cred) = api_key(src) {
+        let req = Request::get(ID, BALANCE_URL).bearer(&cred.token).header("Accept", "application/json");
+        return Some(stamp(http::body(req).await.and_then(|body| parse_balance(&body)), &cred));
     }
-    let stored = src.secret(ID, "platform_token", &["DEEPSEEK_PLATFORM_TOKEN", "DEEPSEEK_USER_TOKEN"])?;
+    let (stored, from) = src.secret_from(ID, "platform_token", &["DEEPSEEK_PLATFORM_TOKEN", "DEEPSEEK_USER_TOKEN"])?;
+    let cred = Cred::new(stored.clone(), None, from);
     // localStorage keeps the token as `{"value":"…"}`; a bare token is used as is.
     let token = stored
         .json_field("value")
         .unwrap_or(stored);
     let req = Request::get(ID, SUMMARY_URL).bearer(&token).header("Accept", "application/json").header("x-client-platform", "web");
-    Some(http::body(req).await.and_then(|body| parse_summary(&body)))
+    Some(stamp(http::body(req).await.and_then(|body| parse_summary(&body)), &cred))
 }
 
-/// The API key, best first: pi's (`deepseek` in its `auth.json`), then the planner's own config, then the planner's environment.
-pub fn api_key(src: &Sources) -> Option<crate::plans::http::Secret> {
-    super::pi_key(src, "deepseek").or_else(|| src.secret(ID, "api_key", &["DEEPSEEK_API_KEY", "DEEPSEEK_KEY"]))
+/// The API key, best first: that of the program the crew runs DeepSeek through (pi's `auth.json`, omp's credential table, OpenCode), then the other
+/// places a key can be, then the planner's own config, and last the planner's environment.
+pub fn api_key(src: &Sources) -> Option<Cred> {
+    for (agent, role) in agents_for(&src.routes, ID) {
+        if let Some(mut found) = agent_login(src, agent, ID) {
+            found.cred.role = role;
+            return Some(found.cred);
+        }
+    }
+    src.secret_from(ID, "api_key", &["DEEPSEEK_API_KEY", "DEEPSEEK_KEY"]).map(|(token, from)| Cred::new(token, None, from))
 }
 
 /// The public API's answer: one entry per currency the account holds.
@@ -239,17 +248,28 @@ mod tests {
     }
 
     #[test]
-    fn the_key_is_pis_first_then_the_config_then_the_environment_and_none_is_none() {
+    fn the_key_is_of_the_program_the_crew_runs_deepseek_through_then_the_config_then_the_environment() {
         use crate::plans::providers::tests::pi_file;
+        use crate::plans::routes::routes_of;
         let tmp = tempfile::tempdir().unwrap();
         let bare = Sources::for_tests(tmp.path());
         assert!(api_key(&bare).is_none(), "no key anywhere: the provider is not connected, and the page says how to connect it");
         let env = Sources::for_tests(tmp.path()).with_env("DEEPSEEK_API_KEY", "from-env");
-        assert!(api_key(&env).is_some());
+        assert_eq!(api_key(&env).unwrap().from, "env");
+        let cfg = Sources::for_tests(tmp.path()).with_env("DEEPSEEK_API_KEY", "from-env").with_settings("[deepseek]\napi_key = \"from-config\"\n");
+        assert_eq!(api_key(&cfg).unwrap().from, "config", "the planner's config comes before the environment");
         pi_file(tmp.path(), &serde_json::json!({"deepseek": {"type": "api_key", "key": "from-pi"}}));
-        let from_pi = api_key(&bare).unwrap();
-        assert!(api_key(&env).unwrap() == from_pi, "pi's key wins over the environment's");
-        assert!(api_key(&Sources::for_tests(tmp.path()).with_settings("[deepseek]\napi_key = \"from-config\"\n")).unwrap() == from_pi);
+        let c = api_key(&cfg).unwrap();
+        assert_eq!((c.from, c.role.as_str()), ("pi", ""), "pi's key comes before the config's and the environment's, and no role names pi yet");
+        // omp holds a key too, and the crew runs DeepSeek through omp: omp's is the one, with its role
+        let mut both = Sources::for_tests(tmp.path());
+        crate::plans::providers::tests::omp_db(&both.omp_db, &[("deepseek", "api_key", r#"{"key":"from-omp","source":"login"}"#, None)]);
+        both.routes = routes_of(&[("worker.agent".to_string(), "omp/deepseek/deepseek-v4-pro".to_string())]);
+        let c = api_key(&both).unwrap();
+        assert_eq!((c.from, c.role.as_str()), ("omp", "worker"));
+        // …and through pi: pi's
+        both.routes = routes_of(&[("worker.agent".to_string(), "pi/deepseek/deepseek-v4-pro".to_string())]);
+        assert_eq!(api_key(&both).unwrap().from, "pi");
     }
 
     #[tokio::test]

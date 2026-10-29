@@ -211,8 +211,11 @@ export const ru: Record<string, string | string[]> = {
   'limits.why.no_login': 'вход не найден', 'limits.why.expired': 'вход просрочен: откройте программу, она обновит его', 'limits.why.rejected': 'сервис отклонил вход: войдите в программу заново',
   'limits.why.rate_limited': 'сервис ограничил частоту запросов; повтор позже', 'limits.why.status': 'сервис ответил HTTP {n}', 'limits.why.network': 'сервис не отвечает', 'limits.why.timeout': 'сервис не ответил вовремя',
   'limits.why.parse': 'ответ сервиса не похож на документированный', 'limits.why.no_plan': 'у аккаунта нет тарифа с лимитами', 'limits.why.no_curl': 'не установлена программа curl', 'limits.why.too_big': 'ответ слишком велик',
-  'limits.unconnected': 'Не подключены: {list}', 'limits.hint.claude': 'войдите в pi (anthropic) или в Claude Code', 'limits.hint.codex': 'войдите в pi (openai) или в Codex CLI', 'limits.hint.kimi': 'войдите в pi (kimi-coding) или в Kimi Code CLI',
-  'limits.hint.deepseek': 'добавьте ключ deepseek в pi (~/.pi/agent/auth.json) или задайте DEEPSEEK_API_KEY в окружении планировщика',
+  'limits.unconnected': 'Не подключены: {list}', 'limits.hint.claude': 'войдите в Claude Code (или в pi / omp, если роль экипажа гонит Claude через них)', 'limits.hint.codex': 'войдите в Codex CLI (или в pi / omp, если роль экипажа гонит Codex через них)', 'limits.hint.kimi': 'войдите в pi, omp или Kimi Code CLI — туда, через что экипаж запускает Kimi',
+  'limits.hint.deepseek': 'добавьте ключ deepseek в pi (~/.pi/agent/auth.json) или в omp — туда, через что экипаж его запускает; последний запасной вариант — DEEPSEEK_API_KEY в окружении планировщика',
+  'limits.keyFrom': 'Вход: {from}', 'limits.keyRole': ' · роль {role}', 'limits.keyAlso': 'ещё идёт через {list}',
+  'limits.from.pi': 'из pi', 'limits.from.omp': 'из omp', 'limits.from.claude': 'из Claude Code', 'limits.from.codex': 'из Codex CLI', 'limits.from.kimi': 'из Kimi Code CLI',
+  'limits.from.opencode': 'из OpenCode', 'limits.from.config': 'из конфигурации планировщика', 'limits.from.env': 'из окружения',
   'limits.barTip': '{name}: {text}', 'limits.noDataBar': 'нет данных',
   // архив, журнал
   'archive.title': 'Архив', 'archive.heading': 'Архив доски', 'archive.text': 'Сделанные задачи, убранные с доски. Верни любую — она появится планетой.',

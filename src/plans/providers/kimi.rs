@@ -1,20 +1,19 @@
-//! Kimi Code (Kimi For Coding) quotas: the 5-hour rate limit, the weekly request quota, and the monthly Total usage pool, in
-//! CodexBar's order (as herdr-gpui reads them):
+//! Kimi Code (Kimi For Coding) quotas: the 5-hour rate limit, the weekly request quota, and the monthly Total usage pool, in CodexBar's order
+//! (as herdr-gpui reads them), but looking first through the program the crew runs Kimi through:
 //!
-//! 0. pi's Kimi sign-in (`kimi-coding` in `~/.pi/agent/auth.json`), while it has not expired;
-//! 1. a Kimi Code API key (`[usage.kimi] api_key`, `KIMI_CODE_API_KEY`), sent to `GET {api}/coding/v1/usages`;
-//! 2. the Kimi Code CLI's own sign-in, `$KIMI_CODE_HOME/credentials/kimi-code.json` (default `~/.kimi-code`), while its access
-//!    token is fresh (it lives 15 minutes and only the CLI renews it), with the CLI's device headers (China region only, as the
-//!    file does not say which host issued it);
-//! 3. the web session token, the `kimi-auth` cookie's value (`[usage.kimi] token`, `KIMI_AUTH_TOKEN`), sent to the console's
-//!    `GetUsages` call.
+//! 1. that program's sign-in: pi's `kimi-coding` (`~/.pi/agent/auth.json`), omp's `kimi-code` (its credential table), or the Kimi Code CLI's own
+//!    `$KIMI_CODE_HOME/credentials/kimi-code.json` (default `~/.kimi-code`; China region only, with the CLI's device headers), while its
+//!    access token is fresh (it lives 15 minutes and only the program renews it); the other programs follow in that order;
+//! 2. a Kimi Code API key (`[usage.kimi] api_key` in the planner's config, then `KIMI_CODE_API_KEY`), sent to `GET {api}/coding/v1/usages`;
+//! 3. the web session token, the `kimi-auth` cookie's value (`[usage.kimi] token`, `KIMI_AUTH_TOKEN`), sent to the console's `GetUsages`.
 //!
-//! With a web token, the membership pool (`GetSubscriptionStats`) and the plan title (`GetSubscription`) are added; failures
-//! there never fail the report. Not ported: reading the cookie from a browser, and several labelled web accounts.
+//! With a web token, the membership pool (`GetSubscriptionStats`) and the plan title (`GetSubscription`) are added; failures there never fail
+//! the report. Not ported: reading the cookie from a browser, and several labelled web accounts.
 
-use super::{number, parse_json, pi_oauth, ts_ms, Timestamp};
+use super::{agent_login, number, parse_json, stamp, ts_ms, Cred, Timestamp};
 use crate::plans::http::{self, Fail, Request, Res, Secret};
 use crate::plans::model::{group, Account, Kind, Report, Section, Window, MIN, MONTH, SESSION, WEEK};
+use crate::plans::routes::agents_for;
 use crate::plans::Sources;
 use serde::Deserialize;
 use serde_json::Value;
@@ -53,50 +52,58 @@ impl Region {
 
 pub async fn fetch(src: &Sources, now: u64) -> Option<Res<Report>> {
     let region = Region::from(src.text(ID, "region").as_deref());
-    let web = src.secret(ID, "token", &["KIMI_AUTH_TOKEN"]);
-    // pi's Kimi sign-in (`kimi-coding` in its `auth.json`) is asked with first; pi renews it when it runs, the planner never does
-    let pi = pi_oauth(src, "kimi-coding");
-    let pi_dead = pi.as_ref().is_some_and(|c| c.stale(now));
-    if let Some(cred) = pi.filter(|c| !c.stale(now)) {
-        let req = Request::get(ID, usages_url(region.api())).bearer(&cred.token);
-        return Some(code(req, web.as_ref(), region).await);
-    }
-    if let Some(key) = src.secret(ID, "api_key", &["KIMI_CODE_API_KEY"]) {
-        let req = Request::get(ID, usages_url(region.api())).bearer(&key);
-        return Some(code(req, web.as_ref(), region).await);
-    }
-    if region == Region::China {
-        if let Some(file) = http::read_json(&src.kimi_home.join("credentials/kimi-code.json")) {
-            let fresh = file
-                .get("expires_at")
-                .and_then(Value::as_f64)
-                .filter(|e| *e > 0.)
-                .is_some_and(|e| (e * 1000.) as u64 > now + FRESH_MS);
-            match http::secret_at(&file, &["access_token"]).filter(|_| fresh) {
-                Some(token) => {
-                    let device = std::fs::read_to_string(src.kimi_home.join("device_id"))
-                        .map(|id| ascii(id.trim()))
-                        .ok()
-                        .filter(|id| !id.is_empty());
-                    let mut req = Request::get(ID, usages_url(region.api()))
-                        .bearer(&token)
-                        .header("User-Agent", concat!("herdr-planner/", env!("CARGO_PKG_VERSION")))
-                        .header("X-Msh-Platform", "kimi_code_cli")
-                        .header("X-Msh-Version", env!("CARGO_PKG_VERSION"))
-                        .header("X-Msh-Device-Model", "Linux");
-                    if let Some(device) = device {
-                        req = req.header("X-Msh-Device-Id", &device);
-                    }
-                    return Some(code(req, web.as_ref(), region).await);
+    let web = src.secret_from(ID, "token", &["KIMI_AUTH_TOKEN"]);
+    let web_token = web.as_ref().map(|(s, _)| s);
+    // a sign-in that was found but has expired: said only when nothing else works
+    let mut dead = false;
+    // the program the crew runs Kimi through comes first (pi's `kimi-coding`, omp's `kimi-code`, the Kimi Code CLI), then the other places
+    for (agent, role) in agents_for(&src.routes, ID) {
+        match agent {
+            "pi" | "omp" => {
+                let Some(found) = agent_login(src, agent, ID) else { continue };
+                let mut cred = found.cred;
+                cred.role = role;
+                if cred.stale(now) {
+                    dead = true;
+                    continue;
                 }
-                // The CLI renews its token when it runs; the planner never rewrites its files.
-                None if web.is_none() => return Some(Err(Fail::Expired)),
-                None => {}
+                // pi and omp renew their own tokens when they run; the planner never does
+                let req = Request::get(ID, usages_url(region.api())).bearer(&cred.token);
+                return Some(stamp(code(req, web_token, region).await, &cred));
             }
+            "kimi" if region == Region::China => {
+                let Some(file) = http::read_json(&src.kimi_home.join("credentials/kimi-code.json")) else { continue };
+                let expires = file.get("expires_at").and_then(Value::as_f64).filter(|e| *e > 0.).map(|e| (e * 1000.) as u64);
+                let Some(token) = http::secret_at(&file, &["access_token"]) else { continue };
+                let mut cred = Cred::new(token, expires, "kimi");
+                cred.role = role;
+                // the CLI's token is used while it has more than a minute left
+                if cred.stale(now + FRESH_MS) {
+                    dead = true;
+                    continue;
+                }
+                let device = std::fs::read_to_string(src.kimi_home.join("device_id")).map(|id| ascii(id.trim())).ok().filter(|id| !id.is_empty());
+                let mut req = Request::get(ID, usages_url(region.api()))
+                    .bearer(&cred.token)
+                    .header("User-Agent", concat!("herdr-planner/", env!("CARGO_PKG_VERSION")))
+                    .header("X-Msh-Platform", "kimi_code_cli")
+                    .header("X-Msh-Version", env!("CARGO_PKG_VERSION"))
+                    .header("X-Msh-Device-Model", "Linux");
+                if let Some(device) = device {
+                    req = req.header("X-Msh-Device-Id", &device);
+                }
+                return Some(stamp(code(req, web_token, region).await, &cred));
+            }
+            _ => {}
         }
     }
-    let Some(token) = web else { return pi_dead.then_some(Err(Fail::Expired)) };
-    Some(web_usage(&token, region).await)
+    // the planner's own config, then its environment
+    if let Some((key, from)) = src.secret_from(ID, "api_key", &["KIMI_CODE_API_KEY"]) {
+        let req = Request::get(ID, usages_url(region.api())).bearer(&key);
+        return Some(stamp(code(req, web_token, region).await, &Cred::new(key, None, from)));
+    }
+    let Some((token, from)) = web else { return dead.then_some(Err(Fail::Expired)) };
+    Some(stamp(web_usage(&token, region).await, &Cred::new(token.clone(), None, from)))
 }
 
 fn ascii(value: &str) -> String {

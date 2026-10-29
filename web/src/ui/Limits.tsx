@@ -53,6 +53,16 @@ export function whyText(code: string): string {
   return out === key ? code : out;
 }
 
+/** «Sign-in: from pi · role worker», and the other programs the crew runs the provider through. Empty when nothing says where it came from. */
+export function keyLine(a: AgentUsage): string {
+  if (!a.key_from) return '';
+  const k = `limits.from.${a.key_from}`;
+  const from = t(k) === k ? a.key_from : t(k);
+  const role = a.key_role ? t('limits.keyRole', { role: a.key_role.replace(/\.agent$/, '') }) : '';
+  const also = a.key_also?.length ? ` · ${t('limits.keyAlso', { list: a.key_also.join(', ') })}` : '';
+  return `${t('limits.keyFrom', { from })}${role}${also}`;
+}
+
 const cur = (n: number, c = 'USD'): string => (c === 'USD' ? `$${Number(n).toFixed(2)}` : `${Number(n).toFixed(2)} ${c}`);
 
 /** `35% used 31m`: the time to the reset names a session or weekly window; a window the service names itself is named. */
@@ -177,7 +187,7 @@ export function LimitAgent(props: { a: AgentUsage }): JSX.Element {
       )}
       {!windows.length && !a.balance && <div class="lim-none-body">{a.note || t('limits.noData')}</div>}
       {a.why && (windows.length > 0 || !!a.balance) && <div class="lim-why">{t('limits.whyStale', { why: whyText(a.why) })}</div>}
-      <div class="lim-foot">{a.updated_at_ms ? t('limits.updated', { at: dayTimeOf(a.updated_at_ms) }) : t('limits.updatedUnknown')}{a.source === 'omarchy' ? ` · ${t('limits.sourceOmarchy')}` : ''}</div>
+      <div class="lim-foot">{a.updated_at_ms ? t('limits.updated', { at: dayTimeOf(a.updated_at_ms) }) : t('limits.updatedUnknown')}{a.source === 'omarchy' ? ` · ${t('limits.sourceOmarchy')}` : ''}{keyLine(a) ? ` · ${keyLine(a)}` : ''}</div>
     </div>
   );
 }
@@ -273,6 +283,7 @@ function ProviderCard(props: { a: AgentUsage }): JSX.Element {
     <div class="lc-body" data-agent={a.id} role="tabpanel">
       <div class="lc-head"><b class="lc-name">{a.name}</b><span class="lc-acct">{a.account}</span></div>
       <div class="lc-sub"><span class="lc-upd">{updatedText(a.updated_at_ms)}</span><span class="lc-tier">{a.tier}</span></div>
+      {keyLine(a) && <div class="lc-key" id="limits-key">{keyLine(a)}</div>}
       {a.stale && <div class="lc-warn">{t('limits.stale')}</div>}
       {windows.map((w, i) => <CardWindow key={i} w={w} />)}
       {(a.extra ?? []).map((w, i) => <CardWindow key={`x${i}`} w={w} />)}

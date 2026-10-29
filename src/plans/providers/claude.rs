@@ -1,10 +1,12 @@
-//! Claude plan usage, read with pi's Claude sign-in (`~/.pi/agent/auth.json`) when it has one, else Claude Code's own sign-in: `.credentials.json` in its config directory (`$CLAUDE_CONFIG_DIR`,
+//! Claude plan usage, read with the sign-in of the program the crew runs Claude through (Claude Code's `.credentials.json`, or pi's `auth.json`, or omp's
+//! credential table), else Claude Code's own sign-in: `.credentials.json` in its config directory (`$CLAUDE_CONFIG_DIR`,
 //! else `~/.claude`). A Claude Code pointed at another endpoint, or signing in through an API key helper, is not using that
 //! sign-in, so it is left alone. The token is Claude Code's own: it renews it when it runs, the planner never does.
 
-use super::{first_fresh, parse_json, pi_oauth, ts_ms, Cred, Timestamp};
+use super::{agent_login, first_fresh, parse_json, stamp, ts_ms, Cred, Timestamp};
 use crate::plans::http::{self, text_at, Fail, Request, Res};
 use crate::plans::model::{title_case, Account, Kind, Report, Section, Window, SESSION, WEEK};
+use crate::plans::routes::agents_for;
 use crate::plans::Sources;
 use serde::Deserialize;
 
@@ -21,17 +23,28 @@ pub async fn fetch(src: &Sources, now: u64) -> Option<Res<Report>> {
         Err(fail) => return Some(Err(fail)),
     };
     let req = Request::get(ID, URL).bearer(&cred.token).header("anthropic-beta", BETA).header("User-Agent", AGENT);
-    Some(http::body(req).await.and_then(|body| parse(&body, account)))
+    Some(stamp(http::body(req).await.and_then(|body| parse(&body, account)), &cred))
 }
 
-/// The sign-in to ask with: pi's Claude sign-in first (when pi has one and it has not expired), then Claude Code's own. Neither is renewed
-/// here: the programs renew them when they run, and a dead one only says so.
+/// The sign-in to ask with: the one of the program the crew runs Claude through (Claude Code itself, or pi or omp when a role names them), the
+/// other places an account can be, and last the planner's own environment. The first that has not expired wins; neither is renewed here: the
+/// programs renew theirs when they run, and a dead one only says so.
 pub fn choose(src: &Sources, now: u64) -> Option<Res<(Cred, Account)>> {
     let mut candidates = Vec::new();
-    if let Some(cred) = pi_oauth(src, "anthropic") {
-        candidates.push((cred, Account::default()));
+    for (agent, role) in agents_for(&src.routes, ID) {
+        let found = match agent {
+            "claude" => claude_code(src),
+            "pi" | "omp" => agent_login(src, agent, ID).map(|f| (f.cred, Account { email: f.email, plan: None })),
+            _ => None,
+        };
+        if let Some((mut cred, account)) = found {
+            cred.role = role;
+            candidates.push((cred, account));
+        }
     }
-    candidates.extend(claude_code(src));
+    if let Some((token, from)) = src.secret_from(ID, "access_token", &["CLAUDE_CODE_OAUTH_TOKEN"]) {
+        candidates.push((Cred::new(token, None, from), Account::default()));
+    }
     first_fresh(candidates, now)
 }
 
@@ -51,7 +64,7 @@ fn claude_code(src: &Sources) -> Option<(Cred, Account)> {
         text_at(&credentials, &["claudeAiOauth", "subscriptionType"]).as_deref(),
         text_at(&credentials, &["claudeAiOauth", "rateLimitTier"]).as_deref(),
     );
-    Some((Cred { token, expires_ms }, Account { email, plan }))
+    Some((Cred::new(token, expires_ms, "claude"), Account { email, plan }))
 }
 
 /// Whether Claude Code works without its OAuth sign-in: `ANTHROPIC_BASE_URL` (from the environment or the `env` of its
@@ -302,10 +315,11 @@ mod tests {
     }
 
     #[test]
-    fn pis_claude_sign_in_comes_first_then_claude_codes_and_a_dead_one_is_the_reason() {
+    fn the_sign_in_is_of_the_program_the_crew_runs_claude_through_and_a_dead_one_is_the_reason() {
         use crate::plans::providers::tests::pi_file;
+        use crate::plans::routes::routes_of;
         let tmp = tempfile::tempdir().unwrap();
-        let src = Sources::for_tests(tmp.path());
+        let mut src = Sources::for_tests(tmp.path());
         assert!(choose(&src, NOW0).is_none(), "no sign-in anywhere: left out");
         std::fs::create_dir_all(&src.claude_dir).unwrap();
         std::fs::write(
@@ -315,17 +329,25 @@ mod tests {
         .unwrap();
         std::fs::write(src.claude_dir.join(".claude.json"), r#"{"oauthAccount":{"emailAddress":"me@x.y"}}"#).unwrap();
         let (cred, account) = choose(&src, NOW0).unwrap().unwrap();
-        assert_eq!((account.email.as_deref(), account.plan.as_deref()), (Some("me@x.y"), Some("Max 5x")));
+        assert_eq!((account.email.as_deref(), account.plan.as_deref(), cred.from), (Some("me@x.y"), Some("Max 5x"), "claude"));
         assert_eq!(cred.expires_ms, Some(4102444800000));
+        // pi has a Claude sign-in too, but the crew does not run Claude through pi: Claude Code's own is first, pi's is only a place to look after it
         pi_file(tmp.path(), &serde_json::json!({"anthropic": {"type": "oauth", "access": "pi-token", "refresh": "r", "expires": 4102444800000u64}}));
-        let (_, account) = choose(&src, NOW0).unwrap().unwrap();
-        assert_eq!(account, Account::default(), "pi's sign-in was taken first: it names no account");
+        assert_eq!(choose(&src, NOW0).unwrap().unwrap().0.from, "claude");
+        // the crew runs it through pi (a role says so): pi's is first, it names no account, and the role is kept
+        src.routes = routes_of(&[("worker.agent".to_string(), "pi/anthropic/claude-sonnet".to_string())]);
+        let (cred, account) = choose(&src, NOW0).unwrap().unwrap();
+        assert_eq!((cred.from, cred.role.as_str(), account), ("pi", "worker", Account::default()));
         // pi's has expired: Claude Code's is the one asked with
         pi_file(tmp.path(), &serde_json::json!({"anthropic": {"type": "oauth", "access": "pi-token", "expires": 5u64}}));
-        assert_eq!(choose(&src, NOW0).unwrap().unwrap().1.email.as_deref(), Some("me@x.y"));
+        assert_eq!(choose(&src, NOW0).unwrap().unwrap().0.from, "claude");
         // both have expired: the reason is said
         std::fs::write(src.claude_dir.join(".credentials.json"), r#"{"claudeAiOauth":{"accessToken":"cc-token","expiresAt":5}}"#).unwrap();
         assert_eq!(choose(&src, NOW0).unwrap().err(), Some(Fail::Expired));
+        // the environment is the last resort
+        let tmp2 = tempfile::tempdir().unwrap();
+        let env = Sources::for_tests(tmp2.path()).with_env("CLAUDE_CODE_OAUTH_TOKEN", "env-token");
+        assert_eq!(choose(&env, NOW0).unwrap().unwrap().0.from, "env");
     }
 
     const NOW0: u64 = 1_792_000_000_000;

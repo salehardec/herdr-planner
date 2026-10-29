@@ -102,3 +102,4 @@
 .lc-tab span{max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .lc-tab:hover{background:var(--pl-hover);color:var(--pl-text)}
 .lc-tab[aria-selected="true"]{background:var(--pl-hover);color:var(--pl-title)}
+.lc-key{color:var(--pl-faint);font-size:0.625rem;overflow-wrap:anywhere}

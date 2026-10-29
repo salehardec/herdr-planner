@@ -13,6 +13,7 @@
 pub mod http;
 pub mod model;
 pub mod providers;
+pub mod routes;
 
 use self::http::{Fail, Res, Secret};
 use self::model::Report;
@@ -68,6 +69,10 @@ pub struct Sources {
     pub kimi_home: PathBuf,
     /// pi's `auth.json` (`$PI_CODING_AGENT_DIR`, else `~/.pi/agent`): the first place the keys and tokens are looked for. Only ever read.
     pub pi_auth: PathBuf,
+    /// omp's credential table (`$OMP_CODING_AGENT_DIR`, else `~/.omp/agent`, `agent.db`): opened read-only.
+    pub omp_db: PathBuf,
+    /// Which agents the crew runs each provider through (read from the board's settings, see `routes`).
+    pub routes: Vec<routes::Route>,
     pub hidden: Vec<String>,
     settings: toml::Table,
     env: BTreeMap<String, String>,
@@ -78,7 +83,7 @@ impl Sources {
         let home = crate::config::home();
         let var = |name: &str| std::env::var_os(name).filter(|v| !v.is_empty()).map(PathBuf::from);
         let env = std::env::vars()
-            .filter(|(k, v)| !v.trim().is_empty() && ["ANTHROPIC_", "DEEPSEEK_", "KIMI_"].iter().any(|p| k.starts_with(p)))
+            .filter(|(k, v)| !v.trim().is_empty() && ["ANTHROPIC_", "CLAUDE_CODE_", "DEEPSEEK_", "KIMI_"].iter().any(|p| k.starts_with(p)))
             .collect();
         let mut s = Self {
             claude_dir: var("CLAUDE_CONFIG_DIR").unwrap_or_else(|| home.join(".claude")),
@@ -86,6 +91,8 @@ impl Sources {
             opencode_auth: var("XDG_DATA_HOME").unwrap_or_else(|| home.join(".local/share")).join("opencode/auth.json"),
             kimi_home: var("KIMI_CODE_HOME").unwrap_or_else(|| home.join(".kimi-code")),
             pi_auth: var("PI_CODING_AGENT_DIR").unwrap_or_else(|| home.join(".pi/agent")).join("auth.json"),
+            omp_db: var("OMP_CODING_AGENT_DIR").unwrap_or_else(|| home.join(".omp/agent")).join("agent.db"),
+            routes: Vec::new(),
             home,
             hidden: Vec::new(),
             settings: toml::Table::new(),
@@ -115,7 +122,16 @@ impl Sources {
         self.settings.get(provider)?.as_table()?.get(name)?.as_str().map(str::trim).filter(|s| !s.is_empty()).map(str::to_string)
     }
 
+    /// A key from the planner's config, else from the environment, and which of the two it was.
+    pub fn secret_from(&self, provider: &str, name: &str, env: &[&str]) -> Option<(Secret, &'static str)> {
+        if let Some(s) = self.text(provider, name).and_then(Secret::new) {
+            return Some((s, "config"));
+        }
+        env.iter().find_map(|e| self.env(e)).and_then(Secret::new).map(|s| (s, "env"))
+    }
+
     /// A key from the planner's config, else from the environment.
+    #[cfg(test)]
     pub fn secret(&self, provider: &str, name: &str, env: &[&str]) -> Option<Secret> {
         self.text(provider, name).or_else(|| env.iter().find_map(|e| self.env(e))).and_then(Secret::new)
     }
@@ -129,6 +145,8 @@ impl Sources {
             opencode_auth: root.join(".local/share/opencode/auth.json"),
             kimi_home: root.join(".kimi-code"),
             pi_auth: root.join(".pi/agent/auth.json"),
+            omp_db: root.join(".omp/agent/agent.db"),
+            routes: Vec::new(),
             hidden: Vec::new(),
             settings: toml::Table::new(),
             env: BTreeMap::new(),
@@ -151,13 +169,22 @@ pub async fn fetch(id: &str, src: &Sources, now: u64) -> Option<Res<Report>> {
     if src.hidden.iter().any(|h| h == id) {
         return None;
     }
-    match id {
+    let mut got = match id {
         "claude" => providers::claude::fetch(src, now).await,
         "codex" => providers::codex::fetch(src, now).await,
         "kimi" => providers::kimi::fetch(src, now).await,
         "deepseek" => providers::deepseek::fetch(src, now).await,
         _ => None,
+    };
+    if let Some(Ok(report)) = &mut got {
+        // the other programs the crew runs this provider through: the card says the numbers are of the one that was asked, and names them
+        report.also = routes::agents_for(&src.routes, id)
+            .into_iter()
+            .filter(|(agent, role)| !role.is_empty() && *agent != report.from)
+            .map(|(agent, _)| agent.to_string())
+            .collect();
     }
+    got
 }
 
 /* ───────── the cache and its clock ───────── */
@@ -184,6 +211,8 @@ struct Entry {
 pub struct Store {
     entries: BTreeMap<&'static str, Entry>,
     manual_ms: u64,
+    routes: Vec<routes::Route>,
+    routes_at_ms: u64,
 }
 
 impl Store {
@@ -242,6 +271,7 @@ impl Store {
             return false;
         }
         self.manual_ms = now;
+        self.routes_at_ms = 0;
         for e in self.entries.values_mut() {
             e.due_ms = now;
             e.strikes = 0;
@@ -261,6 +291,27 @@ fn store() -> &'static Mutex<Store> {
 fn wake() -> &'static Notify {
     static WAKE: OnceLock<Notify> = OnceLock::new();
     WAKE.get_or_init(Notify::new)
+}
+
+/// How long the crew's settings stay as read: the planner asks the board for them no more often than this.
+const ROUTES_EVERY_MS: u64 = 5 * 60_000;
+
+/// The crew's settings, read again when they are old: which agent each provider runs through. A board that does not answer leaves what was known.
+async fn refresh_routes(app: &crate::app::Shared, now: u64) -> Vec<routes::Route> {
+    let (old, at) = store().lock().map(|s| (s.routes.clone(), s.routes_at_ms)).unwrap_or_default();
+    if at != 0 && now.saturating_sub(at) < ROUTES_EVERY_MS {
+        return old;
+    }
+    let read = crate::station::read_settings(&app.cfg, "").await;
+    let routes = match read {
+        Ok(settings) => routes::routes_of(&settings.into_iter().map(|s| (s.name, s.value)).collect::<Vec<_>>()),
+        Err(_) => old,
+    };
+    if let Ok(mut s) = store().lock() {
+        s.routes = routes.clone();
+        s.routes_at_ms = now;
+    }
+    routes
 }
 
 /// What the readings are now, for the snapshot.
@@ -296,7 +347,8 @@ pub async fn run(app: crate::app::Shared) {
         let due = store().lock().map(|s| s.due(now)).unwrap_or_default();
         let mut changed = false;
         if !due.is_empty() {
-            let src = Sources::from_env();
+            let mut src = Sources::from_env();
+            src.routes = refresh_routes(&app, now).await;
             let got = futures_util::future::join_all(due.iter().map(|id| fetch(id, &src, now))).await;
             let at = crate::config::now_ms();
             if let Ok(mut s) = store().lock() {

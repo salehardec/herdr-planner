@@ -67,6 +67,11 @@ pub struct AgentUsage {
     /// Further limits that are not part of the headline windows (a review limit, a weekly code limit).
     pub extra: Vec<LimitWindow>,
     pub sections: Vec<SectionOut>,
+    /// Whose sign-in or key was asked with (`pi`, `omp`, `claude`, `codex`, `kimi`, `opencode`, `config`, `env`), the crew role that runs the provider
+    /// through that program, and the other programs the crew runs it through. Never the key itself.
+    pub key_from: String,
+    pub key_role: String,
+    pub key_also: Vec<String>,
     /// The account's usage page and the service's status page.
     pub dashboard: String,
     pub status_page: String,
@@ -267,6 +272,9 @@ pub fn merge_agent(agent: &mut AgentUsage, r: &crate::plans::Reading, now: u64) 
         agent.tier = plan.clone();
     }
     agent.account = report.account.email.clone().unwrap_or_default();
+    agent.key_from = report.from.clone();
+    agent.key_role = report.role.clone();
+    agent.key_also = report.also.clone();
     agent.status.clear();
     agent.note.clear();
     agent.updated_at_ms = r.fetched_at_ms;
@@ -1079,5 +1087,19 @@ mod tests {
         assert_eq!(u.agents[0].account, "me@x.y");
         let json = serde_json::to_string(&phone).unwrap();
         assert!(!json.contains("me@x.y"));
+    }
+
+    #[test]
+    fn the_card_says_whose_sign_in_was_asked_with_and_never_carries_a_key() {
+        let mut report = claude_report();
+        report.from = "pi".into();
+        report.role = "worker".into();
+        report.also = vec!["omp".into()];
+        let mut agent = AgentUsage::default();
+        merge_agent(&mut agent, &live("claude", Some(report), NOW, None), NOW);
+        assert_eq!((agent.key_from.as_str(), agent.key_role.as_str(), agent.key_also.clone()), ("pi", "worker", vec!["omp".to_string()]));
+        let json = serde_json::to_string(&agent).unwrap();
+        assert!(json.contains("\"key_from\":\"pi\""));
+        assert!(!json.contains("token") && !json.contains("secret"), "{json}");
     }
 }

@@ -144,12 +144,17 @@ pub struct Report {
     pub windows: Vec<Window>,
     pub balances: Vec<Balance>,
     pub sections: Vec<Section>,
+    /// Whose sign-in or key read it (`pi`, `omp`, `claude`, `env`, …), the crew role that runs the provider through that program (empty when
+    /// none does), and the other programs the crew runs the provider through.
+    pub from: String,
+    pub role: String,
+    pub also: Vec<String>,
 }
 
 impl Report {
     pub fn new(provider: &'static str, account: Account, mut windows: Vec<Window>) -> Self {
         windows.sort_by(|a, b| a.kind.cmp(&b.kind));
-        Self { provider, account, windows, balances: Vec::new(), sections: Vec::new() }
+        Self { provider, account, windows, balances: Vec::new(), sections: Vec::new(), from: String::new(), role: String::new(), also: Vec::new() }
     }
 
     pub fn has_numbers(&self) -> bool {
