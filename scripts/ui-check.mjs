@@ -6885,20 +6885,27 @@ section('chat unread', async () => {
   for (let i = 0; i < 4; i++) { await send('Input.dispatchMouseEvent', { type: 'mouseWheel', x: wheel.x, y: wheel.y, deltaX: 0, deltaY: -250 }); await sleep(60); }
   await sleep(4000);
   check('a reader who scrolls up during the jump stays there, with the «down» button shown', (await evalJs(dist)) > 200 && (await evalJs('!!document.querySelector("#tolast")')), String(await evalJs(dist)));
-  { const d0 = await evalJs(dist); say(1);
-  check('PROBE an answer after the reader took over during the jump: counted, log not pulled down', await hasText('#cunread', '1 новое', 10000), await text('#bchat'));
+  // The answer that comes after that is counted, and the log is not pulled down to it.
+  const held = await evalJs(dist);
+  say(1);
+  check('an answer after the reader took over during the jump is counted', await hasText('#cunread', '1 новое', 10000), await text('#bchat'));
   await sleep(3000);
-  check('PROBE and the place is kept', Math.abs((await evalJs(dist)) - d0) > 150 && (await evalJs(dist)) > 200, String(d0) + ' -> ' + String(await evalJs(dist))); }
-  // probe 2: wheel 200 ms after click, answer 300 ms later
-  await click('#tolast'); await waitFor(`${dist} < 24`, 12000); await sleep(1500);
+  check('and the log is not pulled down to it', (await evalJs(dist)) >= held && (await evalJs(dist)) > 200, `${held} -> ${await evalJs(dist)}`);
+  // The same when the reader takes over almost at once and the answer comes right after.
+  await click('#tolast');
+  await waitFor(`${dist} < 24`, 12000);
+  await sleep(1500);
   await evalJs('(() => { const l = document.querySelector("#clog"); l.scrollTop = l.scrollHeight - l.clientHeight - 700; return true; })()');
-  await sleep(400); say(1);
-  check('PROBE2 «1 новое»', await hasText('#cunread', '1 новое', 10000), await text('#bchat'));
-  await click('#cunread'); await sleep(200);
+  await sleep(400);
+  say(1);
+  check('scrolled up a third time, one new answer comes: «1 новое»', await hasText('#cunread', '1 новое', 10000), await text('#bchat'));
+  await click('#cunread');
+  await sleep(200);
   for (let i = 0; i < 4; i++) { await send('Input.dispatchMouseEvent', { type: 'mouseWheel', x: wheel.x, y: wheel.y, deltaX: 0, deltaY: -250 }); await sleep(60); }
-  await sleep(100); say(1);
+  await sleep(100);
+  say(1);
   await sleep(4000);
-  check('PROBE2 early wheel then answer: stays up, counted', (await evalJs(dist)) > 200 && await hasText('#cunread', '1 новое', 3000), String(await evalJs(dist)) + ' ' + await text('#bchat'));
+  check('a reader who takes over at once and gets an answer stays there, with it counted', (await evalJs(dist)) > 200 && await hasText('#cunread', '1 новое', 3000), `${await evalJs(dist)} ${await text('#bchat')}`);
   await click('#tolast');
   await waitFor(`${dist} < 24`, 12000);
   await focus(false);
