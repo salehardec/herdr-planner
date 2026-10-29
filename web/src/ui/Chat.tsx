@@ -227,6 +227,7 @@ export function Chat(): JSX.Element {
 
   /** Takes the log to the first unread turn: older turns are loaded until it is there. */
   const toUnread = async (onlyIfHidden: boolean, first = unreadTurns.peek()[0]): Promise<void> => {
+    (window as any).__mre = ((window as any).__mre || []).concat(['toUnread first=' + first + ' turns=' + chat.peek().turns.length + ' @' + Date.now()]);
     if (first === undefined) return;
     for (let i = 0; i < 40 && !chat.peek().turns.some((x) => x.n === first) && hasOlder(); i++) {
       if (!(await loadOlderWait())) break;
@@ -239,6 +240,7 @@ export function Chat(): JSX.Element {
       const room = log.getBoundingClientRect();
       if (at.top >= room.top && at.bottom <= room.bottom) return;
     }
+    (window as any).__mre.push('scroll to ' + first + ' @' + Date.now());
     stuck.value = false;
     navUntil.current = Date.now() + 1500;
     scrollTo.value = { n: first, at: Date.now(), block: 'start' };
