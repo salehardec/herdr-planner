@@ -29,8 +29,8 @@ function away(): void {
 }
 
 export function installRoomInput(): void {
-  addEventListener('keydown', down, true);
-  addEventListener('keyup', up, true);
+  document.addEventListener('keydown', down, true);
+  document.addEventListener('keyup', up, true);
   addEventListener('blur', away);
   document.addEventListener('visibilitychange', () => { if (document.hidden) away(); });
   // A click on a button of the room leaves no focus on it, so that Space and Enter go on to the game; Tab keeps its focus.
