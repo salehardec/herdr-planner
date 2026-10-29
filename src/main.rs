@@ -28,6 +28,8 @@ mod menu_api;
 mod mobile;
 mod load;
 mod models;
+mod roles;
+mod roles_api;
 mod runners;
 mod runners_alert;
 mod runners_api;

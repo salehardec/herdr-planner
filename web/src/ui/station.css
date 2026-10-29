@@ -146,3 +146,32 @@
 .rf-strays .st-strays-log ul{list-style:none;margin:0.375rem 0 0;padding:0;display:grid;gap:0.375rem;font-size:0.7188rem}
 .rf-strays .st-strays-log li.bad{color:var(--pl-danger)}
 .rf-strays .act .hint{align-self:center}
+/* The crew window: sections to jump to, the crew's own roles, the rules, the card that puts a role on a task (PLN-90). */
+.cr-nav{display:flex;flex-wrap:wrap;gap:0.25rem;margin-top:0.5rem}
+.cr-std{margin:0;overflow-wrap:anywhere}
+.cr-std code{font-size:0.6875rem}
+.cr-suggest{display:grid;gap:0.375rem}
+.cr-suggest>.kl{font-size:0.6562rem;color:var(--pl-faint);text-transform:uppercase;letter-spacing:.06em}
+.cr-sug{display:grid;gap:0.25rem;padding:0.5rem 0.625rem;border:1px dashed var(--pl-accent);border-radius:0.4375rem;min-width:0}
+.cr-role{min-width:0}
+.cr-role .cr-instr{margin:0;overflow-wrap:anywhere}
+.cr-sets>summary{cursor:pointer;font-size:0.7188rem;color:var(--pl-dim)}
+.cr-sets .cr-way{display:grid;gap:0.125rem;margin-top:0.25rem}
+.cr-sets .sets{list-style:none;margin:0;padding:0;display:grid;gap:0.125rem;font-size:0.7188rem}
+.cr-sets .sets li{overflow-wrap:anywhere}
+.cr-usage{font-size:0.7188rem;color:var(--pl-text);overflow-wrap:anywhere}
+.cr-usage .kl{color:var(--pl-faint);font-size:0.6562rem;text-transform:uppercase;letter-spacing:.05em}
+.cr-usage .m{color:var(--pl-faint)}
+.cr-rules{list-style:none;margin:0;padding:0;display:grid;gap:0.375rem}
+.cr-rule{display:flex;flex-wrap:wrap;gap:0.25rem 0.5rem;align-items:center;padding:0.4375rem 0.625rem;border:1px solid var(--pl-line);border-radius:0.4375rem;background:var(--pl-tile);font-size:0.75rem;min-width:0}
+.cr-rule .grow{flex:1 1 0.5rem}
+.cr-rule .cr-if{color:var(--pl-faint);text-transform:uppercase;font-size:0.6562rem;letter-spacing:.05em}
+.cr-rule .cr-words{overflow-wrap:anywhere}
+.cr-editor .field[rows]{font:inherit;resize:vertical;min-height:4.5rem}
+.put-form .how{display:grid;gap:0.25rem;margin:0;padding:0.375rem 0.5rem;border:1px solid var(--pl-line);border-radius:0.375rem;font-size:0.75rem}
+.put-form .how legend{padding:0 0.25rem;font-size:0.6562rem;color:var(--pl-faint);text-transform:uppercase;letter-spacing:.05em}
+.put-form .how label{display:flex;flex-wrap:wrap;gap:0.25rem 0.5rem;align-items:baseline}
+.cr-task{display:grid;gap:0.375rem;margin-top:0.75rem}
+.cr-task>h3{margin:0;font-size:0.7188rem;letter-spacing:.06em;text-transform:uppercase;color:var(--pl-faint);font-weight:700}
+.cr-task .row{display:flex;flex-wrap:wrap;gap:0.25rem 0.5rem;align-items:baseline;font-size:0.75rem}
+.pop-role{display:grid;gap:0.25rem}

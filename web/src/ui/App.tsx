@@ -21,6 +21,7 @@ import { Dialogs } from './Dialogs';
 import { TunnelGuide } from './TunnelGuide';
 import { Cockpit } from './Cockpit';
 import { Station, StationAuto } from './Station';
+import { CrewWindow } from './CrewWindow';
 import { Ship } from './Ship';
 import { Restroom } from './Restroom';
 import { openRestroom } from '../restroom/open';
@@ -86,6 +87,7 @@ export function App(): JSX.Element {
       <Dialogs />
       <TunnelGuide />
       <Station />
+      <CrewWindow />
       <Ship />
       <MemoryWindow />
       <RememberDialog />

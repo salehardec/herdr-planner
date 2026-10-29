@@ -8,6 +8,7 @@ use crate::board::{self, Status};
 use crate::config::now_ms;
 use crate::history;
 use crate::mobile;
+use crate::roles_api;
 use crate::ship;
 use crate::station;
 use crate::usage;
@@ -138,6 +139,10 @@ pub fn router(app: Shared) -> Router {
         .route("/api/station/presets", post(station::station_presets))
         .route("/api/station/preset/preview", post(station::station_preset_preview))
         .route("/api/station/preset/apply", post(station::station_preset_apply))
+        .route("/api/crew/roles", get(crate::roles_api::roles_get).post(crate::roles_api::roles_post))
+        .route("/api/crew/role/preview", post(crate::roles_api::role_preview))
+        .route("/api/crew/role/apply", post(crate::roles_api::role_apply))
+        .route("/api/crew/role/match", post(crate::roles_api::role_match))
         .route("/api/ship", get(ship::ship_get).post(ship::ship_post))
         .route("/api/tunnel", get(crate::tunnel::tunnel_get))
         .route("/api/tunnel/open", post(crate::tunnel::tunnel_open))
@@ -1254,6 +1259,10 @@ pub(crate) struct ActionBody {
     pub(crate) role: Option<String>,
     /// The worker agent for a new task: `claude/claude-sonnet-5-5`.
     pub(crate) agent: Option<String>,
+    /// The crew's own role for a new or starting task (PLN-90): absent — the rules decide, `none` — no role, else a role's id.
+    pub(crate) crew_role: Option<String>,
+    /// How that role goes on: `worker`, `instead` or `after`; absent — the role's own.
+    pub(crate) crew_how: Option<String>,
     /// Uploaded files a todo item holds (todo-add; todo-update replaces the set).
     pub(crate) attachments: Option<Vec<AttachmentRef>>,
     /// The order of the God's list.
@@ -1547,22 +1556,44 @@ pub(crate) async fn perform_action(app: &Shared, body: ActionBody, local: bool) 
             if let Some(e) = bytes_limit_error(&desc, "дело с вложениями") {
                 return error(StatusCode::BAD_REQUEST, e);
             }
+            // The crew's own role (PLN-90): the one picked, or the rules' for this repository and title.
+            let how = body.crew_how.as_deref().unwrap_or("");
+            let role = match roles_api::plan_new(&app, &roles_api::pick_of(body.crew_role.as_deref()), how, &repo, &title).await {
+                Ok(r) => r,
+                Err(e) => return error(StatusCode::UNPROCESSABLE_ENTITY, e),
+            };
+            let mut flags: Vec<String> = role.as_ref().map(|(_, f)| f.clone()).unwrap_or_default();
+            // an agent picked by hand is more explicit than a role a rule gave: the rule's own agent steps aside
+            if agent.is_some() && role.as_ref().is_some_and(|(c, _)| c.by.starts_with("rule:")) {
+                if let Some(at) = flags.iter().position(|f| f == "--worker.agent") {
+                    flags.drain(at..=at + 1);
+                }
+            }
             let mut args: Vec<&str> = vec!["add", title.as_str(), "--repo", repo.as_str()];
             if !desc.is_empty() {
                 args.push("--desc");
                 args.push(desc.as_str());
             }
-            if let Some(a) = agent {
+            // an agent picked by hand is the worker's; a worker role's own agent is not overridden by it
+            if let Some(a) = agent.filter(|_| !flags.iter().any(|f| f == "--worker.agent")) {
                 args.push("--worker.agent");
                 args.push(a);
             }
+            args.extend(flags.iter().map(String::as_str));
             return match run_board(&app.cfg, &args, Duration::from_secs(60)).await {
                 Ok(out) => {
                     app.db.todo_remove(id);
+                    let role_note = match &role {
+                        Some((chosen, _)) => roles_api::after_add(&app, chosen, &out, &repo, &title, &desc).await,
+                        None => None,
+                    };
                     refresh(&app).await;
                     let mut reply = todo_json(&app).await;
                     reply["repo"] = json!(repo);
                     reply["out"] = json!(clip(out));
+                    if let Some((chosen, _)) = &role {
+                        reply["role"] = json!({"name": chosen.role.name, "how": chosen.way.key(), "note": role_note});
+                    }
                     Json(reply).into_response()
                 }
                 Err(e) => error(StatusCode::BAD_GATEWAY, e),
@@ -1617,6 +1648,10 @@ pub(crate) async fn perform_action(app: &Shared, body: ActionBody, local: bool) 
                 Ok(id) => id,
                 Err(e) => return error(StatusCode::BAD_REQUEST, e),
             };
+            // The crew's own role goes on first: the one picked, or the rules' when the place is free. A refusal stops the start.
+            if let Err(f) = roles_api::on_start(&app, id, &roles_api::pick_of(body.crew_role.as_deref()), body.crew_how.as_deref().unwrap_or("")).await {
+                return f.into_response();
+            }
             app.force_after
                 .store(true, std::sync::atomic::Ordering::SeqCst);
             run_board(

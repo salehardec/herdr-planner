@@ -32,6 +32,7 @@ pub const ROLES: &[Role] = &[
     Role { id: "plan", agent: "plan.agent", effort: "", fallback: "" },
     Role { id: "reviewer", agent: "reviewer.agent", effort: "reviewer.effort", fallback: "reviewer.fallback" },
     Role { id: "worker", agent: "worker.agent", effort: "worker.effort", fallback: "worker.fallback" },
+    Role { id: "watcher", agent: "watcher.agent", effort: "", fallback: "" },
     Role { id: "light", agent: "", effort: "", fallback: "" },
 ];
 
@@ -605,11 +606,22 @@ pub struct Step {
     pub now: Option<String>,
     /// Why this step cannot run; empty when it can.
     pub error: String,
+    /// A role of the human's own (`role` is then `custom`): its id and its name. Such a step changes the role in the
+    /// planner's `crew-roles.json`; the board is not asked.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub custom: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub label: String,
 }
 
 impl Step {
     pub fn light(&self) -> bool {
         self.setting == "light"
+    }
+
+    /// The planner's own: the light preset, or a role of the human's own.
+    pub fn own(&self) -> bool {
+        self.light() || !self.custom.is_empty()
     }
 }
 
@@ -630,6 +642,8 @@ pub fn plan(preset: &Preset, settings: &[Setting], light: &str, repo: &str) -> V
                     was_from: String::new(),
                     now: Some(set.agent.clone()).filter(|v| !v.is_empty()),
                     error: String::new(),
+                    custom: String::new(),
+                    label: String::new(),
                 });
             }
             continue;
@@ -659,6 +673,8 @@ pub fn plan(preset: &Preset, settings: &[Setting], light: &str, repo: &str) -> V
                 was_from,
                 now,
                 error: String::new(),
+                custom: String::new(),
+                label: String::new(),
             });
         }
     }
@@ -676,6 +692,7 @@ pub fn check_steps(
     for i in 0..steps.len() {
         let Some(value) = steps[i].now.clone() else { continue };
         let role = steps[i].role;
+        let custom_key = if steps[i].custom.is_empty() { String::new() } else { crate::roles::preset_key(&steps[i].custom) };
         let err = match steps[i].field {
             "agent" => agent_program(&value).and_then(|p| {
                 if value.contains('/') { check_agent(&value, &models_of(&p).0) } else { Ok(()) }
@@ -689,6 +706,7 @@ pub fn check_steps(
                         let want = preset.roles.get(role).map(|s| s.agent.clone()).unwrap_or_default();
                         if want.is_empty() { find(settings, r.agent).map(|s| s.value.clone()) } else { Some(want) }
                     })
+                    .or_else(|| preset.roles.get(&custom_key).map(|s| s.agent.clone()))
                     .unwrap_or_default();
                 let program = program_of(&agent).to_string();
                 if value == "default" || program.is_empty() { Ok(()) } else { check_effort(&value, &models_of(&program).1, &program) }
@@ -704,7 +722,7 @@ pub fn check_steps(
 
 /// The board's command for a step: the arguments after `herdr-projects`.
 pub fn command_of(step: &Step, repo: &str) -> Option<Vec<String>> {
-    if step.light() {
+    if step.own() {
         return None;
     }
     let mut args = match &step.now {
@@ -958,7 +976,7 @@ fn name_taken(store: &Store, name: &str, except: &str) -> bool {
 pub fn clean_roles(roles: &BTreeMap<String, RoleSet>) -> Result<BTreeMap<String, RoleSet>, String> {
     let mut out = BTreeMap::new();
     for (role, set) in roles {
-        if !ROLES.iter().any(|r| r.id == role) {
+        if !ROLES.iter().any(|r| r.id == role) && crate::roles::role_of_key(role).is_none() {
             return Err(format!("«{role}»: такой роли нет"));
         }
         let agent = set.agent.trim().to_string();

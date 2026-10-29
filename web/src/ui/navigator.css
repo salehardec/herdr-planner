@@ -42,3 +42,5 @@
 .nav-ship h4{margin:0.125rem 0 0.25rem;font-size:0.6875rem;font-weight:400;letter-spacing:.06em;text-transform:uppercase;color:var(--pl-faint)}
 .nav-ship button{display:flex;justify-content:space-between;align-items:center;width:100%;text-align:left;background:none;border:1px dashed color-mix(in srgb,var(--c-green) 55%,transparent);border-radius:0.25rem;padding:0.375rem 0.5rem;color:var(--pl-text);font:inherit;font-size:0.75rem;cursor:pointer}
 .nav-ship button:hover{background:color-mix(in srgb,var(--c-green) 12%,transparent)}
+/* The crew's own role on a task (PLN-90): a small mark next to the name. */
+.ti .meta.role-mark{flex:0 1 auto;max-width:48%;padding:0 0.375rem;height:1.125rem;line-height:1.0625rem;font-size:0.6562rem;color:var(--pl-dim);border:1px dashed var(--pl-line);border-radius:0.5rem;white-space:nowrap}

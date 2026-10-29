@@ -960,11 +960,15 @@ function herdrProjectsMain(C, DATA) {
   }
 
   if (cmd === 'add' || cmd === 'new') {
-    const VALUE = ['--repo', '--desc', '--description', '--app', '--model', '--worker.agent'];
+    const VALUE = ['--repo', '--desc', '--description', '--app', '--model', '--after'];
     const words = [];
     const opts = {};
+    const taskSettings = {};
     for (let i = 0; i < rest.length; i++) {
-      if (VALUE.includes(rest[i])) { opts[rest[i]] = rest[i + 1]; i++; }
+      // any work setting is an option of the task (`--worker.effort high`, `--reviewer.instructions …`): the crew's own roles (PLN-90)
+      if (/^--(worker|reviewer|plan|review|merge|workspace)\.[A-Za-z.]+$/.test(rest[i])) { taskSettings[rest[i].slice(2)] = rest[i + 1]; opts[rest[i]] = rest[i + 1]; i++; }
+      else if (VALUE.includes(rest[i])) { opts[rest[i]] = rest[i + 1]; i++; }
+      else if (['--research', '--no-research', '--chat', '--no-chat', '--delegate'].includes(rest[i])) opts[rest[i]] = true;
       else if (!rest[i].startsWith('--')) words.push(rest[i]);
     }
     const title = words.join(' ');
@@ -986,8 +990,25 @@ function herdrProjectsMain(C, DATA) {
       settings: opts['--worker.agent'] ? { 'worker.agent': opts['--worker.agent'] } : {}, session: C.uuid(id), worktree, branch: 'work/' + n, afterDone: [],
     };
     fs.mkdirSync(worktree, { recursive: true });
+    if (opts['--after']) {
+      const deps = String(opts['--after']).split(',').map((r) => C.resolve(w, r.trim()) || r.trim());
+      w.after = w.after || {};
+      w.after[id] = deps;
+    }
+    if (opts['--delegate']) {
+      row.state = 'working';
+      row.stage = opts['--after'] ? 'after' : 'working';
+      row.msg = opts['--after'] ? 'queued after ' + String(opts['--after']) : 'Writing';
+    }
+    if (opts['--research']) w.meta[id].settings['research.only'] = 'true';
     save(w);
     publishTask(w, row);
+    // the settings of the options go through the same store as `set --task`, so `show <id>` says «this task» for them
+    const ops = C.boardSettings(join('state', 'board-settings.json'), { models: DATA.models, efforts: DATA.board.efforts, builtin: DATA.board.builtin, keys: w.keys });
+    for (const [name, value] of Object.entries(taskSettings)) {
+      const res = ops.set(name, value, '', id);
+      if (res.error) fail(res.error);
+    }
     console.log(id + ': added');
     return;
   }

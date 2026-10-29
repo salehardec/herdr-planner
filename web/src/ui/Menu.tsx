@@ -10,7 +10,7 @@ import { Gl } from './Gl';
 import { openAddUniverse } from './AddUniverse';
 import { setLinkMode } from '../keys';
 import { getWorld, goHome } from '../nav';
-import { openShip, openStation } from './station-api';
+import { openCrew, openShip, openStation } from './station-api';
 
 const open = signal(false);
 
@@ -45,7 +45,7 @@ export function Menu(): JSX.Element {
               <hr />
               {item('globe', t('menu.addUniverse'), () => { openAddUniverse(); })}
               {item('universe', t('menu.station'), () => { openStation(); })}
-              {item('plan', t('menu.crewWizard'), () => { openStation(true); })}
+              {item('plan', t('menu.crew'), () => { openCrew(); })}
               {item('ship', t('menu.ship'), () => { openShip(); })}
             </>
           )}
