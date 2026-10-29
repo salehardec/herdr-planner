@@ -5,7 +5,7 @@ import {
   chat, panels, persist, snap, screens,
 } from '../store';
 import {
-  addFiles, draftRequest, draftTodos, hasOlder, loadLatest, loadOlder, loadOlderWait, notePending, openChatAt, optimistic, pendingFiles, pendingMessage, reconcile, removeFile, scrollTo,
+  addFiles, draftRequest, draftTodos, hasOlder, loadLatest, loadOlder, loadOlderWait, notePending, forgetPending, openChatAt, pendingFiles, pendingMessages, removeFile, scrollTo,
   searchChat, send, sending,
 } from '../chat';
 import { hasFiles, pastedFiles } from '../attach';
@@ -138,8 +138,7 @@ export function Chat(): JSX.Element {
   const taRef = useRef<HTMLTextAreaElement>(null);
   const anchor = useRef<{ h: number; top: number } | null>(null);
   const showTurns = c.available === true && c.turns.length > 0;
-  const pending = pendingMessage();
-  const opt = optimistic.value;
+  const pending = pendingMessages();
   const history = coord?.history ?? [];
   // A line the planner sent is written into the transcript by the board too: it is shown once, as that board turn (or as
   // the notice while the transcript does not have it yet), never twice. A notice older than the newest turn loaded here
@@ -179,7 +178,6 @@ export function Chat(): JSX.Element {
     const id = window.setInterval(() => { if (!document.hidden) void fetchScreen('coordinator'); }, 1500);
     return () => window.clearInterval(id);
   }, [open, dialog]);
-  useEffect(() => { reconcile(); }, [coord?.history.length]);
 
   // «At the end» reads everything only when the reader is there on purpose: not before the jump to the first unread on opening
   // has been decided, and not while the log is still scrolling to it.
@@ -206,7 +204,7 @@ export function Chat(): JSX.Element {
     if (anchor.current) { el.scrollTop = anchor.current.top + (el.scrollHeight - anchor.current.h); anchor.current = null; }
     else if (stuck.value) el.scrollTop = el.scrollHeight;
     if (open && active && readsEnd(el)) markReadToEnd();
-  }, [c.turns, pending?.at, opt?.at, reply, open, busy, c.loading, active]);
+  }, [c.turns, pending.map((p) => p.id).join(','), reply, open, busy, c.loading, active]);
 
   useEffect(() => {
     const target = scrollTo.value;
@@ -348,9 +346,10 @@ export function Chat(): JSX.Element {
   const hits = c.hits;
 
   const variantSend = (value: string): void => {
-    notePending(value);
+    const receipt = notePending(value);
     void post('/api/chat', { text: value }).catch((er: Error) => {
-      chat.value = { ...chat.value, pending: null, error: er.message };
+      forgetPending(receipt);
+      chat.value = { ...chat.value, error: er.message };
     });
     setTimeout(() => { void refreshNow(); void loadLatest(); }, 900);
   };
@@ -460,7 +459,7 @@ export function Chat(): JSX.Element {
             </div>
           </div>
         ))}
-        {pending && <PendingTurn text={pending.text} attachments={pending.attachments} />}
+        {pending.filter((p) => showTurns || !history.some((h) => h.text === p.text && h.at >= p.at)).map((p) => <PendingTurn key={p.id} text={p.text} attachments={p.attachments} />)}
         {err && (
           <div class="msg a err"><span class="who"><Gl n="quasar" />{t('quasar.short')}</span><span class="txt">{err}</span></div>
         )}
