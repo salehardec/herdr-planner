@@ -6815,6 +6815,36 @@ section('chat unread', async () => {
   check('an answer 0.3 s after the click is followed: the end stays in view and nothing is counted', await waitFor(`!!document.querySelector('#clog .turn[data-n="${quick}"]') && ${dist} < 24 && !document.querySelector("#cunread") && !document.querySelector("#bchat-n")`, 8000), String(await evalJs(dist)) + ' ' + await text('#bchat'));
   await sleep(2000);
   check('and it stays so after the jump is over', (await evalJs(dist)) < 24 && !(await evalJs('!!document.querySelector("#cunread") || !!document.querySelector("#bchat-n")')), String(await evalJs(dist)) + ' ' + await text('#bchat'));
+  await evalJs('(() => { const l = document.querySelector("#clog"); l.scrollTop = l.scrollHeight - l.clientHeight - 700; return true; })()');
+  await sleep(400);
+  say(1);
+  check('REVIEW 1000: «1 новое»', await hasText('#cunread', '1 новое', 10000), await text('#bchat'));
+  await click('#cunread');
+  await sleep(1000);
+  { const t0 = Date.now(); const q = say(1);
+  check('REVIEW 1000: answer after the click is followed', await waitFor(`!!document.querySelector('#clog .turn[data-n="${q}"]') && ${dist} < 24 && !document.querySelector("#cunread") && !document.querySelector("#bchat-n")`, 8000), String(Date.now()-t0) + ' ' + String(await evalJs(dist)) + ' ' + await text('#bchat')); }
+  await sleep(2500);
+  check('REVIEW 1000: stays at end after the jump', (await evalJs(dist)) < 24 && !(await evalJs('!!document.querySelector("#cunread") || !!document.querySelector("#bchat-n")')), String(await evalJs(dist)) + ' ' + await text('#bchat'));
+  await evalJs('(() => { const l = document.querySelector("#clog"); l.scrollTop = l.scrollHeight - l.clientHeight - 700; return true; })()');
+  await sleep(400);
+  say(1);
+  check('REVIEW 1250: «1 новое»', await hasText('#cunread', '1 новое', 10000), await text('#bchat'));
+  await click('#cunread');
+  await sleep(1250);
+  { const t0 = Date.now(); const q = say(1);
+  check('REVIEW 1250: answer after the click is followed', await waitFor(`!!document.querySelector('#clog .turn[data-n="${q}"]') && ${dist} < 24 && !document.querySelector("#cunread") && !document.querySelector("#bchat-n")`, 8000), String(Date.now()-t0) + ' ' + String(await evalJs(dist)) + ' ' + await text('#bchat')); }
+  await sleep(2500);
+  check('REVIEW 1250: stays at end after the jump', (await evalJs(dist)) < 24 && !(await evalJs('!!document.querySelector("#cunread") || !!document.querySelector("#bchat-n")')), String(await evalJs(dist)) + ' ' + await text('#bchat'));
+  await evalJs('(() => { const l = document.querySelector("#clog"); l.scrollTop = l.scrollHeight - l.clientHeight - 700; return true; })()');
+  await sleep(400);
+  say(1);
+  check('REVIEW 1450: «1 новое»', await hasText('#cunread', '1 новое', 10000), await text('#bchat'));
+  await click('#cunread');
+  await sleep(1450);
+  { const t0 = Date.now(); const q = say(1);
+  check('REVIEW 1450: answer after the click is followed', await waitFor(`!!document.querySelector('#clog .turn[data-n="${q}"]') && ${dist} < 24 && !document.querySelector("#cunread") && !document.querySelector("#bchat-n")`, 8000), String(Date.now()-t0) + ' ' + String(await evalJs(dist)) + ' ' + await text('#bchat')); }
+  await sleep(2500);
+  check('REVIEW 1450: stays at end after the jump', (await evalJs(dist)) < 24 && !(await evalJs('!!document.querySelector("#cunread") || !!document.querySelector("#bchat-n")')), String(await evalJs(dist)) + ' ' + await text('#bchat'));
   await focus(false);
 
   // The wide chat is restored open by a reload: it waits for the history and then goes to the first unread, too.
