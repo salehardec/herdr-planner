@@ -6774,6 +6774,21 @@ section('chat unread', async () => {
   await click('#cunread');
   check('the header button acknowledges every new answer and clears both counts', await waitFor('!document.querySelector("#bchat-n") && !document.querySelector("#cunread")', 5000), await text('#bchat'));
   check('the «down» button remains a plain way back to the end after the reset', await waitFor(`(() => { const b = document.querySelector('#tolast'); return !!b && !b.querySelector('.n') && /последним/.test(b.innerText); })()`, 5000), await text('#tolast'));
+  // Opened in the window in front, the chat also takes the reader to the first unread, and what is above the end stays unread.
+  await toggle();
+  await waitFor('document.querySelector("#chat").classList.contains("off")', 5000);
+  await focus(true);
+  const first2 = say(14); for (let i = 0; i < 3; i++) say(14);
+  check('four tall answers come to a hidden chat in the window in front: the count is 4', await hasText('#bchat-n', '4', 10000), await text('#bchat'));
+  await toggle();
+  check('opened in the window in front, the chat stands on the first unread', await waitFor(`(() => { const e = document.querySelector('#clog .turn[data-n="${first2}"]'); const l = document.querySelector('#clog'); if (!e) return false; const r = e.getBoundingClientRect(); const o = l.getBoundingClientRect(); return r.top >= o.top - 2 && r.top < o.top + 80; })()`, 15000), await evalJs('document.querySelector("#clog").scrollTop'));
+  await sleep(2000);
+  check('the answers below it are not read by opening: the header still counts them', await evalJs(`(document.querySelector('#cunread')?.innerText || '').includes('нов')`), await text('#bchat'));
+  await focus(false);
+  await click('#tolast');
+  await waitFor('(() => { const l = document.querySelector("#clog"); return l.scrollHeight - l.scrollTop - l.clientHeight < 30; })()', 12000);
+  await click('#cunread');
+  check('the header button takes the reader back to the first unread and clears the counts', await waitFor(`(() => { const e = document.querySelector('#clog .turn[data-n="${first2}"]'); const l = document.querySelector('#clog'); if (!e) return false; const r = e.getBoundingClientRect(); const o = l.getBoundingClientRect(); return r.top >= o.top - 2 && r.top < o.top + 80; })() && !document.querySelector('#bchat-n') && !document.querySelector('#cunread')`, 15000), await text('#bchat'));
 
   // The wide chat is restored open by a reload: it waits for the history and then goes to the first unread, too.
   await click('#cwide');

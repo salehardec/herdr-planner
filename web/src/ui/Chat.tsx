@@ -181,13 +181,20 @@ export function Chat(): JSX.Element {
   }, [open, dialog]);
   useEffect(() => { reconcile(); }, [coord?.history.length]);
 
+  // «At the end» reads everything only when the reader is there on purpose: not before the jump to the first unread on opening
+  // has been decided, and not while the log is still scrolling to it.
+  const jumped = useRef(false);
+  const opened = useRef(false);
+  const navUntil = useRef(0);
+  const readsEnd = (el: HTMLElement): boolean => opened.current && Date.now() > navUntil.current && el.scrollHeight - el.scrollTop - el.clientHeight < 24;
+
   // Keep the end in view unless the reader scrolled up; keep the place after older turns are added.
   useLayoutEffect(() => {
     const el = logRef.current;
     if (!el) return;
     if (anchor.current) { el.scrollTop = anchor.current.top + (el.scrollHeight - anchor.current.h); anchor.current = null; }
     else if (stuck.value) el.scrollTop = el.scrollHeight;
-    if (open && active && el.scrollHeight - el.scrollTop - el.clientHeight < 24) markReadToEnd();
+    if (open && active && readsEnd(el)) markReadToEnd();
   }, [c.turns, pending?.at, opt?.at, reply, open, busy, c.loading, active]);
 
   useEffect(() => {
@@ -233,17 +240,17 @@ export function Chat(): JSX.Element {
       if (at.top >= room.top && at.bottom <= room.bottom) return;
     }
     stuck.value = false;
+    navUntil.current = Date.now() + 1500;
     scrollTo.value = { n: first, at: Date.now(), block: 'start' };
   };
 
   // Opening the chat shows what is new in it. A chat that is open from the start (the wide one is restored open) waits for the history.
-  const jumped = useRef(false);
   const ready = c.available !== null;
   useEffect(() => {
-    if (!open) { jumped.current = false; return; }
+    if (!open) { jumped.current = false; opened.current = false; return; }
     if (!ready || jumped.current) return;
     jumped.current = true;
-    const id = requestAnimationFrame(() => { void toUnread(true); });
+    const id = requestAnimationFrame(() => { void toUnread(true).finally(() => { opened.current = true; }); });
     return () => cancelAnimationFrame(id);
   }, [open, ready]);
 
@@ -261,7 +268,7 @@ export function Chat(): JSX.Element {
     const atEnd = el.scrollHeight - el.scrollTop - el.clientHeight < 24;
     stuck.value = atEnd;
     // Reaching the end acknowledges every answer, rather than waiting for an observer timer to fire.
-    if (atEnd && open && active) markReadToEnd();
+    if (open && active && readsEnd(el)) markReadToEnd();
     if (open && showTurns && el.scrollTop < 40) void older();
   };
 
