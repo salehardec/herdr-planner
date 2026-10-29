@@ -13,6 +13,8 @@ export function Log(): JSX.Element {
   const tagOf = (id: string): { tag: string; ok: boolean; runner?: string } => {
     if (id.startsWith('runner/')) return { tag: t('runner.taskTitle'), ok: true, runner: id.slice('runner/'.length) };
     // The shipyards' alarms: a line of their own, about the yards as a group.
+    // The switches of the Coordinator, the planner and the light tasks to a spare.
+    if (id === 'crew') return { tag: t('st.crew'), ok: false };
     if (id === 'runner') return { tag: t('nav.runners'), ok: false };
     const tk = currentView.value.tasks.find((x) => x.id === id) ?? snap.value?.archived.find((x) => x.id === id);
     return { tag: tk?.tag ?? id, ok: !!tk };
