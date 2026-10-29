@@ -1612,7 +1612,7 @@ pub(crate) async fn perform_action(app: &Shared, body: ActionBody, local: bool) 
                     }
                     app.db.todo_remove(id);
                     let role_note = match &role {
-                        Some((chosen, _)) => roles_api::after_add(&app, chosen, &out, &repo, &title, &desc).await,
+                        Some((chosen, _)) => roles_api::after_add(&app, chosen, &flags, &out, &repo, &title, &desc).await,
                         None => None,
                     };
                     refresh(&app).await;

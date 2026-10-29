@@ -611,7 +611,7 @@ export const en: Record<string, string | string[]> = {
   'cr.rules.titlePh': 'words or a mask, e.g. *security*',
   'cr.rules.branchHas': 'branch is like',
   'cr.rules.branchPh': 'e.g. feature/KIC-*',
-  'cr.rules.mask': 'Without «*» the words are looked for in the text; with «*» it is a mask for the whole (like --if of the board\'s automations). Case does not matter. All conditions at once. A task\'s branch is known once it is made: when it is started.',
+  'cr.rules.mask': 'Without «*» the words are looked for in the text; with «*» it is a mask for the whole (like --if of the board\'s automations). Case does not matter. All conditions at once. Before a task is started its branch is taken as the board will make it: work/<number>.',
   'cr.rules.howOwn': 'the role\'s own ({way})',
   'cr.rules.add': 'Add the rule',
   'cr.rules.gone': 'the role is gone',

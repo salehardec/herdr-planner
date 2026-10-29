@@ -36,7 +36,12 @@ fn respond(r: Result<Value, Fail>) -> Response {
 /// A task by its id (`planner/12`) or its tag (`PLN-12`), as the page's last snapshot has it, with the branch from its record.
 async fn target_of(app: &Shared, id: &str) -> Option<(Target, Task)> {
     let task = app.snapshot.read().await.tasks.iter().find(|t| t.id == id || t.tag == id).cloned()?;
-    let branch = taskmeta::read_task(&app.cfg.data_dir, &task.repo, task.n).map(|m| m.branch).unwrap_or_default();
+    // The board gives a task its branch when it starts (`work/<n>`): before that the record has none, and the rules
+    // read the branch the start will make.
+    let branch = taskmeta::read_task(&app.cfg.data_dir, &task.repo, task.n)
+        .map(|m| m.branch)
+        .filter(|b| !b.is_empty())
+        .unwrap_or_else(|| format!("work/{}", task.n));
     let target = Target {
         id: task.id.clone(),
         tag: task.tag.clone(),
@@ -492,7 +497,7 @@ pub async fn plan_new(app: &Shared, pick: &Pick, how: &str, repo: &str, title: &
 
 /// After `add` made the task: records the role, and for an «after» role adds its research task. The words say what went
 /// wrong when the task is made and the role could not be put on it.
-pub async fn after_add(app: &Shared, chosen: &Chosen, out: &str, repo: &str, title: &str, desc: &str) -> Option<String> {
+pub async fn after_add(app: &Shared, chosen: &Chosen, flags: &[String], out: &str, repo: &str, title: &str, desc: &str) -> Option<String> {
     let Some(id) = added_id(out, repo) else {
         return Some(format!("задача добавлена, но её номер не разобран: роль «{}» не записана", chosen.role.name));
     };
@@ -502,7 +507,8 @@ pub async fn after_add(app: &Shared, chosen: &Chosen, out: &str, repo: &str, tit
     if chosen.way == Way::After {
         return put(app, chosen, &target).await.err().map(|f| format!("задача добавлена, роль «{}» не запущена: {}", chosen.role.name, f.message()));
     }
-    let ran: Vec<String> = roles::settings_of(&chosen.role, chosen.way).into_iter().map(|(n, _)| n).collect();
+    // what `add` was really given (a hand-picked agent may have taken the role's own agent out of the flags)
+    let ran: Vec<String> = flags.iter().filter_map(|f| f.strip_prefix("--")).map(str::to_string).collect();
     note_put(app, chosen, &target, &ran, "").err().map(|f| f.message())
 }
 
@@ -515,8 +521,12 @@ pub async fn on_start(app: &Shared, id: &str, pick: &Pick, how: &str) -> Result<
     let Some((target, _)) = target_of(app, id).await else { return Ok(()) };
     let store = roles::read_store(&app.cfg);
     let Some(chosen) = choose(&store, pick, how, &target.repo, &target.title, &target.branch).map_err(|e| Fail::new(422, e))? else { return Ok(()) };
-    // the rules never run over a place the task already has filled (a role chosen when it was added, an earlier start)
+    // the rules never run over a place the task already has filled (a role chosen when it was added, an earlier start),
+    // nor over the check task a role made: that task is the role's own work
     if *pick == Pick::Rules {
+        if store.assigned.iter().any(|a| a.task == target.id && a.how == "followup") {
+            return Ok(());
+        }
         let place = |a: &Assignment| roles::slot_of(a);
         let mine = Assignment { role: chosen.role.id.clone(), how: chosen.way.key().to_string(), ..Assignment::default() };
         if store.assigned.iter().any(|a| a.task == target.id && place(a) == place(&mine)) {
@@ -717,13 +727,57 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_branch_rule_fires_on_the_first_start_when_the_board_has_not_given_the_branch_yet() {
+        let dir = tempfile::tempdir().unwrap();
+        let (app, log) = stand_in(dir.path());
+        let id = roles::edit_store(&app.cfg, |s| roles::add_role(s, &designer())).unwrap();
+        roles::edit_store(&app.cfg, |s| roles::add_rule(s, &roles::RuleInput { role: id, branch: "work/*".into(), ..Default::default() })).unwrap();
+        live_task(&app).await; // no task record on disk: the board makes the branch only when it starts the task
+        on_start(&app, "alpha/1", &Pick::Rules, "").await.unwrap();
+        assert_eq!(commands(&log).len(), 3, "{:?}", commands(&log));
+    }
+
+    #[tokio::test]
+    async fn the_check_task_a_role_made_is_not_given_the_rules_when_it_is_started_by_hand() {
+        let dir = tempfile::tempdir().unwrap();
+        let (app, log) = stand_in(dir.path());
+        let worker = roles::edit_store(&app.cfg, |s| roles::add_role(s, &designer())).unwrap();
+        let sec = roles::edit_store(&app.cfg, |s| roles::enable_suggested(s, "security")).unwrap();
+        roles::edit_store(&app.cfg, |s| {
+            roles::add_rule(s, &roles::RuleInput { role: worker, repo: "alpha".into(), ..Default::default() })?;
+            roles::add_rule(s, &roles::RuleInput { role: sec.clone(), title: "безопас".into(), ..Default::default() })?;
+            roles::record(s, Assignment { task: "alpha/1".into(), role: sec, name: "Ревьюер безопасности".into(), how: "followup".into(), of: "alpha/0".into(), ..Assignment::default() });
+            Ok(())
+        })
+        .unwrap();
+        {
+            let mut snap = app.snapshot.write().await;
+            snap.tasks = vec![Task { id: "alpha/1".into(), repo: "alpha".into(), n: 1, tag: "ALP-1".into(), title: "Ревьюер безопасности: ALP-0 вход".into(), status: Status::Queued, ..Task::default() }];
+        }
+        on_start(&app, "alpha/1", &Pick::Rules, "").await.unwrap();
+        assert!(commands(&log).is_empty(), "{:?}", commands(&log));
+    }
+
+    #[tokio::test]
+    async fn the_record_of_a_new_task_lists_only_what_add_was_given() {
+        let dir = tempfile::tempdir().unwrap();
+        let (app, _log) = stand_in(dir.path());
+        let id = roles::edit_store(&app.cfg, |s| roles::add_role(s, &designer())).unwrap();
+        let (chosen, mut flags) = plan_new(&app, &Pick::Role(id), "", "alpha", "Кнопка").await.unwrap().unwrap();
+        flags.drain(..2); // a hand-picked agent took the role's own agent out
+        assert!(after_add(&app, &chosen, &flags, "alpha/9: added\n", "alpha", "Кнопка", "").await.is_none());
+        let rec = &roles::read_store(&app.cfg).assigned[0];
+        assert_eq!(rec.settings, ["worker.effort", "worker.instructions"]);
+    }
+
+    #[tokio::test]
     async fn a_new_task_from_the_list_gets_the_role_as_flags_of_add_and_an_after_role_follows_it() {
         let dir = tempfile::tempdir().unwrap();
         let (app, log) = stand_in(dir.path());
         let id = roles::edit_store(&app.cfg, |s| roles::add_role(s, &designer())).unwrap();
         let (chosen, flags) = plan_new(&app, &Pick::Role(id), "", "alpha", "Кнопка").await.unwrap().unwrap();
         assert_eq!(flags[..4], ["--worker.agent", "claude/claude-sonnet-5-5", "--worker.effort", "high"]);
-        assert!(after_add(&app, &chosen, "alpha/9: added\n", "alpha", "Кнопка", "").await.is_none());
+        assert!(after_add(&app, &chosen, &flags, "alpha/9: added\n", "alpha", "Кнопка", "").await.is_none());
         let marks = roles::marks_of(&roles::read_store(&app.cfg));
         assert_eq!(marks["alpha/9"][0].name, "Дизайнер");
         assert!(commands(&log).is_empty(), "the flags already went with `add`: nothing more is set");
@@ -731,7 +785,7 @@ mod tests {
         let sec = roles::edit_store(&app.cfg, |s| roles::enable_suggested(s, "security")).unwrap();
         let (after, flags) = plan_new(&app, &Pick::Role(sec), "after", "alpha", "Кнопка").await.unwrap().unwrap();
         assert!(flags.is_empty(), "an «after» role adds no flags to the task itself");
-        assert!(after_add(&app, &after, "alpha/9: added\n", "alpha", "Кнопка", "").await.is_none());
+        assert!(after_add(&app, &after, &flags, "alpha/9: added\n", "alpha", "Кнопка", "").await.is_none());
         assert!(commands(&log).last().unwrap().contains("--research --after alpha/9 --delegate"));
         assert!(plan_new(&app, &Pick::Role("nope".into()), "", "alpha", "x").await.is_err());
     }

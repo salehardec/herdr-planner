@@ -1161,7 +1161,8 @@ pub async fn station_preset_preview(
             "loading": loading,
             "light_skipped": light_skipped,
             "roles_skipped": roles_skipped,
-            "affects": crew::affected(&tasks, &repo),
+            // only the board's settings touch the tasks: a preset that changes the planner's own (the light preset, own roles) touches none
+            "affects": if steps.iter().all(|s| s.own()) { crew::affected(&[], &repo) } else { crew::affected(&tasks, &repo) },
         }))
     }
     .await;
@@ -1597,6 +1598,7 @@ esac"#,
         assert_eq!(fields, ["Дизайнер agent claude/claude-sonnet-5-5 → codex/gpt-6-luna", "Дизайнер effort high → ultra", "Дизайнер fallback  → none"], "{prev}");
         assert!(own.iter().all(|s| s["command"] == ""), "the role is the planner's own: no board command");
         assert_eq!(prev["valid"], true, "{prev}");
+        assert_eq!((prev["affects"]["running"].as_array().unwrap().len(), prev["affects"]["waiting"].as_array().unwrap().len()), (0, 0), "the planner's own roles touch no task");
         // at a repository's level the roles are not touched, and the card says so
         let (_, at_repo) = json_of(station_preset_preview(State(app.clone()), headers(), Json(ApplyBody { repo: Some("alpha".into()), confirm: None, ..body() })).await).await;
         assert!(at_repo["steps"].as_array().unwrap().iter().all(|s| s["role"] != "custom"));
