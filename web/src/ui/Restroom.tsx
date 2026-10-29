@@ -93,7 +93,7 @@ function Wallpapers(): JSX.Element {
           </button>
         )}
         <button class="rm-thumb browse" id="rm-browse" type="button" onClick={() => file.current?.click()}>
-          <span class="im">＋</span><span>{t('restroom.wall.browse')}</span>
+          <span class="im">+</span><span>{t('restroom.wall.browse')}</span>
         </button>
       </div>
       <input ref={file} id="rm-file" type="file" accept="image/*" hidden onChange={(e) => void onFile(e)} />
