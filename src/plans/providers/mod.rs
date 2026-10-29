@@ -182,12 +182,16 @@ pub fn pi_key(src: &super::Sources, name: &str) -> Option<super::http::Secret> {
     found_in(entry, "pi").map(|f| f.cred.token)
 }
 
-/// The first of the candidates (best first) that still works; when there are some and all have expired, why there is nothing.
+/// The sign-in to ask with, from the candidates (best first). When the crew runs the provider through some of the programs (their candidates
+/// carry a role), only those count: the first of them that has not expired, and when all have, that is the reason. Falling back to another
+/// program's account would show somebody else's limits as if they were the ones the board spends. Without any routed candidate the first that
+/// still works wins, and when all have expired, that is the reason.
 pub fn first_fresh<T>(candidates: Vec<(Cred, T)>, now: u64) -> Option<super::http::Res<(Cred, T)>> {
     if candidates.is_empty() {
         return None;
     }
-    Some(candidates.into_iter().find(|(c, _)| !c.stale(now)).ok_or(super::http::Fail::Expired))
+    let routed = candidates.iter().any(|(c, _)| !c.role.is_empty());
+    Some(candidates.into_iter().filter(|(c, _)| !routed || !c.role.is_empty()).find(|(c, _)| !c.stale(now)).ok_or(super::http::Fail::Expired))
 }
 
 /// A claim of the JWT a token is (the account id of a ChatGPT sign-in, say), or none when the token is no JWT.
@@ -277,6 +281,10 @@ pub mod tests {
         assert_eq!(got.1, 2);
         assert_eq!(first_fresh(vec![(c(Some(5)), 1)], 10).unwrap().err(), Some(crate::plans::http::Fail::Expired));
         assert_eq!(first_fresh(vec![(c(None), 7)], 10).unwrap().unwrap().1, 7, "no expiry known: tried");
+        // a program the crew runs the provider through: its dead sign-in is the answer, not somebody else's live one
+        let routed = |ms: u64| { let mut x = c(Some(ms)); x.role = "worker".into(); x };
+        assert_eq!(first_fresh(vec![(routed(5), 1), (c(Some(50)), 2)], 10).unwrap().err(), Some(crate::plans::http::Fail::Expired));
+        assert_eq!(first_fresh(vec![(routed(5), 1), (routed(50), 2), (c(Some(50)), 3)], 10).unwrap().unwrap().1, 2);
     }
 
     #[test]

@@ -32,6 +32,18 @@ pub fn provider_named(name: &str) -> Option<&'static str> {
     }
 }
 
+/// The values one setting holds. The board gives a `*.fallback` as a JSON list (`["pi/openai/gpt-6", "pi/kimi-coding/k3"]`), and its text form
+/// may be a comma list too; an `*.agent` is one value.
+pub fn values_of(value: &str) -> Vec<String> {
+    let v = value.trim();
+    if v.starts_with('[') {
+        if let Ok(list) = serde_json::from_str::<Vec<serde_json::Value>>(v) {
+            return list.iter().filter_map(|x| x.as_str()).map(|x| x.trim().to_string()).filter(|x| !x.is_empty()).collect();
+        }
+    }
+    v.split([',', '\n']).map(|x| x.trim().trim_matches(['"', '\'', '[', ']']).trim().to_string()).filter(|x| !x.is_empty()).collect()
+}
+
 /// The agent and the provider one setting value names: `omp/deepseek/deepseek-v4-flash` is (omp, deepseek), `claude/claude-sonnet-5-5` is
 /// (claude, claude), a bare `codex` is (codex, codex). Nothing for a program or a provider the planner does not read.
 pub fn route_of(value: &str) -> Option<(&'static str, &'static str)> {
@@ -63,9 +75,11 @@ pub fn routes_of(settings: &[(String, String)]) -> Vec<Route> {
     named.sort();
     let mut out: Vec<Route> = Vec::new();
     for (_, _, name, value) in named {
-        if let Some((agent, provider)) = route_of(value) {
-            if !out.iter().any(|r| r.provider == provider && r.agent == agent) {
-                out.push(Route { provider, agent, role: name.trim_end_matches(".agent").to_string() });
+        for one in values_of(value) {
+            if let Some((agent, provider)) = route_of(&one) {
+                if !out.iter().any(|r| r.provider == provider && r.agent == agent) {
+                    out.push(Route { provider, agent, role: name.trim_end_matches(".agent").to_string() });
+                }
             }
         }
     }
@@ -143,5 +157,43 @@ mod tests {
         // a fallback role counts when nothing else names the provider
         let routes = routes_of(&s(&[("reviewer.fallback", "pi/deepseek/x")]));
         assert_eq!(agents_for(&routes, "deepseek")[0], ("pi", "reviewer.fallback".to_string()));
+    }
+
+    #[test]
+    fn a_fallback_the_board_gives_as_a_list_is_read_value_by_value() {
+        // the lines of a real board: the work through claude, the fallbacks as JSON lists through pi
+        let settings = s(&[
+            ("worker.agent", "claude/claude-sonnet-5-5"),
+            ("worker.fallback", r#"["pi/openai/gpt-6.1-sol","pi/kimi-coding/k3.1-pro","pi/deepseek/deepseek-flash"]"#),
+            ("reviewer.fallback", r#"["omp/deepseek/deepseek-v4-flash"]"#),
+        ]);
+        let routes = routes_of(&settings);
+        let shown: Vec<_> = routes.iter().map(|r| format!("{}:{}:{}", r.provider, r.agent, r.role)).collect();
+        assert_eq!(shown, ["claude:claude:worker", "codex:pi:worker.fallback", "kimi:pi:worker.fallback", "deepseek:pi:worker.fallback", "deepseek:omp:reviewer.fallback"]);
+        assert_eq!(agents_for(&routes, "codex")[0], ("pi", "worker.fallback".to_string()), "pi is the program Codex runs through, before the CLI");
+        assert_eq!(agents_for(&routes, "deepseek").iter().map(|(a, _)| *a).collect::<Vec<_>>(), ["pi", "omp", "opencode"]);
+    }
+
+    #[test]
+    fn the_other_forms_of_a_list_are_read_too() {
+        assert_eq!(values_of(r#"["a/b", " c/d/e "]"#), ["a/b", "c/d/e"]);
+        assert_eq!(values_of("pi/openai/x, pi/kimi-coding/y,pi/deepseek/z"), ["pi/openai/x", "pi/kimi-coding/y", "pi/deepseek/z"]);
+        assert_eq!(values_of("claude/claude-sonnet-5-5"), ["claude/claude-sonnet-5-5"]);
+        assert_eq!(values_of("[\"a\", broken"), ["a", "broken"]);
+        assert!(values_of("  ").is_empty() && values_of("[]").is_empty());
+        let r = routes_of(&s(&[("worker.fallback", "pi/openai/x, pi/kimi-coding/y")]));
+        assert_eq!(r.len(), 2);
+    }
+
+    #[test]
+    fn the_boards_own_show_json_gives_the_routes() {
+        let out = r#"{"ok":true,"settings":[
+          {"name":"worker.agent","kind":"work","value":"claude/claude-sonnet-5-5","from":"you","place":"you","own":true},
+          {"name":"worker.fallback","kind":"work","value":["pi/openai/gpt-6.1-sol","pi/kimi-coding/k3.1-pro","pi/deepseek/deepseek-flash"],"from":"you","place":"you","own":true},
+          {"name":"reviewer.fallback","kind":"work","value":["omp/deepseek/deepseek-v4-flash"],"from":"you","place":"you","own":false}]}"#;
+        let settings = crate::station::parse_settings(out).unwrap();
+        let routes = routes_of(&settings.into_iter().map(|x| (x.name, x.value)).collect::<Vec<_>>());
+        assert_eq!(routes.len(), 5);
+        assert_eq!(agents_for(&routes, "kimi")[0].0, "pi");
     }
 }

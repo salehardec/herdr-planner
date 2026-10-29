@@ -295,6 +295,8 @@ fn wake() -> &'static Notify {
 
 /// How long the crew's settings stay as read: the planner asks the board for them no more often than this.
 const ROUTES_EVERY_MS: u64 = 5 * 60_000;
+/// How many repositories' own crew settings are read besides the Galaxy's.
+const REPOS_READ: usize = 6;
 
 /// The crew's settings, read again when they are old: which agent each provider runs through. A board that does not answer leaves what was known.
 async fn refresh_routes(app: &crate::app::Shared, now: u64) -> Vec<routes::Route> {
@@ -302,9 +304,19 @@ async fn refresh_routes(app: &crate::app::Shared, now: u64) -> Vec<routes::Route
     if at != 0 && now.saturating_sub(at) < ROUTES_EVERY_MS {
         return old;
     }
+    // the Galaxy's settings, and those of the repositories with live tasks (a repository may run a provider through another program)
     let read = crate::station::read_settings(&app.cfg, "").await;
     let routes = match read {
-        Ok(settings) => routes::routes_of(&settings.into_iter().map(|s| (s.name, s.value)).collect::<Vec<_>>()),
+        Ok(galaxy) => {
+            let mut all: Vec<(String, String)> = galaxy.into_iter().map(|s| (s.name, s.value)).collect();
+            let repos: Vec<String> = app.snapshot.read().await.projects.iter().filter(|p| p.active > 0).take(REPOS_READ).map(|p| p.name.clone()).collect();
+            for repo in repos {
+                if let Ok(own) = crate::station::read_settings(&app.cfg, &repo).await {
+                    all.extend(own.into_iter().filter(|s| s.own).map(|s| (s.name, s.value)));
+                }
+            }
+            routes::routes_of(&all)
+        }
         Err(_) => old,
     };
     if let Ok(mut s) = store().lock() {

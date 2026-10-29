@@ -338,8 +338,11 @@ mod tests {
         src.routes = routes_of(&[("worker.agent".to_string(), "pi/anthropic/claude-sonnet".to_string())]);
         let (cred, account) = choose(&src, NOW0).unwrap().unwrap();
         assert_eq!((cred.from, cred.role.as_str(), account), ("pi", "worker", Account::default()));
-        // pi's has expired: Claude Code's is the one asked with
+        // pi's has expired: Claude is run through pi, so that is what is said, not Claude Code's account shown in its place
         pi_file(tmp.path(), &serde_json::json!({"anthropic": {"type": "oauth", "access": "pi-token", "expires": 5u64}}));
+        assert_eq!(choose(&src, NOW0).unwrap().err(), Some(Fail::Expired));
+        // with no role naming pi, a dead pi sign-in is only a place to look: Claude Code's is used
+        src.routes = Vec::new();
         assert_eq!(choose(&src, NOW0).unwrap().unwrap().0.from, "claude");
         // both have expired: the reason is said
         std::fs::write(src.claude_dir.join(".credentials.json"), r#"{"claudeAiOauth":{"accessToken":"cc-token","expiresAt":5}}"#).unwrap();

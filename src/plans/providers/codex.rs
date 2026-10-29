@@ -215,8 +215,11 @@ mod tests {
         assert_eq!((pi_cred.from, pi_cred.role.as_str()), ("pi", "reviewer"));
         assert_ne!(pi_cred.token, cred.token, "pi's token, not the CLI's");
         assert!(pi_account.is_some());
-        // pi's has expired, the CLI's has not
+        // pi's has expired, the CLI's has not: Codex is run through pi, so the reason is said and the CLI's other account is not shown instead
         pi_file(tmp.path(), &serde_json::json!({"openai": {"type": "oauth", "access": access, "expires": 5u64}}));
+        assert_eq!(choose(&src, now).unwrap().err(), Some(Fail::Expired));
+        // with no role naming pi, the CLI's is used
+        src.routes = Vec::new();
         assert_eq!(choose(&src, now).unwrap().unwrap().0.token, cred.token);
         // the CLI's token is a JWT that expired: nothing works, and that is said
         let old = jwt(&serde_json::json!({"exp": 1000u64}));
