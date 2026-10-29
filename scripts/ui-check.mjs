@@ -3900,7 +3900,7 @@ section('rest room', async () => {
   await pageTurn();
 
   // ── the doors
-  check('the top bar has «☕ Отдых» and the navigator a «Корабль» block with the rest room', (await text('#rest-btn')).includes('Отдых') && await hasText('#nav-ship', 'Корабль', 4000, true) && await hasText('#rm-nav-btn', 'Комната отдыха') && await hasText('#rm-nav-btn', 'O'), `${await text('#rest-btn')} | ${await text('#nav-ship')}`);
+  check('the dock has «☕ Отдых» (at the bottom, with the todos and the chat) and the navigator a «Корабль» block with the rest room', (await text('#rest-btn')).includes('Отдых') && await hasText('#nav-ship', 'Корабль', 4000, true) && await hasText('#rm-nav-btn', 'Комната отдыха') && await hasText('#rm-nav-btn', 'O'), `${await text('#rest-btn')} | ${await text('#nav-ship')}`);
   check('the room is closed and hidden from the page at first', !(await isOpen()) && (await evalJs('getComputedStyle(document.querySelector("#rm")).visibility')) === 'hidden', await evalJs('document.querySelector("#rm").className'));
   // the key map: O is free (no other action answers it), the letters around it keep theirs
   const nav0 = await evalJs('plannerDebug().panels.nav');

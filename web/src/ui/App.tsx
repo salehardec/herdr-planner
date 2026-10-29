@@ -23,6 +23,7 @@ import { Cockpit } from './Cockpit';
 import { Station, StationAuto } from './Station';
 import { Ship } from './Ship';
 import { Restroom } from './Restroom';
+import { openRestroom } from '../restroom/open';
 import { RememberDialog } from './MemoryPanel';
 import { MemoryWindow } from './MemoryWindow';
 import { Gl } from './Gl';
@@ -42,6 +43,12 @@ function Dock(): JSX.Element {
         <Gl n="chat" />{t('chat.button')}
         {unreadChat.value > 0 && <span class="ubadge" id="bchat-n" role="status" aria-label={tn('chat.unreadN', unreadChat.value)}>{unreadChat.value}</span>}
         {' '}<kbd>/</kbd>
+      </button>
+      <button
+        class="btn restbtn" id="rest-btn" type="button" title={t('restroom.tip')} aria-label={t('restroom.title')}
+        onClick={(e) => openRestroom(e.detail === 0 ? e.currentTarget : null)}
+      >
+        <span aria-hidden="true">☕</span><span class="long">{t('restroom.top')}</span>
       </button>
     </div>
   );

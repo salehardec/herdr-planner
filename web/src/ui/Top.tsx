@@ -5,7 +5,6 @@ import { Search } from './Search';
 import { goHome, navigateTo } from '../nav';
 import { fromQueue } from '../nav';
 import { setMode } from '../keys';
-import { openRestroom } from '../restroom/open';
 import { t } from '../i18n';
 import { LimitsChip } from './Limits';
 import { Menu } from './Menu';
@@ -88,12 +87,6 @@ export function Top(): JSX.Element {
       </div>
       <Search />
       <div class="right" id="right" ref={rightRef}>
-        <button
-          class="btn restbtn" id="rest-btn" type="button" title={t('restroom.tip')} aria-label={t('restroom.title')}
-          onClick={(e) => openRestroom(e.detail === 0 ? e.currentTarget : null)}
-        >
-          <span aria-hidden="true">☕</span><span class="long">{t('restroom.top')}</span>
-        </button>
         <button
           class={`btn waitbtn ${waits ? 'hot' : ''}`} id="wait-btn" type="button" title="B" aria-pressed={panels.wait.value}
           onClick={() => { panels.wait.value = !panels.wait.value; if (panels.wait.value) fromQueue.value = false; }}
