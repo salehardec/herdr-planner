@@ -192,8 +192,8 @@ export function Chat(): JSX.Element {
   useLayoutEffect(() => {
     const el = logRef.current;
     if (!el) return;
-    if (anchor.current) { el.scrollTop = anchor.current.top + (el.scrollHeight - anchor.current.h); anchor.current = null; }
-    else if (stuck.value) el.scrollTop = el.scrollHeight;
+    if (anchor.current) { ((window as any).__mre ||= []).push('LE anchor ' + el.scrollTop' @' + (Date.now() % 100000)); el.scrollTop = anchor.current.top + (el.scrollHeight - anchor.current.h); anchor.current = null; }
+    else if (stuck.value) { ((window as any).__mre ||= []).push('LE bottom'' @' + (Date.now() % 100000)); el.scrollTop = el.scrollHeight; }
     if (open && active && readsEnd(el)) markReadToEnd();
   }, [c.turns, pending?.at, opt?.at, reply, open, busy, c.loading, active]);
 
@@ -202,6 +202,7 @@ export function Chat(): JSX.Element {
     if (!target) return;
     requestAnimationFrame(() => {
       const el = logRef.current?.querySelector<HTMLElement>(`[data-n="${target.n}"]`);
+      ((window as any).__mre ||= []).push('SIV ' + !!el' @' + (Date.now() % 100000));
       if (el) { stuck.value = false; el.scrollIntoView({ block: target.block ?? 'center', behavior: 'smooth' }); }
     });
   }, [scrollTo.value]);
@@ -227,6 +228,7 @@ export function Chat(): JSX.Element {
 
   /** Takes the log to the first unread turn: older turns are loaded until it is there. */
   const toUnread = async (onlyIfHidden: boolean, first = unreadTurns.peek()[0]): Promise<void> => {
+    ((window as any).__mre ||= []).push('toUnread ' + first' @' + (Date.now() % 100000));
     if (first === undefined) return;
     for (let i = 0; i < 40 && !chat.peek().turns.some((x) => x.n === first) && hasOlder(); i++) {
       if (!(await loadOlderWait())) break;
@@ -257,6 +259,7 @@ export function Chat(): JSX.Element {
   }, [open, ready]);
 
   const older = async (): Promise<void> => {
+    ((window as any).__mre ||= []).push('older'' @' + (Date.now() % 100000));
     stuck.value = false;
     const el = logRef.current;
     if (el) anchor.current = { h: el.scrollHeight, top: el.scrollTop };
@@ -270,6 +273,7 @@ export function Chat(): JSX.Element {
     const atEnd = el.scrollHeight - el.scrollTop - el.clientHeight < 24;
     // (the first frames of a scroll away from the end still look like the end: they must not pin the log to it again)
     stuck.value = atEnd && Date.now() > navUntil.current;
+    ((window as any).__mre ||= []).push('SC ' + Math.round(el.scrollTop)' @' + (Date.now() % 100000));
     // Reaching the end acknowledges every answer, rather than waiting for an observer timer to fire.
     if (open && active && readsEnd(el)) markReadToEnd();
     if (open && showTurns && el.scrollTop < 40) void older();
