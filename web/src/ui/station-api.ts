@@ -108,6 +108,31 @@ export interface PresetPreview {
   affects: { running: Affect[]; waiting: Affect[] };
 }
 
+/** A role that now runs on a spare, as the planner keeps it. */
+export interface FailoverSwitched {
+  home: string;
+  to: string;
+  at: number;
+  kind: string;
+  until: string;
+  /** The agent it left can be given work again: the return is offered. */
+  back_ready: boolean;
+  /** Why it left, in words («лимит Claude до 17:00»). */
+  words: string;
+}
+
+/** The spares the planner keeps for the Coordinator, the planner and the light tasks (the board has none for them). */
+export interface FailoverRole {
+  chain: string;
+  /** «переключать само»: the planner may put the next spare when the agent is unavailable. */
+  auto: boolean;
+  switched: FailoverSwitched | null;
+  /** Light tasks: the agent a task would start on now, when it is not the preset. */
+  use?: string;
+}
+
+export const FAILOVER_ROLES = ['coordinator', 'plan', 'light'] as const;
+
 export interface StationData {
   ok: true;
   level: 'you' | 'repo';
@@ -117,6 +142,7 @@ export interface StationData {
   settings: StationSetting[];
   programs: StationProgram[];
   light: string;
+  failover: Record<string, FailoverRole>;
   presets: PresetsData;
 }
 
@@ -194,6 +220,14 @@ export const stationSet = (b: ChangeBody): Promise<SetResult> => post<SetResult>
 /** The «Лёгкие задачи» preset (`''` clears it). */
 export const stationLight = (agent: string): Promise<{ ok: true; light: string }> =>
   post('/api/station/light', { agent, confirm: true });
+
+/** The chain and the mark of a role whose spares the planner keeps. */
+export const failoverSet = (b: { role: string; chain?: string; auto?: boolean }): Promise<{ ok: true; chain: string; auto: boolean }> =>
+  post('/api/station/failover', { ...b, confirm: true });
+
+/** After a switch: go back to the agent the role left (`back`), or stay where it is (`keep`). */
+export const failoverBack = (role: string, op: 'back' | 'keep'): Promise<{ ok: true; agent: string }> =>
+  post('/api/station/failover/back', { role, op, confirm: true });
 
 export interface PresetOp {
   op: 'create' | 'capture' | 'template' | 'update' | 'rename' | 'delete';
