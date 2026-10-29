@@ -431,10 +431,23 @@ fn read_failed(out: &Out) -> Fail {
 
 /// The board's settings at a level: the Galaxy's (`repo` empty) or one repository's (with the inherited ones).
 pub(crate) async fn read_settings(cfg: &AppConfig, repo: &str) -> Result<Vec<Setting>, Fail> {
+    read_settings_of(cfg, repo, false).await
+}
+
+/// The settings the main Coordinator has: `show --main-coordinator`. `set … --main-coordinator` writes into that layer,
+/// and a plain `show` (the human's own) does not see it.
+pub(crate) async fn read_coordinator_settings(cfg: &AppConfig) -> Result<Vec<Setting>, Fail> {
+    read_settings_of(cfg, "", true).await
+}
+
+async fn read_settings_of(cfg: &AppConfig, repo: &str, main_coordinator: bool) -> Result<Vec<Setting>, Fail> {
     let mut args = vec!["show".to_string()];
     if !repo.is_empty() {
         args.push("--repo".into());
         args.push(repo.into());
+    }
+    if main_coordinator {
+        args.push("--main-coordinator".into());
     }
     args.push("--json".into());
     let out = board_run(cfg, &args, BOARD_WAIT).await;
@@ -1406,10 +1419,14 @@ mod tests {
         let log = dir.join("board.log");
         let show = dir.join("show.json");
         std::fs::write(&show, show_json(&[])).unwrap();
+        // the main Coordinator's own layer: `set … --main-coordinator` writes here, a plain `show` never sees it
+        let main = dir.join("main-coordinator.json");
+        std::fs::write(&main, show_json(&[])).unwrap();
+        let fail_new = if refuse == "coordinator-new" { "yes" } else { "no" };
         let body = format!(
             r#"echo "$@" >> {log}
 case "$1" in
-  show) cat {show};;
+  show) case "$2" in --main-coordinator) cat {main};; *) cat {show};; esac;;
   doctor) echo "✓ claude 2.1.303, signed in (worker.agent)"; echo "✗ codex 0.9.2, not signed in: codex login"; echo "✓ omp 1.5.0, API keys: no sign-in needed";;
   models)
     case "$2" in
@@ -1418,12 +1435,17 @@ case "$1" in
       omp) printf 'omp: any name omp takes (not checked: omp has no list of them).\n\nEffort (worker.effort and the like): off, low, high (from `omp --help`).\n';;
       *) echo "models: unknown program $2" >&2; exit 2;;
     esac;;
-  set|unset) if [ "$2" = "{refuse}" ]; then echo "$2: refused by the stand-in" >&2; exit 3; fi;;
-  list|coordinator) echo "[]";;
+  set|unset) if [ "$2" = "{refuse}" ]; then echo "$2: refused by the stand-in" >&2; exit 3; fi
+    if [ "$1" = set ] && [ "$4" = "--main-coordinator" ]; then sed -i "s|\"name\":\"$2\",\"kind\":\"work\",\"value\":\"[^\"]*\"|\"name\":\"$2\",\"kind\":\"work\",\"value\":\"$3\"|" {main}; fi;;
+  add) ;;
+  coordinator) if [ "$2" = new ] && [ "{fail_new}" = yes ]; then echo "coordinator new: failed in the stand-in" >&2; exit 4; fi; echo "[]";;
+  list) echo "[]";;
   *) exit 1;;
 esac"#,
             log = log.display(),
             show = show.display(),
+            main = main.display(),
+            fail_new = fail_new,
             refuse = refuse
         );
         let script = dir.join("board.sh");
@@ -1697,15 +1719,6 @@ esac"#,
             .collect()
     }
 
-    /// The stand-in board's `show` now says the role runs on `agent` (it keeps no state of its own).
-    fn board_says(dir: &FsPath, name: &str, agent: &str) {
-        let show = dir.join("show.json");
-        let text = std::fs::read_to_string(&show).unwrap();
-        let from = format!(r#"{{"name":"{name}","kind":"work","value":"claude/claude-opus-5-5""#);
-        assert!(text.contains(&from), "{name} is in the stand-in's settings");
-        std::fs::write(&show, text.replace(&from, &format!(r#"{{"name":"{name}","kind":"work","value":"{agent}""#))).unwrap();
-    }
-
     fn keep_chain(app: &Shared, role: &str, chain: &str, auto: bool) {
         failover::edit_store(&app.cfg, |s| {
             s.roles.insert(role.into(), failover::Spare { chain: chain.into(), auto });
@@ -1732,11 +1745,13 @@ esac"#,
             journal.iter().any(|t| t == "Координатор: claude/claude-opus-5-5 → omp/deepseek/deepseek-v4-flash, лимит Claude до 17:00"),
             "{journal:?}"
         );
-        // the board now says so: the next look changes nothing
-        board_says(dir.path(), "coordinator.agent", "omp/deepseek/deepseek-v4-flash");
+        // the board keeps the Coordinator's agent in its own layer (`show --main-coordinator`), and a plain `show` still
+        // says claude: the next looks must not take that for a hand-made change and switch again
         let before = all_calls(&log).len();
         failover::tick_with(&app, &installed()).await;
-        assert_eq!(all_calls(&log).len(), before, "a second look changes nothing: {:?}", all_calls(&log));
+        failover::tick_with(&app, &installed()).await;
+        assert_eq!(all_calls(&log).len(), before, "later looks change nothing: {:?}", all_calls(&log));
+        assert!(failover::read_store(&app.cfg).switched.contains_key("coordinator"), "the switch is not forgotten");
     }
 
     #[tokio::test]
@@ -1747,8 +1762,10 @@ esac"#,
         claude_limited(&app, true).await;
         wait_models(&app, &["claude", "codex", "omp"]).await;
         failover::tick_with(&app, &installed()).await;
-        board_says(dir.path(), "coordinator.agent", "omp/deepseek/deepseek-v4-flash");
-        assert_eq!(board_commands(&log).len(), 1);
+        failover::tick_with(&app, &installed()).await;
+        failover::tick_with(&app, &installed()).await;
+        assert_eq!(board_commands(&log).len(), 1, "one switch, however many looks: {:?}", all_calls(&log));
+        assert_eq!(all_calls(&log).iter().filter(|l| *l == "coordinator new").count(), 1);
         // the subscription is back: the planner says so once and changes nothing
         claude_limited(&app, false).await;
         failover::tick_with(&app, &installed()).await;
@@ -1837,5 +1854,75 @@ esac"#,
         assert_eq!(code, StatusCode::OK);
         assert!(failover::read_store(&app.cfg).roles.is_empty(), "an empty chain with the default mark is no entry");
         assert!(board_commands(&log).is_empty(), "the board is not asked: it has no such setting");
+    }
+
+    #[tokio::test]
+    async fn a_new_coordinator_that_fails_to_start_keeps_the_switch_so_it_can_be_taken_back() {
+        let dir = tempfile::tempdir().unwrap();
+        let (app, log) = app_with_board(dir.path(), "coordinator-new");
+        keep_chain(&app, "coordinator", "omp/deepseek/deepseek-v4-flash", true);
+        claude_limited(&app, true).await;
+        wait_models(&app, &["claude", "codex", "omp"]).await;
+        failover::tick_with(&app, &installed()).await;
+        assert_eq!(board_commands(&log), vec!["set coordinator.agent omp/deepseek/deepseek-v4-flash --main-coordinator"]);
+        let store = failover::read_store(&app.cfg);
+        assert_eq!(store.switched["coordinator"].home, "claude/claude-opus-5-5", "the setting changed, so the switch is on record");
+        let journal = app.snapshot.read().await.journal.iter().map(|e| e.text.clone()).collect::<Vec<_>>();
+        assert!(journal.iter().any(|t| t.contains("не удалось перейти") && t.contains("coordinator new")), "{journal:?}");
+        failover::tick_with(&app, &installed()).await;
+        assert_eq!(board_commands(&log).len(), 1, "and it is not switched again");
+    }
+
+    #[tokio::test]
+    async fn a_light_task_made_from_a_todo_starts_on_the_spare_and_carries_the_rest() {
+        let dir = tempfile::tempdir().unwrap();
+        let (app, log) = app_with_board(dir.path(), "");
+        write_light(&app.cfg, "claude/claude-haiku-5-5").unwrap();
+        keep_chain(&app, "light", "codex/gpt-6-luna, omp/deepseek/deepseek-v4-flash", true);
+        claude_limited(&app, true).await;
+        wait_models(&app, &["claude", "codex", "omp"]).await;
+        app.snapshot.write().await.projects.push(crate::board::Project { name: "planner".into(), ..Default::default() });
+        let item = app.db.todo_add("Поправить опечатку", now_ms());
+        let add_lines = || {
+            std::fs::read_to_string(&log).unwrap_or_default().lines().filter(|l| l.starts_with("add ")).map(String::from).collect::<Vec<_>>()
+        };
+        let create = |agent: &str| -> crate::server::ActionBody {
+            serde_json::from_value(json!({"action": "todo-create", "id": item.id, "repo": "planner", "agent": agent})).unwrap()
+        };
+        let res = crate::server::perform_action(&app, create("claude/claude-haiku-5-5"), true).await;
+        assert_eq!(res.status(), StatusCode::OK);
+        let lines = add_lines();
+        assert_eq!(lines.len(), 1, "{lines:?}");
+        assert!(lines[0].contains("--worker.agent omp/deepseek/deepseek-v4-flash"), "the first usable one starts it: {}", lines[0]);
+        assert!(!lines[0].contains("--worker.fallback"), "nothing is left after the last one: {}", lines[0]);
+        let journal = app.snapshot.read().await.journal.iter().map(|e| e.text.clone()).collect::<Vec<_>>();
+        assert!(journal.iter().any(|t| t.contains("недоступен, начата на omp/deepseek/deepseek-v4-flash")), "{journal:?}");
+
+        // a model picked by hand is not the preset: the task is made as asked
+        // (the board is read again after every create, and the stand-in lists no projects)
+        app.snapshot.write().await.projects.push(crate::board::Project { name: "planner".into(), ..Default::default() });
+        let item2 = app.db.todo_add("Вторая", now_ms());
+        let body: crate::server::ActionBody =
+            serde_json::from_value(json!({"action": "todo-create", "id": item2.id, "repo": "planner", "agent": "claude/claude-sonnet-5-5"})).unwrap();
+        let (code, said) = json_of(crate::server::perform_action(&app, body, true).await).await;
+        assert_eq!(code, StatusCode::OK, "{said}");
+        let lines = add_lines();
+        assert!(lines[1].contains("--worker.agent claude/claude-sonnet-5-5") && !lines[1].contains("--worker.fallback"), "{}", lines[1]);
+
+        // the preset is usable: it starts first and the chain goes with it as the task's fallback
+        claude_limited(&app, false).await;
+        app.snapshot.write().await.projects.push(crate::board::Project { name: "planner".into(), ..Default::default() });
+        let item3 = app.db.todo_add("Третья", now_ms());
+        let body: crate::server::ActionBody =
+            serde_json::from_value(json!({"action": "todo-create", "id": item3.id, "repo": "planner", "agent": "claude/claude-haiku-5-5"})).unwrap();
+        let (code, said) = json_of(crate::server::perform_action(&app, body, true).await).await;
+        assert_eq!(code, StatusCode::OK, "{said}");
+        let lines = add_lines();
+        assert!(
+            lines[2].contains("--worker.agent claude/claude-haiku-5-5")
+                && lines[2].contains("--worker.fallback codex/gpt-6-luna, omp/deepseek/deepseek-v4-flash"),
+            "{}",
+            lines[2]
+        );
     }
 }

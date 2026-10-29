@@ -18,7 +18,7 @@ use crate::app::{self, Shared};
 use crate::config::{now_ms, AppConfig};
 use crate::crew::{local_minute, program_of};
 use crate::server::{error, same_origin};
-use crate::station::{self, find, Fail, Setting, BOARD_WAIT};
+use crate::station::{self, find, Fail, BOARD_WAIT};
 use axum::extract::State;
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
@@ -198,8 +198,8 @@ pub struct LightPick {
     pub fallback: String,
 }
 
-/// The first usable agent of [preset, chain…] and the rest of the chain after it. `None`: nothing to change (no chain,
-/// the switching is off, or every one is down — then the task starts on the preset and the board deals with it).
+/// The first usable agent of [preset, chain…] and the rest of the chain after it; with every one down, the preset and
+/// the whole chain. `None`: nothing to change (no chain, or the switching is off).
 pub fn pick_light(light: &str, spare: &Spare, down: &Down) -> Option<LightPick> {
     let items = items_of(&spare.chain);
     if !spare.auto || items.is_empty() || light.is_empty() {
@@ -207,7 +207,8 @@ pub fn pick_light(light: &str, spare: &Spare, down: &Down) -> Option<LightPick> 
     }
     let mut all = vec![light.to_string()];
     all.extend(items.into_iter().filter(|i| i != light));
-    let at = all.iter().position(|a| !down.contains_key(program_of(a)))?;
+    // Nobody usable: the task starts on the preset all the same and carries the whole chain, for when one comes back.
+    let at = all.iter().position(|a| !down.contains_key(program_of(a))).unwrap_or(0);
     Some(LightPick { agent: all[at].clone(), fallback: all[at + 1..].join(", ") })
 }
 
@@ -306,22 +307,47 @@ pub fn page_json(cfg: &AppConfig, light: &str, down: &Down) -> Value {
 
 /* ───────── the loop ───────── */
 
+/// The programs installed here (a test says its own).
+fn installed() -> Vec<String> {
+    #[cfg(test)]
+    return ["claude", "codex", "omp"].map(String::from).to_vec();
+    #[cfg(not(test))]
+    station::available()
+}
+
+/// The agent a role has now. The Coordinator's own layer is read with `show --main-coordinator` (that is where
+/// `set coordinator.agent … --main-coordinator` writes; a plain `show` does not see it); the plan's with a plain `show`.
+async fn current_agent(app: &Shared, role: &str) -> Result<String, Fail> {
+    let settings = if role == "coordinator" {
+        station::read_coordinator_settings(&app.cfg).await
+    } else {
+        station::read_settings(&app.cfg, "").await
+    }
+    .map_err(Fail::refused)?;
+    Ok(find(&settings, &format!("{role}.agent")).map(|s| s.value.clone()).unwrap_or_default())
+}
+
 /// The last failed switch of each role (ms), and the dead ends already told (`role|program`): the loop runs every
-/// minute and does not say or try the same thing again.
+/// minute and does not say or try the same thing again. Keyed by the state folder as well as the role.
 static FAILED: Mutex<BTreeMap<String, u64>> = Mutex::new(BTreeMap::new());
 static TOLD: Mutex<BTreeMap<String, String>> = Mutex::new(BTreeMap::new());
+
+fn memo(app: &Shared, role: &str) -> String {
+    format!("{}|{role}", app.cfg.state_dir.display())
+}
 
 async fn say(app: &Shared, line: &str, toast: Value) {
     app::journal_note(app, "crew", "crew", line).await;
     app.bus.send("toast", toast.to_string());
 }
 
-/// Runs the commands that put `agent` on `role`. The first refusal stops the run and comes back as the error.
-async fn run_commands(app: &Shared, role: &str, agent: &str) -> Result<(), String> {
-    for args in commands(role, agent) {
+/// Runs the commands that put `agent` on `role`. The first refusal stops the run: the error says which command it was
+/// (0 is the first; after a later one the setting has already changed).
+async fn run_commands(app: &Shared, role: &str, agent: &str) -> Result<(), (usize, String)> {
+    for (i, args) in commands(role, agent).into_iter().enumerate() {
         let out = station::board_run(&app.cfg, &args, BOARD_WAIT).await;
         if !out.ok() {
-            return Err(format!("herdr-projects {}: {}", args.join(" "), out.words()));
+            return Err((i, format!("herdr-projects {}: {}", args.join(" "), out.words())));
         }
     }
     Ok(())
@@ -331,19 +357,26 @@ async fn do_switch(app: &Shared, role: &str, to: &str, home: &str, from_program:
     let now = now_ms();
     {
         let failed = FAILED.lock().unwrap_or_else(|e| e.into_inner());
-        if failed.get(role).is_some_and(|at| now.saturating_sub(*at) < RETRY_MS) {
+        if failed.get(&memo(app, role)).is_some_and(|at| now.saturating_sub(*at) < RETRY_MS) {
             return;
         }
     }
     let _one_at_a_time = station::APPLY.lock().await;
-    if let Err(why) = run_commands(app, role, to).await {
-        FAILED.lock().unwrap_or_else(|e| e.into_inner()).insert(role.to_string(), now);
+    let mut half_done = false;
+    if let Err((at, why)) = run_commands(app, role, to).await {
+        FAILED.lock().unwrap_or_else(|e| e.into_inner()).insert(memo(app, role), now);
         app::journal_note(app, "crew", "crew", &format!("{}: не удалось перейти на {to}: {why}", role_title(role))).await;
-        app::refresh(app).await;
-        return;
+        // The agent is already set when only a later command failed: the switch is kept, so that it can be taken back.
+        half_done = at > 0;
+        if !half_done {
+            app::refresh(app).await;
+            return;
+        }
     }
-    FAILED.lock().unwrap_or_else(|e| e.into_inner()).remove(role);
-    TOLD.lock().unwrap_or_else(|e| e.into_inner()).remove(role);
+    if !half_done {
+        FAILED.lock().unwrap_or_else(|e| e.into_inner()).remove(&memo(app, role));
+    }
+    TOLD.lock().unwrap_or_else(|e| e.into_inner()).remove(&memo(app, role));
     let sw = Switched {
         home: home.to_string(),
         to: to.to_string(),
@@ -370,12 +403,12 @@ async fn do_switch(app: &Shared, role: &str, to: &str, home: &str, from_program:
     app::refresh(app).await;
 }
 
-async fn step(app: &Shared, role: &str, store: &Store, settings: &[Setting], down: &Down) {
-    let current = find(settings, &format!("{role}.agent")).map(|s| s.value.clone()).unwrap_or_default();
+async fn step(app: &Shared, role: &str, store: &Store, down: &Down) {
+    let Ok(current) = current_agent(app, role).await else { return };
     let sw = store.switched.get(role);
     match decide(&store.spare(role), &current, sw, down) {
         Decision::Nothing => {
-            TOLD.lock().unwrap_or_else(|e| e.into_inner()).remove(role);
+            TOLD.lock().unwrap_or_else(|e| e.into_inner()).remove(&memo(app, role));
         }
         Decision::Forget => {
             let _ = edit_store(&app.cfg, |s| {
@@ -409,7 +442,7 @@ async fn step(app: &Shared, role: &str, store: &Store, settings: &[Setting], dow
         }
         Decision::NoSpare { program, gone } => {
             let key = format!("{program}|{}", gone.kind);
-            let told = TOLD.lock().unwrap_or_else(|e| e.into_inner()).insert(role.to_string(), key.clone());
+            let told = TOLD.lock().unwrap_or_else(|e| e.into_inner()).insert(memo(app, role), key.clone());
             if told.as_deref() != Some(&key) {
                 let line = format!("{}: {}, а запасных, которые можно запустить, в цепочке нет", role_title(role), why_words(&program, &gone));
                 app::journal_note(app, "crew", "crew", &line).await;
@@ -424,16 +457,15 @@ pub async fn tick_with(app: &Shared, installed: &[String]) {
         return;
     }
     let Ok(down) = station::down_programs(app, installed).await else { return };
-    let Ok(settings) = station::read_settings(&app.cfg, "").await else { return };
     // The store is read again after the (slow) reads, and the same state serves both roles.
     let store = read_store(&app.cfg);
     for role in SWITCHED_ROLES {
-        step(app, role, &store, &settings, &down).await;
+        step(app, role, &store, &down).await;
     }
 }
 
 pub async fn tick(app: &Shared) {
-    tick_with(app, &station::available()).await;
+    tick_with(app, &installed()).await;
 }
 
 /// The background loop: a look once a minute.
@@ -456,7 +488,7 @@ pub async fn light_start(app: &Shared, agent: &str) -> Option<LightPick> {
     if light.is_empty() || agent != light {
         return None;
     }
-    let down = station::down_programs(app, &station::available()).await.ok()?;
+    let down = station::down_programs(app, &installed()).await.ok()?;
     pick_light(&light, &spare, &down)
 }
 
@@ -558,7 +590,7 @@ pub async fn failover_back(State(app): State<Shared>, headers: HeaderMap, Json(b
     if !same_origin(&headers) {
         return error(StatusCode::FORBIDDEN, "cross-origin request refused");
     }
-    back_with(&app, body, &station::available()).await
+    back_with(&app, body, &installed()).await
 }
 
 /// The return, with the programs installed here given (a test names its own).
@@ -590,8 +622,7 @@ async fn back_with(app: &Shared, body: BackBody, installed: &[String]) -> Respon
             return Err(Fail::new(400, "op: back или keep"));
         }
         let _one_at_a_time = station::APPLY.lock().await;
-        let settings = station::read_settings(&app.cfg, "").await.map_err(Fail::refused)?;
-        let current = find(&settings, &format!("{role}.agent")).map(|s| s.value.clone()).unwrap_or_default();
+        let current = current_agent(&app, role).await?;
         if current != sw.to {
             edit_store(&app.cfg, |s| {
                 s.switched.remove(role);
@@ -604,7 +635,7 @@ async fn back_with(app: &Shared, body: BackBody, installed: &[String]) -> Respon
         if let Some(g) = down.get(program_of(&sw.home)) {
             return Err(Fail::new(409, format!("{} ещё недоступен: {}", sw.home, why_words(program_of(&sw.home), g))));
         }
-        run_commands(&app, role, &sw.home).await.map_err(|e| Fail::new(422, e))?;
+        run_commands(&app, role, &sw.home).await.map_err(|(_, e)| Fail::new(422, e))?;
         edit_store(&app.cfg, |s| {
             s.switched.remove(role);
             Ok(())
@@ -745,7 +776,11 @@ mod tests {
         assert_eq!(pick_light(light, &s, &d).unwrap().agent, "codex/gpt-6-astra");
         assert_eq!(pick_light(light, &s, &d).unwrap().fallback, "");
         let all = down(&[("claude", "limited", ""), ("omp", "signed_out", ""), ("codex", "missing", "")]);
-        assert_eq!(pick_light(light, &s, &all), None, "nobody usable: the task asked for is left as it is");
+        assert_eq!(
+            pick_light(light, &s, &all),
+            Some(LightPick { agent: light.into(), fallback: "omp/deepseek/deepseek-v4-flash, codex/gpt-6-astra".into() }),
+            "nobody usable: the preset, with the whole chain for when one comes back"
+        );
         assert_eq!(pick_light(light, &spare(""), &d), None, "no chain: no action");
         assert_eq!(pick_light(light, &Spare { chain: "codex".into(), auto: false }, &d), None);
     }
