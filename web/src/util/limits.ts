@@ -90,3 +90,14 @@ export function ago(ms: number): { n: number; unit: 'now' | 'min' | 'h' | 'd' } 
   if (min < 1440) return { n: Math.floor(min / 60), unit: 'h' };
   return { n: Math.floor(min / 1440), unit: 'd' };
 }
+
+/** A single top-bar reading, independent of the selected provider. Expired windows no longer consume an allowance. */
+export function limitSummary(agents: AgentUsage[], now = Date.now()): { percent: number | null; level: 'ok' | 'warn' | 'crit'; unavailable: boolean } {
+  const subscriptions = tabAgents(agents);
+  const windows = subscriptions.flatMap((a) => a.limits ?? []).filter((w) => !w.resets_at_ms || w.resets_at_ms > now);
+  const percent = windows.length ? Math.max(...windows.map(usedPct)) : null;
+  const unavailable = subscriptions.some((a) => a.stale || !!a.why || !hasNumbers(a));
+  const depleted = subscriptions.some((a) => a.balance && a.balance.remaining <= 0);
+  const severity = level(windows);
+  return { percent, unavailable, level: depleted || severity === 'crit' || (percent ?? 0) >= 95 ? 'crit' : unavailable || severity === 'warn' || (percent ?? 0) >= 80 ? 'warn' : 'ok' };
+}

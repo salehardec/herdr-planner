@@ -180,6 +180,7 @@ export const en: Record<string, string | string[]> = {
   'memory.title': 'Coordinator memory', 'memory.unknown': 'no data', 'memory.time': 'Time to compact the history.', 'memory.compact': 'Compact',
   'memory.new': 'New', 'memory.confirm': 'Sure? once more', 'memory.compactTip': 'Compact the history: the Coordinator summarises the conversation and frees context; work does not stop',
   'memory.compactOff': 'Cannot compact: the Coordinator is answering or is not Claude', 'memory.newTip': 'A new Coordinator: clean context, the current conversation closes',
+  'limits.unavailable': 'Subscription data unavailable or stale',
   'limits.title': 'Subscription limits', 'limits.sub': 'what is left per window', 'limits.chip': 'Limits', 'limits.noData': 'no data', 'limits.noneTip': 'Subscription limits: no data',
   'limits.left': '{n} % left', 'limits.used': '{n} % used', 'limits.stale': 'data is stale', 'limits.staleShort': 'stale', 'limits.staleTip': 'Data older than {n} min',
   'limits.reset': 'Resets {at} · {left}', 'limits.noReset': 'Reset time not reported', 'limits.resetPassed': 'Reset passed', 'limits.inMin': 'in {n} min',

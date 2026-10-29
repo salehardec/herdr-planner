@@ -578,7 +578,7 @@ section('buttons', async () => {
   // a runner's id «vm-r», the agent on a task in the navigator «ревью · pi/k3.1-pro») is not a label, so those are left out; a label that starts with an arrow
   // or a digit has no first letter to capitalise.
   const smallLabels = () => evalJs(`(() => {
-    const skip = '#crumbs, [data-prog], .prog, #load-chip, #hud-limits, .ti .seat, .rf-task .k, .menu-opt:not(.own)';
+    const skip = '#crumbs, [data-prog], .prog, #load-chip, #hud-limits, #chat-limits, .ti .seat, .rf-task .k, .menu-opt:not(.own)';
     const bad = [];
     for (const b of document.querySelectorAll('button')) {
       const r = b.getBoundingClientRect();
@@ -2721,7 +2721,7 @@ const topRects = () => evalJs(`(() => {
   const r = (s) => { const e = document.querySelector(s); if (!e || getComputedStyle(e).display === 'none') return null; const b = e.getBoundingClientRect(); return b.width > 0 ? { l: b.left, t: b.top, r: b.right, b: b.bottom, w: b.width, h: b.height } : null; };
   const chip = document.querySelector('#hud-limits');
   return { menu: r('#menu-btn'), crumbs: r('#crumbs'), load: r('#load-chip'), lim: r('#hud-limits'), gate: r('#gate-chip'), q: r('#q'), wait: r('#wait-btn'), mode: r('#mode'),
-    form: chip?.dataset.form, tier: document.querySelector('#loadbar')?.dataset.tier, limText: chip ? chip.innerText.trim() : '', limTip: chip ? chip.getAttribute('aria-label') || '' : '',
+    compact: chip?.classList.contains('lim-summary'), tier: document.querySelector('#loadbar')?.dataset.tier, limText: chip ? chip.innerText.trim() : '', limTip: chip ? chip.getAttribute('aria-label') || '' : '',
     fit: chip?.dataset.fit, provs: document.querySelectorAll('#hud-limits .lp').length, bars: [...document.querySelectorAll('#hud-limits .lp-bar')].filter((e) => e.offsetParent).length, provIcons: document.querySelectorAll('#hud-limits .lp svg').length,
     limClipped: chip ? chip.scrollWidth > chip.clientWidth + 1 || [...chip.querySelectorAll('.lim-ag')].some((e) => e.offsetParent && e.scrollWidth > e.clientWidth + 1) : false, sw: document.documentElement.scrollWidth, phone: document.documentElement.classList.contains('bp900') };
 })()`);
@@ -2774,19 +2774,9 @@ section('top bar', async () => {
         check(`${at}: a phone-sized window: the menu and the crumbs above, the search and the monitoring below`, m.menu.r <= m.crumbs.l + 1 && m.crumbs.r <= m.wait.l + 1 && m.q.t >= m.menu.b - 1 && (!m.lim || m.q.r <= m.lim.l + 1), JSON.stringify(m));
       }
       check(`${at}: the crumbs are whole unless the window is a phone's`, await evalJs(`[...document.querySelectorAll('#crumbs button')].every((b) => b.scrollWidth <= b.clientWidth + 1) || document.documentElement.classList.contains('bp900')`), JSON.stringify(m));
-      check(`${at}: the subscription chip (${m.form}) is whole; shortened to its percentage it keeps the words in its tooltip`, !m.limClipped
-        && (m.form === 'none' ? !m.lim : !!m.lim) && ((m.form !== 'pct' && m.form !== 'worst') || (/^[\d\s%$.]+$/.test(m.limText) && m.limText.includes('%') && m.limTip.includes(' · ') && /\d/.test(m.limTip))) && (m.form === 'pct' || m.form === 'worst' || m.form === 'none' || /^\d+\s*%\s+\S/.test(m.limText)), JSON.stringify(m));
-      if (!m.phone && w >= 1920 && scale === 'auto') check(`${at}: with a task selected (the longest crumbs) the row still has a gauge for every provider and the words of the leading one`, ['full', 'one', 'mix'].includes(m.form) && /\d+\s*%\s+исп\.\s+\S/.test(m.limText) && m.bars >= 3 && !m.limClipped, JSON.stringify({ form: m.form, fit: m.fit, bars: m.bars, lim: m.lim, load: m.load, q: m.q }));
-      if (m.phone || scale === 200) check(`${at}: narrow: the chip is a percentage and the bars the worst one`, m.form === 'pct' || m.form === 'worst' || m.form === 'none', JSON.stringify(m));
-      check(`${at}: the row has a provider after provider, each with its icon (${m.provs})`, m.form === 'none' || m.provs >= 4, JSON.stringify(m));
-      if (w >= 1920 && scale === 'auto') {
-        // with the short crumbs of the Galaxy there is room: the chip keeps the agent and the window, whole (not cut by an ellipsis)
-        await evalJs('planner.goHome(); true');
-        await waitFor('plannerDebug().selected === null && world.debug().flight === "idle"', 12000);
-        await beat();
-        const h = await topRects();
-        check(`${at}: with room to spare the row has gauges and words («N % исп. <сброс>») for the leading providers and every provider's share, whole`, ['full', 'one', 'mix'].includes(h.form) && /^\d+\s*%\s+исп\.\s+\S/.test(h.limText) && h.bars >= 3 && !h.limClipped && h.provIcons === h.provs, JSON.stringify({ form: h.form, tier: h.tier, text: h.limText, bars: h.bars, clipped: h.limClipped, provs: h.provs, icons: h.provIcons, lim: h.lim, load: h.load }));
-      }
+      check(`${at}: limits stay compact with one icon and the worst percentage, and details remain labelled`, m.compact && !!m.lim && !m.limClipped && m.lim.w < 100 * (scale === 'auto' ? 1 : scale / 100)
+        && /97\s*%/.test(m.limText) && m.provs === 0 && m.limTip.includes(' · ')
+        && await evalJs(`document.querySelectorAll('#hud-limits svg').length === 1`), JSON.stringify(m));
       if (scale === 'auto' && w === 1920) await shot(`topbar-${theme}.png`);
     }
   };
@@ -2810,9 +2800,9 @@ section('top bar', async () => {
     await click('#hud-limits');
     await waitFor('!!document.querySelector("#top-card[data-card=limits]")', 3000);
     await click('#top-card [data-tab="kimi"]');
-    check(`${w}×${h}: with another provider's tab open the narrow chip still shows the one closest to its limit`, await evalJs(`(() => { const v = [...document.querySelectorAll('#hud-limits .lp')].filter((e) => e.offsetParent); return v.length === 1 && v[0].dataset.p === 'claude' && /97/.test(v[0].innerText); })()`));
+    check(`${w}×${h}: changing the provider leaves the compact worst percentage unchanged`, /97\s*%/.test(await text('#hud-limits')));
     await press('Escape');
-    check(`${w}×${h}: the chip is the worst provider's percentage with a label`, m.form === 'worst' && /^[\d\s%$.]+$/.test(m.limText) && m.limTip.length > 8, JSON.stringify(m));
+    check(`${w}×${h}: the chip is the worst provider's percentage with a label`, m.compact && /^[\d\s%$.!]+$/.test(m.limText) && m.limTip.length > 8, JSON.stringify(m));
     await click('#menu-btn');
     check(`${w}×${h}: the menu is inside the window`, await waitFor('!!document.querySelector(".menupop")', 3000) && await evalJs(`(() => { const p = document.querySelector('.menupop').getBoundingClientRect(); return p.left >= -1 && p.right <= innerWidth + 1; })()`));
     await click('#menu-btn');
@@ -2831,7 +2821,7 @@ section('top bar', async () => {
 
 section('limits', async () => {
   await resetUi();
-  check('the top bar has the subscription row, naming the worst window among the providers', await waitFor('!!document.querySelector("#hud-limits")', 8000) && await waitFor('/97\\s*%/.test(document.querySelector("#hud-limits")?.innerText || "")', 8000), await text('#hud-limits'));
+  check('the top bar has a compact summary naming the worst window among providers', await waitFor('!!document.querySelector("#hud-limits")', 8000) && await waitFor('/97\\s*%/.test(document.querySelector("#hud-limits")?.innerText || "")', 8000), await text('#hud-limits'));
   await clearToasts();
   await click('#hud-limits');
   check('a click on the chip opens the card with all the subscriptions, not the panel', await waitFor('!!document.querySelector("#top-card[data-card=limits]")', 3000) && !(await exists('.pop.limits')));
@@ -2856,18 +2846,38 @@ section('limits', async () => {
   await press('KeyQ', 'q');
   check('Q closes the limits panel', await waitFor('!document.querySelector(".pop.limits")', 3000));
 
-  // the row as in herdr-gpui's status bar: a window as wide as the bar needs, the page at 100 %
-  await send('Emulation.setDeviceMetricsOverride', { width: 3840, height: 1600, deviceScaleFactor: 1, mobile: false });
-  await evalJs(`try { localStorage.setItem('herdr-planner.uiScale', '100'); } catch {} true`);
-  await navigate(base + '/?noauto&nocoach&bloom=0');
-  await resized();
-  await waitFor('document.querySelectorAll("#hud-limits .lp").length >= 4', 8000);
-  await beat();
-  const wide = await topRects();
-  check('with the room of a wide window the row says it all: «91 % исп. 1д 5ч · 97 % исп. Fable Weekly», «35 % исп. … · 21 % исп. Total usage», the balance', wide.form === 'full' && !wide.limClipped
-    && /\d+ % исп\. \S+ \S* ?· \d+ % исп\. Fable Weekly/.test(wide.limText.replace(/\s+/g, ' ')) && /35 % исп\. \d+м · 21 % исп\. Total usage/.test(wide.limText.replace(/\s+/g, ' ')) && /\$11\.92/.test(wide.limText) && wide.provIcons === wide.provs, JSON.stringify({ form: wide.form, text: wide.limText, clipped: wide.limClipped, lim: wide.lim }));
-  await shot('topbar-limits-wide.png');
-  await evalJs(`try { localStorage.removeItem('herdr-planner.uiScale'); } catch {} true`);
+  // Both entries open the same card from their own anchor. The row stays with the memory, outside the unread header.
+  for (const [w, h] of [[1920, 1080], [2560, 1440], [1100, 800], [430, 900], [360, 780]]) {
+    await send('Emulation.setDeviceMetricsOverride', { width: w, height: h, deviceScaleFactor: 1, mobile: false });
+    await navigate(base + '/?noauto&nocoach&bloom=0');
+    await resized();
+    if (await evalJs(`document.querySelector('#chat').classList.contains('off')`)) await press('Slash', '/');
+    await waitFor('!document.querySelector("#chat").classList.contains("off")', 3000);
+    for (const wide of [false, true]) {
+      if (wide) await click('#cwide');
+      await waitFor(`document.querySelector('#chat').getAnimations().every((a) => a.playState !== 'running')`);
+      const at = `${w}×${h} ${wide ? 'wide' : 'docked'} chat`;
+      check(`${at}: provider row sits below memory and before messages`, await evalJs(`document.querySelector('.cmem').nextElementSibling?.contains(document.querySelector('#chat-limits')) && !document.querySelector('#chat > header #chat-limits') && document.querySelectorAll('#chat-limits .lp').length === 4`));
+      check(`${at}: row, status, search and input fit inside the chat`, await evalJs(`(() => { const chat = document.querySelector('#chat').getBoundingClientRect(); return ['#chat-limits', '#cstate', '#chat-q', '#ask-in'].every((s) => { const e = document.querySelector(s); const r = e.getBoundingClientRect(); return r.left >= chat.left - 1 && r.right <= chat.right + 1 && e.scrollWidth <= e.clientWidth + 1; }) && document.documentElement.scrollWidth <= innerWidth; })()`));
+      const words = (await text('#chat-limits')).replace(/\s+/g, ' ');
+      check(`${at}: every provider keeps its icon, gauge, both windows and balance`, /97 % исп\. Fable Weekly/.test(words) && /35 % исп\. \d+м · 21 % исп\. Total usage/.test(words) && /\$11\.92/.test(words) && await evalJs(`document.querySelectorAll('#chat-limits .lp svg').length === 4 && document.querySelectorAll('#chat-limits .lp-bar').length === 3`), words);
+      for (const anchor of ['#chat-limits', '#hud-limits']) {
+        await click(anchor);
+        check(`${at}: ${anchor} opens the provider card`, await cardOpen('limits') && await evalJs(`document.querySelector(${JSON.stringify(anchor)}).getAttribute('aria-expanded') === 'true'`));
+        check(`${at}: card from ${anchor} stays visible and points at its button`, await waitFor(`(() => { const a = document.querySelector(${JSON.stringify(anchor)}).getBoundingClientRect(); const c = document.querySelector('#top-card').getBoundingClientRect(); return c.left >= 0 && c.right <= innerWidth + 1 && c.top >= 0 && c.bottom <= innerHeight + 1 && (Math.abs(c.top - a.bottom - 6) < 2 || Math.abs(c.bottom - a.top + 6) < 2); })()`));
+        await evalJs(`document.querySelector(${JSON.stringify(anchor)}).focus(); true`);
+        await press('Tab');
+        await press('Escape');
+        check(`${at}: Escape returns focus to ${anchor}`, await cardGone() && await evalJs(`document.activeElement === document.querySelector(${JSON.stringify(anchor)})`), JSON.stringify(await evalJs(`({ focus: document.activeElement?.id, keys: window.__net.keys, card: !!document.querySelector('#top-card'), chatOff: document.querySelector('#chat').classList.contains('off') })`)));
+      }
+      await shot(`chat-limits-${w}-${wide ? 'wide' : 'docked'}.png`);
+      if (wide) await click('#cwide');
+    }
+    await click('#chide');
+    await click('#hud-limits');
+    check(`${w}×${h}: limits remain available when chat is hidden`, await cardOpen('limits') && await evalJs(`document.querySelector('#chat').classList.contains('off')`));
+    await press('Escape');
+  }
   await send('Emulation.setDeviceMetricsOverride', { width: 1500, height: 950, deviceScaleFactor: 1, mobile: false });
   await navigate(base + '/?noauto&nocoach&bloom=0');
 });
@@ -2896,7 +2906,7 @@ section('top cards', async () => {
   await mouseTo(700, 600);
 
   const chipText = (await text('#hud-limits')).trim();
-  check('the subscription row: a provider after provider (Claude, Codex, Kimi Code, DeepSeek), each with its icon, a gauge and what is used', await evalJs(`[...document.querySelectorAll('#hud-limits .lp')].map((e) => e.dataset.p).sort().join() === 'claude,codex,deepseek,kimi' && [...document.querySelectorAll('#hud-limits .lp')].every((e) => e.querySelector('svg')) && document.querySelectorAll('#hud-limits .lp-bar').length === 3`) && /\d+\s*%/.test(chipText), chipText);
+  check('the subscription row: a provider after provider (Claude, Codex, Kimi Code, DeepSeek), each with its icon, a gauge and what is used', await evalJs(`[...document.querySelectorAll('#chat-limits .lp')].map((e) => e.dataset.p).sort().join() === 'claude,codex,deepseek,kimi' && [...document.querySelectorAll('#chat-limits .lp')].every((e) => e.querySelector('svg')) && document.querySelectorAll('#chat-limits .lp-bar').length === 3`) && /\d+\s*%/.test(chipText), chipText);
   check('the row says «used» and when the window resets, and a balance as money', await evalJs(`(() => { const a = document.querySelector('#hud-limits').getAttribute('aria-label'); return /Kimi Code: 35 % исп\\.[^;]* · 21 % исп\\. Total usage/.test(a) && /DeepSeek: \\$11\\.92/.test(a) && /Codex: 4 % исп\\. 1ч \\d+м · 12 % исп\\. \\d+д \\d+ч/.test(a); })()`), await evalJs(`document.querySelector('#hud-limits').getAttribute('aria-label')`));
   check('the bars carry no long captions: only CPU, MEM, GPU and the numbers', !/ядер|ГБ|обновлено|видеопамять/i.test(await text('#load-chip')), await text('#load-chip'));
   check('no card is open before anyone asks', !(await exists('#top-card')));
@@ -2983,7 +2993,7 @@ section('top cards', async () => {
   check('the Codex tab: the plan and the account, the review limit as one more window, the credits', await waitFor('document.querySelector("#top-card .lc-body")?.dataset.agent === "codex"', 3000) && /Plus/.test(await text('#top-card')) && /codex@example\.test/.test(await text('#top-card')) && /Вход: из Codex CLI/.test(await text('#top-card')) && (await evalJs('document.querySelectorAll("#top-card .lc-win").length')) === 3 && /Code review: осталось 97 %/.test((await text('#top-card')).replace(/\s+/g, ' ')) && /Кредиты Баланс 7\.50/.test((await text('#top-card')).replace(/\s+/g, ' ')));
   await click('#top-card [data-tab="claude"]');
   await waitFor('document.querySelector("#top-card .lc-body")?.dataset.agent === "claude"', 3000);
-  check('the bar follows the tab picked: the provider of the open tab leads the row', await evalJs(`document.querySelector('#hud-limits .lp').dataset.p === 'claude'`));
+  check('the bar follows the tab picked: the provider of the open tab leads the row', await evalJs(`document.querySelector('#chat-limits .lp').dataset.p === 'claude'`));
   // Refresh asks the planner to read the providers again, and the card says so
   await click('#limits-refresh');
   check('Refresh is pressed: the card shows it while the providers are read again', await waitFor('document.querySelector("#limits-refresh")?.disabled === true || /Обновляю/.test(document.querySelector("#limits-refresh")?.innerText || "")', 3000) || (await text('#limits-refresh')).includes('Обновить'));
@@ -6847,7 +6857,9 @@ section('chat unread', async () => {
   const chatOpen = () => evalJs('!document.querySelector("#chat").classList.contains("off")');
 
   await resetUi();
-  await evalJs(`localStorage.removeItem(${JSON.stringify(READ)}); true`);
+  // Earlier todo-to-chat scenarios leave undelivered receipts below the transcript (PLN-87).
+  // This scenario assumes the new answer is last; start with only its own transcript messages.
+  await evalJs(`localStorage.removeItem(${JSON.stringify(READ)}); localStorage.removeItem('planner.chat.echoes'); true`);
   await fresh();
   check('the first look takes what the chat holds for read: no count, no light', await waitFor('!!localStorage.getItem(' + JSON.stringify(READ) + ')', 10000) && !(await exists('#bchat-n')) && (await stored()).base === 8, JSON.stringify(await stored()));
 

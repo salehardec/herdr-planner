@@ -20,6 +20,7 @@ import { Gl } from './Gl';
 import { Grip } from './Grip';
 import { RichText } from './RichText';
 import { Memory } from './FocusOther';
+import { LimitsChip } from './Limits';
 import { dialogOpen } from '../dialogs';
 import { PendingFiles, SavedFiles } from './Attached';
 import { ChatTurn, PendingTurn } from './ChatTurn';
@@ -410,6 +411,7 @@ export function Chat(): JSX.Element {
         <button class="btn sm" id="chide" type="button" title="/" onClick={() => { panels.chat.value = false; }}>{t('chat.hide')}</button>
       </header>
       <div class="cmem"><Memory compact /></div>
+      <div class="climits"><LimitsChip chat /></div>
       {c.q.trim().length >= 2 && (
         <div id="chits" class="chits">
           {c.hitsBusy && c.hits.length === 0 && <div class="h dim">{t('chat.searching')}</div>}

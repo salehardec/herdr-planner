@@ -6,7 +6,7 @@ import { t, tn, locale } from '../i18n';
 import { goHome } from '../nav';
 import { cardAnchor, closeCard } from './hovercard';
 import { rootPx } from '../scale';
-import { gb, levelOf, meters, pct, rowFit, staleLoad, worstMeter, type LoadLevel, type Meter, type RowStep } from '../util/load';
+import { gb, levelOf, meters, pct, tierFor, staleLoad, worstMeter, type LoadLevel, type Meter } from '../util/load';
 import './loadbar.css';
 
 /** What time it is for the bars: they go grey when a reading is too old. */
@@ -37,11 +37,7 @@ function summaryText(ms: Meter[], st: State): string {
   return t('load.aria', { host, list: ms.map((m) => `${keyName(m.key)} ${m.percent} %, ${t(`load.level.${m.level}`)}`).join('; ') });
 }
 
-/** The least the search is squeezed to (rem) when the subscription row needs its room. */
-const SEARCH_LEAST_REM = 12;
-
-/** The monitoring group (the bars, then the subscription chip) sits right of the menu and the crumbs, which come first: the form of the bars
- *  (data-tier) and of the chip (data-form) is the one that fits in what they leave. */
+/** Machine readings use the space left by navigation and the compact limits button, keeping navigation and the compact limits button visible. */
 function useTier(box: { current: HTMLElement | null }): void {
   useEffect(() => {
     const el = box.current;
@@ -58,71 +54,33 @@ function useTier(box: { current: HTMLElement | null }): void {
       if (gate) mo?.observe(gate, { childList: true, characterData: true, subtree: true });
       // a phone-sized window puts the group on the second row, beside the search: always the narrowest forms
       const top = row.parentElement as HTMLElement | null;
-      const search = top?.querySelector('.top-search') as HTMLElement | null;
-      // the search gives room back to the row only while the row needs it: measured at its natural width each time
       top?.style.removeProperty('--search-w');
       if (document.documentElement.classList.contains('bp900')) {
         el.dataset.tier = 'sum';
-        if (chip) chip.dataset.form = 'worst';
         if (gate) gate.dataset.form = 'icon';
         return;
       }
       const px = rootPx();
       const gap = parseFloat(getComputedStyle(crumbs).columnGap) || 0;
       const kids = [...crumbs.children] as HTMLElement[];
-      // what the crumbs would take if nothing were cut: a button's own text, not the width it was squeezed to
       const natural = kids.reduce((a, c) => a + (c.tagName === 'BUTTON' ? c.scrollWidth : c.offsetWidth), 0) + gap * Math.max(0, kids.length - 1);
       const rowGap = parseFloat(getComputedStyle(row).columnGap) || 0;
       const monGap = parseFloat(getComputedStyle(mon).columnGap) || 0;
-      // every form the row can take, measured as it is drawn (the widest first): all the words, the tightest window, the first k providers with
-      // their words, the shares, the one closest to its limit
-      const segs = chip ? [...chip.querySelectorAll<HTMLElement>('.lp')] : [];
-      const widthOf = (form: string, words: number): number => {
-        if (!chip) return 0;
-        chip.dataset.form = form;
-        segs.forEach((sg, i) => { sg.dataset.w = i < words ? '1' : '0'; });
-        return chip.offsetWidth / px;
-      };
-      const n = segs.length;
-      const steps: RowStep[] = [{ form: 'full', words: n, w: widthOf('full', n) }, { form: 'one', words: n, w: widthOf('one', n) }];
-      for (let k = n - 1; k >= 1; k--) steps.push({ form: 'mix', words: k, w: widthOf('mix', k) });
-      steps.push({ form: 'pct', words: 0, w: widthOf('pct', 0) });
-      const worstW = widthOf('worst', 0);
-      let gateFull = 0;
-      let gateIcon = 0;
+      const room = row.clientWidth - menu.offsetWidth - natural - 2 * rowGap - (chip?.offsetWidth ?? 0) - monGap;
       if (gate) {
-        gate.dataset.form = 'full'; gateFull = gate.offsetWidth;
-        gate.dataset.form = 'icon'; gateIcon = gate.offsetWidth;
+        gate.dataset.form = 'full';
+        if (room - gate.offsetWidth - monGap < 5.6 * px) gate.dataset.form = 'icon';
       }
-      const room = (row.clientWidth - menu.offsetWidth - natural - 2 * rowGap) / px;
-      // the search may shrink toward its least width, and the row and the bars have the room that frees (half on each side of the middle)
-      const searchWas = search ? search.offsetWidth : 0;
-      const maxExtra = search ? Math.max(0, (searchWas - SEARCH_LEAST_REM * px) / 2) / px : 0;
-      // the gate keeps its words while the subscription row keeps at least as much of its own; else it is only an icon and a dot
-      const decide = (extra: number): { fit: ReturnType<typeof rowFit>; gateForm: 'full' | 'icon' } => {
-        let fit = rowFit(room + extra - (gate ? (gateFull + monGap) / px : 0), steps, worstW, monGap / px);
-        let gateForm: 'full' | 'icon' = 'full';
-        if (gate) {
-          const small = rowFit(room + extra - (gateIcon + monGap) / px, steps, worstW, monGap / px);
-          if (small.idx < fit.idx || fit.idx >= steps.length) { gateForm = 'icon'; fit = small; }
-        }
-        return { fit, gateForm };
-      };
-      let chosen = decide(0);
-      let extraUsed = 0;
-      for (const share of [0.25, 0.5, 0.75, 1]) {
-        const d = decide(maxExtra * share);
-        if (d.fit.idx < chosen.fit.idx) { chosen = d; extraUsed = maxExtra * share; }
+      let left = room - (gate ? gate.offsetWidth + monGap : 0);
+      // At large interface scales only navigation and the two small buttons can fill the left half.
+      // Keep them whole by taking just the missing space from the centred search.
+      const search = top?.querySelector<HTMLElement>('.top-search');
+      if (left < 0 && search) {
+        const extra = Math.min(-left, Math.max(0, (search.offsetWidth - 12 * px) / 2));
+        if (extra > 0) top?.style.setProperty('--search-w', `${Math.round(search.offsetWidth - 2 * extra)}px`);
+        left += extra;
       }
-      const { fit, gateForm } = chosen;
-      if (search && extraUsed > 0) top?.style.setProperty('--search-w', `${Math.round(searchWas - 2 * extraUsed * px)}px`);
-      el.dataset.tier = fit.tier;
-      if (chip) {
-        widthOf(fit.chip, fit.words);
-        // what the choice was made of (for the checks and for whoever wonders why the row has the form it has)
-        chip.dataset.fit = JSON.stringify({ room: +room.toFixed(1), extra: +(extraUsed).toFixed(1), gate: gateForm, steps: steps.map((st) => `${st.form}${st.words}:${st.w.toFixed(1)}`), worst: +worstW.toFixed(1) });
-      }
-      if (gate) gate.dataset.form = gateForm;
+      el.dataset.tier = tierFor(left / px);
     };
     measure();
     if (typeof ResizeObserver === 'undefined') return;
