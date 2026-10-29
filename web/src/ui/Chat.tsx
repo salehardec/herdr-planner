@@ -14,7 +14,7 @@ import { post, refreshNow, onChatEvent } from '../api';
 import { fetchScreen, todoToDraft } from '../actions';
 import { t, tn } from '../i18n';
 import { sigOf } from '../chat-read';
-import { markRead, SEE_MS, unreadCount, unreadTurns, windowActive } from '../chat-unread';
+import { markRead, markReadToEnd, SEE_MS, unreadTurns, windowActive } from '../chat-unread';
 import { dayKey, dayTimeOf, isToday, timeOf } from '../util/dates';
 import { Gl } from './Gl';
 import { Grip } from './Grip';
@@ -187,7 +187,8 @@ export function Chat(): JSX.Element {
     if (!el) return;
     if (anchor.current) { el.scrollTop = anchor.current.top + (el.scrollHeight - anchor.current.h); anchor.current = null; }
     else if (stuck.value) el.scrollTop = el.scrollHeight;
-  }, [c.turns.length, pending?.at, opt?.at, reply, open, busy, c.loading]);
+    if (open && active && el.scrollHeight - el.scrollTop - el.clientHeight < 24) markReadToEnd();
+  }, [c.turns, pending?.at, opt?.at, reply, open, busy, c.loading, active]);
 
   useEffect(() => {
     const target = scrollTo.value;
@@ -218,8 +219,7 @@ export function Chat(): JSX.Element {
   }, [open, active, unreadKey, c.turns.length]);
 
   /** Takes the log to the first unread turn: older turns are loaded until it is there. */
-  const toUnread = async (onlyIfHidden: boolean): Promise<void> => {
-    const first = unreadTurns.peek()[0];
+  const toUnread = async (onlyIfHidden: boolean, first = unreadTurns.peek()[0]): Promise<void> => {
     if (first === undefined) return;
     for (let i = 0; i < 40 && !chat.peek().turns.some((x) => x.n === first) && hasOlder(); i++) {
       if (!(await loadOlder())) break;
@@ -258,7 +258,10 @@ export function Chat(): JSX.Element {
   const onScroll = (): void => {
     const el = logRef.current;
     if (!el) return;
-    stuck.value = el.scrollHeight - el.scrollTop - el.clientHeight < 24;
+    const atEnd = el.scrollHeight - el.scrollTop - el.clientHeight < 24;
+    stuck.value = atEnd;
+    // Reaching the end acknowledges every answer, rather than waiting for an observer timer to fire.
+    if (atEnd && open && active) markReadToEnd();
     if (open && showTurns && el.scrollTop < 40) void older();
   };
 
@@ -357,7 +360,11 @@ export function Chat(): JSX.Element {
         <b>{t('quasar.label')}</b>
         <span class={`st ${err ? 'bad' : busy ? 'busy' : ''}`} id="cstate">● {status}</span>
         {unread.length > 0 && (
-          <button class="btn sm ubtn" id="cunread" type="button" title={t('chat.toUnread')} onClick={() => void toUnread(false)}>
+          <button class="btn sm ubtn" id="cunread" type="button" title={t('chat.toUnread')} onClick={() => {
+            const first = unread[0];
+            markReadToEnd();
+            void toUnread(false, first);
+          }}>
             <i class="udot on" />↓ {tn('chat.unreadN', unread.length)}
           </button>
         )}

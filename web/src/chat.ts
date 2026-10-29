@@ -39,9 +39,16 @@ export async function loadLatest(limit = 3): Promise<void> {
     chat.value = { ...chat.value, ...patch };
     if (r.available) {
       const have = chat.value.turns.length ? chat.value.turns[chat.value.turns.length - 1].n : -1;
-      // More than a page arrived since the last look: start again from the end.
-      if (have >= 0 && r.turns.length && r.turns[0].n > have + 1) update({ turns: [] });
+      // More than one page arrived since the last look. Load the gap before counting: positions without their turns could be
+      // notices, so counting them would make reconnects and polling invent unread messages.
+      const gap = have >= 0 && r.turns.length && r.turns[0].n > have + 1;
+      if (gap) update({ turns: [] });
       merge(r.turns);
+      if (gap) {
+        for (let i = 0; i < 40 && chat.value.turns[0]?.n > have + 1 && hasOlder(); i++) {
+          if (!(await loadOlder(100))) break;
+        }
+      }
       settleRead();
     }
   } catch { /* the compact tail stays */ } finally {
@@ -51,12 +58,13 @@ export async function loadLatest(limit = 3): Promise<void> {
 }
 
 /**
- * The turns that were read keep the words they were read as, and an answer may have changed since: they have to be loaded to be
- * checked, though a page that has just started holds only the last few. Loads older turns down to the oldest of them.
+ * The answers that were read keep the words they were read as, and an answer may have changed since: they have to be loaded to
+ * be checked, though a page that has just started holds only the last few. Board notices have the zero signature and cannot
+ * become answers, so they do not pull old history back into a reloaded chat.
  */
 async function coverRead(): Promise<void> {
   const rs = chatRead.value;
-  const keys = rs ? Object.keys(rs.seen).map(Number) : [];
+  const keys = rs ? Object.entries(rs.seen).filter(([, sig]) => sig !== 0).map(([n]) => Number(n)) : [];
   if (!keys.length) return;
   const lowest = Math.min(...keys);
   let got = false;
@@ -68,12 +76,12 @@ async function coverRead(): Promise<void> {
 }
 
 /** Older turns, five at a time. Returns true when something was added. */
-export async function loadOlder(): Promise<boolean> {
+export async function loadOlder(limit = 5): Promise<boolean> {
   const c = chat.value;
   if (c.loading || !hasOlder()) return false;
   update({ loading: true });
   try {
-    const r = await api<{ turns: TurnData[] }>('/api/chat/history?limit=5&before=' + c.turns[0].n);
+    const r = await api<{ turns: TurnData[] }>('/api/chat/history?limit=' + limit + '&before=' + c.turns[0].n);
     merge(r.turns || []);
     return (r.turns || []).length > 0;
   } catch { return false; } finally {
