@@ -51,14 +51,17 @@ export type RowForm = 'full' | 'one' | 'mix' | 'pct' | 'worst' | 'none';
 
 export interface RowStep { form: Exclude<RowForm, 'worst' | 'none'>; words: number; w: number }
 
+/** What the machine bars keep at least (rem): their dot. The subscription row has the first claim on the rest. */
+export const BARS_LEAST = 3.8;
+
 /** The top bar's monitoring group (the bars, then the subscription row) in the room (rem) the menu and the crumbs leave. The row has
  *  the first claim on it: the widest of the `steps` (given widest first, each with its width) that still leaves the bars at least their
- *  summary; else the one provider closest to its limit while there is room at all (`worst`, of width `worstW`); else nothing. `gap` is
+ *  dot; else the one provider closest to its limit while there is room at all (`worst`, of width `worstW`); else nothing. `gap` is
  *  the space between the two, and `idx` the place of the step chosen (the steps' count for `worst`, one more for none). */
 export function rowFit(room: number, steps: RowStep[], worstW: number, gap: number): { chip: RowForm; words: number; tier: ReturnType<typeof tierFor>; idx: number } {
   const left = (x: number): number => room - x - gap;
   for (let i = 0; i < steps.length; i++) {
-    if (left(steps[i].w) >= 5.6) return { chip: steps[i].form, words: steps[i].words, tier: tierFor(left(steps[i].w)), idx: i };
+    if (left(steps[i].w) >= BARS_LEAST) return { chip: steps[i].form, words: steps[i].words, tier: tierFor(left(steps[i].w)), idx: i };
   }
   if (room >= worstW) return { chip: 'worst', words: 0, tier: tierFor(left(worstW)), idx: steps.length };
   return { chip: 'none', words: 0, tier: 'none', idx: steps.length + 1 };

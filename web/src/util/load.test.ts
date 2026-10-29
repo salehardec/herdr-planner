@@ -35,15 +35,15 @@ describe('load levels', () => {
     expect(rowFit(40, steps, 3.6, 0.5)).toEqual({ chip: 'full', words: 4, tier: 'full', idx: 0 });
     expect(rowFit(50, steps, 3.6, 0.5)).toEqual({ chip: 'full', words: 4, tier: 'host', idx: 0 });
     // the words give way first to the tightest window of each provider, while the bars keep at least their summary…
-    expect(rowFit(19.1, steps, 3.6, 0.5)).toEqual({ chip: 'full', words: 4, tier: 'sum', idx: 0 });
-    expect(rowFit(19.0, steps, 3.6, 0.5)).toEqual({ chip: 'one', words: 4, tier: 'sum', idx: 1 });
+    expect(rowFit(17.4, steps, 3.6, 0.5)).toEqual({ chip: 'full', words: 4, tier: 'dot', idx: 0 });
+    expect(rowFit(17.2, steps, 3.6, 0.5)).toEqual({ chip: 'one', words: 4, tier: 'sum', idx: 1 });
     // …then to fewer providers with their words, the rest as shares…
-    expect(rowFit(14.2, steps, 3.6, 0.5)).toEqual({ chip: 'mix', words: 3, tier: 'sum', idx: 2 });
-    expect(rowFit(12.7, steps, 3.6, 0.5)).toEqual({ chip: 'mix', words: 1, tier: 'sum', idx: 3 });
+    expect(rowFit(12.4, steps, 3.6, 0.5)).toEqual({ chip: 'mix', words: 3, tier: 'dot', idx: 2 });
+    expect(rowFit(10.9, steps, 3.6, 0.5)).toEqual({ chip: 'mix', words: 1, tier: 'dot', idx: 3 });
     // …then to shares only…
-    expect(rowFit(11.2, steps, 3.6, 0.5)).toEqual({ chip: 'pct', words: 0, tier: 'sum', idx: 4 });
+    expect(rowFit(9.4, steps, 3.6, 0.5)).toEqual({ chip: 'pct', words: 0, tier: 'dot', idx: 4 });
     // …then to the one provider closest to its limit, whatever is left for the bars, …
-    expect(rowFit(10, steps, 3.6, 0.5)).toEqual({ chip: 'worst', words: 0, tier: 'sum', idx: 5 });
+    expect(rowFit(9.2, steps, 3.6, 0.5)).toEqual({ chip: 'worst', words: 0, tier: 'dot', idx: 5 });
     expect(rowFit(4, steps, 3.6, 0.5)).toEqual({ chip: 'worst', words: 0, tier: 'none', idx: 5 });
     // …and at last to nothing
     expect(rowFit(3, steps, 3.6, 0.5)).toEqual({ chip: 'none', words: 0, tier: 'none', idx: 6 });

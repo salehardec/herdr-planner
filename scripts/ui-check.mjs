@@ -2688,6 +2688,7 @@ section('top bar', async () => {
       check(`${at}: the crumbs are whole unless the window is a phone's`, await evalJs(`[...document.querySelectorAll('#crumbs button')].every((b) => b.scrollWidth <= b.clientWidth + 1) || document.documentElement.classList.contains('bp900')`), JSON.stringify(m));
       check(`${at}: the subscription chip (${m.form}) is whole; shortened to its percentage it keeps the words in its tooltip`, !m.limClipped
         && (m.form === 'none' ? !m.lim : !!m.lim) && ((m.form !== 'pct' && m.form !== 'worst') || (/^[\d\s%$.]+$/.test(m.limText) && m.limText.includes('%') && m.limTip.includes(' · ') && /\d/.test(m.limTip))) && (m.form === 'pct' || m.form === 'worst' || m.form === 'none' || /^\d+\s*%\s+\S/.test(m.limText)), JSON.stringify(m));
+      if (!m.phone && w >= 1920 && scale === 'auto') check(`${at}: with a task selected (the longest crumbs) the row still has a gauge for every provider and the words of the leading one`, ['full', 'one', 'mix'].includes(m.form) && /\d+\s*%\s+исп\.\s+\S/.test(m.limText) && m.bars >= 3 && !m.limClipped, JSON.stringify({ form: m.form, text: m.limText, bars: m.bars, provs: m.provs, lim: m.lim, load: m.load, q: m.q }));
       if (m.phone || scale === 200) check(`${at}: narrow: the chip is a percentage and the bars the worst one`, m.form === 'pct' || m.form === 'worst' || m.form === 'none', JSON.stringify(m));
       check(`${at}: the row has a provider after provider, each with its icon (${m.provs})`, m.form === 'none' || m.provs >= 4, JSON.stringify(m));
       if (w >= 1920 && scale === 'auto') {
@@ -2696,7 +2697,7 @@ section('top bar', async () => {
         await waitFor('plannerDebug().selected === null && world.debug().flight === "idle"', 12000);
         await beat();
         const h = await topRects();
-        check(`${at}: with room to spare the row has gauges and words («N % исп. <сброс>») for the leading providers and every provider's share, whole`, ['full', 'one', 'mix'].includes(h.form) && /^\d+\s*%\s+исп\.\s+\S/.test(h.limText) && h.bars >= 1 && !h.limClipped && h.provIcons === h.provs, JSON.stringify({ form: h.form, tier: h.tier, text: h.limText, bars: h.bars, clipped: h.limClipped, provs: h.provs, icons: h.provIcons, lim: h.lim, load: h.load }));
+        check(`${at}: with room to spare the row has gauges and words («N % исп. <сброс>») for the leading providers and every provider's share, whole`, ['full', 'one', 'mix'].includes(h.form) && /^\d+\s*%\s+исп\.\s+\S/.test(h.limText) && h.bars >= 3 && !h.limClipped && h.provIcons === h.provs, JSON.stringify({ form: h.form, tier: h.tier, text: h.limText, bars: h.bars, clipped: h.limClipped, provs: h.provs, icons: h.provIcons, lim: h.lim, load: h.load }));
       }
       if (scale === 'auto' && w === 1920) await shot(`topbar-${theme}.png`);
     }

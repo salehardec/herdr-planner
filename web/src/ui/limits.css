@@ -51,10 +51,10 @@
 .limchip[data-form="mix"] .lp-t2{display:none}
 .limchip[data-form="mix"] .lp[data-w="0"] .lp-words{display:none}
 .limchip[data-form="mix"] .lp[data-w="0"] .lp-s{display:inline}
-.limchip[data-form="mix"] .lp[data-w="0"] .lp-bar{display:none}
+.limchip[data-form="mix"] .lp[data-w="0"] .lp-bar{width:1rem}
 .limchip[data-form="pct"] .lp-words,.limchip[data-form="worst"] .lp-words{display:none}
 .limchip[data-form="pct"] .lp-s,.limchip[data-form="worst"] .lp-s{display:inline}
-.limchip[data-form="pct"] .lp-bar{width:1.25rem}
+.limchip[data-form="pct"] .lp-bar{width:1rem}
 .limchip[data-form="worst"] .lp-bar{display:none}
 .limchip[data-form="pct"].lim-row,.limchip[data-form="mix"].lim-row{gap:0.5rem;padding:0 0.5rem}
 .limchip[data-form="worst"] .lp:not([data-urgent]){display:none}

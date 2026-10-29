@@ -37,6 +37,9 @@ function summaryText(ms: Meter[], st: State): string {
   return t('load.aria', { host, list: ms.map((m) => `${keyName(m.key)} ${m.percent} %, ${t(`load.level.${m.level}`)}`).join('; ') });
 }
 
+/** The least the search is squeezed to (rem) when the subscription row needs its room. */
+const SEARCH_LEAST_REM = 14;
+
 /** The monitoring group (the bars, then the subscription chip) sits right of the menu and the crumbs, which come first: the form of the bars
  *  (data-tier) and of the chip (data-form) is the one that fits in what they leave. */
 function useTier(box: { current: HTMLElement | null }): void {
@@ -54,6 +57,10 @@ function useTier(box: { current: HTMLElement | null }): void {
       const gate = mon.querySelector('.gatechip') as HTMLElement | null;
       if (gate) mo?.observe(gate, { childList: true, characterData: true, subtree: true });
       // a phone-sized window puts the group on the second row, beside the search: always the narrowest forms
+      const top = row.parentElement as HTMLElement | null;
+      const search = top?.querySelector('.top-search') as HTMLElement | null;
+      // the search gives room back to the row only while the row needs it: measured at its natural width each time
+      top?.style.removeProperty('--search-w');
       if (document.documentElement.classList.contains('bp900')) {
         el.dataset.tier = 'sum';
         if (chip) chip.dataset.form = 'worst';
@@ -88,13 +95,27 @@ function useTier(box: { current: HTMLElement | null }): void {
         gate.dataset.form = 'icon'; gateIcon = gate.offsetWidth;
       }
       const room = (row.clientWidth - menu.offsetWidth - natural - 2 * rowGap) / px;
+      // the search may shrink toward its least width, and the row and the bars have the room that frees (half on each side of the middle)
+      const searchWas = search ? search.offsetWidth : 0;
+      const maxExtra = search ? Math.max(0, (searchWas - SEARCH_LEAST_REM * px) / 2) / px : 0;
       // the gate keeps its words while the subscription row keeps at least as much of its own; else it is only an icon and a dot
-      let fit = rowFit(room - (gate ? (gateFull + monGap) / px : 0), steps, worstW, monGap / px);
-      let gateForm: 'full' | 'icon' = 'full';
-      if (gate) {
-        const small = rowFit(room - (gateIcon + monGap) / px, steps, worstW, monGap / px);
-        if (small.idx < fit.idx || fit.idx >= steps.length) { gateForm = 'icon'; fit = small; }
+      const decide = (extra: number): { fit: ReturnType<typeof rowFit>; gateForm: 'full' | 'icon' } => {
+        let fit = rowFit(room + extra - (gate ? (gateFull + monGap) / px : 0), steps, worstW, monGap / px);
+        let gateForm: 'full' | 'icon' = 'full';
+        if (gate) {
+          const small = rowFit(room + extra - (gateIcon + monGap) / px, steps, worstW, monGap / px);
+          if (small.idx < fit.idx || fit.idx >= steps.length) { gateForm = 'icon'; fit = small; }
+        }
+        return { fit, gateForm };
+      };
+      let chosen = decide(0);
+      let extraUsed = 0;
+      for (const share of [0.25, 0.5, 0.75, 1]) {
+        const d = decide(maxExtra * share);
+        if (d.fit.idx < chosen.fit.idx) { chosen = d; extraUsed = maxExtra * share; }
       }
+      const { fit, gateForm } = chosen;
+      if (search && extraUsed > 0) top?.style.setProperty('--search-w', `${Math.round(searchWas - 2 * extraUsed * px)}px`);
       el.dataset.tier = fit.tier;
       if (chip) widthOf(fit.chip, fit.words);
       if (gate) gate.dataset.form = gateForm;
