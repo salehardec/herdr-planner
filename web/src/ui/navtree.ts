@@ -47,7 +47,8 @@ function planetNodes(
   const groups = groupByDate(tasks, (x) => x.created, i.now);
   for (const g of groups) {
     const gkey = `grp|${u}|${g.key}`;
-    const open = isOpen(i.folds, gkey, g.today);
+    /* A date is open by default when it is today or holds a live task; only dates of finished tasks start folded. */
+    const open = isOpen(i.folds, gkey, g.today || g.items.some((x) => x.status !== 'done' && !x.archived));
     out.push({
       key: gkey, depth, kind: 'group', label: g.today ? t('nav.today') : g.key, count: g.items.length, expandable: true, open,
       attention: g.items.some((x) => ATTENTION.includes(x.status)),
@@ -111,7 +112,7 @@ export function buildTree(i: NavInput): NavNode[] {
   const v = i.view;
   const open = isOpen(i.folds, 'gal', true);
   out.push({
-    key: 'gal', depth: 0, kind: 'galaxy', label: i.hostLabel || v.label, sub: t('nav.thisMachine'), expandable: true, open, attention: false,
+    key: 'gal', depth: 0, kind: 'galaxy', label: i.hostLabel || v.label, expandable: true, open, attention: false,
   });
   if (!open) return out;
   const subs = (i.coordinator?.subagents ?? []).filter((s) => s.state !== 'done');
