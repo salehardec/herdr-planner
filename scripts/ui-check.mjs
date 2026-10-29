@@ -2384,10 +2384,10 @@ section('requests', async () => {
   check('the chat opens on the last turns after the reload', await waitFor('!document.querySelector("#chat").classList.contains("off") && document.querySelectorAll("#clog .turn[data-n]").length >= 3', 12000), String(await evalJs('document.querySelectorAll("#clog .turn[data-n]").length')));
   // The notice was the last turn when the chat was read at its end, so its words are checked again after a reload and it
   // may come back as a turn of its own, in its place: what must not happen is a notice stuck under the newer turns.
-  check('after a reload that holds only the last turns, an old notice is not pinned under them',
-    await waitFor('document.querySelectorAll("#clog [data-notice]").length === 0', 5000)
-      && await evalJs(`(() => { const t = [...document.querySelectorAll('#clog .turn')].map((e) => e.innerText); const i = t.findIndex((x) => x.includes(${JSON.stringify(noticeLine)})); const a = t.findIndex((x) => x.includes('Ответ 1')); return i === -1 || i < a; })()`),
-    await evalJs(`[...document.querySelectorAll('#clog .turn')].map((e) => (e.hasAttribute('data-notice') ? 'NOTICE ' : '') + (e.innerText || '').replace(/\\s+/g, ' ').slice(0, 40)).join(' | ')`));
+  const pinned = async () => evalJs(`(() => { const t = [...document.querySelectorAll('#clog .turn')].map((e) => e.innerText); const i = t.findIndex((x) => x.includes(${JSON.stringify(noticeLine)})); const a = t.findIndex((x) => x.includes('Ответ 1')); return { n: document.querySelectorAll('#clog [data-notice]').length, i, a, len: t.length, ok: document.querySelectorAll('#clog [data-notice]').length === 0 && (i === -1 || i < a) }; })()`);
+  await waitFor('document.querySelectorAll("#clog [data-notice]").length === 0', 5000);
+  const pin = await pinned();
+  check('after a reload that holds only the last turns, an old notice is not pinned under them', pin.ok, JSON.stringify(pin));
   writeFileSync(transcript, transcriptBefore);
   await navigate(base + '/?noauto&nocoach&bloom=0');
   await waitFor('window.world && world.debug().planets > 0', 20000);
@@ -6567,7 +6567,7 @@ section('chat unread', async () => {
   await toggle();
   const away2 = (await send('Page.addScriptToEvaluateOnNewDocument', { source: 'document.hasFocus = () => false;' })).result.identifier;
   await navigate(base + '/?noauto&nocoach&bloom=0');
-  check('after a reload that holds only board lines, old history is not counted again', await waitFor('!document.querySelector("#bchat-n")', 15000), await text('#bchat') + JSON.stringify(await stored()));
+  check('after a reload that holds only board lines, the answer before them is still counted: 1', await hasText('#bchat-n', '1', 15000), await text('#bchat') + JSON.stringify(await stored()));
   await send('Page.removeScriptToEvaluateOnNewDocument', { identifier: away2 });
 }, { retry: false });
 

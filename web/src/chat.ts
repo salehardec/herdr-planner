@@ -64,12 +64,16 @@ export async function loadLatest(limit = 3): Promise<void> {
  */
 async function coverRead(): Promise<void> {
   const rs = chatRead.value;
-  const keys = rs ? Object.entries(rs.seen).filter(([, sig]) => sig !== 0).map(([n]) => Number(n)) : [];
-  if (!keys.length) return;
-  const lowest = Math.min(...keys);
+  if (!rs) return;
+  const keys = Object.entries(rs.seen).filter(([, sig]) => sig !== 0).map(([n]) => Number(n));
+  // Everything above the stored place is loaded too: a turn that is not there could be a board line or an answer, and an
+  // unread answer must not drop out of the count only because notices came after it.
+  const first = rs.base + 1 < chat.value.total ? rs.base + 1 : Infinity;
+  const lowest = Math.min(first, ...keys);
+  if (lowest === Infinity) return;
   let got = false;
   for (let i = 0; i < 20 && chat.value.turns.length && chat.value.turns[0].n > lowest && hasOlder(); i++) {
-    if (!(await loadOlder())) break;
+    if (!(await loadOlder(100))) break;
     got = true;
   }
   if (got) settleRead();
