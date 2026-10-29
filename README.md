@@ -51,7 +51,7 @@ curl -fsSL https://github.com/salehardec/herdr-planner/releases/latest/download/
 |---|---|
 | 1–2 | Определяет систему; доставляет недостающее из `git`, `curl`, `jq`, `ssh` (через `pacman`, `apt-get` или `brew`; `sudo` — только после вашего «да» или с `--yes`) |
 | 3 | **herdr** 0.9.3 или новее — через [mise](https://mise.jdx.dev) (`github:herdrdev/herdr`); уже стоящий не через mise не трогает |
-| 4 | Плагин **herdr-projects** (`herdr plugin install eliasstravik/herdr-projects`, при повторе — `update`) |
+| 4 | Плагин **herdr-projects** — доска **v1**, закреплённая на ветке `legacy-herdr-projects` (`herdr plugin install eliasstravik/herdr-projects --ref legacy-herdr-projects`); `herdr plugin update` скрипт не вызывает. Подробности — [Shepherdr v2](#shepherdr-v2-и-закрепление-доски-v1) |
 | 5 | Сам **планировщик**: готовый бинарник из релиза, контрольная сумма сверяется; `--from-source` — сборка из клона |
 | 6 | **Службу** (`systemd --user`, на macOS — `launchd`), которая держит его запущенным. На Omarchy ещё: ярлык «отдельным окном», клавиша Hyprland и значок в панели |
 | 7 | Вход и адрес: спрашивает, открывать ли доступ с других машин (по умолчанию нет) |
@@ -77,11 +77,41 @@ curl -fsSL …/install.sh | sh -s -- uninstall      # снять планиро�
 `~/.local/state/herdr-planner`). Полезные флаги: `--yes`, `--version vX.Y.Z` (закрепить версию), `--no-herdr`, `--no-plugin`,
 `--no-service`, `--user NAME --password-stdin --listen ADDR`, на Omarchy `--no-hypr`, `--no-shell`, `--key "SUPER + ALT + P"`.
 
-**Обновление** — та же строка ещё раз: скрипт сравнит версии, обновит herdr, плагин и планировщик и перезапустит службу, если
-что-то изменилось.
+**Обновление** — та же строка ещё раз: скрипт сравнит версии, обновит herdr, плагин (в пределах закреплённой ветки v1) и планировщик
+и перезапустит службу, если что-то изменилось.
 
 После установки откройте <http://127.0.0.1:7117> (на Omarchy — значок в панели или `herdr-planner-open`). На пустой доске
 Галактика предложит добавить первые проекты из `~/Projects`.
+
+### Shepherdr v2 и закрепление доски v1
+
+Апстрим переименовал репозиторий плагина в [shepherdr](https://github.com/eliasstravik/shepherdr): под тем же id
+`herdr-projects` теперь **Shepherdr 2.0** — другая программа (команда `shepherdr`, данные в `~/.shepherdr`, задачи доски не
+переносятся). Планировщик работает только с доской v1. Раньше скрипт при каждом запуске делал `herdr plugin update herdr-projects`, а это
+тянет main, то есть v2 (так плагин молча переключился 29.10). Теперь:
+
+- плагин всегда ставится на ветку **`legacy-herdr-projects`** (последняя v1); другой ref — переменная `HERDR_PROJECTS_REF`
+  (например, `HERDR_PROJECTS_REF=v1.2.27 sh install.sh`). Если плагин уже стоит на этом коммите, он не переустанавливается;
+- если `herdr plugin list` показывает **Shepherdr 2** (имя или версия 2.x), скрипт **останавливается до любых изменений** (код 1,
+  даже с `--dry-run`) и печатает команду, которая возвращает v1:
+
+  ```sh
+  herdr plugin action invoke herdr-projects.stop      # если Shepherdr запущен
+  herdr plugin install eliasstravik/herdr-projects --ref legacy-herdr-projects --yes
+  ```
+
+  Данные v2 остаются в `~/.shepherdr`, данные доски v1 в `~/.herdr-projects` не менялись; работа, сделанная в v2, в доску v1 не
+  попадает. Если Shepherdr успел запуститься, он убрал блок `sidebar` из `~/.config/herdr/config.toml` и навык `herdr-projects`.
+  Остальные шаги отката — по `docs/upgrading.md` Shepherdr (скрипт их не делает): вернуть `config.toml` из
+  `~/.herdr-projects-backup-<дата>/`, выполнить `herdr server reload-config` и удалить `~/.shepherdr/took-over-herdr-projects.json`;
+- после установки скрипт проверяет, что стоит **v1** (версия `1.x`), что лаунчер `~/.herdr-projects/data/bin/herdr-projects`
+  запускает программу из **текущего** каталога плагина (его называет `herdr plugin list --json`) и что
+  `~/.local/bin/herdr-projects` ведёт на лаунчер. Ссылку скрипт чинит сам, лаунчер — командой самого плагина
+  (`sh <каталог плагина>/bin/run.sh install`); если не вышло, он пишет «ВНИМАНИЕ» и точную команду. Ref, давший v2 (скажем,
+  `HERDR_PROJECTS_REF=main`), скрипт после установки признаёт ошибкой и называет команду возврата.
+
+Скрипт проверяют `scripts/check-install.sh` на подставном `herdr`: v1 закрепляется, v2 отклоняется без изменений,
+`HERDR_PROJECTS_REF` соблюдается, лаунчер и ссылка проверяются.
 
 ## Что внутри кабины
 
