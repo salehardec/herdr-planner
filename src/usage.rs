@@ -34,6 +34,9 @@ pub struct Usage {
     pub at: u64,
     pub stale_after_secs: u64,
     pub agents: Vec<AgentUsage>,
+    /// The providers the planner reads itself that have no sign-in on this machine (ids), so the page can say what is missing
+    /// and how to connect it instead of leaving them out without a word.
+    pub unconnected: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Default)]
@@ -55,9 +58,26 @@ pub struct AgentUsage {
     pub note: String,
     /// What the collector says to do to sign in (`authHelpText`), when the agent is not ready.
     pub auth_help: String,
+    /// Where the numbers come from: `live` (the planner asked the provider itself, PLN-84), `omarchy` (its record), or empty.
+    pub source: String,
+    /// The signed-in account (an email), when the provider says.
+    pub account: String,
+    /// Why the planner's own read failed, as a code the page translates (`rejected`, `expired`, `status:500`…); empty when it did not.
+    pub why: String,
+    /// Further limits that are not part of the headline windows (a review limit, a weekly code limit).
+    pub extra: Vec<LimitWindow>,
+    pub sections: Vec<SectionOut>,
+    /// Whose sign-in or key was asked with (`pi`, `omp`, `claude`, `codex`, `kimi`, `opencode`, `config`, `env`), the crew role that runs the provider
+    /// through that program, and the other programs the crew runs it through. Never the key itself.
+    pub key_from: String,
+    pub key_role: String,
+    pub key_also: Vec<String>,
+    /// The account's usage page and the service's status page.
+    pub dashboard: String,
+    pub status_page: String,
 }
 
-#[derive(Debug, Clone, Serialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, PartialEq, Default)]
 pub struct LimitWindow {
     pub label: String,
     /// Share used, 0..1.
@@ -68,6 +88,41 @@ pub struct LimitWindow {
     pub resets_at_ms: u64,
     /// `ok`, `warn` or `crit`.
     pub severity: String,
+    /// Which limit this is: `session`, `daily`, `weekly`, `monthly`, or `named` (a window the service names itself,
+    /// `label` then being its name); empty when the record does not say.
+    pub kind: String,
+    /// How long the window runs (ms), 0 when unknown.
+    pub length_ms: u64,
+    /// Percent points the even spend of the window has used beyond this window's own use: positive is in reserve,
+    /// negative in deficit. Absent until a hundredth of the window has passed, or without its length and reset time.
+    pub reserve: Option<f64>,
+    /// When the window runs out at the pace so far, as time from the reading (ms), if that is before it resets.
+    pub runs_out_ms: Option<u64>,
+}
+
+impl LimitWindow {
+    /// Fills in `reserve` and `runs_out_ms` for a window whose length and reset time are known.
+    pub fn with_pace(mut self, now: u64) -> Self {
+        self.reserve = None;
+        self.runs_out_ms = None;
+        if self.length_ms > 0 && self.resets_at_ms > 0 {
+            if let Some(p) = crate::plans::model::pace(self.percent * 100.0, self.resets_at_ms, self.length_ms, now) {
+                self.reserve = Some(p.expected - self.percent * 100.0);
+                self.runs_out_ms = p.runs_out_ms;
+            }
+        }
+        self
+    }
+}
+
+/// What a card shows besides the windows.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+#[serde(tag = "kind", rename_all = "lowercase")]
+pub enum SectionOut {
+    /// Label and value pairs under a heading.
+    Facts { title: String, facts: Vec<(String, String)> },
+    /// Shares (0..100) of one whole.
+    Shares { title: String, shares: Vec<(String, f64)> },
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -97,23 +152,133 @@ pub struct WorstLimit {
     pub stale: bool,
 }
 
+impl Usage {
+    /// The same readings without the accounts they belong to (the light page for the phone has no use for an email).
+    pub fn without_accounts(&self) -> Usage {
+        let mut u = self.clone();
+        for a in &mut u.agents {
+            a.account.clear();
+        }
+        u
+    }
+}
+
 pub fn read() -> Usage {
-    read_at(
-        now_ms(),
-        &state_home().join("omarchy/agents/usage"),
-        &cache_home().join("omarchy/agent-usage"),
-    )
+    let now = now_ms();
+    let (state, cache) = (state_home().join("omarchy/agents/usage"), cache_home().join("omarchy/agent-usage"));
+    let mut usage = read_at(now, &state, &cache);
+    let readings = crate::plans::readings();
+    merge_live(&mut usage, &readings, now, &state, &cache);
+    usage.unconnected = crate::plans::unconnected(&readings);
+    usage
 }
 
 /// One program's record by its id, for any program Omarchy writes one for (the crew screen): the same reading as
 /// the dashboard's, with the program's own name when the record has none.
 pub fn agent_by_id(id: &str) -> AgentUsage {
-    agent_at(
-        now_ms(),
-        id,
-        &state_home().join("omarchy/agents/usage"),
-        &cache_home().join("omarchy/agent-usage"),
-    )
+    let now = now_ms();
+    let (state, cache) = (state_home().join("omarchy/agents/usage"), cache_home().join("omarchy/agent-usage"));
+    let mut agent = agent_at(now, id, &state, &cache);
+    if let Some(r) = crate::plans::readings().iter().find(|r| r.id == id) {
+        merge_agent(&mut agent, r, now);
+    }
+    agent
+}
+
+/// The planner's own readings (`plans`) laid over Omarchy's records: a provider it read replaces the numbers of the record of the
+/// same id, and one that has no record yet (Codex, Kimi Code, DeepSeek) joins the list, with Omarchy's numbers when it has them
+/// and the planner's read failed.
+pub fn merge_live(usage: &mut Usage, readings: &[crate::plans::Reading], now: u64, state_dir: &Path, cache_dir: &Path) {
+    for r in readings {
+        match usage.agents.iter_mut().find(|a| a.id == r.id) {
+            Some(agent) => merge_agent(agent, r, now),
+            None => {
+                let mut agent = agent_at(now, r.id, state_dir, cache_dir);
+                merge_agent(&mut agent, r, now);
+                usage.agents.push(agent);
+            }
+        }
+    }
+}
+
+/// One provider's reading over its record. With numbers the reading wins (it is the fresher: the provider itself answered);
+/// without, the record stays, and why the planner's own read failed is said.
+pub fn merge_agent(agent: &mut AgentUsage, r: &crate::plans::Reading, now: u64) {
+    use crate::plans::model::Section;
+    let (dashboard, status_page) = crate::plans::links_of(r.id);
+    agent.id = r.id.to_string();
+    agent.dashboard = dashboard.to_string();
+    agent.status_page = status_page.to_string();
+    agent.why = r.error.as_ref().map(|f| f.code()).unwrap_or_default();
+    if !agent.present {
+        agent.name = crate::plans::name_of(r.id).to_string();
+        // The planner found the sign-in, so the program is there; whether the numbers came is another matter.
+        agent.present = true;
+        agent.ready = true;
+    }
+    let Some(report) = &r.report else {
+        if agent.limits.is_empty() && agent.balance.is_none() {
+            if let Some(f) = &r.error {
+                agent.note = format!("нет данных: {}", f.ru());
+            }
+        }
+        if agent.source.is_empty() && (!agent.limits.is_empty() || agent.balance.is_some()) {
+            agent.source = "omarchy".into();
+        }
+        return;
+    };
+    let window = |w: &crate::plans::model::Window, label: String| {
+        let percent = w.used / 100.0;
+        LimitWindow {
+            label,
+            percent,
+            resets_at: String::new(),
+            resets_at_ms: w.resets_at_ms.unwrap_or(0),
+            severity: severity(percent).to_string(),
+            kind: w.kind.id().to_string(),
+            length_ms: w.length_ms.unwrap_or(0),
+            ..LimitWindow::default()
+        }
+        .with_pace(now)
+    };
+    agent.source = "live".into();
+    agent.name = crate::plans::name_of(r.id).to_string();
+    agent.limits = report.windows.iter().map(|w| window(w, w.kind.title())).collect();
+    agent.extra = report
+        .sections
+        .iter()
+        .filter_map(|s| match s {
+            Section::Limit(w) => Some(window(w, w.kind.title())),
+            _ => None,
+        })
+        .collect();
+    agent.sections = report
+        .sections
+        .iter()
+        .filter_map(|s| match s {
+            Section::Facts { title, facts } => Some(SectionOut::Facts { title: title.clone(), facts: facts.clone() }),
+            Section::Shares { title, shares } => Some(SectionOut::Shares { title: title.clone(), shares: shares.clone() }),
+            Section::Limit(_) => None,
+        })
+        .collect();
+    agent.balance = report.balances.first().map(|b| Balance {
+        remaining: b.amount,
+        funded: b.total.unwrap_or(0.0),
+        spent: 0.0,
+        currency: b.currency.clone(),
+        estimated: false,
+    });
+    if let Some(plan) = &report.account.plan {
+        agent.tier = plan.clone();
+    }
+    agent.account = report.account.email.clone().unwrap_or_default();
+    agent.key_from = report.from.clone();
+    agent.key_role = report.role.clone();
+    agent.key_also = report.also.clone();
+    agent.status.clear();
+    agent.note.clear();
+    agent.updated_at_ms = r.fetched_at_ms;
+    agent.stale = r.fetched_at_ms > 0 && now.saturating_sub(r.fetched_at_ms) > STALE_AFTER_MS;
 }
 
 pub fn agent_at(now: u64, id: &str, state_dir: &Path, cache_dir: &Path) -> AgentUsage {
@@ -178,6 +343,7 @@ pub fn read_at(now: u64, state_dir: &Path, cache_dir: &Path) -> Usage {
         at: now,
         stale_after_secs: STALE_AFTER_MS / 1000,
         agents,
+        unconnected: Vec::new(),
     }
 }
 
@@ -212,9 +378,9 @@ fn agent_usage(
         updated_at_ms = mtime.unwrap_or(0);
     }
 
-    let mut limits = parse_limits(record);
+    let mut limits = parse_limits(record, now);
     if let Some(cache) = claude_cache {
-        let cached = parse_limits(cache);
+        let cached = parse_limits(cache, now);
         if limits.is_empty() && !cached.is_empty() {
             limits = cached;
         }
@@ -242,6 +408,7 @@ fn agent_usage(
         String::new()
     };
 
+    let source = if limits.is_empty() && balance.is_none() { "" } else { "omarchy" };
     AgentUsage {
         id: id.into(),
         name,
@@ -255,10 +422,30 @@ fn agent_usage(
         balance,
         note,
         auth_help: text(record.get("authHelpText")).unwrap_or_default(),
+        source: source.into(),
+        ..AgentUsage::default()
     }
 }
 
-fn parse_limits(value: &Value) -> Vec<LimitWindow> {
+/// The kind and the length of a window the record names only by its label (`Session (5-hour)`, `Weekly (7-day)`, `Fable Weekly`):
+/// enough to judge its pace. A label that says nothing of its length gets none.
+fn kind_of_label(label: &str) -> (&'static str, u64) {
+    use crate::plans::model::{MONTH, SESSION, WEEK};
+    let l = label.to_lowercase();
+    if l.contains("5-hour") || l.contains("5h") || l.starts_with("session") {
+        ("session", SESSION)
+    } else if l == "weekly" || l.starts_with("weekly (") {
+        ("weekly", WEEK)
+    } else if l.contains("week") || l.contains("7-day") {
+        ("named", WEEK)
+    } else if l.contains("month") {
+        ("named", MONTH)
+    } else {
+        ("", 0)
+    }
+}
+
+fn parse_limits(value: &Value, now: u64) -> Vec<LimitWindow> {
     let Some(entries) = value.get("limits").and_then(Value::as_array) else {
         return Vec::new();
     };
@@ -272,13 +459,20 @@ fn parse_limits(value: &Value) -> Vec<LimitWindow> {
             let percent = percent_value(entry.get("percent"))?;
             let resets_at = text(entry.get("resetsAt")).unwrap_or_default();
             let resets_at_ms = parse_time_ms(entry.get("resetsAt")).unwrap_or(0);
-            Some(LimitWindow {
-                label,
-                percent,
-                resets_at,
-                resets_at_ms,
-                severity: severity(percent).to_string(),
-            })
+            let (kind, length_ms) = kind_of_label(&label);
+            Some(
+                LimitWindow {
+                    label,
+                    percent,
+                    resets_at,
+                    resets_at_ms,
+                    severity: severity(percent).to_string(),
+                    kind: kind.to_string(),
+                    length_ms,
+                    ..LimitWindow::default()
+                }
+                .with_pace(now),
+            )
         })
         .collect()
 }
@@ -720,6 +914,7 @@ mod tests {
             at: NOW,
             stale_after_secs: 1800,
             agents: vec![claude],
+            ..Usage::default()
         };
         let alert = alert_at(&usage, NOW);
         assert_eq!(alert.level, "crit");
@@ -748,5 +943,163 @@ mod tests {
         assert_eq!(balance.spent, 7.5);
         assert!(balance.estimated);
         assert_eq!(agent.note, "");
+    }
+
+    /* ───────── PLN-84: the planner's own readings over Omarchy's records ───────── */
+
+    use crate::plans::http::Fail;
+    use crate::plans::model::{Account, Balance as PlanBalance, Kind, Report, Section, Window as PlanWindow, DAY, HOUR, MIN, SESSION, WEEK};
+    use crate::plans::Reading;
+
+    fn live(id: &'static str, report: Option<Report>, at: u64, error: Option<Fail>) -> Reading {
+        Reading { id, report, fetched_at_ms: at, error }
+    }
+
+    fn claude_report() -> Report {
+        let mut r = Report::new(
+            "claude",
+            Account { email: Some("me@x.y".into()), plan: Some("Max 5x".into()) },
+            vec![
+                PlanWindow::new(Kind::Session, 7., Some(NOW + HOUR + 33 * MIN), Some(SESSION)),
+                PlanWindow::new(Kind::Weekly, 12., Some(NOW + 5 * DAY + HOUR), Some(WEEK)),
+            ],
+        );
+        r.sections.push(Section::Shares { title: "This week by surface".into(), shares: vec![("Claude Code".into(), 100.)] });
+        r.sections.push(Section::Limit(PlanWindow::new(Kind::Named("Code review".into()), 3., Some(NOW + DAY), Some(WEEK))));
+        r
+    }
+
+    #[test]
+    fn a_live_reading_replaces_the_numbers_of_the_record_and_carries_the_pace_and_the_extras() {
+        let mut agent = fixture_agent("claude", CLAUDE);
+        merge_agent(&mut agent, &live("claude", Some(claude_report()), NOW, None), NOW);
+        assert_eq!(agent.source, "live");
+        assert_eq!(agent.name, "Claude");
+        assert_eq!(agent.tier, "Max 5x");
+        assert_eq!(agent.account, "me@x.y");
+        assert_eq!(agent.limits.len(), 2, "the record's three windows are gone");
+        let session = &agent.limits[0];
+        assert_eq!((session.kind.as_str(), session.length_ms), ("session", SESSION));
+        assert!((session.percent - 0.07).abs() < 1e-9);
+        assert_eq!(session.reserve.map(f64::round), Some(62.0), "62% in reserve, as in the screenshot");
+        assert_eq!(session.runs_out_ms, None);
+        assert_eq!(session.resets_at_ms, NOW + HOUR + 33 * MIN);
+        assert_eq!(agent.limits[1].reserve.map(f64::round), Some(16.0));
+        assert_eq!(agent.extra.len(), 1);
+        assert_eq!(agent.extra[0].label, "Code review");
+        assert!(matches!(&agent.sections[0], SectionOut::Shares { shares, .. } if shares[0].0 == "Claude Code"));
+        assert!(agent.dashboard.contains("claude.ai") && agent.status_page.contains("anthropic"));
+        assert_eq!((agent.updated_at_ms, agent.stale, agent.why.as_str(), agent.note.as_str()), (NOW, false, "", ""));
+    }
+
+    #[test]
+    fn a_reading_that_is_old_is_stale_and_one_that_failed_since_says_why_but_keeps_its_numbers() {
+        let mut agent = AgentUsage::default();
+        let r = live("claude", Some(claude_report()), NOW - 31 * MIN, Some(Fail::Network));
+        merge_agent(&mut agent, &r, NOW);
+        assert!(agent.stale);
+        assert_eq!(agent.why, "network");
+        assert_eq!(agent.limits.len(), 2);
+    }
+
+    #[test]
+    fn when_the_planners_read_fails_the_record_stays_and_the_reason_is_named() {
+        let mut agent = fixture_agent("claude", CLAUDE);
+        merge_agent(&mut agent, &live("claude", None, 0, Some(Fail::Expired)), NOW);
+        assert_eq!(agent.source, "omarchy");
+        assert_eq!(agent.why, "expired");
+        assert_eq!(agent.limits.len(), 3, "Omarchy's numbers are still the best there are");
+        assert_eq!(agent.note, "");
+        assert_eq!(agent.name, "Claude Code");
+    }
+
+    #[test]
+    fn a_provider_without_a_record_or_numbers_says_honestly_why_there_is_nothing() {
+        let mut agent = AgentUsage::default();
+        merge_agent(&mut agent, &live("kimi", None, 0, Some(Fail::Rejected)), NOW);
+        assert!(agent.present && agent.limits.is_empty() && agent.balance.is_none());
+        assert_eq!(agent.name, "Kimi Code");
+        assert_eq!(agent.why, "rejected");
+        assert!(agent.note.starts_with("нет данных:") && agent.note.contains("отклонил"), "{}", agent.note);
+        assert_eq!(agent.source, "");
+    }
+
+    #[test]
+    fn a_balance_is_the_providers_remaining_money() {
+        let mut report = Report::new("deepseek", Account::default(), Vec::new());
+        report.balances.push(PlanBalance { amount: 11.92, currency: "USD".into(), total: None });
+        let mut agent = AgentUsage::default();
+        merge_agent(&mut agent, &live("deepseek", Some(report), NOW, None), NOW);
+        let b = agent.balance.unwrap();
+        assert_eq!((b.remaining, b.currency.as_str(), b.funded), (11.92, "USD", 0.0));
+        assert!(agent.limits.is_empty());
+        assert_eq!(agent.name, "DeepSeek");
+    }
+
+    #[test]
+    fn providers_the_record_list_does_not_have_join_it_with_omarchys_numbers_when_their_read_failed() {
+        let tmp = tempfile::tempdir().unwrap();
+        let (state, cache) = (tmp.path().join("state"), tmp.path().join("cache"));
+        fs::create_dir_all(&state).unwrap();
+        fs::write(
+            state.join("codex.json"),
+            r#"{"name":"Codex","ready":true,"tierLabel":"plus","updatedAt":"2026-10-19T12:39:00Z","limits":[{"label":"5h window","percent":0.04,"resetsAt":"2026-10-19T15:00:00Z"}]}"#,
+        )
+        .unwrap();
+        let mut usage = read_at(NOW, &state, &cache);
+        assert_eq!(usage.agents.len(), 3, "the three agents of the dashboard, as before");
+        merge_live(
+            &mut usage,
+            &[live("codex", None, 0, Some(Fail::Rejected)), live("deepseek", None, 0, Some(Fail::NoLogin))],
+            NOW,
+            &state,
+            &cache,
+        );
+        let ids: Vec<_> = usage.agents.iter().map(|a| a.id.as_str()).collect();
+        assert_eq!(ids, ["claude", "omp", "pi", "codex", "deepseek"]);
+        let codex = &usage.agents[3];
+        assert_eq!((codex.limits.len(), codex.source.as_str(), codex.why.as_str()), (1, "omarchy", "rejected"));
+        assert_eq!(codex.limits[0].kind, "session", "the label says it is the 5-hour window");
+        assert_eq!(usage.agents[4].why, "no_login");
+    }
+
+    #[test]
+    fn a_record_window_gets_its_kind_length_and_pace_from_its_label() {
+        assert_eq!(kind_of_label("Session (5-hour)"), ("session", SESSION));
+        assert_eq!(kind_of_label("5h window"), ("session", SESSION));
+        assert_eq!(kind_of_label("Weekly (7-day)"), ("weekly", WEEK));
+        assert_eq!(kind_of_label("Fable Weekly"), ("named", WEEK));
+        assert_eq!(kind_of_label("Monthly total").0, "named");
+        assert_eq!(kind_of_label("Credits"), ("", 0));
+        let value = json(CLAUDE);
+        let limits = parse_limits(&value, NOW);
+        assert!(limits[0].length_ms == SESSION && limits[1].length_ms == WEEK);
+        let none: Vec<_> = limits.iter().filter(|w| w.length_ms == 0).collect();
+        assert!(none.is_empty());
+    }
+
+    #[test]
+    fn the_light_page_gets_the_readings_without_the_account() {
+        let mut u = Usage::default();
+        u.agents.push(AgentUsage { id: "claude".into(), account: "me@x.y".into(), ..AgentUsage::default() });
+        let phone = u.without_accounts();
+        assert_eq!(phone.agents[0].account, "");
+        assert_eq!(u.agents[0].account, "me@x.y");
+        let json = serde_json::to_string(&phone).unwrap();
+        assert!(!json.contains("me@x.y"));
+    }
+
+    #[test]
+    fn the_card_says_whose_sign_in_was_asked_with_and_never_carries_a_key() {
+        let mut report = claude_report();
+        report.from = "pi".into();
+        report.role = "worker".into();
+        report.also = vec!["omp".into()];
+        let mut agent = AgentUsage::default();
+        merge_agent(&mut agent, &live("claude", Some(report), NOW, None), NOW);
+        assert_eq!((agent.key_from.as_str(), agent.key_role.as_str(), agent.key_also.clone()), ("pi", "worker", vec!["omp".to_string()]));
+        let json = serde_json::to_string(&agent).unwrap();
+        assert!(json.contains("\"key_from\":\"pi\""));
+        assert!(!json.contains("token") && !json.contains("secret"), "{json}");
     }
 }

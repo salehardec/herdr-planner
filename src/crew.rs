@@ -1101,7 +1101,7 @@ mod tests {
     }
 
     fn win(label: &str, percent: f64, resets: u64) -> LimitWindow {
-        LimitWindow { label: label.into(), percent, resets_at: String::new(), resets_at_ms: resets, severity: crate::usage::severity(percent).into() }
+        LimitWindow { label: label.into(), percent, resets_at: String::new(), resets_at_ms: resets, severity: crate::usage::severity(percent).into(), ..LimitWindow::default() }
     }
 
     fn facts<'a>(program: &'a str, u: &'a AgentUsage, hits: &'a [Hit]) -> Facts<'a> {
