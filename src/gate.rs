@@ -149,6 +149,11 @@ pub const POLICY: &[(&str, Access)] = &[
     ("/api/station/presets", Local),
     ("/api/station/preset/preview", Local),
     ("/api/station/preset/apply", Local),
+    // The crew's own roles (PLN-90): what the board is told for a role, and the rules that put it on tasks.
+    ("/api/crew/roles", Local),
+    ("/api/crew/role/preview", Local),
+    ("/api/crew/role/apply", Local),
+    ("/api/crew/role/match", Local),
     ("/api/ship", Local),
     // The tunnel itself: its address, opening and closing it.
     ("/api/tunnel", Local),

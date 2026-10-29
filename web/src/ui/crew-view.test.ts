@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { chainOf, chainValue, downPrograms, leadOf, modelOptions, momentLabel, offerable, rolesOrEmpty, sameRoles, summary, untilLabel } from './crew-view';
+import { chainOf, chainValue, downPrograms, leadOf, modelOptions, momentLabel, offerable, presetKey, presetKeys, rolesOrEmpty, sameRoles, summary, untilLabel } from './crew-view';
 import type { ModelsData, ProgramAvail, StationData, StationProgram, StationSetting } from './station-api';
 
 const avail = (over: Partial<ProgramAvail> = {}): ProgramAvail => ({ state: 'ok', until_ms: 0, until: '', reason: '', source: '', ...over });
@@ -25,7 +25,7 @@ describe('the summary line', () => {
   it('names who leads every role; no planner is an empty lead', () => {
     const s = summary(data([program('claude'), program('codex')]));
     expect(s.leads.map((l) => `${l.role}:${l.agent}`)).toEqual([
-      'coordinator:claude/opus', 'plan:', 'reviewer:claude/opus', 'worker:codex/gpt-6-luna', 'light:omp/deepseek/deepseek-v4-flash',
+      'coordinator:claude/opus', 'plan:', 'reviewer:claude/opus', 'worker:codex/gpt-6-luna', 'watcher:', 'light:omp/deepseek/deepseek-v4-flash',
     ]);
     expect(s.down).toEqual([]);
   });
@@ -87,8 +87,18 @@ describe('fallback chains', () => {
 describe('presets in the editor', () => {
   it('fills every role', () => {
     const r = rolesOrEmpty({ worker: { agent: 'codex', effort: 'high', fallback: 'none' } });
-    expect(Object.keys(r)).toEqual(['coordinator', 'plan', 'reviewer', 'worker', 'light']);
+    expect(Object.keys(r)).toEqual(['coordinator', 'plan', 'reviewer', 'worker', 'watcher', 'light']);
     expect(r.plan).toEqual({ agent: '', effort: '', fallback: '' });
+  });
+  it('holds the own roles next to the standard ones, under role:<id>', () => {
+    expect(presetKey('r1f')).toBe('role:r1f');
+    expect(presetKeys(['r1f'])).toEqual(['coordinator', 'plan', 'reviewer', 'worker', 'watcher', 'light', 'role:r1f']);
+    const saved = rolesOrEmpty({ 'role:r1f': { agent: 'codex', effort: '', fallback: 'none' } }, ['r1f', 'r2a']);
+    expect(saved['role:r1f']).toEqual({ agent: 'codex', effort: '', fallback: 'none' });
+    expect(saved['role:r2a']).toEqual({ agent: '', effort: '', fallback: '' });
+    expect(sameRoles(saved, { ...saved, 'role:r1f': { agent: 'codex', effort: 'high', fallback: 'none' } }, ['r1f', 'r2a'])).toBe(false);
+    // a role the editor does not know about is not compared
+    expect(sameRoles(saved, { ...saved, 'role:r1f': { agent: 'x', effort: '', fallback: '' } })).toBe(true);
   });
   it('knows an edit from the saved one', () => {
     const saved = rolesOrEmpty({ worker: { agent: 'codex', effort: '', fallback: '' } });

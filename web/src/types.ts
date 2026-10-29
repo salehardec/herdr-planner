@@ -70,6 +70,19 @@ export interface Task {
   subagents: Subagent[];
   subagents_note: string;
   seat?: Seat | null;
+  /** The crew's own roles put on the task (the planner's record). */
+  crew_roles?: RoleMark[];
+}
+
+/** One role of the crew's own on a task's row: its name, how it went on, where it came from. */
+export interface RoleMark {
+  role: string;
+  name: string;
+  /** `worker`, `instead`, `after` (the extra check runs after the task) or `followup` (the task is that check). */
+  how: 'worker' | 'instead' | 'after' | 'followup';
+  by: 'chosen' | 'rule';
+  rule: string;
+  of: string;
 }
 
 export interface Link {
