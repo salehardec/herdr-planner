@@ -188,7 +188,16 @@ export function Chat(): JSX.Element {
   const navUntil = useRef(0);
   /** The jump to the first unread ends at the bottom (the unread are the last answers): the log keeps following meanwhile. */
   const navToEnd = useRef(false);
-  const readsEnd = (el: HTMLElement): boolean => opened.current && Date.now() > navUntil.current && el.scrollHeight - el.scrollTop - el.clientHeight < 24;
+  /** The reader takes the log into their own hands: the jump is over, and the log stays where they leave it. */
+  const cancelNav = (): void => {
+    if (Date.now() >= navUntil.current) return;
+    navUntil.current = 0;
+    navToEnd.current = false;
+    const el = logRef.current;
+    if (el) stuck.value = el.scrollHeight - el.scrollTop - el.clientHeight < 24;
+  };
+  // (on the way to the bottom the end is where the reader is meant to be: the answers there are read at once)
+  const readsEnd = (el: HTMLElement): boolean => opened.current && (Date.now() > navUntil.current || navToEnd.current) && el.scrollHeight - el.scrollTop - el.clientHeight < 24;
 
   // Keep the end in view unless the reader scrolled up; keep the place after older turns are added.
   useLayoutEffect(() => {
@@ -415,7 +424,7 @@ export function Chat(): JSX.Element {
           ))}
         </div>
       )}
-      <div class="log" id="clog" ref={logRef} onScroll={onScroll} aria-live="polite">
+      <div class="log" id="clog" ref={logRef} onScroll={onScroll} onWheel={cancelNav} onTouchMove={cancelNav} onPointerDown={cancelNav} aria-live="polite">
         {showTurns ? (
           <>
             {hasOlder() ? (
