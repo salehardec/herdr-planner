@@ -94,8 +94,7 @@ function Segment(props: { a: AgentUsage }): JSX.Element {
       {one && <span class="lp-bar"><i style={`--w:${usedPct(one)}%`} /></span>}
       {ws.length ? (
         <>
-          <span class="lp-t lp-t1">{usedText(ws[0])}</span>
-          {ws[1] && <span class="lp-t lp-t2"> · {usedText(ws[1])}</span>}
+          <span class="lp-words"><span class="lp-t lp-t1">{usedText(ws[0])}</span>{ws[1] && <span class="lp-t lp-t2"> · {usedText(ws[1])}</span>}</span>
           <span class="lp-s">{usedPct(one)}%</span>
         </>
       ) : (
@@ -293,7 +292,9 @@ function ProviderCard(props: { a: AgentUsage }): JSX.Element {
 /** The card under the chip: the provider picked (the first one at first), its windows with how long they last, and the tabs. */
 export function LimitsCard(): JSX.Element {
   const tabs = tabAgents(agents());
-  const cur0 = tabs.find((a) => a.id === picked.value) ?? tabs[0];
+  // the provider picked, else the one closest to its limit (the bar's first), else the first tab
+  const lead = barAgents(agents(), '')[0]?.id;
+  const cur0 = tabs.find((a) => a.id === picked.value) ?? tabs.find((a) => a.id === lead) ?? tabs[0];
   const pick = (id: string): void => { picked.value = id; };
   const move = (e: KeyboardEvent, at: number): void => {
     const to = e.key === 'ArrowRight' ? at + 1 : e.key === 'ArrowLeft' ? at - 1 : -1;

@@ -2696,7 +2696,7 @@ section('top bar', async () => {
         await waitFor('plannerDebug().selected === null && world.debug().flight === "idle"', 12000);
         await beat();
         const h = await topRects();
-        check(`${at}: with room to spare the chip keeps its words (the tightest window of each provider at least), whole`, (h.form === 'full' || h.form === 'one') && /^\d+\s*%\s+\S/.test(h.limText) && !h.limClipped && h.provIcons === h.provs, JSON.stringify(h));
+        check(`${at}: with room to spare the row keeps every provider (its share at least), whole`, (h.form === 'full' || h.form === 'one' || h.form === 'pct') && /^\d+\s*%\s+\S/.test(h.limText) && !h.limClipped && h.provIcons === h.provs, JSON.stringify({ form: h.form, tier: h.tier, text: h.limText, clipped: h.limClipped, provs: h.provs, icons: h.provIcons, lim: h.lim, load: h.load }));
       }
       if (scale === 'auto' && w === 1920) await shot(`topbar-${theme}.png`);
     }
@@ -2761,6 +2761,21 @@ section('limits', async () => {
   check('the bar alert names the worst live window', alert[0] === 200 && alert[1].level === 'crit' && alert[1].worst.label === 'Fable Weekly', JSON.stringify(alert[1]));
   await press('KeyQ', 'q');
   check('Q closes the limits panel', await waitFor('!document.querySelector(".pop.limits")', 3000));
+
+  // the row as in herdr-gpui's status bar: a window as wide as the bar needs, the page at 100 %
+  await send('Emulation.setDeviceMetricsOverride', { width: 3840, height: 1600, deviceScaleFactor: 1, mobile: false });
+  await evalJs(`try { localStorage.setItem('herdr-planner.uiScale', '100'); } catch {} true`);
+  await navigate(base + '/?noauto&nocoach&bloom=0');
+  await resized();
+  await waitFor('document.querySelectorAll("#hud-limits .lp").length >= 4', 8000);
+  await beat();
+  const wide = await topRects();
+  check('with the room of a wide window the row says it all: «91 % исп. 1д 5ч · 97 % исп. Fable Weekly», «35 % исп. … · 21 % исп. Total usage», the balance', wide.form === 'full' && !wide.limClipped
+    && /\d+ % исп\. \S+ \S* ?· \d+ % исп\. Fable Weekly/.test(wide.limText.replace(/\s+/g, ' ')) && /35 % исп\. \d+м · 21 % исп\. Total usage/.test(wide.limText.replace(/\s+/g, ' ')) && /\$11\.92/.test(wide.limText) && wide.provIcons === wide.provs, JSON.stringify({ form: wide.form, text: wide.limText, clipped: wide.limClipped, lim: wide.lim }));
+  await shot('topbar-limits-wide.png');
+  await evalJs(`try { localStorage.removeItem('herdr-planner.uiScale'); } catch {} true`);
+  await send('Emulation.setDeviceMetricsOverride', { width: 1500, height: 950, deviceScaleFactor: 1, mobile: false });
+  await navigate(base + '/?noauto&nocoach&bloom=0');
 });
 
 
@@ -2788,7 +2803,7 @@ section('top cards', async () => {
 
   const chipText = (await text('#hud-limits')).trim();
   check('the subscription row: a provider after provider (Claude, Codex, Kimi Code, DeepSeek), each with its icon, a gauge and what is used', await evalJs(`[...document.querySelectorAll('#hud-limits .lp')].map((e) => e.dataset.p).sort().join() === 'claude,codex,deepseek,kimi' && [...document.querySelectorAll('#hud-limits .lp')].every((e) => e.querySelector('svg')) && document.querySelectorAll('#hud-limits .lp-bar').length === 3`) && /\d+\s*%/.test(chipText), chipText);
-  check('the row says «used» and when the window resets, and a balance as money', await evalJs(`(() => { const a = document.querySelector('#hud-limits').getAttribute('aria-label'); return /Kimi Code: 35 % исп\.[^;]* · 21 % исп\. Total usage/.test(a) && /DeepSeek: \$11\.92/.test(a) && /Codex: 4 % исп\. 1ч \d+м · 12 % исп\. 4д 2\dч/.test(a); })()`), await evalJs(`document.querySelector('#hud-limits').getAttribute('aria-label')`));
+  check('the row says «used» and when the window resets, and a balance as money', await evalJs(`(() => { const a = document.querySelector('#hud-limits').getAttribute('aria-label'); return /Kimi Code: 35 % исп\\.[^;]* · 21 % исп\\. Total usage/.test(a) && /DeepSeek: \\$11\\.92/.test(a) && /Codex: 4 % исп\\. 1ч \\d+м · 12 % исп\\. \\d+д \\d+ч/.test(a); })()`), await evalJs(`document.querySelector('#hud-limits').getAttribute('aria-label')`));
   check('the bars carry no long captions: only CPU, MEM, GPU and the numbers', !/ядер|ГБ|обновлено|видеопамять/i.test(await text('#load-chip')), await text('#load-chip'));
   check('no card is open before anyone asks', !(await exists('#top-card')));
 
@@ -2859,7 +2874,7 @@ section('top cards', async () => {
   check('the pointer over the chip opens the subscriptions card', await cardOpen('limits'));
   await cardPlace('#hud-limits', 'subscriptions', 1500, 950, 'hover');
   const lt = (await text('#top-card')).replace(/\s+/g, ' ');
-  check('the card opens on the provider closest to its limit (Claude), with its account and plan, each window with what is left and when it resets', /^Claude fixture@example\.test/.test(lt) && /Max 5x/.test(lt) && /Сессия: осталось 79 %/.test(lt) && /Неделя: осталось 9 %/.test(lt) && /Fable Weekly: осталось 3 %/.test(lt) && /Сброс через 1ч 59м|Сброс через 2ч 0м/.test(lt), lt.slice(0, 500));
+  check('the card opens on the provider closest to its limit (Claude), with its account and plan, each window with what is left and when it resets', /^Claude fixture@example\.test/.test(lt) && /Max 5x/.test(lt) && /Сессия: осталось 79 %/.test(lt) && /Неделя: осталось 9 %/.test(lt) && /Fable Weekly: осталось 3 %/.test(lt) && /Сброс через (1ч \d+м|2ч 0м)/.test(lt), lt.slice(0, 500));
   check('all the windows of the provider are there, with the thresholds in colour', (await evalJs('document.querySelectorAll("#top-card .lc-win").length')) === 3 && (await evalJs('document.querySelectorAll("#top-card .lc-win.warn").length')) === 1 && (await evalJs('document.querySelectorAll("#top-card .lc-win.crit").length')) === 1);
   check('the pace: a session with room to spare «lasts until reset», a weekly one that is spent too fast says when it runs out', /запас \d+ % · хватит до сброса/.test(lt) && /перерасход \d+ % · кончится через/.test(lt), lt.slice(0, 700));
   check('every window has a tick where an even spend would stand, and the sections: surfaces and extra usage', (await evalJs('document.querySelectorAll("#top-card .lc-win .lc-tick").length')) === 3 && /На этой неделе по клиентам Claude Code 100%/.test(lt) && /Дополнительный расход Статус выкл\./.test(lt), lt.slice(0, 900));
@@ -2869,7 +2884,7 @@ section('top cards', async () => {
   check('the Kimi Code tab: its plan, «35% used» as «осталось 65 %», the monthly total as a window of its own', await waitFor('document.querySelector("#top-card .lc-body")?.dataset.agent === "kimi"', 3000) && (await text('#top-card')).replace(/\s+/g, ' ').includes('Сессия: осталось 65 %') && /Total usage: осталось 79 %/.test((await text('#top-card')).replace(/\s+/g, ' ')) && /Allegretto/.test(await text('#top-card')), (await text('#top-card')).replace(/\s+/g, ' ').slice(0, 400));
   await shot('topcard-limits-kimi.png');
   await click('#top-card [data-tab="deepseek"]');
-  check('the DeepSeek tab: the balance as money and the paid and granted parts, no windows', await waitFor('document.querySelector("#top-card .lc-body")?.dataset.agent === "deepseek"', 3000) && /Баланс \$11\.92/.test((await text('#top-card')).replace(/\s+/g, ' ')) && /Оплачено \$11\.92/.test((await text('#top-card')).replace(/\s+/g, ' ')) && (await evalJs('document.querySelectorAll("#top-card .lc-win").length')) === 0);
+  check('the DeepSeek tab: the balance as money and the paid and granted parts, no windows', await waitFor('document.querySelector("#top-card .lc-body")?.dataset.agent === "deepseek"', 3000) && /остаток \$11\.92/.test((await text('#top-card')).replace(/\s+/g, ' ')) && /Оплачено \$11\.92/.test((await text('#top-card')).replace(/\s+/g, ' ')) && (await evalJs('document.querySelectorAll("#top-card .lc-win").length')) === 0);
   await click('#top-card [data-tab="codex"]');
   check('the Codex tab: the plan and the account, the review limit as one more window, the credits', await waitFor('document.querySelector("#top-card .lc-body")?.dataset.agent === "codex"', 3000) && /Plus/.test(await text('#top-card')) && /codex@example\.test/.test(await text('#top-card')) && (await evalJs('document.querySelectorAll("#top-card .lc-win").length')) === 3 && /Code review: осталось 97 %/.test((await text('#top-card')).replace(/\s+/g, ' ')) && /Кредиты Баланс 7\.50/.test((await text('#top-card')).replace(/\s+/g, ' ')));
   await click('#top-card [data-tab="claude"]');
@@ -2928,7 +2943,7 @@ section('top cards', async () => {
   await evalJs('document.querySelector("#hud-limits").focus(); true');
   await cardOpen('limits');
   const le = (await text('#top-card')).replace(/\s+/g, ' ');
-  check('English: the card, as in herdr-gpui: «Session 79% left», «Resets in 1h 59m», «in reserve · Lasts until reset», the actions', /Claude fixture@example\.test/.test(le) && /Session 79% left/.test(le) && /Resets in (1h 59m|2h 0m)/.test(le) && /\d+% in reserve · Lasts until reset/.test(le) && /\d+% in deficit · Runs out in/.test(le) && /This week by surface/.test(le) && /Extra usage Status Off/.test(le) && /Refresh Usage Dashboard Status Page/.test(le) && le.includes('Subscription limits'), le.slice(0, 700));
+  check('English: the card, as in herdr-gpui: «Session 79% left», «Resets in 1h 59m», «in reserve · Lasts until reset», the actions', /Claude fixture@example\.test/.test(le) && /Session 79% left/.test(le) && /Resets in (1h \d+m|2h 0m)/.test(le) && /\d+% in reserve · Lasts until reset/.test(le) && /\d+% in deficit · Runs out in/.test(le) && /This week by surface/.test(le) && /Extra usage Status Off/.test(le) && /Refresh Usage Dashboard Status Page/.test(le) && le.includes('Subscription limits'), le.slice(0, 700));
   await evalJs('document.querySelector("#load-chip").focus(); true');
   await cardOpen('load');
   const me = (await text('#top-card')).replace(/\s+/g, ' ');

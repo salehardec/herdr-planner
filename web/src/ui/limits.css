@@ -40,13 +40,14 @@
 .lp-warn .lp-bar i{background:var(--c-yellow)}
 .lp-crit .lp-bar i{background:var(--c-red)}
 .lp-t,.lp-s{font-size:0.6875rem;color:var(--pl-dim);font-variant-numeric:tabular-nums;white-space:pre}
+.lp-words{display:block;white-space:pre}
 .lp-s{display:none}
 .lp-bal{display:inline;color:var(--pl-title);font-weight:700}
 .lp-crit .lp-t,.lp-crit .lp-s{color:var(--pl-danger)}
 .lp-warn .lp-t,.lp-warn .lp-s{color:var(--c-yellow)}
 /* the forms: all the words, the tightest window only, the shares only, the one provider closest to its limit (LoadBar.tsx picks one by the room) */
 .limchip[data-form="one"] .lp-t2{display:none}
-.limchip[data-form="pct"] .lp-t,.limchip[data-form="worst"] .lp-t{display:none}
+.limchip[data-form="pct"] .lp-words,.limchip[data-form="worst"] .lp-words{display:none}
 .limchip[data-form="pct"] .lp-s,.limchip[data-form="worst"] .lp-s{display:inline}
 .limchip[data-form="pct"] .lp-bar,.limchip[data-form="worst"] .lp-bar{display:none}
 .limchip[data-form="pct"].lim-row{gap:0.5rem;padding:0 0.5rem}
@@ -58,8 +59,8 @@
 .lc-acct,.lc-upd,.lc-tier{color:var(--pl-faint);font-size:0.6875rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
 .lc-warn{color:var(--c-yellow);font-size:0.6875rem}
 .lc-win{display:grid;gap:0.25rem;padding-top:0.5rem;border-top:1px solid var(--pl-line)}
-.lc-wt{display:flex;justify-content:space-between;align-items:baseline;gap:0.75rem;color:var(--pl-title);min-width:0}
-.lc-wt b{font-size:0.8125rem;white-space:nowrap}
+.lc-wt{display:flex;flex-wrap:wrap;justify-content:space-between;align-items:baseline;gap:0 0.75rem;color:var(--pl-title);min-width:0}
+.lc-wt b{font-size:0.8125rem;min-width:0;overflow-wrap:anywhere}
 .lc-wt span{color:var(--pl-faint);font-size:0.6875rem;white-space:nowrap}
 .lc-win.warn .lc-wt b{color:color-mix(in srgb,var(--c-yellow) 70%,var(--c-fg))}
 .lc-win.crit .lc-wt b{color:var(--pl-danger)}
