@@ -38,6 +38,8 @@ mod runners_hist;
 mod runners_log;
 mod search;
 mod seat;
+#[cfg(test)]
+mod security_tests;
 mod server;
 mod ship;
 mod ssh;

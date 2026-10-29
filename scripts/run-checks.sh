@@ -1,7 +1,7 @@
 #!/bin/sh
 # Everything that can be checked offline: the page's unit tests and build, Rust tests,
 # the installer and launcher checks, then the page against a fixture board in headless
-# Chromium (the Galaxy), a big fixture (50 universes / 500 planets) and the login.
+# Chromium (the Galaxy), a big fixture (50 universes / 500 planets), the login and the gate (Шлюз) from the outside.
 #   scripts/run-checks.sh [screenshot-dir]
 #   PAGE_ONLY=1 scripts/run-checks.sh   only the page checks, on the binary and the page already built
 #   SHARDS="ui2 big" scripts/run-checks.sh   only these parts of the page checks (ui1 … ui9, big, auth; default: all; ui6–ui9 are the layout at every scale);
@@ -193,7 +193,8 @@ if [ -z "${SECTIONS:-}" ] && want big; then
   JOBS="$JOBS $!:big"
 fi
 
-# A server with a password: the login, the cookie and the limit; the ship's computer behind it.
+# A server with a password: the login, the cookie and the limit; the ship's computer behind it; the gate (Шлюз) from the
+# outside on the stand-in of cloudflared (the full version of the planner through the gate needs a password).
 if [ -z "${SECTIONS:-}" ] && want auth; then
   PASSWORD=secret start_server auth
   AUTH_D="$D"; AUTH_P="$P"
@@ -202,6 +203,7 @@ if [ -z "${SECTIONS:-}" ] && want auth; then
     set +e
     # before auth-check's limit test: a wrong old password is refused in the server's words
     SHIP_LOGIN="me:secret" ONLY="ship login" FIXTURE="$AUTH_D" limited node scripts/ui-check.mjs "http://127.0.0.1:$AUTH_P" ${SHOTS:+"$SHOTS"} &&
+      FIXTURE="$AUTH_D" AUTH_BASE="http://127.0.0.1:$AUTH_P" limited node scripts/tunnel-check.mjs &&
       FIXTURE="$AUTH_D" AUTH_BASE="http://127.0.0.1:$AUTH_P" limited node scripts/auth-check.mjs
     rc=$?; done_part auth; job_release; exit "$rc"
   ) >"$OUT/auth.txt" 2>&1 &
