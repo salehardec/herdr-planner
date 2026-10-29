@@ -175,3 +175,11 @@
 .cr-task>h3{margin:0;font-size:0.7188rem;letter-spacing:.06em;text-transform:uppercase;color:var(--pl-faint);font-weight:700}
 .cr-task .row{display:flex;flex-wrap:wrap;gap:0.25rem 0.5rem;align-items:baseline;font-size:0.75rem}
 .pop-role{display:grid;gap:0.25rem}
+
+/* The spares the planner keeps (PLN-89): the switching mark, the switch it made, the return. */
+.spares{padding-left:0.25rem;border-left:2px solid var(--pl-line)}
+.spares .chk{display:flex;gap:0.375rem;align-items:center;font-size:0.75rem;cursor:pointer}
+.spares .chk input{width:auto;flex:none;margin:0}
+.spares .hint{text-transform:none;letter-spacing:normal}
+.failnow{display:grid;gap:0.25rem;font-size:0.75rem;color:var(--pl-title)}
+.failnow .act{display:flex;flex-wrap:wrap;gap:0.375rem;align-items:center}

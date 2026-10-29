@@ -23,7 +23,7 @@ function spr(g: Ctx, p: string[], x: number, y: number, c: string, s = 2): void 
   p.forEach((row, j) => [...row].forEach((ch, i) => { if (ch === '#') g.fillRect(Math.round(x + (i - 3.5) * s), Math.round(y + j * s), s, s); }));
 }
 
-function shooter(g: Ctx, game: Game, now: number): void {
+function shooter(g: Ctx, game: Game, now: number, touch = false): void {
   const S = game.s!;
   txt(g, `${t('restroom.game.score')} ${String(S.score).padStart(5, '0')}`, 6, 10, PAL.fg, 8, 'left');
   txt(g, `${t('restroom.game.wave')} ${S.wave}`, W / 2, 10, PAL.dim);
@@ -42,11 +42,11 @@ function shooter(g: Ctx, game: Game, now: number): void {
     g.fillStyle = 'rgba(0,0,0,.6)'; g.fillRect(0, 0, W, H);
     txt(g, t('restroom.game.over'), W / 2, 80, PAL.red, 12);
     txt(g, `${t('restroom.game.score.low')} ${S.score}`, W / 2, 98);
-    txt(g, t('restroom.game.again'), W / 2, 120, PAL.dim);
+    txt(g, t(touch ? 'restroom.game.touchAgain' : 'restroom.game.again'), W / 2, 120, PAL.dim);
   }
 }
 
-function bricks(g: Ctx, game: Game): void {
+function bricks(g: Ctx, game: Game, touch = false): void {
   const B = game.b!;
   const CS = 9;
   const ox = (W - BW * CS) / 2 - 30;
@@ -60,15 +60,15 @@ function bricks(g: Ctx, game: Game): void {
   txt(g, `${t('restroom.game.score.low')} ${B.score}`, tx, 40, PAL.fg, 8, 'left');
   txt(g, `${t('restroom.game.lines')} ${B.lines}`, tx, 54, PAL.fg, 8, 'left');
   txt(g, t('restroom.game.rotate'), tx, 90, PAL.dim, 7, 'left');
-  txt(g, t('restroom.game.drop'), tx, 102, PAL.dim, 7, 'left');
+  txt(g, t(touch ? 'restroom.game.touchDrop' : 'restroom.game.drop'), tx, 102, PAL.dim, 7, 'left');
   if (B.over) {
     g.fillStyle = 'rgba(0,0,0,.6)'; g.fillRect(0, 0, W, H);
     txt(g, t('restroom.game.stacked'), W / 2, 84, PAL.red, 12);
-    txt(g, t('restroom.game.again'), W / 2, 104, PAL.dim);
+    txt(g, t(touch ? 'restroom.game.touchAgain' : 'restroom.game.again'), W / 2, 104, PAL.dim);
   }
 }
 
-function menu(g: Ctx, game: Game): void {
+function menu(g: Ctx, game: Game, touch = false): void {
   txt(g, t('restroom.game.title'), W / 2, 30, PAL.hi, 12);
   for (let i = 0; i < 3; i++) spr(g, ALIEN[i], W / 2 - 40 + i * 40, 44, PAL.dim);
   const items = [
@@ -82,19 +82,19 @@ function menu(g: Ctx, game: Game): void {
     txt(g, (s ? '▶ ' : '  ') + it.n, W / 2, y - 1, s ? PAL.hi : PAL.fg, 9);
     txt(g, it.d, W / 2, y + 8, s ? PAL.fg : PAL.dim, 7);
   });
-  txt(g, t('restroom.game.menuHint'), W / 2, H - 10, PAL.dim, 7);
+  txt(g, t(touch ? 'restroom.game.touchMenu' : 'restroom.game.menuHint'), W / 2, H - 10, PAL.dim, 7);
 }
 
 /** One frame of the screen. */
-export function drawScreen(g: Ctx, game: Game, now: number): void {
+export function drawScreen(g: Ctx, game: Game, now: number, touch = false): void {
   g.fillStyle = PAL.bg; g.fillRect(0, 0, W, H);
-  if (game.mode === 'menu') menu(g, game);
-  else if (game.mode === 'shoot' && game.s) shooter(g, game, now);
-  else if (game.mode === 'bricks' && game.b) bricks(g, game);
+  if (game.mode === 'menu') menu(g, game, touch);
+  else if (game.mode === 'shoot' && game.s) shooter(g, game, now, touch);
+  else if (game.mode === 'bricks' && game.b) bricks(g, game, touch);
   if (game.paused) {
     g.fillStyle = 'rgba(0,0,0,.55)'; g.fillRect(0, 0, W, H);
     txt(g, t('restroom.game.paused'), W / 2, H / 2, PAL.hi, 14);
-    txt(g, t('restroom.game.resume'), W / 2, H / 2 + 16, PAL.fg, 7);
+    txt(g, t(touch ? 'restroom.game.touchResume' : 'restroom.game.resume'), W / 2, H / 2 + 16, PAL.fg, 7);
   }
   g.fillStyle = 'rgba(0,0,0,.12)';
   for (let y = 0; y < H; y += 2) g.fillRect(0, y, W, 1);

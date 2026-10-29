@@ -48,7 +48,7 @@ run(bin, ['--port', String(serverPort), '--data', join(D, 'board')], {
   HERDR_PLANNER_SSH: join(D, 'bin/ssh'), HERDR_PLANNER_CLAUDE: join(D, 'bin/claude'), HERDR_PLANNER_GH: join(D, 'bin/gh'), HERDR_PLANNER_GLAB: join(D, 'bin/glab'),
   HERDR_BIN: join(D, 'bin/herdr'), HERDR_PLANNER_TERMINAL: join(D, 'bin/xdg-terminal-exec'), FIXTURE_DIR: D,
   HERDR_PROJECTS_BIN: join(D, 'bin/herdr-projects'), HERDR_SOCKET_PATH: join(D, 'herdr.sock'), OMARCHY_THEME_DIR: join(D, 'theme'),
-  CLAUDE_CONFIG_DIR: join(D, 'claude'), PATH: `${join(D, 'bin')}:${process.env.PATH}`, XDG_STATE_HOME: join(D, 'state'),
+  CLAUDE_CONFIG_DIR: join(D, 'claude'), KIMI_CODE_HOME: join(D, 'kimi'), PI_CODING_AGENT_DIR: join(D, 'pi-agent'), HERDR_PLANNER_USAGE_STUB: join(D, 'usage-stub'), PATH: `${join(D, 'bin')}:${process.env.PATH}`, XDG_STATE_HOME: join(D, 'state'),
   XDG_CONFIG_HOME: join(D, 'cfg'), XDG_CACHE_HOME: join(D, 'cache'),
 });
 const base = `http://127.0.0.1:${serverPort}`;

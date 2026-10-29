@@ -10,6 +10,7 @@ use crate::history;
 use crate::mobile;
 use crate::roles_api;
 use crate::ship;
+use crate::failover;
 use crate::station;
 use crate::usage;
 use axum::extract::{ConnectInfo, DefaultBodyLimit, Multipart, Path, Query, State};
@@ -136,6 +137,8 @@ pub fn router(app: Shared) -> Router {
         .route("/api/station/preview", post(station::station_preview))
         .route("/api/station/set", post(station::station_set))
         .route("/api/station/light", post(station::station_light))
+        .route("/api/station/failover", post(failover::failover_set))
+        .route("/api/station/failover/back", post(failover::failover_back))
         .route("/api/station/presets", post(station::station_presets))
         .route("/api/station/preset/preview", post(station::station_preset_preview))
         .route("/api/station/preset/apply", post(station::station_preset_apply))
@@ -913,7 +916,16 @@ async fn run_herdr_with(args: &[&str], wait: Duration, color: bool) -> Result<St
     Ok(stdout)
 }
 
-async fn api_refresh(State(app): State<Shared>) -> Response {
+#[derive(Deserialize)]
+struct RefreshQuery {
+    /// The card's Refresh button: the providers are asked for their limits again, not for more than once in ten seconds.
+    limits: Option<String>,
+}
+
+async fn api_refresh(State(app): State<Shared>, Query(q): Query<RefreshQuery>) -> Response {
+    if q.limits.is_some() {
+        crate::plans::refresh_now();
+    }
     refresh(&app).await;
     Json(json!({"ok": true})).into_response()
 }
@@ -1574,14 +1586,30 @@ pub(crate) async fn perform_action(app: &Shared, body: ActionBody, local: bool) 
                 args.push("--desc");
                 args.push(desc.as_str());
             }
-            // an agent picked by hand is the worker's; a worker role's own agent is not overridden by it
-            if let Some(a) = agent.filter(|_| !flags.iter().any(|f| f == "--worker.agent")) {
+            // A task made from the «Лёгкая» preset starts on the first agent of its spares that can be given work and
+            // carries the rest as its own fallback (PLN-89). An agent or a spare list the crew role gives is the role's own.
+            let role_agent = flags.iter().any(|f| f == "--worker.agent");
+            let role_fallback = flags.iter().any(|f| f == "--worker.fallback");
+            let light = match agent {
+                Some(a) if !role_agent => failover::light_start(&app, a).await,
+                _ => None,
+            };
+            if let Some(a) = light.as_ref().map(|p| p.agent.as_str()).or(agent).filter(|_| !role_agent) {
                 args.push("--worker.agent");
                 args.push(a);
+            }
+            if let Some(p) = light.as_ref().filter(|p| !p.fallback.is_empty() && !role_fallback) {
+                args.push("--worker.fallback");
+                args.push(p.fallback.as_str());
             }
             args.extend(flags.iter().map(String::as_str));
             return match run_board(&app.cfg, &args, Duration::from_secs(60)).await {
                 Ok(out) => {
+                    if let (Some(p), Some(a)) = (light.as_ref(), agent) {
+                        if p.agent != a {
+                            app::journal_note(&app, "crew", "crew", &format!("Лёгкая задача «{title}»: {a} недоступен, начата на {}", p.agent)).await;
+                        }
+                    }
                     app.db.todo_remove(id);
                     let role_note = match &role {
                         Some((chosen, _)) => roles_api::after_add(&app, chosen, &out, &repo, &title, &desc).await,

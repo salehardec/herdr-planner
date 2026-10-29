@@ -32,7 +32,7 @@ for (const [path, body] of [['/api/translate', { text: 'hello' }], ['/api/statio
   check(`POST ${path} needs a session`, r.status === 401, String(r.status));
 }
 const localLimits = await get('/api/limits');
-check('the local bar can read limits without a session', localLimits.status === 200 && (await localLimits.json()).level === 'ok', String(localLimits.status));
+check('the local bar can read limits without a session', localLimits.status === 200 && ['ok', 'warn', 'crit'].includes((await localLimits.json()).level), String(localLimits.status));
 const remoteLimits = await get('/api/limits', null, { headers: { 'x-forwarded-for': '203.0.113.5' } });
 check('a remote caller needs a session for limits', remoteLimits.status === 401, String(remoteLimits.status));
 const root = await get('/');

@@ -12,6 +12,7 @@ mod board;
 mod config;
 mod coordinator;
 mod crew;
+mod failover;
 mod db;
 mod devices;
 mod events;
@@ -30,6 +31,7 @@ mod load;
 mod models;
 mod roles;
 mod roles_api;
+mod plans;
 mod runners;
 mod runners_alert;
 mod runners_api;
@@ -314,6 +316,10 @@ fn spawn_loops(app: Shared) {
         }
     });
     tokio::spawn(load::run(app.clone()));
+    // The spares of the Coordinator and the planner (PLN-89): a look once a minute.
+    tokio::spawn(failover::run(app.clone()));
+    // The subscriptions: each provider asked for its own limits (PLN-84), cached, and the page told when they change.
+    tokio::spawn(plans::run(app.clone()));
     // The gate's clock: devices that time out, and the gate closing itself when nobody has used it.
     let a = app.clone();
     tokio::spawn(async move {

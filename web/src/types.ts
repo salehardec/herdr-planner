@@ -136,10 +136,23 @@ export interface Summary {
 
 export interface LimitWindow {
   label: string;
+  /** Share used, 0..1. */
   percent: number;
   severity: 'ok' | 'warn' | 'crit';
   resets_at_ms: number | null;
+  /** `session`, `daily`, `weekly`, `monthly`, `named` (the label is the service's own name for it), or empty. */
+  kind?: string;
+  /** How long the window runs (ms); 0 when unknown. */
+  length_ms?: number;
+  /** Percent points in reserve (positive) or in deficit (negative) against an even spend; absent when the pace cannot be judged. */
+  reserve?: number | null;
+  /** When the window runs out at the pace so far, ms from the reading; absent when it outlasts its reset. */
+  runs_out_ms?: number | null;
 }
+
+export type UsageSection =
+  | { kind: 'facts'; title: string; facts: [string, string][] }
+  | { kind: 'shares'; title: string; shares: [string, number][] };
 
 export interface AgentUsage {
   id: string;
@@ -151,6 +164,19 @@ export interface AgentUsage {
   limits?: LimitWindow[];
   balance?: { remaining: number; funded?: number; currency?: string; estimated?: boolean } | null;
   updated_at_ms?: number;
+  /** `live` (the planner asked the provider), `omarchy` (Omarchy's record), or empty. */
+  source?: string;
+  account?: string;
+  /** Why the planner's own read failed: `rejected`, `expired`, `status:500`… */
+  why?: string;
+  extra?: LimitWindow[];
+  sections?: UsageSection[];
+  dashboard?: string;
+  status_page?: string;
+  /** Whose sign-in was asked with (`pi`, `omp`, `claude`, `env`, …), the crew role that runs the provider through it, and the other programs it runs through. */
+  key_from?: string;
+  key_role?: string;
+  key_also?: string[];
 }
 
 /** How loaded this machine is (GET /api/load, the `load` event). Shares are 0..100, memory is in bytes. */
@@ -174,6 +200,8 @@ export interface LoadInfo {
 export interface Usage {
   agents: AgentUsage[];
   stale_after_secs?: number;
+  /** Providers the planner reads itself that have no sign-in on this machine. */
+  unconnected?: string[];
 }
 
 export interface ChatAttachment {

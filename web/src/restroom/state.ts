@@ -3,14 +3,17 @@
    and leaving brings the person back to exactly that place. The game outlives the visit: it waits on pause. */
 import { signal } from '@preact/signals';
 import { Game } from './game';
+import { TouchPad } from './touch';
 import { WALLS, WALL_DEFAULT } from './walls';
 
 export const game = new Game();
+export const touch = new TouchPad(game);
 
 export const roomOpen = signal(false);
 
 /** The place the person came from. Words for it are in the dictionary (restroom.back.*, restroom.where.*). */
 export type Origin =
+  | { kind: 'mobile' }
   | { kind: 'nav' }
   | { kind: 'galaxy' }
   | { kind: 'quasar' }
@@ -81,6 +84,7 @@ export function enter(from: Origin, by: HTMLElement | null = null): void {
   if (roomOpen.value || busy) return;
   origin.value = from;
   opener = by;
+  touch.clear();
   game.releaseAll();
   gate({ kind: 'in' }, () => {
     hooks.entered();
@@ -93,6 +97,7 @@ export function enter(from: Origin, by: HTMLElement | null = null): void {
 export function leave(to?: { type: string; id: string; tag: string }): void {
   if (!roomOpen.value || busy) return;
   game.pause(true);
+  touch.clear();
   game.releaseAll();
   gate(to ? { kind: 'fly', tag: to.tag } : { kind: 'back', from: origin.value }, () => {
     roomOpen.value = false;
@@ -105,6 +110,7 @@ export function leave(to?: { type: string; id: string; tag: string }): void {
 
 /** For tests: forget timers and the open state. */
 export function reset(): void {
+  touch.clear();
   timers.forEach(clearTimeout);
   timers.length = 0;
   busy = false;

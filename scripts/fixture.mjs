@@ -20,7 +20,7 @@
 // Run the planner on it (run-checks.sh does this):
 //   HERDR_PROJECTS_BIN=DIR/bin/herdr-projects HERDR_SOCKET_PATH=DIR/herdr.sock
 //   OMARCHY_THEME_DIR=DIR/theme XDG_STATE_HOME=DIR/state XDG_CONFIG_HOME=DIR/cfg
-//   CLAUDE_CONFIG_DIR=DIR/claude CODEX_HOME=DIR/codex PATH=DIR/bin:$PATH
+//   CLAUDE_CONFIG_DIR=DIR/claude CODEX_HOME=DIR/codex KIMI_CODE_HOME=DIR/kimi PI_CODING_AGENT_DIR=DIR/pi-agent HERDR_PLANNER_USAGE_STUB=DIR/usage-stub PATH=DIR/bin:$PATH
 //   herdr-planner --port N --data DIR/board
 // The time-dependent parts (created, mtimes, rate limits) are relative to now; the rest is fixed.
 
@@ -1640,6 +1640,51 @@ for (const [id, name] of [['omp', 'OMP'], ['pi', 'Pi']]) {
 write(path.join(dir, 'cache', 'omarchy', 'agent-usage', 'claude-limits.json'), JSON.stringify({ fetchedAtMs: usageAt, limits: claudeLimits }));
 const old = new Date(usageAt - 2 * 3600 * 1000);
 fs.utimesSync(path.join(usageDir, 'pi.json'), old, old);
+// The planner's own limits reading (PLN-84): the four providers' sign-ins as their programs keep them (fake tokens, far from expiry)
+// and the services' answers as saved files, which HERDR_PLANNER_USAGE_STUB makes the planner read instead of asking the network.
+// Claude's numbers are Omarchy's own above, so the old checks of the numbers hold; what is new is the account, the surfaces and the
+// extra usage, the pace, the other three providers and their balance.
+{
+  const b64u = (o) => Buffer.from(JSON.stringify(o)).toString('base64url');
+  const FAR = 4102444800;
+  write(path.join(dir, 'claude', '.credentials.json'), JSON.stringify({ claudeAiOauth: { accessToken: 'fixture-claude-token', expiresAt: FAR * 1000, subscriptionType: 'max', rateLimitTier: 'default_claude_max_5x' } }));
+  write(path.join(dir, 'claude', '.claude.json'), JSON.stringify({ oauthAccount: { emailAddress: 'fixture@example.test' } }));
+  write(path.join(dir, 'codex', 'auth.json'), JSON.stringify({ tokens: { access_token: `${b64u({ alg: 'none' })}.${b64u({ exp: FAR })}.sig`, account_id: 'fixture-account' } }));
+  write(path.join(dir, 'kimi', 'credentials', 'kimi-code.json'), JSON.stringify({ access_token: 'fixture-kimi-token', expires_at: FAR }));
+  write(path.join(dir, 'kimi', 'device_id'), 'fixture-device\n');
+  // pi's own sign-in file is where the planner looks first: the DeepSeek key lives there, as it does on a real machine
+  write(path.join(dir, 'pi-agent', 'auth.json'), JSON.stringify({ deepseek: { type: 'api_key', key: 'fixture-deepseek-key' } }));
+  const stub = path.join(dir, 'usage-stub');
+  const at = (ms) => new Date(usageAt + ms).toISOString();
+  const H = 3600 * 1000;
+  write(path.join(stub, 'claude.json'), JSON.stringify({
+    limits: [
+      { kind: 'session', percent: 21, resets_at: at(2 * H) },
+      { kind: 'weekly_all', percent: 91, resets_at: at(30 * H) },
+      { kind: 'weekly_scoped', percent: 97, resets_at: at(30 * H), scope: { model: { display_name: 'Fable Weekly' } } },
+    ],
+    seven_day_breakdown: { rows: [{ display_name: 'Claude Code', percent: 100 }] },
+    spend: { enabled: false },
+  }));
+  write(path.join(stub, 'codex.json'), JSON.stringify({
+    email: 'codex@example.test', plan_type: 'plus',
+    rate_limit: {
+      primary_window: { used_percent: 4, limit_window_seconds: 18000, reset_at: Math.round((usageAt + 1.5 * H) / 1000) },
+      secondary_window: { used_percent: 12, limit_window_seconds: 604800, reset_at: Math.round((usageAt + 5 * 24 * H) / 1000) },
+    },
+    code_review_rate_limit: { primary_window: { used_percent: 3, limit_window_seconds: 604800, reset_at: Math.round((usageAt + 3 * 24 * H) / 1000) } },
+    credits: { unlimited: false, balance: '7.50' },
+  }));
+  write(path.join(stub, 'kimi.json'), JSON.stringify({
+    usages: {
+      limit_5h: { used_ratio: 0.35, reset_time: at(31 * 60 * 1000) },
+      limit_7d: { used_ratio: 0.1, reset_time: at(4 * 24 * H) },
+      limit_month_total: { used_ratio: 0.21, reset_time: at(28 * 24 * H) },
+    },
+    user: { membership: { level: 'LEVEL_INTERMEDIATE' } },
+  }));
+  write(path.join(stub, 'deepseek.json'), JSON.stringify({ is_available: true, balance_infos: [{ currency: 'USD', total_balance: '11.92', granted_balance: '0.00', topped_up_balance: '11.92' }] }));
+}
 // The board's own settings (show, set and unset read and write this file): the board with its repo alpha.
 write(path.join(dir, 'state', 'board-settings.json'), JSON.stringify({ '': BOARD.seed.home, alpha: BOARD.seed.alpha }, null, 1));
 // The same levels in the board's real shape (settings/config.json), as the planner reads a scope's own instructions.

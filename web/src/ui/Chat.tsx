@@ -5,7 +5,7 @@ import {
   chat, panels, persist, snap, screens,
 } from '../store';
 import {
-  addFiles, draftRequest, draftTodos, hasOlder, loadLatest, loadOlder, notePending, openChatAt, optimistic, pendingFiles, pendingMessage, reconcile, removeFile, scrollTo,
+  addFiles, draftRequest, draftTodos, hasOlder, loadLatest, loadOlder, loadOlderWait, notePending, openChatAt, optimistic, pendingFiles, pendingMessage, reconcile, removeFile, scrollTo,
   searchChat, send, sending,
 } from '../chat';
 import { hasFiles, pastedFiles } from '../attach';
@@ -14,7 +14,7 @@ import { post, refreshNow, onChatEvent } from '../api';
 import { fetchScreen, todoToDraft } from '../actions';
 import { t, tn } from '../i18n';
 import { sigOf } from '../chat-read';
-import { markRead, SEE_MS, unreadCount, unreadTurns, windowActive } from '../chat-unread';
+import { markRead, markReadToEnd, SEE_MS, unreadTurns, windowActive } from '../chat-unread';
 import { dayKey, dayTimeOf, isToday, timeOf } from '../util/dates';
 import { Gl } from './Gl';
 import { Grip } from './Grip';
@@ -181,20 +181,39 @@ export function Chat(): JSX.Element {
   }, [open, dialog]);
   useEffect(() => { reconcile(); }, [coord?.history.length]);
 
+  // «At the end» reads everything only when the reader is there on purpose: not before the jump to the first unread on opening
+  // has been decided, and not while the log is still scrolling to it.
+  const jumped = useRef(false);
+  const opened = useRef(false);
+  const navUntil = useRef(0);
+  /** The jump to the first unread ends at the bottom (the unread are the last answers): the log keeps following meanwhile. */
+  const navToEnd = useRef(false);
+  /** The reader takes the log into their own hands: the jump is over, and the log stays where they leave it. */
+  const cancelNav = (): void => {
+    if (Date.now() >= navUntil.current) return;
+    navUntil.current = 0;
+    navToEnd.current = false;
+    const el = logRef.current;
+    if (el) stuck.value = el.scrollHeight - el.scrollTop - el.clientHeight < 24;
+  };
+  // (on the way to the bottom the end is where the reader is meant to be: the answers there are read at once)
+  const readsEnd = (el: HTMLElement): boolean => opened.current && (Date.now() > navUntil.current || navToEnd.current) && el.scrollHeight - el.scrollTop - el.clientHeight < 24;
+
   // Keep the end in view unless the reader scrolled up; keep the place after older turns are added.
   useLayoutEffect(() => {
     const el = logRef.current;
     if (!el) return;
     if (anchor.current) { el.scrollTop = anchor.current.top + (el.scrollHeight - anchor.current.h); anchor.current = null; }
     else if (stuck.value) el.scrollTop = el.scrollHeight;
-  }, [c.turns.length, pending?.at, opt?.at, reply, open, busy, c.loading]);
+    if (open && active && readsEnd(el)) markReadToEnd();
+  }, [c.turns, pending?.at, opt?.at, reply, open, busy, c.loading, active]);
 
   useEffect(() => {
     const target = scrollTo.value;
     if (!target) return;
     requestAnimationFrame(() => {
       const el = logRef.current?.querySelector<HTMLElement>(`[data-n="${target.n}"]`);
-      if (el) { stuck.value = false; el.scrollIntoView({ block: target.block ?? 'center', behavior: 'smooth' }); }
+      if (el) { stuck.value = navToEnd.current && Date.now() < navUntil.current; el.scrollIntoView({ block: target.block ?? 'center', behavior: 'smooth' }); }
     });
   }, [scrollTo.value]);
 
@@ -218,11 +237,10 @@ export function Chat(): JSX.Element {
   }, [open, active, unreadKey, c.turns.length]);
 
   /** Takes the log to the first unread turn: older turns are loaded until it is there. */
-  const toUnread = async (onlyIfHidden: boolean): Promise<void> => {
-    const first = unreadTurns.peek()[0];
+  const toUnread = async (onlyIfHidden: boolean, first = unreadTurns.peek()[0]): Promise<void> => {
     if (first === undefined) return;
     for (let i = 0; i < 40 && !chat.peek().turns.some((x) => x.n === first) && hasOlder(); i++) {
-      if (!(await loadOlder())) break;
+      if (!(await loadOlderWait())) break;
     }
     const log = logRef.current;
     const el = log?.querySelector<HTMLElement>(`[data-n="${first}"]`);
@@ -232,19 +250,25 @@ export function Chat(): JSX.Element {
       const room = log.getBoundingClientRect();
       if (at.top >= room.top && at.bottom <= room.bottom) return;
     }
-    stuck.value = false;
+    const at = el.getBoundingClientRect();
+    const room = log.getBoundingClientRect();
+    // (the place of the turn in the log: further down than the log can scroll means that the jump ends at the bottom)
+    navToEnd.current = at.top - room.top + log.scrollTop >= log.scrollHeight - log.clientHeight - 24;
+    stuck.value = navToEnd.current;
+    navUntil.current = Date.now() + 1500;
     scrollTo.value = { n: first, at: Date.now(), block: 'start' };
   };
 
   // Opening the chat shows what is new in it. A chat that is open from the start (the wide one is restored open) waits for the history.
-  const jumped = useRef(false);
-  const ready = c.available !== null;
+  const ready = c.available !== null && !c.loadingLatest;
   useEffect(() => {
-    if (!open) { jumped.current = false; return; }
+    if (!open) { jumped.current = false; opened.current = false; return; }
     if (!ready || jumped.current) return;
     jumped.current = true;
-    const id = requestAnimationFrame(() => { void toUnread(true); });
-    return () => cancelAnimationFrame(id);
+    let ran = false;
+    const id = requestAnimationFrame(() => { ran = true; void toUnread(true).finally(() => { opened.current = true; }); });
+    // A history that starts loading again before the frame cancels the jump: it is made when the history is there.
+    return () => { cancelAnimationFrame(id); if (!ran) jumped.current = false; };
   }, [open, ready]);
 
   const older = async (): Promise<void> => {
@@ -258,8 +282,14 @@ export function Chat(): JSX.Element {
   const onScroll = (): void => {
     const el = logRef.current;
     if (!el) return;
-    stuck.value = el.scrollHeight - el.scrollTop - el.clientHeight < 24;
-    if (open && showTurns && el.scrollTop < 40) void older();
+    const atEnd = el.scrollHeight - el.scrollTop - el.clientHeight < 24;
+    // (the first frames of a scroll away from the end still look like the end: they must not pin the log to it again)
+    if (Date.now() > navUntil.current) stuck.value = atEnd;
+    else if (!navToEnd.current) stuck.value = false;
+    // Reaching the end acknowledges every answer, rather than waiting for an observer timer to fire.
+    if (open && active && readsEnd(el)) markReadToEnd();
+    // (not on the way to the first unread: loading older turns there would pull the log back to where it started)
+    if (open && showTurns && el.scrollTop < 40 && Date.now() > navUntil.current) void older();
   };
 
   const submit = async (): Promise<void> => {
@@ -357,7 +387,11 @@ export function Chat(): JSX.Element {
         <b>{t('quasar.label')}</b>
         <span class={`st ${err ? 'bad' : busy ? 'busy' : ''}`} id="cstate">● {status}</span>
         {unread.length > 0 && (
-          <button class="btn sm ubtn" id="cunread" type="button" title={t('chat.toUnread')} onClick={() => void toUnread(false)}>
+          <button class="btn sm ubtn" id="cunread" type="button" title={t('chat.toUnread')} onClick={() => {
+            const first = unread[0];
+            markReadToEnd();
+            void toUnread(false, first);
+          }}>
             <i class="udot on" />↓ {tn('chat.unreadN', unread.length)}
           </button>
         )}
@@ -390,7 +424,7 @@ export function Chat(): JSX.Element {
           ))}
         </div>
       )}
-      <div class="log" id="clog" ref={logRef} onScroll={onScroll} aria-live="polite">
+      <div class="log" id="clog" ref={logRef} onScroll={onScroll} onWheel={cancelNav} onTouchMove={cancelNav} onPointerDown={cancelNav} aria-live="polite">
         {showTurns ? (
           <>
             {hasOlder() ? (

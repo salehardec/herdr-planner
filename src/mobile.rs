@@ -146,7 +146,8 @@ pub fn project(s: &Snapshot) -> Snapshot {
         projects: s.projects.iter().map(project_of).collect(),
         summary: s.summary.clone(),
         links: s.links.clone(),
-        limits: s.limits.clone(),
+        // the light page names no account: the email of a subscription stays on the desktop
+        limits: s.limits.without_accounts(),
         todo: Vec::new(),
         memory_suggestions: Vec::new(),
         journal: Vec::new(),
