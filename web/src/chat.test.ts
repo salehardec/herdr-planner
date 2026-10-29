@@ -23,7 +23,7 @@ beforeEach(async () => {
 });
 
 it('reload covers an echo older than the latest page before leaving it in the waiting queue', async () => {
-  saved.set('planner.chat.echoes', JSON.stringify([{ id: 'saved', text: 'mid-turn', base: 0, at: 1, attachments: [] }]));
+  saved.set('planner.chat.echoes', JSON.stringify([{ id: 'saved', text: 'mid-turn', base: 0, at: Date.now(), attachments: [] }]));
   calls.api.mockImplementation(async (path: string) => path.includes('&before=')
     ? { turns: [turn(0), turn(1, 'mid-turn'), turn(2), turn(3), turn(4)] }
     : { available: true, total: 8, turns: [turn(5), turn(6), turn(7)] });
@@ -34,6 +34,20 @@ it('reload covers an echo older than the latest page before leaving it in the wa
   expect(saved.has('planner.chat.echoes')).toBe(false);
   const { chat } = await import('./store');
   expect(chat.value.turns.map((t) => t.n)).toEqual([0, 1, 2, 3, 4, 5, 6, 7]);
+});
+
+it('forgets expired slash commands and non-Claude sends without pulling older history on every reload', async () => {
+  saved.set('planner.chat.echoes', JSON.stringify([
+    { id: 'command', text: '/compact', base: 0, at: Date.now() - 600_001, attachments: [] },
+    { id: 'non-claude', text: 'обычное сообщение', base: 0, at: Date.now() - 86_400_000, attachments: [] },
+  ]));
+  calls.api.mockResolvedValue({ available: false, total: 0, turns: [] });
+  const { loadLatest, pendingMessages } = await import('./chat');
+  expect(pendingMessages()).toEqual([]);
+  expect(saved.has('planner.chat.echoes')).toBe(false);
+  await loadLatest();
+  expect(calls.api.mock.calls.map(([p]) => p)).toEqual(['/api/chat/history?limit=3']);
+  expect(pendingMessages()).toEqual([]);
 });
 
 it('does not lose a transcript event arriving while the preceding history request is in flight', async () => {

@@ -16,7 +16,17 @@ export const addFiles = shelf.add;
 export const removeFile = shelf.remove;
 export const sending = signal(false);
 export const ECHO_KEY = 'planner.chat.echoes';
-const readEchoes = (): Echo[] => { try { return restoreEchoes(localStorage.getItem(ECHO_KEY)); } catch { return []; } };
+const readEchoes = (): Echo[] => {
+  try {
+    const restored = restoreEchoes(localStorage.getItem(ECHO_KEY));
+    const live = reconcileEchoes(restored, []);
+    // Do not carry an expired command through every reload, even when no transcript is available.
+    if (live.length !== restored.length) {
+      if (live.length) localStorage.setItem(ECHO_KEY, JSON.stringify(live)); else localStorage.removeItem(ECHO_KEY);
+    }
+    return live;
+  } catch { return []; }
+};
 const echoes = signal<Echo[]>(readEchoes());
 const saveEchoes = (list: Echo[]): void => {
   echoes.value = list;

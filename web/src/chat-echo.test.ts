@@ -1,9 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { matchesEcho, reconcileEchoes, restoreEchoes, type Echo } from './chat-echo';
+import { ECHO_WAIT_MS, matchesEcho, reconcileEchoes, restoreEchoes, type Echo } from './chat-echo';
 import type { TurnData } from './types';
 
 const file = { id: 'a'.repeat(32) + '.png', name: 'screen.png' };
-const echo = (text = 'продолжай', base = 0, id = 'send-1'): Echo => ({ id, text, base, at: 123, attachments: [] });
+const echo = (text = 'продолжай', base = 0, id = 'send-1'): Echo => ({ id, text, base, at: Date.now(), attachments: [] });
 const turn = (n: number, q = 'продолжай', patch: Partial<TurnData> = {}): TurnData => ({ n, q, at: 0, from: 'human', a: '', ...patch });
 const waiting = (list: Echo[]) => list.filter((e) => e.delivered === undefined);
 
@@ -53,8 +53,16 @@ describe('planner echo and native transcript', () => {
     expect(waiting(got)).toEqual([]);
     expect(reconcileEchoes(got, [turn(1), turn(2)])).toEqual(got);
   });
-  it('keeps an unobserved message indefinitely and ignores malformed storage', () => {
+  it('keeps a recent unobserved message, but expires input that cannot become a transcript record', () => {
     expect(waiting(reconcileEchoes([echo()], [turn(1, 'ещё работаю')]))).toHaveLength(1);
+    const command = { ...echo('/compact'), at: Date.now() - ECHO_WAIT_MS - 1 };
+    expect(reconcileEchoes([command], [turn(1, 'поздний ответ')])).toEqual([]);
+    const nonClaude = { ...echo('обычное сообщение'), at: Date.now() - 86_400_000 };
+    expect(reconcileEchoes([nonClaude], [])).toEqual([]);
+    // An old delivered occurrence still cannot be consumed by a later identical send.
+    expect(reconcileEchoes([{ ...command, delivered: 1 }], [])).toEqual([{ ...command, delivered: 1 }]);
+  });
+  it('ignores malformed storage', () => {
     for (const raw of [null, '{', '{}', '[null,1,{"id":"bad"}]']) expect(restoreEchoes(raw)).toEqual([]);
   });
 });

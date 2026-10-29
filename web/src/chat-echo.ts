@@ -23,9 +23,14 @@ export function matchesEcho(e: Echo, t: TurnData): boolean {
   return e.attachments.length === (t.images?.length ?? 0);
 }
 
-export function reconcileEchoes(receipts: Echo[], turns: TurnData[]): Echo[] {
-  const used = new Set(receipts.flatMap((e) => e.delivered === undefined ? [] : [e.delivered]));
-  return receipts.map((e) => {
+/** Some accepted input never becomes a human transcript record (slash commands; non-Claude Coordinators). */
+export const ECHO_WAIT_MS = 10 * 60 * 1000;
+
+export function reconcileEchoes(receipts: Echo[], turns: TurnData[], now = Date.now()): Echo[] {
+  // Expire only waiting receipts: a delivered one still protects a later identical send from reusing its turn.
+  const live = receipts.filter((e) => e.delivered !== undefined || now - e.at <= ECHO_WAIT_MS);
+  const used = new Set(live.flatMap((e) => e.delivered === undefined ? [] : [e.delivered]));
+  return live.map((e) => {
     if (e.delivered !== undefined) return e;
     const t = turns.find((t) => !used.has(t.n) && matchesEcho(e, t));
     if (!t) return e;
