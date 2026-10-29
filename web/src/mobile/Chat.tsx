@@ -3,7 +3,7 @@
 import { Fragment, type JSX } from 'preact';
 import { useEffect, useLayoutEffect, useRef, useState } from 'preact/hooks';
 import { chat, screens, snap } from '../store';
-import { hasOlder, loadLatest, loadOlder, optimistic, pendingMessage, reconcile, send, sending } from '../chat';
+import { hasOlder, loadLatest, loadOlder, pendingMessages, send, sending } from '../chat';
 import { onChatEvent } from '../api';
 import { fetchScreen } from '../actions';
 import { parseOptions } from '../requests';
@@ -16,6 +16,7 @@ import type { MenuData, TurnData } from '../types';
 import { Gl } from '../ui/Gl';
 import { Markdown } from '../ui/Markdown';
 import { MenuSlot } from '../ui/MenuCard';
+import { SavedFiles } from '../ui/Attached';
 import { RefText, TaskChip, taskOf } from '../ui/TaskChip';
 import { chatShown } from './state';
 
@@ -28,14 +29,18 @@ function Day(props: { at: number }): JSX.Element {
   return <div class="day" role="separator">{label}</div>;
 }
 
-function Human(props: { text: string; at: number; pending?: boolean }): JSX.Element {
+function Human(props: { text: string; at: number; pending?: boolean; turn?: TurnData }): JSX.Element {
   const { text, files, pasted } = splitAttachments(props.text);
-  const pics = files.length + pasted;
+  const images = (props.turn?.images ?? []).map((mime, i) => ({
+    id: `turn-${props.turn!.n}-${i}`, name: `${t('chat.image')} ${i + 1}`, mime, url: `/m/api/chat/image/${props.turn!.n}/${i}`,
+  }));
+  const pics = images.length ? 0 : files.length + pasted;
   return (
     <>
       <div class="who me"><b>{t('chat.you')}</b> {props.pending ? t('chat.sentWaiting') : timeOf(props.at)}</div>
       <div class={`b me ${props.pending ? 'pending' : ''}`} data-bubble="human">
         {text && <p><RefText text={text} /></p>}
+        <SavedFiles list={images} />
         {pics > 0 && <p class="pic"><Gl n="image" />{tn('m.pictures', pics)}</p>}
       </div>
     </>
@@ -92,8 +97,7 @@ export function ChatPage(): JSX.Element {
   const stuck = useRef(true);
   const anchor = useRef<{ h: number; top: number } | null>(null);
   const [text, setText] = useState('');
-  const pending = pendingMessage();
-  const opt = optimistic.value;
+  const pending = pendingMessages();
   const busy = !!coord?.busy;
   const dialog = !!coord?.dialog;
   const err = c.error || (coord?.error ?? '');
@@ -106,7 +110,6 @@ export function ChatPage(): JSX.Element {
 
   useEffect(() => { void loadLatest(PAGE); }, []);
   useEffect(() => onChatEvent(() => { void loadLatest(PAGE); }), []);
-  useEffect(() => { reconcile(); }, [coord?.history.length]);
   useEffect(() => { if (on && dialog) void fetchScreen('coordinator'); }, [on, dialog, coord?.reply]);
 
   // the end stays in view unless the reader has scrolled up; older turns added above do not move what is read
@@ -115,7 +118,7 @@ export function ChatPage(): JSX.Element {
     if (!el) return;
     if (anchor.current) { el.scrollTop = anchor.current.top + (el.scrollHeight - anchor.current.h); anchor.current = null; }
     else if (stuck.current) el.scrollTop = el.scrollHeight;
-  }, [c.turns.length, pending?.at, opt?.at, coord?.reply, busy, on, c.loading]);
+  }, [c.turns, pending.map((p) => p.id).join(','), coord?.reply, busy, on, c.loading]);
 
   // what is on the screen of an open chat is read once it has been there for a moment
   const unread = unreadTurns.value;
@@ -163,12 +166,12 @@ export function ChatPage(): JSX.Element {
           return (
             <Fragment key={x.n}>
               {(!prev || dayKey(prev.at) !== dayKey(x.at)) && x.at > 0 && <Day at={x.at} />}
-              {x.from === 'board' ? <Notice turn={x} /> : <Human text={x.q} at={x.at} />}
+              {x.from === 'board' ? <Notice turn={x} /> : <Human text={x.q} at={x.at} turn={x} />}
               {x.a && <Answer turn={x} />}
             </Fragment>
           );
         })}
-        {pending && <Human text={pending.text} at={pending.at} pending />}
+        {pending.map((p) => <Human key={p.id} text={p.text} at={p.at} pending />)}
         {err && <div class="b q err">{err}</div>}
         {busy && !err && <Working doing={open?.doing ?? ''} />}
       </div>

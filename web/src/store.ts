@@ -87,7 +87,7 @@ export const navFolds = signal<Record<string, boolean>>(JSON.parse(store('herdr-
 export const fresh = signal<Record<string, number>>({});
 export const tellDraft = signal<Record<string, string>>({});
 
-/** The Coordinator's chat: turns of the transcript, the compact tail and a pending message. */
+/** The Coordinator's chat: turns of the transcript, the compact tail and local receipts. */
 export const chat = signal<{
   turns: TurnData[];
   available: boolean | null;
@@ -98,12 +98,11 @@ export const chat = signal<{
   q: string;
   hits: { n: number; at: number; from: string; q_snip: string; a_snip: string }[];
   hitsBusy: boolean;
-  pending: { text: string; attachments: { id: string; name: string }[]; base: number; at: number } | null;
   highlight: number | null;
   error: string;
 }>({
   turns: [], available: null, loading: false, loadingLatest: false, total: 0, q: '', hits: [], hitsBusy: false,
-  pending: null, highlight: null, error: '',
+  highlight: null, error: '',
 });
 
 export const searchState = signal<{ open: boolean; q: string; hits: any[]; cur: number }>({ open: false, q: '', hits: [], cur: 0 });
