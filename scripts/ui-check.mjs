@@ -2384,7 +2384,7 @@ section('requests', async () => {
   check('the chat opens on the last turns after the reload', await waitFor('!document.querySelector("#chat").classList.contains("off") && document.querySelectorAll("#clog .turn[data-n]").length >= 3', 12000), String(await evalJs('document.querySelectorAll("#clog .turn[data-n]").length')));
   // The notice was the last turn when the chat was read at its end, so its words are checked again after a reload and it
   // may come back as a turn of its own, in its place: what must not happen is a notice stuck under the newer turns.
-  const pinned = async () => evalJs(`(() => { const t = [...document.querySelectorAll('#clog .turn')].map((e) => e.innerText); const i = t.findIndex((x) => x.includes(${JSON.stringify(noticeLine)})); const a = t.findIndex((x) => x.includes('Ответ 1')); return { n: document.querySelectorAll('#clog [data-notice]').length, i, a, len: t.length, ok: document.querySelectorAll('#clog [data-notice]').length === 0 && (i === -1 || i < a) }; })()`);
+  const pinned = async () => evalJs(`(() => { const t = [...document.querySelectorAll('#clog .turn')].map((e) => e.innerText); const i = t.findIndex((x) => x.includes(${JSON.stringify(noticeLine)})); const a = t.findLastIndex((x) => x.includes('Ответ 1')); return { n: document.querySelectorAll('#clog [data-notice]').length, i, a, len: t.length, ok: document.querySelectorAll('#clog [data-notice]').length === 0 && (i === -1 || i < a) }; })()`);
   await waitFor('document.querySelectorAll("#clog [data-notice]").length === 0', 5000);
   const pin = await pinned();
   check('after a reload that holds only the last turns, an old notice is not pinned under them', pin.ok, JSON.stringify(pin));
