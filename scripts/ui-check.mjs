@@ -7438,7 +7438,12 @@ section('crew roles', async () => {
   await waitFor(`!!document.querySelector('[data-preset="${cap.id}"]')`, 40000);
   check('the crew differs from the preset by the role\'s two fields', await waitFor(`document.querySelector('[data-preset="${cap.id}"]')?.dataset.diff === "2"`, 15000), String(await evalJs(`document.querySelector('[data-preset="${cap.id}"]')?.dataset.diff`)));
   const c6 = calls().length;
-  await click(`[data-preset-apply="${cap.id}"]`);
+  // a slow machine may not have drawn the list when the button was pressed: pressed again until the card is there
+  for (let i = 0; i < 4 && !(await exists('#st-preset-card')); i++) {
+    await waitFor(`!!document.querySelector('[data-preset-apply="${cap.id}"]') && !document.querySelector('[data-preset-apply="${cap.id}"]').disabled`, 15000);
+    await click(`[data-preset-apply="${cap.id}"]`);
+    await waitFor('!!document.querySelector("#st-preset-card")', 8000);
+  }
   check('the card shows the role\'s steps as «было → стало», by the planner, not by a board command', await waitFor(`document.querySelectorAll('#st-pv-steps li[data-step="role:${rid}"]').length === 2`, 15000)
     && await hasText('#st-pv-steps', 'Дизайнер') && await hasText('#st-pv-steps', 'claude/claude-haiku-5-5'), await text('#st-preset-card'));
   await evalJs('document.querySelector("#st-preset-card").scrollIntoView({ block: "center" }); true');
