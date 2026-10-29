@@ -2,7 +2,8 @@
    and sending (text and files: pasted screenshots, images, sound, text). */
 import { signal } from '@preact/signals';
 import { api, post, refreshNow } from './api';
-import { chat, snap } from './store';
+import { chat } from './store';
+import { reconcileEchoes, restoreEchoes, type Echo } from './chat-echo';
 import type { TurnData } from './types';
 import { t } from './i18n';
 import { makeShelf, type SavedFile } from './attach';
@@ -14,7 +15,31 @@ export const pendingFiles = shelf.files;
 export const addFiles = shelf.add;
 export const removeFile = shelf.remove;
 export const sending = signal(false);
-export const optimistic = signal<{ text: string; at: number; attachments: { id: string; name: string }[] } | null>(null);
+export const ECHO_KEY = 'planner.chat.echoes';
+const readEchoes = (): Echo[] => {
+  try {
+    const restored = restoreEchoes(localStorage.getItem(ECHO_KEY));
+    const live = reconcileEchoes(restored, []);
+    // Do not carry an expired command through every reload, even when no transcript is available.
+    if (live.length !== restored.length) {
+      if (live.length) localStorage.setItem(ECHO_KEY, JSON.stringify(live)); else localStorage.removeItem(ECHO_KEY);
+    }
+    return live;
+  } catch { return []; }
+};
+const echoes = signal<Echo[]>(readEchoes());
+const saveEchoes = (list: Echo[]): void => {
+  echoes.value = list;
+  try { if (list.length) localStorage.setItem(ECHO_KEY, JSON.stringify(list)); else localStorage.removeItem(ECHO_KEY); } catch { /* private mode */ }
+};
+function settleEchoes(): void {
+  const list = reconcileEchoes(echoes.peek(), chat.peek().turns);
+  const base = Math.min(...list.filter((e) => e.delivered === undefined).map((e) => e.base));
+  // A delivered receipt below every remaining send's boundary can no longer be mistaken for that send.
+  saveEchoes(list.filter((e) => e.delivered === undefined || e.delivered > base));
+}
+export const pendingMessages = (): Echo[] => reconcileEchoes(echoes.value, chat.value.turns).filter((e) => e.delivered === undefined);
+export const forgetPending = (id: string): void => saveEchoes(echoes.peek().filter((e) => e.id !== id));
 /** Set when a search hit or a key asks the log to show a given turn. */
 export const scrollTo = signal<{ n: number; at: number; block?: 'start' | 'center' } | null>(null);
 /** A draft for the message line (a todo item dropped on the chat): the line takes the text once. */
@@ -26,12 +51,14 @@ function merge(list: TurnData[]): void {
   const map = new Map(chat.value.turns.map((x) => [x.n, x]));
   for (const x of list) map.set(x.n, x);
   update({ turns: [...map.values()].sort((a, b) => a.n - b.n) });
+  settleEchoes();
 }
 
 export const hasOlder = (): boolean => chat.value.turns.length > 0 && chat.value.turns[0].n > 0;
 
+let latestAgain = 0;
 export async function loadLatest(limit = 3): Promise<void> {
-  if (chat.value.loadingLatest) return;
+  if (chat.value.loadingLatest) { latestAgain = Math.max(latestAgain, limit); return; }
   update({ loadingLatest: true });
   try {
     const r = await api<{ available: boolean; turns: TurnData[]; total: number }>(`/api/chat/history?limit=${limit}`);
@@ -49,12 +76,19 @@ export async function loadLatest(limit = 3): Promise<void> {
           if (!(await loadOlderWait(100))) break;
         }
       }
+      // Reloads and reconnects may return only the tail while an echo belongs in an older page.
+      // Cover its transcript boundary before deciding it is still waiting.
+      const base = Math.min(...echoes.peek().filter((e) => e.delivered === undefined).map((e) => e.base + 1));
+      for (let i = 0; i < 40 && chat.value.turns[0]?.n > base && hasOlder(); i++) {
+        if (!(await loadOlderWait(100))) break;
+      }
       settleRead();
       // Still part of this load: whoever waits for the history (the jump to the first unread) waits for the covering, too.
       await coverRead();
     }
   } catch { /* the compact tail stays */ } finally {
     update({ loadingLatest: false });
+    if (latestAgain) { const limit = latestAgain; latestAgain = 0; void loadLatest(limit); }
   }
 }
 
@@ -132,17 +166,11 @@ export function searchChat(q: string): void {
 }
 
 /** A message sent from here stays in the open chat until the transcript has it. */
-export function notePending(text: string, attachments: { id: string; name: string }[] = []): void {
+export function notePending(text: string, attachments: { id: string; name: string }[] = []): string {
   const turns = chat.value.turns;
-  update({ pending: { text, attachments, base: turns.length ? turns[turns.length - 1].n : -1, at: Date.now() } });
-}
-
-export function pendingMessage(): ReturnType<typeof chat.peek>['pending'] {
-  const p = chat.value.pending;
-  if (!p) return null;
-  const seen = chat.value.turns.some((x) => x.n > p.base && (!p.text || x.q.includes(p.text)));
-  if (seen || Date.now() - p.at > 600000) { queueMicrotask(() => update({ pending: null })); return null; }
-  return p;
+  const id = Array.from(crypto.getRandomValues(new Uint32Array(4)), (n) => n.toString(16)).join('-');
+  saveEchoes([...echoes.peek(), { id, text, attachments, base: turns.length ? turns[turns.length - 1].n : -1, at: Date.now() }]);
+  return id;
 }
 
 /* ───────── files ───────── */
@@ -173,8 +201,7 @@ export async function send(text: string): Promise<boolean> {
     if (!got.ok) { update({ error: t('chat.imgFailed', { why: got.why }) }); return false; }
     const attachments = got.saved;
     update({ error: '' });
-    optimistic.value = { text: body, at: Date.now(), attachments };
-    notePending(body, attachments);
+    const receipt = notePending(body, attachments);
     try {
       await post('/api/chat', { text: body, attachments });
       const keys = new Set(files.map((p) => p.key));
@@ -186,19 +213,11 @@ export async function send(text: string): Promise<boolean> {
       setTimeout(() => { void refreshNow(); void loadLatest(); }, 2400);
       return true;
     } catch (e) {
-      optimistic.value = null;
-      update({ pending: null, error: t('chat.sendFailed', { why: (e as Error).message }) });
+      forgetPending(receipt);
+      update({ error: t('chat.sendFailed', { why: (e as Error).message }) });
       return false;
     }
   } finally {
     sending.value = false;
   }
-}
-
-/** Drops the optimistic echo once the server's history has the message. */
-export function reconcile(): void {
-  const o = optimistic.value;
-  const hist = snap.value?.coordinator.history ?? [];
-  const last = hist[hist.length - 1];
-  if (o && last && last.text === o.text && last.attachments.length === o.attachments.length) optimistic.value = null;
 }

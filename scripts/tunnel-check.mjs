@@ -7,6 +7,8 @@
 //   AUTH_BASE=http://127.0.0.1:PORT node scripts/tunnel-check.mjs
 //   (scripts/run-checks.sh runs it in the part «auth»; the same checks in a browser: the sections «gate» and «gate page» of ui-check)
 import http from 'node:http';
+import { appendFileSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
 
 const base = process.env.AUTH_BASE || process.argv[2];
 if (!base) { console.error('tunnel-check: AUTH_BASE is required'); process.exit(2); }
@@ -196,6 +198,38 @@ try {
   check('the full version: the planner\'s state', pcState.status === 200 && Array.isArray(pcState.json?.tasks) && typeof pcState.json?.chat_rev === 'number', brief(pcState));
   const pcRoot = await tun('GET', '/', { cookie: pcFull, headers: page });
   check('the planner\'s page comes with the mark that tells it to ask instead of listening', pcRoot.status === 200 && /<meta name="herdr-gate" content="poll">/.test(pcRoot.text), brief(pcRoot));
+  // PLN-87: both scopes see the same native mid-turn records and every image, through the actual gate.
+  if (process.env.FIXTURE) {
+    const folder = realpathSync(join(process.env.FIXTURE, 'board', 'coordinator', 'default', 'chat')).replace(/[^A-Za-z0-9]/g, '-');
+    const transcript = join(process.env.FIXTURE, 'claude', 'projects', folder, 'fixture.jsonl');
+    const before = readFileSync(transcript, 'utf8');
+    const image = { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAFgwJ/lK3Q6wAAAABJRU5ErkJggg==' } };
+    try {
+      const records = [
+        { type: 'user', message: { content: 'PLN87 gate: первый' } },
+        { type: 'assistant', message: { stop_reason: 'tool_use', content: [{ type: 'tool_use', name: 'Bash' }] } },
+        { type: 'attachment', attachment: { type: 'queued_command', prompt: [{ type: 'text', text: 'PLN87 gate: картинки' }, image, image] } },
+        { type: 'attachment', attachment: { type: 'queued_command', prompt: 'PLN87 gate: уточнение' } },
+        { type: 'assistant', message: { stop_reason: 'end_turn', content: [{ type: 'text', text: 'Сделал все три' }] } },
+        { type: 'user', message: { content: 'PLN87 gate: Запускай' } },
+      ];
+      appendFileSync(transcript, records.map((r) => JSON.stringify(r)).join('\n') + '\n');
+      const full = await tun('GET', '/api/chat/history?limit=4', { cookie: pcFull });
+      const lite = await tun('GET', '/m/api/chat/history?limit=4', { cookie: phoneCookie, ua: IPHONE });
+      const qs = full.json?.turns?.map((t) => t.q);
+      check('gate: full and /m preserve the same ordered mid-turn messages', full.status === 200 && lite.status === 200
+        && JSON.stringify(full.json?.turns) === JSON.stringify(lite.json?.turns)
+        && JSON.stringify(qs) === JSON.stringify(['PLN87 gate: первый', 'PLN87 gate: картинки', 'PLN87 gate: уточнение', 'PLN87 gate: Запускай']), JSON.stringify(qs));
+      const n = full.json?.turns?.[1]?.n;
+      for (let i = 0; i < 2; i++) {
+        const f = await tun('GET', `/api/chat/image/${n}/${i}`, { cookie: pcFull });
+        const m = await tun('GET', `/m/api/chat/image/${n}/${i}`, { cookie: phoneCookie, ua: IPHONE });
+        check(`gate: image ${i + 1} of a mid-turn message is served in both scopes`, f.status === 200 && m.status === 200 && f.headers['content-type'] === 'image/png' && m.headers['content-type'] === 'image/png');
+      }
+      const again = await tun('GET', '/api/chat/history?limit=4', { cookie: pcFull });
+      check('gate: reconnecting has no duplicate or missing native messages', JSON.stringify(again.json?.turns) === JSON.stringify(full.json?.turns));
+    } finally { writeFileSync(transcript, before); }
+  }
   const pcEvents = await tun('GET', '/api/events', { cookie: pcFull });
   check('a quick tunnel has no event stream: 410 and the interval to ask at', pcEvents.status === 410 && pcEvents.json?.poll_ms === 5000, brief(pcEvents));
   const pcWrong = await denied(hidden, 404, { cookie: pcFull });

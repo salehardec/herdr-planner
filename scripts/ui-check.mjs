@@ -1128,6 +1128,92 @@ section('chat', async () => {
   await press('Escape');
 });
 
+section('chat echo', async () => {
+  const folder = realpathSync(join(fixture, 'board', 'coordinator', 'default', 'chat')).replace(/[^A-Za-z0-9]/g, '-');
+  const file = join(fixture, 'claude', 'projects', folder, 'fixture.jsonl');
+  const before = readFileSync(file, 'utf8');
+  const busyFile = join(fixture, 'state', 'coordinator-busy');
+  const key = 'planner.chat.echoes';
+  const messages = ['PLN87: начни проверку', 'PLN87: По лимитам мне надо…', 'PLN87: ещё мысль с картинкой', 'PLN87: и ещё одно уточнение', 'PLN87: Запускай'];
+  const raw = (v) => appendFileSync(file, JSON.stringify(v) + '\n');
+  const stamp = (i) => new Date(Date.now() - i * 1000).toISOString(); // deliberately backwards: order is the file's
+  const assistant = (text, stop = 'end_turn') => raw({ type: 'assistant', timestamp: stamp(9), message: { stop_reason: stop, content: [{ type: 'text', text }, ...(stop === 'tool_use' ? [{ type: 'tool_use', name: 'Bash', input: { description: 'Проверяю PLN87' } }] : [])] } });
+  const reload = async () => {
+    await navigate(base + '/?noauto&nocoach&bloom=0');
+    if (await evalJs('document.querySelector("#chat").classList.contains("off")')) await click('#bchat');
+    await waitFor('document.querySelector("#chat").getAttribute("aria-hidden") === "false"', 5000);
+  };
+  const pendingN = () => evalJs('document.querySelectorAll("#clog .msg.q.pending").length');
+  try {
+    await resetUi();
+    await evalJs(`localStorage.removeItem(${JSON.stringify(key)}); true`);
+    await reload();
+    await waitFor('document.querySelectorAll("#clog .turn[data-n]").length >= 3', 8000);
+    writeFileSync(busyFile, '1');
+    const start = Date.now();
+    for (let i = 0; i < messages.length; i++) {
+      if (i === 1 || i === 2) {
+        await evalJs(`(() => {
+          const dt = new DataTransfer();
+          for (const [w, h] of ${i === 1 ? '[[120,80],[640,24]]' : '[[80,100]]'}) {
+            const c = document.createElement('canvas'); c.width = w; c.height = h;
+            const x = c.getContext('2d'); x.fillStyle = '#f5f0e6'; x.fillRect(0,0,w,h);
+            x.fillStyle = '#249458'; x.fillRect(0,0,24,h); x.fillStyle = '#c44b30'; x.fillRect(w-24,0,24,h);
+            const bytes = Uint8Array.from(atob(c.toDataURL().split(',')[1]), (s) => s.charCodeAt(0));
+            dt.items.add(new File([bytes], 'burst-' + w + '.png', { type: 'image/png' }));
+          }
+          const input = document.querySelector('#file-in'); input.files = dt.files; input.dispatchEvent(new Event('change', { bubbles: true })); return true;
+        })()`);
+        await waitFor('document.querySelectorAll("#attach [data-state=ready]").length > 0 && !document.querySelector("#attach [data-state=uploading]")', 8000);
+      }
+      await evalJs(`(() => { const t = document.querySelector('#ask-in'); t.value = ${JSON.stringify(messages[i])}; t.dispatchEvent(new Event('input', { bubbles: true })); document.querySelector('#ask').requestSubmit(); return true; })()`);
+      check(`burst send ${i + 1} completes`, await waitFor(`document.querySelector('#ask-in').value === '' && JSON.parse(localStorage.getItem(${JSON.stringify(key)}) || '[]').length === ${i + 1}`, 8000));
+    }
+    console.log(`   five messages submitted in ${Date.now() - start} ms`);
+    check('all five sends have their own echo while the transcript has none', await pendingN() === 5, await pendingN());
+    check('the snapshot includes every accepted send', await waitFor(`fetch('/api/state').then(r => r.json()).then(s => s.coordinator.history.some(m => m.text === ${JSON.stringify(messages.at(-1))}))`, 12000));
+    const history = await evalJs('fetch("/api/state").then(r => r.json()).then(s => s.coordinator.history)');
+    const held = messages.map((text) => history.findLast((m) => m.text === text));
+    const question = (i, queued) => {
+      const images = held[i].attachments.map((a) => ({ type: 'image', source: { type: 'base64', media_type: a.mime, data: readFileSync(join(fixture, 'state', 'herdr-planner', 'attachments', a.id)).toString('base64') } }));
+      const content = [{ type: 'text', text: `${images.map((_, n) => `[Image #${n + 1}]`).join(' ')}${messages[i]}${images.length ? '\nКартинки (файлы на машине с доской):' : ''}` }, ...images];
+      raw(queued ? { type: 'attachment', timestamp: stamp(i), attachment: { type: 'queued_command', prompt: content } } : { type: 'user', timestamp: stamp(i), message: { role: 'user', content } });
+    };
+    question(0, false); assistant('PLN87: Работаю', 'tool_use'); question(1, true);
+    check('mid-turn input with both images is acknowledged before the answer', await waitFor('document.querySelectorAll("#clog .msg.q.pending").length === 3 && [...document.querySelectorAll("#clog .turn[data-n] .msg.q")].some(e => e.innerText.includes("По лимитам"))', 12000), await pendingN());
+    await reload();
+    check('reload keeps all three undelivered sends and does not revive the first two', await waitFor('document.querySelectorAll("#clog .msg.q.pending").length === 3', 10000), await pendingN());
+    question(2, true); question(3, true); assistant('PLN87: Сделал все три'); question(4, false);
+    check('the remaining echoes disappear as soon as their native records arrive', await waitFor('!document.querySelector("#clog .msg.q.pending") && !localStorage.getItem("planner.chat.echoes")', 12000));
+    const words = await evalJs('[...document.querySelectorAll("#clog .turn[data-n] .msg")].map(e => e.querySelector(".txt")?.innerText || "").filter(t => t.includes("PLN87:"))');
+    const expected = [messages[0], 'PLN87: Работаю', messages[1], messages[2], messages[3], 'PLN87: Сделал все три', messages[4]];
+    check('five rapid messages and the reply follow transcript order, regardless of timestamps', JSON.stringify(words) === JSON.stringify(expected), JSON.stringify(words));
+    const imageTurn = await evalJs('[...document.querySelectorAll("#clog .turn[data-n]")].find(e => e.innerText.includes("По лимитам"))?.dataset.n');
+    const thumbs = await evalJs(`Promise.all([...document.querySelectorAll('#clog .turn[data-n="${imageTurn}"] .shot img')].map(async (img) => { await img.decode(); return [img.naturalWidth, img.naturalHeight, getComputedStyle(img).objectFit]; }))`);
+    check('both images decode; the narrow strip is fitted whole instead of cropping its empty centre', JSON.stringify(thumbs) === JSON.stringify([[120,80,'contain'],[640,24,'contain']]), JSON.stringify(thumbs));
+    if (await evalJs('document.querySelector("#cwide").getAttribute("aria-pressed") !== "true"')) await click('#cwide');
+    await waitFor('document.querySelector("#chat").classList.contains("wide")', 4000);
+    await evalJs(`(() => { const turns = [...document.querySelectorAll('#clog .turn[data-n]')]; turns.find(e => e.innerText.includes(${JSON.stringify(messages[0])}))?.scrollIntoView({ block: 'start' }); return true; })()`);
+    await shot('chat-echo-burst.png');
+    await reload();
+    // The fresh page can hold only a tail. Load older native records to inspect every message after reload.
+    for (let i = 0; i < 3 && !(await text('#clog')).includes(messages[0]); i++) {
+      await click('[data-chat="older"]'); await quiet();
+    }
+    const restored = await evalJs('[...document.querySelectorAll("#clog .turn[data-n] .msg.q .txt")].map(e => e.innerText).filter(t => t.includes("PLN87:"))');
+    check('reload has exactly one copy of every send and no false waiting status', JSON.stringify(restored) === JSON.stringify(messages) && await pendingN() === 0, JSON.stringify(restored));
+    await navigate(base + '/m');
+    check('/m reads the same ordered native messages', await waitFor('document.querySelectorAll("#clog [data-bubble=human]").length >= 5', 10000) && await evalJs(`[...document.querySelectorAll('#clog [data-bubble=human]')].map(e => e.querySelector('p')?.innerText).filter(t => t?.includes('PLN87:')).join('|') === ${JSON.stringify(messages.join('|'))}`));
+    check('/m serves every native image using its own allowed routes', await waitFor(`document.querySelectorAll('#clog img[src^="/m/api/chat/image/"]').length >= 3`, 5000) && await evalJs(`Promise.all([...document.querySelectorAll('#clog img[src^="/m/api/chat/image/"]')].map(async i => { await i.decode(); return i.naturalWidth > 0; })).then(a => a.every(Boolean))`));
+    check('/m has no resurrected local echo', !(await exists('#clog .pending')));
+  } finally {
+    writeFileSync(file, before);
+    try { unlinkSync(busyFile); } catch { /* gone */ }
+    await evalJs(`localStorage.removeItem(${JSON.stringify(key)}); true`);
+    await navigate(base + '/?noauto&nocoach&bloom=0');
+  }
+});
+
 // ── the hints of `/` and `@`: the program's commands, and what to name in a message ──
 
 section('hints', async () => {
