@@ -936,6 +936,17 @@ mod tests {
         assert!(checks.merge_blocked && !checks.review_failed);
         assert_eq!(checks.actions, vec!["anyway", "review", "tell"]);
 
+        let checkout = task(
+            json!({"id":"all-gis-services-next/3","state":"blocked","kind":"permission","stage":"approval","msg":"Review: Pass · 1 minor · Merge needs a clean checkout","pr":false,"review":{"findings":[{"severity":"minor"}],"meets":true,"pass":true}}),
+        );
+        assert_eq!(
+            (checkout.status, checkout.board_label.as_str()),
+            (Status::Ready, "готова к одобрению"),
+            "the board's remedy is to clean the checkout and approve again",
+        );
+        assert!(!checkout.merge_blocked && !checkout.review_failed);
+        assert_eq!(checkout.actions, vec!["approve", "anyway", "review", "tell"]);
+
         let plain = task(
             json!({"id":"p/1","state":"blocked","kind":"permission","stage":"approval","msg":"Pass · 1 minor"}),
         );

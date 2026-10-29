@@ -1170,6 +1170,8 @@ export const en: Record<string, string | string[]> = {
   'm.reviewFailed': 'review failed', 'm.mergeBlocked': 'merge blocked',
   'm.pr': 'has a PR', 'm.note.plan': 'This plan can be approved on the computer.',
   'm.note.approval': 'No merge from here: the decision is on the computer (merge, send the review back or merge anyway).', 'm.note.auth': 'Signing in is done on the computer: the planner does not keep your logins.',
+  'm.note.mergeBlocked': 'The board cannot merge this task. Resolve the reason above on the computer or ask the Coordinator in chat; “anyway” is available only on the computer.',
+  'm.note.mergeBlockedCheckout': 'The board could not merge: the checkout has uncommitted files or is on the wrong branch. Fix it on the computer and press “Approve the merge” again — or ask the Coordinator in chat.',
   'm.note.reviewneeds': 'The reviewer needs you — on the computer.', 'm.note.alarm': 'Computer only: “Shipyard”, where you can see what would be removed.',
   'm.quick.1': 'What’s on fire?', 'm.quick.2': 'Summary of the day',
   'm.quick.3': 'What waits for me?', 'm.pictures': ['{n} picture', '{n} pictures', '{n} pictures'],

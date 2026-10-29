@@ -28,6 +28,35 @@ describe('the phone\'s cards', () => {
     expect(ok.approve).toBe(true);
   });
 
+  it('a merge refused for the checkout keeps approve for the retry and says what to fix', () => {
+    const refused = task({
+      id: 'all-gis-services-next/3', repo: 'all-gis-services-next', n: 3, tag: 'AGSVN-3',
+      status: 'ready', kind: 'permission', stage: 'approval', msg: 'Review: Pass · 1 minor · Merge needs a clean checkout',
+      merge_blocked: false, actions: ['approve', 'anyway', 'review', 'tell'], pr: '',
+    });
+    const p = planOf(reqOf(refused));
+    expect(p).toMatchObject({ block: 'approval', approve: true, note: 'm.note.mergeBlockedCheckout', pr: '' });
+    expect(can(refused, 'approve')).toBe(true);
+  });
+
+  it('both branch refusals keep approve and explain the checkout too', () => {
+    for (const msg of ['Your checkout is on another branch', 'Task is on the wrong branch']) {
+      const p = planOf(reqOf(task({
+        status: 'ready', kind: 'permission', stage: 'approval', msg,
+        actions: ['approve', 'anyway', 'review', 'tell'],
+      })));
+      expect(p, msg).toMatchObject({ approve: true, note: 'm.note.mergeBlockedCheckout' });
+    }
+  });
+
+  it('other merge blocks keep the board reason and offer the computer or the Coordinator', () => {
+    const p = planOf(reqOf(task({
+      status: 'waiting', kind: 'permission', stage: 'approval', msg: 'The pull request checks fail',
+      merge_blocked: true, actions: ['tell'],
+    })));
+    expect(p).toMatchObject({ block: 'approval', approve: false, note: 'm.note.mergeBlocked' });
+  });
+
   it('a merge the board asks as a «permission» (the review failed) is still the merge', () => {
     const p = planOf(reqOf(task({ status: 'waiting', kind: 'permission', stage: 'approval', review_failed: true, actions: ['review', 'anyway', 'tell'] })));
     expect(p).toMatchObject({ block: 'approval', approve: false, screen: false, note: 'm.note.approval' });
