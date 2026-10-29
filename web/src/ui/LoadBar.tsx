@@ -6,7 +6,7 @@ import { t, tn, locale } from '../i18n';
 import { goHome } from '../nav';
 import { cardAnchor, closeCard } from './hovercard';
 import { rootPx } from '../scale';
-import { gb, levelOf, meters, pct, rowFit, staleLoad, worstMeter, type LoadLevel, type Meter } from '../util/load';
+import { gb, levelOf, meters, pct, rowFit, staleLoad, worstMeter, type LoadLevel, type Meter, type RowStep } from '../util/load';
 import './loadbar.css';
 
 /** What time it is for the bars: they go grey when a reading is too old. */
@@ -67,10 +67,20 @@ function useTier(box: { current: HTMLElement | null }): void {
       const natural = kids.reduce((a, c) => a + (c.tagName === 'BUTTON' ? c.scrollWidth : c.offsetWidth), 0) + gap * Math.max(0, kids.length - 1);
       const rowGap = parseFloat(getComputedStyle(row).columnGap) || 0;
       const monGap = parseFloat(getComputedStyle(mon).columnGap) || 0;
-      const widths = { full: 0, one: 0, pct: 0, worst: 0 };
-      if (chip) {
-        for (const form of ['full', 'one', 'pct', 'worst'] as const) { chip.dataset.form = form; widths[form] = chip.offsetWidth / px; }
-      }
+      // every form the row can take, measured as it is drawn (the widest first): all the words, the tightest window, the first k providers with
+      // their words, the shares, the one closest to its limit
+      const segs = chip ? [...chip.querySelectorAll<HTMLElement>('.lp')] : [];
+      const widthOf = (form: string, words: number): number => {
+        if (!chip) return 0;
+        chip.dataset.form = form;
+        segs.forEach((sg, i) => { sg.dataset.w = i < words ? '1' : '0'; });
+        return chip.offsetWidth / px;
+      };
+      const n = segs.length;
+      const steps: RowStep[] = [{ form: 'full', words: n, w: widthOf('full', n) }, { form: 'one', words: n, w: widthOf('one', n) }];
+      for (let k = n - 1; k >= 1; k--) steps.push({ form: 'mix', words: k, w: widthOf('mix', k) });
+      steps.push({ form: 'pct', words: 0, w: widthOf('pct', 0) });
+      const worstW = widthOf('worst', 0);
       let gateFull = 0;
       let gateIcon = 0;
       if (gate) {
@@ -78,16 +88,15 @@ function useTier(box: { current: HTMLElement | null }): void {
         gate.dataset.form = 'icon'; gateIcon = gate.offsetWidth;
       }
       const room = (row.clientWidth - menu.offsetWidth - natural - 2 * rowGap) / px;
-      // the gate keeps its words while the subscription chip still keeps its own; else it is only an icon and a dot
-      // the subscriptions keep all their words, else the tightest window of each provider, else their shares, else only the provider closest to its limit
-      let fit = rowFit(room - (gate ? (gateFull + monGap) / px : 0), widths, monGap / px);
+      // the gate keeps its words while the subscription row keeps at least as much of its own; else it is only an icon and a dot
+      let fit = rowFit(room - (gate ? (gateFull + monGap) / px : 0), steps, worstW, monGap / px);
       let gateForm: 'full' | 'icon' = 'full';
-      if (gate && (fit.chip === 'pct' || fit.chip === 'worst' || fit.chip === 'none')) {
-        gateForm = 'icon';
-        fit = rowFit(room - (gateIcon + monGap) / px, widths, monGap / px);
+      if (gate) {
+        const small = rowFit(room - (gateIcon + monGap) / px, steps, worstW, monGap / px);
+        if (small.idx < fit.idx || fit.idx >= steps.length) { gateForm = 'icon'; fit = small; }
       }
       el.dataset.tier = fit.tier;
-      if (chip) chip.dataset.form = fit.chip;
+      if (chip) widthOf(fit.chip, fit.words);
       if (gate) gate.dataset.form = gateForm;
     };
     measure();

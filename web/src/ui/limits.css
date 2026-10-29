@@ -35,7 +35,7 @@
 .lp{display:inline-flex;align-items:center;gap:0.3125rem;min-width:0}
 .lp.stale{opacity:.68}
 .lp-ico{width:0.875rem;height:0.875rem;color:var(--pl-dim)}
-.lp-bar{width:2.5rem;height:0.25rem;border-radius:2px;background:var(--pl-line);overflow:hidden;flex:none}
+.lp-bar{width:2rem;height:0.25rem;border-radius:2px;background:var(--pl-line);overflow:hidden;flex:none}
 .lp-bar i{display:block;height:100%;width:max(var(--w,0),3%);background:var(--pl-accent);border-radius:inherit}
 .lp-warn .lp-bar i{background:var(--c-yellow)}
 .lp-crit .lp-bar i{background:var(--c-red)}
@@ -45,13 +45,19 @@
 .lp-bal{display:inline;color:var(--pl-title);font-weight:700}
 .lp-crit .lp-t,.lp-crit .lp-s{color:var(--pl-danger)}
 .lp-warn .lp-t,.lp-warn .lp-s{color:var(--c-yellow)}
-/* the forms: all the words, the tightest window only, the shares only, the one provider closest to its limit (LoadBar.tsx picks one by the room) */
+/* the forms: all the words; the tightest window of each provider; the first providers with their words and the rest as shares; every provider
+   as a share with a small gauge; the one provider closest to its limit and only its share (LoadBar.tsx picks one by the room) */
 .limchip[data-form="one"] .lp-t2{display:none}
+.limchip[data-form="mix"] .lp-t2{display:none}
+.limchip[data-form="mix"] .lp[data-w="0"] .lp-words{display:none}
+.limchip[data-form="mix"] .lp[data-w="0"] .lp-s{display:inline}
+.limchip[data-form="mix"] .lp[data-w="0"] .lp-bar{display:none}
 .limchip[data-form="pct"] .lp-words,.limchip[data-form="worst"] .lp-words{display:none}
 .limchip[data-form="pct"] .lp-s,.limchip[data-form="worst"] .lp-s{display:inline}
-.limchip[data-form="pct"] .lp-bar,.limchip[data-form="worst"] .lp-bar{display:none}
-.limchip[data-form="pct"].lim-row{gap:0.5rem;padding:0 0.5rem}
-.limchip[data-form="worst"] .lp:not(:first-child){display:none}
+.limchip[data-form="pct"] .lp-bar{width:1.25rem}
+.limchip[data-form="worst"] .lp-bar{display:none}
+.limchip[data-form="pct"].lim-row,.limchip[data-form="mix"].lim-row{gap:0.5rem;padding:0 0.5rem}
+.limchip[data-form="worst"] .lp:not([data-urgent]){display:none}
 
 .lc-body{display:grid;gap:0.375rem}
 .lc-head,.lc-sub{display:flex;justify-content:space-between;align-items:baseline;gap:0.75rem;min-width:0}

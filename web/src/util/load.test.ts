@@ -24,21 +24,29 @@ describe('load levels', () => {
   it('takes the form that fits the room the crumbs leave', () => {
     expect([32, 24, 14, 8, 4, 3].map(tierFor)).toEqual(['host', 'full', 'stack', 'sum', 'dot', 'none']);
   });
-  it('gives the subscription row its words only while the bars keep the stack form, then shrinks it step by step', () => {
-    const w = { full: 13, one: 9, pct: 6, worst: 3.6 };
-    expect(rowFit(40, w, 0.5)).toEqual({ chip: 'full', tier: 'full' });
-    expect(rowFit(50, w, 0.5)).toEqual({ chip: 'full', tier: 'host' });
-    expect(rowFit(28, w, 0.5)).toEqual({ chip: 'full', tier: 'stack' });
+  it('gives the subscription row the first claim on the room, then shrinks it step by step', () => {
+    const steps = [
+      { form: 'full' as const, words: 4, w: 13 },
+      { form: 'one' as const, words: 4, w: 9 },
+      { form: 'mix' as const, words: 3, w: 8 },
+      { form: 'mix' as const, words: 1, w: 6.5 },
+      { form: 'pct' as const, words: 0, w: 5 },
+    ];
+    expect(rowFit(40, steps, 3.6, 0.5)).toEqual({ chip: 'full', words: 4, tier: 'full', idx: 0 });
+    expect(rowFit(50, steps, 3.6, 0.5)).toEqual({ chip: 'full', words: 4, tier: 'host', idx: 0 });
     // the words give way first to the tightest window of each provider, while the bars keep at least their summary…
-    expect(rowFit(25, w, 0.5)).toEqual({ chip: 'one', tier: 'stack' });
-    expect(rowFit(15.2, w, 0.5)).toEqual({ chip: 'one', tier: 'sum' });
-    // …then to the shares…
-    expect(rowFit(12.5, w, 0.5)).toEqual({ chip: 'pct', tier: 'sum' });
+    expect(rowFit(19.1, steps, 3.6, 0.5)).toEqual({ chip: 'full', words: 4, tier: 'sum', idx: 0 });
+    expect(rowFit(19.0, steps, 3.6, 0.5)).toEqual({ chip: 'one', words: 4, tier: 'sum', idx: 1 });
+    // …then to fewer providers with their words, the rest as shares…
+    expect(rowFit(14.2, steps, 3.6, 0.5)).toEqual({ chip: 'mix', words: 3, tier: 'sum', idx: 2 });
+    expect(rowFit(12.7, steps, 3.6, 0.5)).toEqual({ chip: 'mix', words: 1, tier: 'sum', idx: 3 });
+    // …then to shares only…
+    expect(rowFit(11.2, steps, 3.6, 0.5)).toEqual({ chip: 'pct', words: 0, tier: 'sum', idx: 4 });
     // …then to the one provider closest to its limit, whatever is left for the bars, …
-    expect(rowFit(10, w, 0.5)).toEqual({ chip: 'worst', tier: 'sum' });
-    expect(rowFit(4, w, 0.5)).toEqual({ chip: 'worst', tier: 'none' });
+    expect(rowFit(10, steps, 3.6, 0.5)).toEqual({ chip: 'worst', words: 0, tier: 'sum', idx: 5 });
+    expect(rowFit(4, steps, 3.6, 0.5)).toEqual({ chip: 'worst', words: 0, tier: 'none', idx: 5 });
     // …and at last to nothing
-    expect(rowFit(3, w, 0.5)).toEqual({ chip: 'none', tier: 'none' });
+    expect(rowFit(3, steps, 3.6, 0.5)).toEqual({ chip: 'none', words: 0, tier: 'none', idx: 6 });
   });
   it('knows an old reading by the machine\'s own clock and by how long the stream was quiet', () => {
     expect(staleLoad(0, 5000, 0, 3000)).toBe(true);

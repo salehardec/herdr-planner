@@ -2634,7 +2634,7 @@ const topRects = () => evalJs(`(() => {
   const chip = document.querySelector('#hud-limits');
   return { menu: r('#menu-btn'), crumbs: r('#crumbs'), load: r('#load-chip'), lim: r('#hud-limits'), gate: r('#gate-chip'), q: r('#q'), wait: r('#wait-btn'), mode: r('#mode'),
     form: chip?.dataset.form, tier: document.querySelector('#loadbar')?.dataset.tier, limText: chip ? chip.innerText.trim() : '', limTip: chip ? chip.getAttribute('aria-label') || '' : '',
-    provs: document.querySelectorAll('#hud-limits .lp').length, provIcons: document.querySelectorAll('#hud-limits .lp svg').length,
+    provs: document.querySelectorAll('#hud-limits .lp').length, bars: [...document.querySelectorAll('#hud-limits .lp-bar')].filter((e) => e.offsetParent).length, provIcons: document.querySelectorAll('#hud-limits .lp svg').length,
     limClipped: chip ? chip.scrollWidth > chip.clientWidth + 1 || [...chip.querySelectorAll('.lim-ag')].some((e) => e.offsetParent && e.scrollWidth > e.clientWidth + 1) : false, sw: document.documentElement.scrollWidth, phone: document.documentElement.classList.contains('bp900') };
 })()`);
 
@@ -2696,7 +2696,7 @@ section('top bar', async () => {
         await waitFor('plannerDebug().selected === null && world.debug().flight === "idle"', 12000);
         await beat();
         const h = await topRects();
-        check(`${at}: with room to spare the row keeps every provider (its share at least), whole`, (h.form === 'full' || h.form === 'one' || h.form === 'pct') && /^\d+\s*%\s+\S/.test(h.limText) && !h.limClipped && h.provIcons === h.provs, JSON.stringify({ form: h.form, tier: h.tier, text: h.limText, clipped: h.limClipped, provs: h.provs, icons: h.provIcons, lim: h.lim, load: h.load }));
+        check(`${at}: with room to spare the row has gauges and words («N % исп. <сброс>») for the leading providers and every provider's share, whole`, ['full', 'one', 'mix'].includes(h.form) && /^\d+\s*%\s+исп\.\s+\S/.test(h.limText) && h.bars >= 1 && !h.limClipped && h.provIcons === h.provs, JSON.stringify({ form: h.form, tier: h.tier, text: h.limText, bars: h.bars, clipped: h.limClipped, provs: h.provs, icons: h.provIcons, lim: h.lim, load: h.load }));
       }
       if (scale === 'auto' && w === 1920) await shot(`topbar-${theme}.png`);
     }
@@ -2718,6 +2718,11 @@ section('top bar', async () => {
     const m = await topRects();
     const shown = Object.values(m).filter((v) => v && typeof v === 'object' && 'l' in v);
     check(`${w}×${h}: nothing overlaps and the page does not scroll sideways`, shown.every((a, i) => shown.slice(i + 1).every((b) => apart(a, b))) && shown.every((a) => a.l >= -1 && a.r <= w + 1) && m.sw <= w + 1, JSON.stringify(m));
+    await click('#hud-limits');
+    await waitFor('!!document.querySelector("#top-card[data-card=limits]")', 3000);
+    await click('#top-card [data-tab="kimi"]');
+    check(`${w}×${h}: with another provider's tab open the narrow chip still shows the one closest to its limit`, await evalJs(`(() => { const v = [...document.querySelectorAll('#hud-limits .lp')].filter((e) => e.offsetParent); return v.length === 1 && v[0].dataset.p === 'claude' && /97/.test(v[0].innerText); })()`));
+    await press('Escape');
     check(`${w}×${h}: the chip is the worst provider's percentage with a label`, m.form === 'worst' && /^[\d\s%$.]+$/.test(m.limText) && m.limTip.length > 8, JSON.stringify(m));
     await click('#menu-btn');
     check(`${w}×${h}: the menu is inside the window`, await waitFor('!!document.querySelector(".menupop")', 3000) && await evalJs(`(() => { const p = document.querySelector('.menupop').getBoundingClientRect(); return p.left >= -1 && p.right <= innerWidth + 1; })()`));
@@ -2929,7 +2934,7 @@ section('top cards', async () => {
   check('a tap on the chip opens the subscriptions card and keeps it', await cardOpen('limits') && (await evalJs('document.querySelector("#top-card")?.dataset.pinned')) === 'true');
   await sleep(500);
   check('it stays (a finger has no hover to keep it)', !!(await cardRect()));
-  await tap(700, 600);
+  await tap(900, 700);
   check('a tap elsewhere closes it', await cardGone());
   await tap(...centre(await rectOf('#load-chip')));
   check('a tap on the bars opens the machine card', await cardOpen('load'));

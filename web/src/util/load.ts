@@ -45,18 +45,21 @@ export const tierFor = (rem: number): 'host' | 'full' | 'stack' | 'sum' | 'dot' 
   rem >= 31 ? 'host' : rem >= 22 ? 'full' : rem >= 12.5 ? 'stack' : rem >= 5.6 ? 'sum' : rem >= 3.8 ? 'dot' : 'none';
 
 /** The forms of the subscription row, widest first: every provider with the two tightest windows (`full`), with the tightest one
- *  (`one`), with only its share (`pct`), only the provider closest to its limit and only its share (`worst`), or nothing. */
-export type RowForm = 'full' | 'one' | 'pct' | 'worst' | 'none';
+ *  (`one`), the first `words` providers with their words and the rest as a share (`mix`), every provider as a share with a small gauge
+ *  (`pct`), only the provider closest to its limit and only its share (`worst`), or nothing. */
+export type RowForm = 'full' | 'one' | 'mix' | 'pct' | 'worst' | 'none';
 
-/** The top bar's monitoring group (the bars, then the subscription row) in the room (rem) the menu and the crumbs leave: the row keeps
- *  all its words while the bars still get the stack form, the tightest window of each provider or their shares while the bars keep at
- *  least their summary, the one provider closest to its limit while there is room at all, and steps aside with none. `w` holds the width
- *  of each form and `gap` is the space between the two. */
-export function rowFit(room: number, w: Record<Exclude<RowForm, 'none'>, number>, gap: number): { chip: RowForm; tier: ReturnType<typeof tierFor> } {
+export interface RowStep { form: Exclude<RowForm, 'worst' | 'none'>; words: number; w: number }
+
+/** The top bar's monitoring group (the bars, then the subscription row) in the room (rem) the menu and the crumbs leave. The row has
+ *  the first claim on it: the widest of the `steps` (given widest first, each with its width) that still leaves the bars at least their
+ *  summary; else the one provider closest to its limit while there is room at all (`worst`, of width `worstW`); else nothing. `gap` is
+ *  the space between the two, and `idx` the place of the step chosen (the steps' count for `worst`, one more for none). */
+export function rowFit(room: number, steps: RowStep[], worstW: number, gap: number): { chip: RowForm; words: number; tier: ReturnType<typeof tierFor>; idx: number } {
   const left = (x: number): number => room - x - gap;
-  if (left(w.full) >= 12.5) return { chip: 'full', tier: tierFor(left(w.full)) };
-  if (left(w.one) >= 5.6) return { chip: 'one', tier: tierFor(left(w.one)) };
-  if (left(w.pct) >= 5.6) return { chip: 'pct', tier: tierFor(left(w.pct)) };
-  if (room >= w.worst) return { chip: 'worst', tier: tierFor(left(w.worst)) };
-  return { chip: 'none', tier: 'none' };
+  for (let i = 0; i < steps.length; i++) {
+    if (left(steps[i].w) >= 5.6) return { chip: steps[i].form, words: steps[i].words, tier: tierFor(left(steps[i].w)), idx: i };
+  }
+  if (room >= worstW) return { chip: 'worst', words: 0, tier: tierFor(left(worstW)), idx: steps.length };
+  return { chip: 'none', words: 0, tier: 'none', idx: steps.length + 1 };
 }

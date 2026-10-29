@@ -82,14 +82,14 @@ export function ProviderIcon(props: { id: string }): JSX.Element {
 }
 
 /** What a provider says in the bar, in two lengths: the two tightest windows, then the tightest alone (the third form is its percentage). */
-function Segment(props: { a: AgentUsage }): JSX.Element {
+function Segment(props: { a: AgentUsage; urgent: boolean }): JSX.Element {
   const a = props.a;
   const ws = tightest(a.limits ?? []);
   const one = tightest(a.limits ?? [], 1)[0];
   const lv = level(a.limits ?? []);
   const words = ws.length ? ws.map(usedText).join(' · ') : a.balance ? cur(a.balance.remaining, a.balance.currency || 'USD') : '';
   return (
-    <span class={`lp lp-${lv}${a.stale ? ' stale' : ''}`} data-p={a.id}>
+    <span class={`lp lp-${lv}${a.stale ? ' stale' : ''}`} data-p={a.id} data-urgent={props.urgent ? '1' : undefined}>
       <ProviderIcon id={a.id} />
       {one && <span class="lp-bar"><i style={`--w:${usedPct(one)}%`} /></span>}
       {ws.length ? (
@@ -115,14 +115,15 @@ export function LimitsChip(): JSX.Element {
       </button>
     );
   }
-  const all = shown.flatMap((a) => a.limits ?? []);
-  const lv = level(all);
+  // the one the narrowest form keeps is the provider closest to its limit, whichever tab is open in the card
+  const urgent = barAgents(agents(), '')[0]?.id;
+  const lv = level(shown.flatMap((a) => a.limits ?? []));
   const tip = shown
     .map((a) => `${a.name}: ${tightest(a.limits ?? []).map(usedText).join(' · ') || (a.balance ? cur(a.balance.remaining, a.balance.currency || 'USD') : '')}${a.stale ? ` (${t('limits.stale')})` : ''}`)
     .join('; ');
   return (
     <button class={`btn limchip lim-row${lv === 'crit' ? ' lim-crit' : lv === 'warn' ? ' lim-warn' : ''}`} id="hud-limits" type="button" aria-label={tip} {...cardAnchor('limits')}>
-      {shown.map((a) => <Segment key={a.id} a={a} />)}
+      {shown.map((a) => <Segment key={a.id} a={a} urgent={a.id === urgent} />)}
     </button>
   );
 }
@@ -186,8 +187,9 @@ function Unconnected(): JSX.Element | null {
   if (!ids.length) return null;
   const name = (id: string): string => PROVIDER_NAMES[id] ?? id;
   return (
-    <div class="lim-unc" id="limits-unconnected" title={ids.map((id) => `${name(id)}: ${t(`limits.hint.${id}`)}`).join('\n')}>
-      {t('limits.unconnected', { list: ids.map(name).join(', ') })}
+    <div class="lim-unc" id="limits-unconnected">
+      <div>{t('limits.unconnected', { list: ids.map(name).join(', ') })}</div>
+      {ids.map((id) => <div class="lim-unc-hint" key={id}>{name(id)}: {t(`limits.hint.${id}`)}</div>)}
     </div>
   );
 }
