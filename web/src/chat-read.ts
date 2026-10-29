@@ -1,6 +1,7 @@
 /* Which turns of the Coordinator's chat are unread: the pure part (the state in the browser is in chat-unread.ts).
    A turn's answer is the Coordinator's latest words of it, and they change while it works («Сейчас посмотрю…», then the real
-   answer): what was read is the words themselves, so a read turn whose answer has changed is news again. */
+   answer): what was read is the words themselves, so a read turn whose answer has changed is news again. Board status lines
+   are deliberately not messages in this count. */
 import type { TurnData } from './types';
 
 /** Every turn up to `base` is read; `seen` are the ones above it that were read, each with the signature of the words that were read. */
@@ -13,17 +14,18 @@ export function sigOf(a: string): number {
   return h === 0 && a ? 1 : h;
 }
 
-/** Does the turn bring something to read: words of the Coordinator's, or a notice of the board (which is shown by itself). */
-const isNews = (x: TurnData): boolean => !!x.a || x.from === 'board';
+/** Only words from the Coordinator are news. Board notices are status lines, not chat messages to read. */
+const isNews = (x: TurnData): boolean => !!x.a;
 
-/** The turns above `base` whose words (as they are now) have not been read. A turn that is not loaded is taken for answered. */
+/** The loaded turns above `base` whose words (as they are now) have not been read. Missing turns are history that has not
+ * been loaded yet, so their kind cannot be known: they never inflate the indicator. */
 export function unreadOf(rs: ReadState | null, turns: TurnData[], total: number): number[] {
   if (!rs) return [];
   const have = new Map(turns.map((x) => [x.n, x]));
   const out: number[] = [];
   for (let n = rs.base + 1; n < total; n++) {
     const x = have.get(n);
-    if (!x) { if (!(n in rs.seen)) out.push(n); continue; }
+    if (!x) continue;
     if (isNews(x) && rs.seen[n] !== sigOf(x.a)) out.push(n);
   }
   return out;
@@ -53,6 +55,11 @@ export function withRead(rs: ReadState, marks: [number, number][], total: number
   return fold({ base: rs.base, seen }, total, turns);
 }
 
+/** Clears the indicator at the end of the chat. The last answer stays separately signed, so a later update to it is news. */
+export function readToEnd(turns: TurnData[], total: number): ReadState {
+  return settled(null, turns, total);
+}
+
 /**
  * The first look at a chat (nothing stored): what is there now counts as read, so a page that has never been told about the chat
  * does not open with a hundred lights. A transcript that got much shorter than the stored place is a new conversation: the place goes back to its end.
@@ -70,7 +77,7 @@ export function settled(rs: ReadState | null, turns: TurnData[], total: number):
     for (const [n, sig] of Object.entries(rs.seen)) if (Number(n) <= last) seen[Number(n)] = sig;
     return { base: last, seen };
   }
-  // A finished turn without words (and not a notice of the board) will never bring news: it is read, so it does not hold the place back.
+  // A turn without Coordinator words will never bring news: it is read, so it does not hold the place back.
   const holes = turns.filter((x) => !isNews(x) && x.n > rs.base && x.n < last && !(x.n in rs.seen)).map((x): [number, number] => [x.n, 0]);
   const next = fold({ base: rs.base, seen: { ...rs.seen, ...Object.fromEntries(holes) } }, total, turns);
   return holes.length || next.base !== rs.base ? next : rs;

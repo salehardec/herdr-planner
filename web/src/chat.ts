@@ -39,41 +39,60 @@ export async function loadLatest(limit = 3): Promise<void> {
     chat.value = { ...chat.value, ...patch };
     if (r.available) {
       const have = chat.value.turns.length ? chat.value.turns[chat.value.turns.length - 1].n : -1;
-      // More than a page arrived since the last look: start again from the end.
-      if (have >= 0 && r.turns.length && r.turns[0].n > have + 1) update({ turns: [] });
+      // More than one page arrived since the last look. Load the gap before counting: positions without their turns could be
+      // notices, so counting them would make reconnects and polling invent unread messages.
+      const gap = have >= 0 && r.turns.length && r.turns[0].n > have + 1;
+      if (gap) update({ turns: [] });
       merge(r.turns);
+      if (gap) {
+        for (let i = 0; i < 40 && chat.value.turns[0]?.n > have + 1 && hasOlder(); i++) {
+          if (!(await loadOlderWait(100))) break;
+        }
+      }
       settleRead();
+      // Still part of this load: whoever waits for the history (the jump to the first unread) waits for the covering, too.
+      await coverRead();
     }
   } catch { /* the compact tail stays */ } finally {
     update({ loadingLatest: false });
   }
-  await coverRead();
 }
 
 /**
- * The turns that were read keep the words they were read as, and an answer may have changed since: they have to be loaded to be
- * checked, though a page that has just started holds only the last few. Loads older turns down to the oldest of them.
+ * The answers that were read keep the words they were read as, and an answer may have changed since: they have to be loaded to
+ * be checked, though a page that has just started holds only the last few. Board notices have the zero signature and cannot
+ * become answers, so they do not pull old history back into a reloaded chat.
  */
 async function coverRead(): Promise<void> {
   const rs = chatRead.value;
-  const keys = rs ? Object.keys(rs.seen).map(Number) : [];
-  if (!keys.length) return;
-  const lowest = Math.min(...keys);
+  if (!rs) return;
+  const keys = Object.entries(rs.seen).filter(([, sig]) => sig !== 0).map(([n]) => Number(n));
+  // Everything above the stored place is loaded too: a turn that is not there could be a board line or an answer, and an
+  // unread answer must not drop out of the count only because notices came after it.
+  const first = rs.base + 1 < chat.value.total ? rs.base + 1 : Infinity;
+  const lowest = Math.min(first, ...keys);
+  if (lowest === Infinity) return;
   let got = false;
   for (let i = 0; i < 20 && chat.value.turns.length && chat.value.turns[0].n > lowest && hasOlder(); i++) {
-    if (!(await loadOlder())) break;
+    if (!(await loadOlderWait(100))) break;
     got = true;
   }
   if (got) settleRead();
 }
 
+/** Like `loadOlder`, but a load that is already going (the reader scrolled to the top) is waited for, not taken for «nothing more». */
+export async function loadOlderWait(limit = 5): Promise<boolean> {
+  for (let i = 0; i < 100 && chat.value.loading; i++) await new Promise((r) => setTimeout(r, 100));
+  return loadOlder(limit);
+}
+
 /** Older turns, five at a time. Returns true when something was added. */
-export async function loadOlder(): Promise<boolean> {
+export async function loadOlder(limit = 5): Promise<boolean> {
   const c = chat.value;
   if (c.loading || !hasOlder()) return false;
   update({ loading: true });
   try {
-    const r = await api<{ turns: TurnData[] }>('/api/chat/history?limit=5&before=' + c.turns[0].n);
+    const r = await api<{ turns: TurnData[] }>('/api/chat/history?limit=' + limit + '&before=' + c.turns[0].n);
     merge(r.turns || []);
     return (r.turns || []).length > 0;
   } catch { return false; } finally {
