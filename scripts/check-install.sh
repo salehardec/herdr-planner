@@ -70,12 +70,12 @@ exec "$@"
 EOF
 stub pacman <<'EOF'
 echo "$*" >>"$ST/pacman.log"
-for c in git ssh; do printf '#!/bin/sh\nexit 0\n' >"$EX/$c"; chmod +x "$EX/$c"; done
+sh "$ST/mkextra.sh"
 exit 0
 EOF
 stub brew <<'EOF'
 echo "$*" >>"$ST/brew.log"
-for c in git ssh; do printf '#!/bin/sh\nexit 0\n' >"$EX/$c"; chmod +x "$EX/$c"; done
+sh "$ST/mkextra.sh"
 exit 0
 EOF
 stub mise <<'EOF'
@@ -93,52 +93,71 @@ exit 0
 EOF
 stub herdr <<'EOF'
 echo "$*" >>"$ST/herdr.log"
-plugin_bin="$HOME/.herdr-projects/data/bin/herdr-projects"
-write_plugin() {
-  mkdir -p "$HOME/.herdr-projects/data/bin"
-  printf '#!/bin/sh\necho "herdr-projects %s"\n' "$1" >"$plugin_bin"
-  chmod +x "$plugin_bin"
-  printf '%s\n' "$1" >"$ST/plugin-ver"
-}
+data="$HOME/.herdr-projects/data/bin"
 # herdr refuses install and update without --yes when stdin is not a terminal.
 plugin_yes() {
   case " $* " in *" --yes "* | *" -y "*) return 0 ;; esac
   echo "$1 requires --yes when stdin is not interactive" >&2
   exit 2
 }
+# The plugin as herdr keeps it: a checkout folder per install, the launcher the plugin writes in the data folder
+# (at once, as its startup hook would; $ST/no-launcher-write leaves it stale, $ST/stuck-launcher also breaks
+# `bin/run.sh install`), and the facts `plugin list` prints.
+install_plugin() { # ref
+  n=$(( $(cat "$ST/plugin-n" 2>/dev/null || echo 0) + 1 ))
+  echo "$n" >"$ST/plugin-n"
+  root="$ST/plugins/$n/checkout"
+  mkdir -p "$root/bin" "$data"
+  case "$1" in
+    "" | main) ver=2.0.0; name=Shepherdr ;;
+    *) ver=$(cat "$ST/plugin-latest" 2>/dev/null || echo 1.4.2); name=Projects ;;
+  esac
+  printf '#!/bin/sh\necho "herdr-projects %s"\n' "$ver" >"$root/bin/herdr-projects-linux-x86_64"
+  printf '#!/bin/sh\nexport HERDR_PROJECTS_HOME=%s\nexec %s "$@"\n' "'$HOME/.herdr-projects'" "'$root/bin/herdr-projects-linux-x86_64'" >"$root/launcher.txt"
+  printf '#!/bin/sh\n[ "$1" = install ] || exit 0\n[ -e "%s/stuck-launcher" ] && exit 0\ncp "%s/launcher.txt" "%s/herdr-projects"\nchmod +x "%s/herdr-projects"\n' "$ST" "$root" "$data" "$data" >"$root/bin/run.sh"
+  chmod +x "$root/bin/herdr-projects-linux-x86_64"
+  if [ "$name" = Projects ] && [ ! -e "$ST/no-launcher-write" ]; then
+    cp "$root/launcher.txt" "$data/herdr-projects"; chmod +x "$data/herdr-projects"
+  fi
+  : >"$ST/plugin"
+  echo "$ver" >"$ST/plugin-ver"; echo "$name" >"$ST/plugin-name"; echo "$root" >"$ST/plugin-root"
+  echo "$1" >"$ST/plugin-ref"
+  cat "$ST/remote-commit" 2>/dev/null >"$ST/plugin-commit" || echo 0000000 >"$ST/plugin-commit"
+}
 case "$1" in
   --version) echo "herdr $(cat "$ST/herdr-ver")" ;;
   plugin)
     case "$2" in
-      list) [ -e "$ST/plugin" ] && echo "herdr-projects $(cat "$ST/plugin-ver" 2>/dev/null || echo 1.4.2) enabled" ;;
+      list)
+        only=; prev=
+        for a in "$@"; do [ "$prev" = --plugin ] && only=$a; prev=$a; done
+        json=0
+        case " $* " in *" --json "*) json=1 ;; esac
+        if [ -e "$ST/plugin" ] && { [ -z "$only" ] || [ "$only" = herdr-projects ]; }; then
+          name=$(cat "$ST/plugin-name"); ver=$(cat "$ST/plugin-ver"); root=$(cat "$ST/plugin-root"); commit=$(cat "$ST/plugin-commit")
+          src=$(cat "$ST/plugin-source" 2>/dev/null || echo eliasstravik/herdr-projects)
+          if [ "$json" -eq 1 ]; then
+            printf '{"id":"cli:plugin","result":{"plugins":[{"actions":[{"id":"open","title":"Open"}],"description":"x","enabled":true,"min_herdr_version":"0.9.0","name":"%s","plugin_id":"herdr-projects","plugin_root":"%s","source":{"kind":"github","owner":"eliasstravik","repo":"%s","resolved_commit":"%s"},"version":"%s"}],"type":"plugin_list"}}\n' "$name" "$root" "${src#*/}" "$commit" "$ver"
+          else
+            echo "1 plugin installed:"
+            echo "- herdr-projects ($name) enabled [github:$src@$commit]"
+            echo "  config: $HOME/.config/herdr/plugins/config/herdr-projects"
+          fi
+        elif [ "$json" -eq 1 ]; then
+          echo '{"id":"cli:plugin","result":{"plugins":[],"type":"plugin_list"}}'
+        else
+          echo "0 plugins installed."
+        fi ;;
       install)
         plugin_yes "remote plugin install" "$@"
-        : >"$ST/plugin"
-        write_plugin "$(cat "$ST/plugin-latest" 2>/dev/null || echo 1.4.2)" ;;
+        ref=; prev=
+        for a in "$@"; do [ "$prev" = --ref ] && ref=$a; prev=$a; done
+        install_plugin "$ref" ;;
       update)
-        plugin_yes "plugin update" "$@"
-        scope=
-        for a in "$@"; do
-          case "$a" in update | --yes | -y) ;; *) scope=$a ;; esac
-        done
-        if [ -n "$scope" ] && [ "$scope" != "herdr-projects" ]; then
-          echo "plugin not installed: $scope" >&2
-          exit 1
-        fi
-        # Another GitHub plugin: an unnamed update touches it too (the real herdr does).
-        if [ -z "$scope" ] && [ -e "$ST/other-plugin" ]; then
-          echo "augie-git is already up to date."
-          echo augie-git >"$ST/other.log"
-        fi
-        [ -e "$ST/plugin" ] || exit 0
-        cur=$(cat "$ST/plugin-ver" 2>/dev/null || true)
-        latest=$(cat "$ST/plugin-latest" 2>/dev/null || echo 1.4.2)
-        if [ "$cur" = "$latest" ]; then
-          echo "herdr-projects is already up to date."
-          exit 0
-        fi
-        write_plugin "$latest"
-        echo "Updated herdr-projects from github:eliasstravik/herdr-projects." ;;
+        # The real one follows main, which is Shepherdr 2: the installer must never call it.
+        : >"$ST/update-called"
+        echo "plugin update stand-in: not expected" >&2
+        exit 1 ;;
       *) echo "herdr stand-in: unexpected plugin $*" >&2; exit 1 ;;
     esac ;;
   *) echo "herdr stand-in: unexpected $*" >&2; exit 1 ;;
@@ -163,7 +182,17 @@ if [ -e "$ST/darwin" ]; then
 fi
 exec "$REAL_UNAME" "$@"
 EOF
-for c in git ssh; do printf '#!/bin/sh\nexit 0\n' >"$EX/$c"; chmod +x "$EX/$c"; done
+# git answers `ls-remote` with the commit the plugin's ref points to now ($ST/remote-commit), else nothing.
+{ printf '#!/bin/sh\nST=%s\n' "$ST"; cat <<'EOF2'
+if [ "$1" = ls-remote ] && [ -e "$ST/remote-commit" ]; then
+  printf '%s\trefs/heads/legacy-herdr-projects\n' "$(cat "$ST/remote-commit")"
+fi
+exit 0
+EOF2
+} >"$ST/git.stub"
+printf '#!/bin/sh\nexit 0\n' >"$ST/ssh.stub"
+{ printf 'cp %s/git.stub %s/git\ncp %s/ssh.stub %s/ssh\nchmod +x %s/git %s/ssh\n' "$ST" "$EX" "$ST" "$EX" "$EX" "$EX"; } >"$ST/mkextra.sh"
+sh "$ST/mkextra.sh"
 # Every system tool except git and ssh (those are stand-ins in $EX and can be removed).
 for d in /usr/bin /bin; do
   for f in "$d"/*; do
@@ -182,14 +211,17 @@ jq . "$T/shell.in" >"$H/.config/omarchy/shell.json"
 cp "$H/.config/omarchy/shell.json" "$T/shell.orig"
 cp "$H/.config/hypr/bindings.lua" "$T/bindings.orig"
 echo 0.8.0 >"$ST/herdr-ver"
+printf 'c1\n' >"$ST/remote-commit"   # what the plugin's ref points to
 printf 'cert\n' >"$T/cert.pem"
 printf 'key\n' >"$T/key.pem"
 
 # ---- running the installer ----
 
 # Every run starts from an empty environment with the test folders, and without a terminal.
+XENV=   # more variables for the installer, as NAME=value words (no spaces)
 sh_env() { # script, args: output to $LAST; the status is the script's
-  setsid -w env -i HOME="$H" PATH="$PATHX" SHELL=/bin/sh TMPDIR="$T/tmp" LC_ALL=C.UTF-8 \
+  # shellcheck disable=SC2086  # XENV is a list of words
+  setsid -w env -i $XENV HOME="$H" PATH="$PATHX" SHELL=/bin/sh TMPDIR="$T/tmp" LC_ALL=C.UTF-8 \
     XDG_CONFIG_HOME="$H/.config" XDG_DATA_HOME="$H/.local/share" XDG_CACHE_HOME="$H/.cache" \
     XDG_STATE_HOME="$H/.local/state" HERDR_PLANNER_RELEASES="file://$T/rel" \
     HERDR_PLANNER_TARGET_DIR="$T/target" \
@@ -299,27 +331,108 @@ check "first install: seven steps" test "$(grep -c '^\[[1-7]/7\] ' "$LAST")" -eq
 ok "first install: planner, herdr, plugin, service, Omarchy bits, summary"
 
 # 3. the same version again: already installed, the tree unchanged, the service not restarted.
-: >"$ST/other-plugin"   # a second GitHub plugin, also current
 before=$(snap)
 rs_before=$(grep -c -- '--user restart' "$ST/systemctl.log" || true)
 inst install --yes --version "v$V1" || fail "second install"
 has "$LAST" "уже стоит $V1" || fail "same version must say it is already installed"
-has "$LAST" 'уже новейший' || fail "an up-to-date plugin must say it is already the newest"
-check "same version: another plugin is not updated" test ! -e "$ST/other.log"
+has "$LAST" 'уже на legacy-herdr-projects' || fail "a plugin at its ref must say so"
+check "same version: the plugin is not reinstalled" test "$(grep -c 'plugin install' "$ST/herdr.log")" -eq 1
+check "same version: plugin update is never called" test ! -e "$ST/update-called"
 [ "$before" = "$(snap)" ] || fail "same version changed the home folder"
 [ "$(grep -c -- '--user restart' "$ST/systemctl.log" || true)" -eq "$rs_before" ] || fail "same version restarted the service"
 check "same version: PATH block not repeated" test "$(grep -c '>>> herdr-planner PATH' "$H/.profile")" -eq 1
 check "same version: one shell.json backup only" test "$(find "$H/.config/omarchy" -maxdepth 1 -name 'shell.json.bak-herdr-planner-*' | wc -l)" -eq 1
 ok "same version: already installed, tree unchanged, no restart"
 
-# 3b. the plugin is behind: herdr updates it, still without a terminal.
+# 3b. the plugin: the first install pinned the branch of v1, not main.
+check "plugin: installed at the v1 ref" grep -q 'plugin install eliasstravik/herdr-projects --ref legacy-herdr-projects --yes' "$ST/herdr.log"
+check "plugin: the ref the stand-in got" test "$(cat "$ST/plugin-ref")" = legacy-herdr-projects
+ok "plugin: first install pinned to legacy-herdr-projects"
+
+# 3c. the ref moved on: reinstalled at the same ref (never `update`), still without a terminal.
 printf '1.4.3\n' >"$ST/plugin-latest"
-inst install --yes --version "v$V1" || fail "plugin update"
-has "$LAST" 'обновлён: 1.4.2 → 1.4.3' || fail "plugin update: message"
-check "plugin update: names herdr-projects and passes --yes without a terminal" grep -q 'plugin update herdr-projects --yes' "$ST/herdr.log"
-check "plugin update: another plugin is not updated" test ! -e "$ST/other.log"
-check "plugin update: the plugin is at 1.4.3" sh -c "[ \"\$('$H/.local/bin/herdr-projects' version)\" = 'herdr-projects 1.4.3' ]"
-ok "plugin update: behind, updated with --yes"
+printf 'c2\n' >"$ST/remote-commit"
+inst install --yes --version "v$V1" || fail "plugin reinstall"
+has "$LAST" 'обновлён (legacy-herdr-projects): 1.4.2 → 1.4.3' || fail "plugin reinstall: message"
+check "plugin reinstall: install at the ref, --yes without a terminal" test "$(grep -c 'plugin install eliasstravik/herdr-projects --ref legacy-herdr-projects --yes' "$ST/herdr.log")" -eq 2
+check "plugin reinstall: update is never called" test ! -e "$ST/update-called"
+check "plugin reinstall: the plugin is at 1.4.3" sh -c "[ \"\$('$H/.local/bin/herdr-projects' version)\" = 'herdr-projects 1.4.3' ]"
+check "plugin reinstall: the launcher runs the new checkout" grep -q "$(cat "$ST/plugin-root")/bin/" "$H/.herdr-projects/data/bin/herdr-projects"
+ok "plugin: the ref moved, reinstalled at the ref"
+
+# 3d. HERDR_PROJECTS_REF is respected.
+printf 'c3\n' >"$ST/remote-commit"
+XENV=HERDR_PROJECTS_REF=v1.2.27
+inst install --yes --version "v$V1" || fail "HERDR_PROJECTS_REF"
+check "HERDR_PROJECTS_REF: install at that ref" grep -q 'plugin install eliasstravik/herdr-projects --ref v1.2.27 --yes' "$ST/herdr.log"
+has "$LAST" 'v1.2.27' || fail "HERDR_PROJECTS_REF: the ref is named in the output"
+XENV='HERDR_PROJECTS_REF=--evil'
+if inst install --yes --version "v$V1" --no-herdr; then fail "a ref that starts with - must be refused"; fi
+XENV=
+has "$LAST" 'HERDR_PROJECTS_REF' || fail "a bad ref must name the variable"
+ok "HERDR_PROJECTS_REF: respected, a bad one refused"
+
+# 3e. the launcher and the link are checked after the install: stale ones are put right, the rest is named.
+printf 'c4\n' >"$ST/remote-commit"
+: >"$ST/no-launcher-write"   # the plugin has not written its launcher for the new checkout yet
+inst install --yes --version "v$V1" || fail "stale launcher"
+check "stale launcher: put right with the plugin's own bin/run.sh install" grep -q "$(cat "$ST/plugin-root")/bin/" "$H/.herdr-projects/data/bin/herdr-projects"
+ok "stale launcher: repaired"
+ln -sfn /nonexistent "$H/.local/bin/herdr-projects"
+inst install --yes --version "v$V1" || fail "wrong link"
+check "wrong link: points to the launcher again" test "$(readlink "$H/.local/bin/herdr-projects")" = "$H/.herdr-projects/data/bin/herdr-projects"
+ok "wrong link: repaired"
+printf 'c5\n' >"$ST/remote-commit"
+: >"$ST/stuck-launcher"
+inst install --yes --version "v$V1" || fail "unrepairable launcher must not fail the installer"
+has "$LAST" 'ВНИМАНИЕ' || fail "an unrepairable launcher must be named"
+has "$LAST" "$(cat "$ST/plugin-root")/bin/run.sh' install" || fail "an unrepairable launcher must name the command"
+rm -f "$ST/no-launcher-write" "$ST/stuck-launcher"
+printf 'c6\n' >"$ST/remote-commit"
+inst install --yes --version "v$V1" || fail "launcher back to normal"
+if has "$LAST" 'ВНИМАНИЕ'; then fail "a correct launcher must not warn"; fi
+ok "launcher: the unrepairable one is named with its command"
+
+# 3f. Shepherdr 2 is there: refused before anything changes, with the command to pin v1.
+printf 'Shepherdr\n' >"$ST/plugin-name"; printf '2.0.0\n' >"$ST/plugin-ver"
+printf 'c7\n' >"$ST/remote-commit"
+before=$(snap)
+installs=$(grep -c 'plugin install' "$ST/herdr.log")
+mise_before=$(count "$ST/mise.log")
+if inst install --yes --version "v$V1"; then fail "Shepherdr 2 must be refused"; fi
+has "$LAST" 'Shepherdr' || fail "refusal: names Shepherdr"
+has "$LAST" 'herdr plugin install eliasstravik/herdr-projects --ref legacy-herdr-projects --yes' || fail "refusal: names the pin command"
+[ "$before" = "$(snap)" ] || fail "a refused install changed the home folder"
+[ "$(grep -c 'plugin install' "$ST/herdr.log")" -eq "$installs" ] || fail "a refused install ran plugin install"
+[ "$(count "$ST/mise.log")" -eq "$mise_before" ] || fail "a refused install ran mise"
+check "refusal: plugin update is never called" test ! -e "$ST/update-called"
+check "refusal: no planner step ran" sh -c "! grep -q '^\[4/7\]' '$LAST'"
+if inst install --dry-run; then fail "Shepherdr 2 must be refused in --dry-run too"; fi
+has "$LAST" 'Shepherdr' || fail "dry-run refusal: names Shepherdr"
+inst install --yes --no-plugin --version "v$V1" || fail "--no-plugin must not look at the plugin"
+ok "Shepherdr 2: refused with the command, nothing changed"
+
+# 3g. a ref that is no v1 (main): installed, then the check finds Shepherdr 2 and says how to go back.
+printf 'c8\n' >"$ST/remote-commit"
+env HOME="$H" "$FB/herdr" plugin install eliasstravik/herdr-projects --ref legacy-herdr-projects --yes   # back to v1
+printf 'c9\n' >"$ST/remote-commit"
+XENV=HERDR_PROJECTS_REF=main
+if inst install --yes --version "v$V1"; then fail "a ref that gives Shepherdr 2 must fail"; fi
+XENV=
+has "$LAST" 'Shepherdr 2' || fail "main: the result is named"
+has "$LAST" 'herdr plugin install eliasstravik/herdr-projects --ref legacy-herdr-projects --yes' || fail "main: the way back is named"
+printf 'c1\n' >"$ST/remote-commit"
+env HOME="$H" "$FB/herdr" plugin install eliasstravik/herdr-projects --ref legacy-herdr-projects --yes   # back to v1
+ok "a ref that gives Shepherdr 2: failed with the way back"
+
+# 3h. v1 installed from the renamed repo (upstream's own rollback command): the word in the source is no Shepherdr 2.
+echo eliasstravik/shepherdr >"$ST/plugin-source"
+printf 'c10\n' >"$ST/remote-commit"
+inst install --yes --version "v$V1" || fail "v1 from the renamed repo must not be refused"
+if has "$LAST" 'Shepherdr 2'; then fail "v1 from the renamed repo was taken for Shepherdr 2"; fi
+inst install --dry-run --version "v$V1" || fail "v1 from the renamed repo, --dry-run"
+rm -f "$ST/plugin-source"
+ok "v1 installed from eliasstravik/shepherdr: not refused"
 
 # 4. a new version: updated, service restarted, the old release kept.
 rs_before=$(grep -c -- '--user restart' "$ST/systemctl.log" || true)
