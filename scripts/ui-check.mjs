@@ -2414,8 +2414,8 @@ section('links', async () => {
   await evalJs('world.connect("alpha/11", "gamma/2")');
   check('a wait on an archived task keeps its id and is drawn as a far star', await waitFor(`plannerSnap().links.some((l) => l.from === 'gamma/2' && l.to === 'alpha/11' && l.kind === 'far' && l.label === 'GAM-2')`, 15000), JSON.stringify((await debug())?.links));
   await evalJs('world.connect("alpha/11", "alpha/9")');
-  check('a later link edit keeps the archived wait', await waitFor(`plannerSnap().links.some((l) => l.from === 'alpha/9' && l.to === 'alpha/11') && plannerSnap().links.some((l) => l.from === 'gamma/2' && l.to === 'alpha/11')`, 15000));
-  check('the after call carries the archived id, not its tag', await waitLog(() => calls().some((c) => c.argv[0] === 'after' && c.argv[1] === 'alpha/11' && String(c.argv[2]).includes('gamma/2')), 8000), JSON.stringify(lastCall()));
+  check('a later link edit keeps the archived wait', await waitFor(`plannerSnap().links.some((l) => l.from === 'alpha/9' && l.to === 'alpha/11') && plannerSnap().links.some((l) => l.from === 'gamma/2' && l.to === 'alpha/11')`, 15000), JSON.stringify({ links: (await debug())?.links, call: lastCall() }));
+  check('the after call carries the archived id, not its tag', await waitLog(() => calls().some((c) => c.argv[0] === 'after' && c.argv[1] === 'alpha/11' && String(c.argv[2]).includes('gamma/2') && String(c.argv[2]).includes('alpha/9')), 8000), JSON.stringify(lastCall()));
   // A task may wait for a task of another machine (`vm-a:OMG-1`): the board keeps it, the page lists it and does not fly there.
   const hasFar = await post('/api/action', { action: 'after', id: 'alpha/10', after: ['alpha/9', 'vm-a:OMG-1'] });
   check('a task of this machine can wait for a task of another (vm-a:OMG-1): it is a link of the board', hasFar[0] === 200 && await waitFor(`plannerSnap().links.some((l) => l.to === 'alpha/10' && l.kind === 'far' && String(l.from).includes('vm-a:'))`, 15000), JSON.stringify(hasFar).slice(0, 200));
@@ -3977,9 +3977,9 @@ section('rest room', async () => {
   await opened();
   await press('KeyM', 'm');
   check('M goes to the menu', await ROOM('g.mode') === 'menu');
-  await evalJs(`(() => { const b = document.querySelector('#rm-console [data-pad="down"]'); const o = { bubbles: true, cancelable: true, pointerId: 1 }; b.dispatchEvent(new PointerEvent('pointerdown', o)); b.dispatchEvent(new PointerEvent('pointerup', o)); return true; })()`);
+  await mouseClick('#rm-console [data-pad="down"]');
   check('the pad on the shell presses the same buttons: ↓ chooses the bricks', await ROOM('g.sel') === 1);
-  await evalJs(`(() => { const b = document.querySelector('#rm-console [data-pad="a"]'); const o = { bubbles: true, cancelable: true, pointerId: 1 }; b.dispatchEvent(new PointerEvent('pointerdown', o)); b.dispatchEvent(new PointerEvent('pointerup', o)); return true; })()`);
+  await mouseClick('#rm-console [data-pad="a"]');
   check('and A starts it: «Кирпичики» are played', await ROOM('g.mode') === 'bricks' && await screenHas('КИРПИЧИКИ'));
   await press('ArrowUp', 'ArrowUp'); await press('Space', ' ');
   check('the piece turns and drops to the floor and locks', await ROOM('g.b.grid[22].some(Boolean)') === true);
@@ -6964,7 +6964,7 @@ section('light page', async () => {
     await openPhone(TABLET, mode);
     const at = `tablet ${TABLET.join('×')} ${mode}`;
     check(`${at}: the list and the chat stand side by side`, await waitFor(`(() => { const a = document.querySelector('#p-wait')?.getBoundingClientRect(); const b = document.querySelector('#p-chat')?.getBoundingClientRect(); return !!a && !!b && a.width > 250 && b.width > 350 && a.right <= b.left + 1 && Math.abs(a.top - b.top) < 4; })()`, 6000));
-    check(`${at}: the nav has the list tabs only and nothing scrolls sideways`, (await evalJs('document.querySelectorAll(".nav button").length')) === 2 && await noSideways(TABLET[0]));
+    check(`${at}: the nav has the list tabs only and nothing scrolls sideways`, (await evalJs('document.querySelectorAll(".nav [data-tab]").length')) === 2 && await noSideways(TABLET[0]));
     check(`${at}: the chat fills the right side down to the line`, await evalJs(`(() => { const r = document.querySelector('#ask').getBoundingClientRect(); return r.bottom <= innerHeight && r.bottom > innerHeight - 140 && r.width > 350; })()`));
     check(`${at}: the buttons are 44 px`, (await smallTargets()).length === 0, JSON.stringify(await smallTargets()));
     await shot(`m-tablet-${mode}.png`);
@@ -6983,6 +6983,111 @@ section('light page', async () => {
   await backToDesk();
   await navigate(base + '/?noauto&nocoach&bloom=0');
 }, { retry: true });
+
+// The same room through /m, driven by actual browser touch events rather than keyboard or element.click().
+section('light page rest room', async () => {
+  await send('Emulation.setTouchEmulationEnabled', { enabled: true, maxTouchPoints: 5 });
+  const point = (sel, id = 1) => evalJs(`(() => { const r = document.querySelector(${JSON.stringify(sel)}).getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2, id: ${id} }; })()`);
+  const touch = (type, points = []) => send('Input.dispatchTouchEvent', { type, touchPoints: points });
+  const tap = async (sel) => { await touch('touchStart', [await point(sel)]); await touch('touchEnd'); await pageTurn(); };
+  const pad = (name) => `#rm [data-pad="${name}"]`;
+  for (const [w, h] of [PHONE, TABLET, [844, 390], [1180, 820], [375, 812], [320, 568], [360, 640], [667, 375]]) {
+    const at = `${w}×${h}`;
+    await openPhone([w, h], 'dark');
+    await tap('#m-rest');
+    check(`${at}: touch opens the shared room over /m`, await waitFor('restroomState().open && document.querySelector(".mob").inert', 4000) && await hasText('#rm-back', 'Назад в планировщик'));
+    check(`${at}: the screen and every game button fit and are hit-testable (at least 44×44)`, await evalJs(`(() => {
+      const selectors = ['#rm-back', '#rm-screen', ...[...document.querySelectorAll('#rm [data-pad]')].map((e) => '#rm [data-pad="' + e.dataset.pad + '"]')];
+      return selectors.every((s) => { const e = document.querySelector(s), r = e.getBoundingClientRect(); const hit = document.elementFromPoint(r.x + r.width/2, r.y + r.height/2);
+        return r.left >= 0 && r.right <= innerWidth + 1 && r.top >= 0 && r.bottom <= innerHeight && (s === '#rm-screen' || (r.width >= 44 && r.height >= 44)) && (e === hit || e.contains(hit)); }); })()`));
+    await tap(pad('a'));
+    check(`${at}: A starts the shooter`, await waitFor('restroomGame.mode === "shoot"', 4000));
+    const x = await evalJs('restroomGame.s.x');
+    const left = await point(pad('left'), 1), fire = await point(pad('a'), 2);
+    await touch('touchStart', [left]);
+    await touch('touchStart', [left, fire]);
+    check(`${at}: two fingers move and fire together`, await waitFor(`restroomGame.s.x < ${x} - 15 && (restroomGame.s.bul.length > 0 || restroomGame.s.score > 0)`, 8000));
+    await touch('touchMove', [{ ...left, x: left.x + 12, y: left.y - 25 }, fire]);
+    check(`${at}: dragging a held finger neither scrolls nor zooms`, await evalJs('document.querySelector("#rm").scrollTop === 0 && scrollY === 0 && visualViewport.scale === 1'));
+    await touch('touchEnd');
+    check(`${at}: releasing fingers clears held buttons`, await waitFor('restroomGame.held.size === 0 && !document.querySelector("#rm .dn")', 4000));
+    await tap(pad('start'));
+    check(`${at}: START pauses`, await evalJs('restroomGame.paused'));
+    await tap(pad('start'));
+    check(`${at}: START resumes`, !(await evalJs('restroomGame.paused')));
+    await tap(pad('select')); await tap(pad('down')); await tap(pad('a'));
+    check(`${at}: touch selects and starts bricks`, await waitFor('restroomGame.mode === "bricks"', 4000));
+    const bx = await evalJs('restroomGame.b.p.x');
+    await touch('touchStart', [await point(pad('left'))]);
+    check(`${at}: holding repeats movement in bricks`, await waitFor(`restroomGame.b.p.x < ${bx} - 1`, 8000));
+    await touch('touchCancel');
+    check(`${at}: cancellation releases capture and game input`, await waitFor('restroomGame.held.size === 0 && !document.querySelector("#rm .dn")', 4000));
+    await shot(`m-restroom-${w}-${h}.png`);
+    await tap('#rm-back');
+    check(`${at}: exit returns to the same /m tab and pauses the game`, await waitFor('!restroomState().open && !document.querySelector(".mob").inert', 4000) && await evalJs('location.pathname === "/m" && restroomGame.paused && mobile.tab.value === "wait"'));
+    await tap('#m-rest');
+    check(`${at}: reentry keeps the paused game`, await waitFor('restroomState().open && restroomGame.mode === "bricks" && restroomGame.paused', 4000));
+    await tap('#rm-back');
+  }
+  await openPhone(PHONE, 'light'); await tap('#m-rest');
+  await click('#rm-wp-min');
+  await evalJs('document.querySelector("#rm-wp").scrollIntoView({block:"nearest"}); true');
+  await tap('#rm-thumbs [data-wall="sea"]');
+  check('phone: a wallpaper is chosen and saved locally', await waitFor('restroomState().wall === "sea" && localStorage.getItem("herdr-planner.restroom.wall") === "sea"', 3000));
+  await evalJs(`(async () => { const c = document.createElement('canvas'); c.width = 64; c.height = 36; const x = c.getContext('2d'); x.fillStyle = '#c0392b'; x.fillRect(0, 0, 64, 36);
+    const blob = await new Promise((r) => c.toBlob(r, 'image/png')); const dt = new DataTransfer(); dt.items.add(new File([blob], 'wall.png', { type: 'image/png' }));
+    const i = document.querySelector('#rm-file'); i.files = dt.files; i.dispatchEvent(new Event('change', { bubbles: true })); return true; })()`);
+  check('phone: a custom wallpaper is kept in browser storage', await waitFor('restroomState().wall === "custom" && localStorage.getItem("herdr-planner.restroom.custom").startsWith("data:image/")', 4000));
+  await evalJs('document.querySelector("#rm").scrollTop = 0; true'); await tap('#rm-back');
+  await openPhone(PHONE, 'light'); await tap('#m-rest');
+  check('phone: custom wallpaper survives reload', await waitFor('restroomState().wall === "custom"', 4000));
+  await shot('m-restroom-light.png');
+  // A new notice must be visible and actionable during play, without knowing to scroll the room.
+  const taskFile = join(fixture, 'state', 'board.json');
+  const original = readFileSync(taskFile, 'utf8');
+  try {
+    for (const [w, h, mode = 'dark'] of [PHONE, [844, 390], TABLET, [320, 568], [390, 844, 'light']]) {
+      const id = 'alpha/923';
+      await openPhone([w, h], mode); await tap('#m-rest'); await tap(pad('a'));
+      check(`${w}×${h}: playing before a notice arrives`, await waitFor('restroomGame.mode === "shoot" && !restroomGame.paused', 4000));
+      const board = JSON.parse(original);
+      board.rows.push({ id, app: 'claude', state: 'blocked', kind: 'question', stage: 'working', title: 'Вопрос с телефона', msg: 'Нужно уточнение с телефона' });
+      writeFileSync(taskFile, JSON.stringify(board));
+      await post('/api/refresh', {});
+      check(`${w}×${h}: a new waiting task appears during play`, await waitFor(`!!document.querySelector('#rm-notes [data-note="${id}"]')`, 20000));
+      const noticeVisible = () => waitFor(`(() => {
+        const note = document.querySelector('#rm-notes [data-note="${id}"]');
+        return !!note && Number(getComputedStyle(note).opacity) >= .99 && document.querySelector('#rm').scrollTop === 0 && [note, note.querySelector('[data-act="fly"]'), note.querySelector('[data-act="later"]'), document.querySelector('#rm-back'), ...document.querySelectorAll('#rm [data-pad]')].every((e) => {
+          const r = e.getBoundingClientRect(), hit = document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2);
+          return r.top >= 0 && r.bottom <= innerHeight && r.left >= 0 && r.right <= innerWidth && (hit === e || e.contains(hit));
+        }); })()`, 4000);
+      check(`${w}×${h}: notice, actions, exit and game controls are visible without scrolling`, await noticeVisible());
+      check(`${w}×${h}: notice has a readable panel background`, await evalJs(`(() => {
+        const c = getComputedStyle(document.querySelector('#rm-notes .rm-note')).backgroundColor;
+        const canvas = document.createElement('canvas'), g = canvas.getContext('2d'); g.fillStyle = c; g.fillRect(0, 0, 1, 1);
+        return g.getImageData(0, 0, 1, 1).data[3] >= 240;
+      })()`));
+      await shot(`m-restroom-notice-${w}-${h}-${mode}.png`);
+      await tap('#rm-notes [data-act="later"]');
+      check(`${w}×${h}: «Позже» dismisses the notice and leaves the game playable`, await waitFor('!document.querySelector("#rm-notes .rm-note") && restroomGame.mode === "shoot" && !restroomGame.paused', 4000));
+      // Reenter so this request can arrive as new again; then fly directly from the overlay.
+      await tap('#rm-back');
+      writeFileSync(taskFile, original); await post('/api/refresh', {});
+      await waitFor(`!plannerSnap().tasks.some((t) => t.id === "${id}")`, 15000);
+      await tap('#m-rest'); await tap(pad('start'));
+      writeFileSync(taskFile, JSON.stringify(board)); await post('/api/refresh', {});
+      await waitFor(`!!document.querySelector('#rm-notes [data-note="${id}"]')`, 20000);
+      check(`${w}×${h}: a subsequent notice stays in view too`, await noticeVisible());
+      await tap('#rm-notes [data-act="fly"]');
+      check(`${w}×${h}: «Лететь» opens the task sheet directly from play`, await waitFor(`!restroomState().open && mobile.sheet.value?.kind === "task" && mobile.sheet.value.id === "${id}" && !!document.querySelector("#sheet.on")`, 5000) && await evalJs('location.pathname === "/m"'));
+      writeFileSync(taskFile, original); await post('/api/refresh', {});
+      await waitFor(`!plannerSnap().tasks.some((t) => t.id === "${id}")`, 15000);
+    }
+  } finally { writeFileSync(taskFile, original); }
+  await evalJs('localStorage.removeItem("herdr-planner.restroom.wall"); localStorage.removeItem("herdr-planner.restroom.custom"); true');
+  await send('Emulation.setTouchEmulationEnabled', { enabled: false });
+  await backToDesk(); await navigate(base + '/?noauto&nocoach&bloom=0');
+});
 
 section('light page actions', async () => {
   await openPhone(PHONE, 'dark');

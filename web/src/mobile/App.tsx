@@ -12,6 +12,8 @@ import { chatShown, listTab, session, sheet, tab, wide, type Tab } from './state
 import { WaitPage } from './Wait';
 import { ChatPage } from './Chat';
 import { BoardPage } from './Board';
+import { Restroom } from '../ui/Restroom';
+import { enter } from '../restroom/state';
 import { Sheets } from './Sheets';
 
 function since(ms: number): string {
@@ -69,6 +71,9 @@ function Nav(): JSX.Element {
           {k === 'chat' && unread > 0 && tab.value !== 'chat' && <span class="u" id="nu" role="img" aria-label={t('chat.unreadDot')} />}
         </button>
       ))}
+      <button id="m-rest" type="button" onClick={(e) => enter({ kind: 'mobile' }, e.currentTarget)}>
+        <span class="rest-icon" aria-hidden="true">☕</span>{t('restroom.top')}
+      </button>
     </nav>
   );
 }
@@ -76,6 +81,7 @@ function Nav(): JSX.Element {
 export function App(): JSX.Element {
   const ready = snap.value !== null;
   return (
+    <>
     <div class="mob" data-ready={ready ? '1' : '0'}>
       <Header />
       {!live.value && ready && <div class="banner" id="offline" role="status">{t('m.offline')}</div>}
@@ -100,5 +106,7 @@ export function App(): JSX.Element {
         ))}
       </div>
     </div>
+    <Restroom mobile />
+    </>
   );
 }
