@@ -186,6 +186,8 @@ export function Chat(): JSX.Element {
   const jumped = useRef(false);
   const opened = useRef(false);
   const navUntil = useRef(0);
+  /** The jump to the first unread ends at the bottom (the unread are the last answers): the log keeps following meanwhile. */
+  const navToEnd = useRef(false);
   const readsEnd = (el: HTMLElement): boolean => opened.current && Date.now() > navUntil.current && el.scrollHeight - el.scrollTop - el.clientHeight < 24;
 
   // Keep the end in view unless the reader scrolled up; keep the place after older turns are added.
@@ -202,7 +204,7 @@ export function Chat(): JSX.Element {
     if (!target) return;
     requestAnimationFrame(() => {
       const el = logRef.current?.querySelector<HTMLElement>(`[data-n="${target.n}"]`);
-      if (el) { stuck.value = false; el.scrollIntoView({ block: target.block ?? 'center', behavior: 'smooth' }); }
+      if (el) { stuck.value = navToEnd.current && Date.now() < navUntil.current; el.scrollIntoView({ block: target.block ?? 'center', behavior: 'smooth' }); }
     });
   }, [scrollTo.value]);
 
@@ -239,17 +241,13 @@ export function Chat(): JSX.Element {
       const room = log.getBoundingClientRect();
       if (at.top >= room.top && at.bottom <= room.bottom) return;
     }
-    stuck.value = false;
+    const at = el.getBoundingClientRect();
+    const room = log.getBoundingClientRect();
+    // (the place of the turn in the log: further down than the log can scroll means that the jump ends at the bottom)
+    navToEnd.current = at.top - room.top + log.scrollTop >= log.scrollHeight - log.clientHeight - 24;
+    stuck.value = navToEnd.current;
     navUntil.current = Date.now() + 1500;
     scrollTo.value = { n: first, at: Date.now(), block: 'start' };
-    // When the scroll has come to rest, the log follows new answers again if it ended at the bottom (the unread were the last ones).
-    window.setTimeout(() => {
-      const el = logRef.current;
-      if (!el) return;
-      const atEnd = el.scrollHeight - el.scrollTop - el.clientHeight < 24;
-      stuck.value = atEnd;
-      if (atEnd && open && active) markReadToEnd();
-    }, 1600);
   };
 
   // Opening the chat shows what is new in it. A chat that is open from the start (the wide one is restored open) waits for the history.
@@ -277,7 +275,8 @@ export function Chat(): JSX.Element {
     if (!el) return;
     const atEnd = el.scrollHeight - el.scrollTop - el.clientHeight < 24;
     // (the first frames of a scroll away from the end still look like the end: they must not pin the log to it again)
-    stuck.value = atEnd && Date.now() > navUntil.current;
+    if (Date.now() > navUntil.current) stuck.value = atEnd;
+    else if (!navToEnd.current) stuck.value = false;
     // Reaching the end acknowledges every answer, rather than waiting for an observer timer to fire.
     if (open && active && readsEnd(el)) markReadToEnd();
     // (not on the way to the first unread: loading older turns there would pull the log back to where it started)

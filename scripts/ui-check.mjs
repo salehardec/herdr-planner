@@ -6804,6 +6804,17 @@ section('chat unread', async () => {
   check('the click takes the log to the end and clears the count', (await evalJs(dist)) < 24 && !(await evalJs('!!document.querySelector("#cunread") || !!document.querySelector("#bchat-n")')), String(await evalJs(dist)));
   const nextN = say(1);
   check('the next answer is followed: the end stays in view and nothing is counted', await waitFor(`!!document.querySelector('#clog .turn[data-n="${nextN}"]') && ${dist} < 24 && !document.querySelector("#cunread") && !document.querySelector("#bchat-n")`, 8000), String(await evalJs(dist)) + ' ' + await text('#bchat'));
+  // An answer that comes while the log is still on its way to the end is followed, too.
+  await evalJs('(() => { const l = document.querySelector("#clog"); l.scrollTop = l.scrollHeight - l.clientHeight - 700; return true; })()');
+  await sleep(400);
+  say(1);
+  check('scrolled up again, one new answer comes: «1 новое»', await hasText('#cunread', '1 новое', 10000), await text('#bchat'));
+  await click('#cunread');
+  await sleep(300);
+  const quick = say(1);
+  check('an answer 0.3 s after the click is followed: the end stays in view and nothing is counted', await waitFor(`!!document.querySelector('#clog .turn[data-n="${quick}"]') && ${dist} < 24 && !document.querySelector("#cunread") && !document.querySelector("#bchat-n")`, 8000), String(await evalJs(dist)) + ' ' + await text('#bchat'));
+  await sleep(2000);
+  check('and it stays so after the jump is over', (await evalJs(dist)) < 24 && !(await evalJs('!!document.querySelector("#cunread") || !!document.querySelector("#bchat-n")')), String(await evalJs(dist)) + ' ' + await text('#bchat'));
   await focus(false);
 
   // The wide chat is restored open by a reload: it waits for the history and then goes to the first unread, too.
