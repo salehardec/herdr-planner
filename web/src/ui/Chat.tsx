@@ -242,6 +242,14 @@ export function Chat(): JSX.Element {
     stuck.value = false;
     navUntil.current = Date.now() + 1500;
     scrollTo.value = { n: first, at: Date.now(), block: 'start' };
+    // When the scroll has come to rest, the log follows new answers again if it ended at the bottom (the unread were the last ones).
+    window.setTimeout(() => {
+      const el = logRef.current;
+      if (!el) return;
+      const atEnd = el.scrollHeight - el.scrollTop - el.clientHeight < 24;
+      stuck.value = atEnd;
+      if (atEnd && open && active) markReadToEnd();
+    }, 1600);
   };
 
   // Opening the chat shows what is new in it. A chat that is open from the start (the wide one is restored open) waits for the history.
