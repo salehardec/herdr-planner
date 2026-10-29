@@ -89,7 +89,7 @@ function Segment(props: { a: AgentUsage }): JSX.Element {
   const lv = level(a.limits ?? []);
   const words = ws.length ? ws.map(usedText).join(' · ') : a.balance ? cur(a.balance.remaining, a.balance.currency || 'USD') : '';
   return (
-    <span class={`lp lp-${lv}${a.stale ? ' stale' : ''}`} data-p={a.id} title={`${a.name}: ${words}`}>
+    <span class={`lp lp-${lv}${a.stale ? ' stale' : ''}`} data-p={a.id}>
       <ProviderIcon id={a.id} />
       {one && <span class="lp-bar"><i style={`--w:${usedPct(one)}%`} /></span>}
       {ws.length ? (

@@ -3580,6 +3580,14 @@ section('crew', async () => {
   const spent = JSON.parse(usageWas);
   spent.limits = [{ label: 'Session (5-hour)', percent: 1, resetsAt: new Date(Date.now() + 3 * 3600 * 1000).toISOString() }];
   writeFileSync(usageFile, JSON.stringify(spent));
+  // the planner's own reading of Claude (PLN-84) comes first, so the stand-in service says the same, and the planner is asked to read it again
+  const stubFile = join(fixture, 'usage-stub', 'claude.json');
+  const stubWas = readFileSync(stubFile, 'utf8');
+  const stubSpent = JSON.parse(stubWas);
+  stubSpent.limits[0] = { kind: 'session', percent: 100, resets_at: new Date(Date.now() + 3 * 3600 * 1000).toISOString() };
+  writeFileSync(stubFile, JSON.stringify(stubSpent));
+  await post('/api/refresh?limits=1', {});
+  await waitFor('plannerSnap().limits.agents.find((a) => a.id === "claude")?.limits?.[0]?.percent === 1', 15000);
   await click('#station header button');
   await waitFor('!document.querySelector("#station")', 4000);
   await menuPick('Станция');
@@ -3587,6 +3595,10 @@ section('crew', async () => {
     && (await evalJs('document.querySelector(\'[data-program="claude"]\')?.dataset.state')) === 'limited', await text('#st-summary-down'));
   await shot('crew-summary.png');
   writeFileSync(usageFile, usageWas);
+  writeFileSync(stubFile, stubWas);
+  await sleep(10500);
+  await post('/api/refresh?limits=1', {});
+  await waitFor('plannerSnap().limits.agents.find((a) => a.id === "claude")?.limits?.[0]?.percent === 0.21', 15000);
 
   // presets: save the current crew, edit it, apply it
   const before = (await stationOf()).presets.list.length;
