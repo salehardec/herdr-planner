@@ -6802,8 +6802,8 @@ section('chat unread', async () => {
   await click('#cunread');
   await sleep(2800);
   check('the click takes the log to the end and clears the count', (await evalJs(dist)) < 24 && !(await evalJs('!!document.querySelector("#cunread") || !!document.querySelector("#bchat-n")')), String(await evalJs(dist)));
-  say(1);
-  check('the next answer is followed: the end stays in view and nothing is counted', await waitFor(`${dist} < 24 && !document.querySelector("#cunread") && !document.querySelector("#bchat-n")`, 8000), String(await evalJs(dist)) + ' ' + await text('#bchat'));
+  const nextN = say(1);
+  check('the next answer is followed: the end stays in view and nothing is counted', await waitFor(`!!document.querySelector('#clog .turn[data-n="${nextN}"]') && ${dist} < 24 && !document.querySelector("#cunread") && !document.querySelector("#bchat-n")`, 8000), String(await evalJs(dist)) + ' ' + await text('#bchat'));
   await focus(false);
 
   // The wide chat is restored open by a reload: it waits for the history and then goes to the first unread, too.
@@ -6811,7 +6811,7 @@ section('chat unread', async () => {
   check('the wide chat', await waitFor('!!document.querySelector("#chat.wide")', 5000));
   const away = (await send('Page.addScriptToEvaluateOnNewDocument', { source: 'document.hasFocus = () => false;' })).result.identifier;
   await navigate(base + '/?noauto&nocoach&bloom=0');
-  check('after a reload the wide chat is open and the acknowledged queue stays cleared', await waitFor('!!document.querySelector("#chat.wide:not(.off)") && !document.querySelector("#bchat-n") && !document.querySelector("#cunread")', 20000), await evalJs(`JSON.stringify({ turns: [...document.querySelectorAll('#clog .turn')].map((e) => e.dataset.n), top: document.querySelector('#clog').scrollTop, header: document.querySelector('#cunread')?.innerText, read: localStorage.getItem('herdr-planner.chat.read'), dots: [...document.querySelectorAll('[data-unread]')].map((e) => e.dataset.unread + ':' + e.dataset.sig) })`));
+  check('after a reload the wide chat is open and the acknowledged queue stays cleared', await waitFor('!!document.querySelector("#chat.wide:not(.off)") && !document.querySelector("#bchat-n") && !document.querySelector("#cunread")', 20000), await evalJs(`JSON.stringify({ turns: [...document.querySelectorAll('#clog .turn')].map((e) => e.dataset.n), top: document.querySelector('#clog').scrollTop, header: document.querySelector('#cunread')?.innerText })`));
   // A slow network: the last turns come first and hold no answer (only board lines), the covering of the history comes after.
   // The jump to the first unread waits for it, and the end of the chat reads nothing before that.
   const first3 = say(14);
