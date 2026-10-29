@@ -1,8 +1,8 @@
-//! Claude plan usage, read with Claude Code's own sign-in: `.credentials.json` in its config directory (`$CLAUDE_CONFIG_DIR`,
+//! Claude plan usage, read with pi's Claude sign-in (`~/.pi/agent/auth.json`) when it has one, else Claude Code's own sign-in: `.credentials.json` in its config directory (`$CLAUDE_CONFIG_DIR`,
 //! else `~/.claude`). A Claude Code pointed at another endpoint, or signing in through an API key helper, is not using that
 //! sign-in, so it is left alone. The token is Claude Code's own: it renews it when it runs, the planner never does.
 
-use super::{parse_json, ts_ms, Timestamp};
+use super::{first_fresh, parse_json, pi_oauth, ts_ms, Cred, Timestamp};
 use crate::plans::http::{self, text_at, Fail, Request, Res};
 use crate::plans::model::{title_case, Account, Kind, Report, Section, Window, SESSION, WEEK};
 use crate::plans::Sources;
@@ -16,18 +16,34 @@ const AGENT: &str = "claude-code/2.1.0";
 const API: &str = "https://api.anthropic.com";
 
 pub async fn fetch(src: &Sources, now: u64) -> Option<Res<Report>> {
+    let (cred, account) = match choose(src, now)? {
+        Ok(found) => found,
+        Err(fail) => return Some(Err(fail)),
+    };
+    let req = Request::get(ID, URL).bearer(&cred.token).header("anthropic-beta", BETA).header("User-Agent", AGENT);
+    Some(http::body(req).await.and_then(|body| parse(&body, account)))
+}
+
+/// The sign-in to ask with: pi's Claude sign-in first (when pi has one and it has not expired), then Claude Code's own. Neither is renewed
+/// here: the programs renew them when they run, and a dead one only says so.
+pub fn choose(src: &Sources, now: u64) -> Option<Res<(Cred, Account)>> {
+    let mut candidates = Vec::new();
+    if let Some(cred) = pi_oauth(src, "anthropic") {
+        candidates.push((cred, Account::default()));
+    }
+    candidates.extend(claude_code(src));
+    first_fresh(candidates, now)
+}
+
+/// Claude Code's own sign-in: `.credentials.json` of its config directory.
+fn claude_code(src: &Sources) -> Option<(Cred, Account)> {
     let settings = http::read_json(&src.claude_dir.join("settings.json"));
     if elsewhere(src, settings.as_ref()) {
         return None;
     }
     let credentials = http::read_json(&src.claude_dir.join(".credentials.json"))?;
     let token = http::secret_at(&credentials, &["claudeAiOauth", "accessToken"])?;
-    // Claude Code renews the token when it runs; asking with a dead one only repeats a request the service refuses.
-    if let Some(expires) = credentials.pointer("/claudeAiOauth/expiresAt").and_then(|v| v.as_u64()) {
-        if expires > 0 && expires <= now {
-            return Some(Err(Fail::Expired));
-        }
-    }
+    let expires_ms = credentials.pointer("/claudeAiOauth/expiresAt").and_then(|v| v.as_u64());
     let email = [src.claude_dir.join(".claude.json"), src.home.join(".claude.json")]
         .iter()
         .find_map(|p| http::read_json(p).and_then(|v| text_at(&v, &["oauthAccount", "emailAddress"])));
@@ -35,8 +51,7 @@ pub async fn fetch(src: &Sources, now: u64) -> Option<Res<Report>> {
         text_at(&credentials, &["claudeAiOauth", "subscriptionType"]).as_deref(),
         text_at(&credentials, &["claudeAiOauth", "rateLimitTier"]).as_deref(),
     );
-    let req = Request::get(ID, URL).bearer(&token).header("anthropic-beta", BETA).header("User-Agent", AGENT);
-    Some(http::body(req).await.and_then(|body| parse(&body, Account { email, plan })))
+    Some((Cred { token, expires_ms }, Account { email, plan }))
 }
 
 /// Whether Claude Code works without its OAuth sign-in: `ANTHROPIC_BASE_URL` (from the environment or the `env` of its
@@ -285,4 +300,33 @@ mod tests {
         assert!(!anthropic("https://api.anthropic.com.evil.example"));
         assert!(!anthropic("https://proxy.example"));
     }
+
+    #[test]
+    fn pis_claude_sign_in_comes_first_then_claude_codes_and_a_dead_one_is_the_reason() {
+        use crate::plans::providers::tests::pi_file;
+        let tmp = tempfile::tempdir().unwrap();
+        let src = Sources::for_tests(tmp.path());
+        assert!(choose(&src, NOW0).is_none(), "no sign-in anywhere: left out");
+        std::fs::create_dir_all(&src.claude_dir).unwrap();
+        std::fs::write(
+            src.claude_dir.join(".credentials.json"),
+            r#"{"claudeAiOauth":{"accessToken":"cc-token","expiresAt":4102444800000,"subscriptionType":"max","rateLimitTier":"default_claude_max_5x"}}"#,
+        )
+        .unwrap();
+        std::fs::write(src.claude_dir.join(".claude.json"), r#"{"oauthAccount":{"emailAddress":"me@x.y"}}"#).unwrap();
+        let (cred, account) = choose(&src, NOW0).unwrap().unwrap();
+        assert_eq!((account.email.as_deref(), account.plan.as_deref()), (Some("me@x.y"), Some("Max 5x")));
+        assert_eq!(cred.expires_ms, Some(4102444800000));
+        pi_file(tmp.path(), &serde_json::json!({"anthropic": {"type": "oauth", "access": "pi-token", "refresh": "r", "expires": 4102444800000u64}}));
+        let (_, account) = choose(&src, NOW0).unwrap().unwrap();
+        assert_eq!(account, Account::default(), "pi's sign-in was taken first: it names no account");
+        // pi's has expired: Claude Code's is the one asked with
+        pi_file(tmp.path(), &serde_json::json!({"anthropic": {"type": "oauth", "access": "pi-token", "expires": 5u64}}));
+        assert_eq!(choose(&src, NOW0).unwrap().unwrap().1.email.as_deref(), Some("me@x.y"));
+        // both have expired: the reason is said
+        std::fs::write(src.claude_dir.join(".credentials.json"), r#"{"claudeAiOauth":{"accessToken":"cc-token","expiresAt":5}}"#).unwrap();
+        assert_eq!(choose(&src, NOW0).unwrap().err(), Some(Fail::Expired));
+    }
+
+    const NOW0: u64 = 1_792_000_000_000;
 }

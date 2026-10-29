@@ -1,4 +1,4 @@
-//! DeepSeek credit balance. The sign-in is an API key (`[usage.deepseek] api_key` in the planner's config.toml, or
+//! DeepSeek credit balance. The sign-in is an API key: pi's (`deepseek` in `~/.pi/agent/auth.json`), else (`[usage.deepseek] api_key` in the planner's config.toml, or
 //! `DEEPSEEK_API_KEY`/`DEEPSEEK_KEY` in the planner's environment) read against the public balance endpoint, else a DeepSeek
 //! Platform session token (`platform_token`, `DEEPSEEK_PLATFORM_TOKEN`) read against the dashboard's user summary.
 //! Not ported: the Platform's per-key cost history, and importing the token from a browser.
@@ -14,7 +14,7 @@ const BALANCE_URL: &str = "https://api.deepseek.com/user/balance";
 const SUMMARY_URL: &str = "https://platform.deepseek.com/api/v0/users/get_user_summary";
 
 pub async fn fetch(src: &Sources, _now: u64) -> Option<Res<Report>> {
-    if let Some(key) = src.secret(ID, "api_key", &["DEEPSEEK_API_KEY", "DEEPSEEK_KEY"]) {
+    if let Some(key) = api_key(src) {
         let req = Request::get(ID, BALANCE_URL).bearer(&key).header("Accept", "application/json");
         return Some(http::body(req).await.and_then(|body| parse_balance(&body)));
     }
@@ -25,6 +25,11 @@ pub async fn fetch(src: &Sources, _now: u64) -> Option<Res<Report>> {
         .unwrap_or(stored);
     let req = Request::get(ID, SUMMARY_URL).bearer(&token).header("Accept", "application/json").header("x-client-platform", "web");
     Some(http::body(req).await.and_then(|body| parse_summary(&body)))
+}
+
+/// The API key, best first: pi's (`deepseek` in its `auth.json`), then the planner's own config, then the planner's environment.
+pub fn api_key(src: &Sources) -> Option<crate::plans::http::Secret> {
+    super::pi_key(src, "deepseek").or_else(|| src.secret(ID, "api_key", &["DEEPSEEK_API_KEY", "DEEPSEEK_KEY"]))
 }
 
 /// The public API's answer: one entry per currency the account holds.
@@ -231,5 +236,25 @@ mod tests {
         assert_eq!(parse_summary(r#"{"code":0}"#), Err(Fail::Parse));
         assert_eq!(parse_balance(r#"{"balance_infos":[{"currency":"USD"}]}"#), Err(Fail::Parse));
         assert_eq!(parse_balance("x"), Err(Fail::Parse));
+    }
+
+    #[test]
+    fn the_key_is_pis_first_then_the_config_then_the_environment_and_none_is_none() {
+        use crate::plans::providers::tests::pi_file;
+        let tmp = tempfile::tempdir().unwrap();
+        let bare = Sources::for_tests(tmp.path());
+        assert!(api_key(&bare).is_none(), "no key anywhere: the provider is not connected, and the page says how to connect it");
+        let env = Sources::for_tests(tmp.path()).with_env("DEEPSEEK_API_KEY", "from-env");
+        assert!(api_key(&env).is_some());
+        pi_file(tmp.path(), &serde_json::json!({"deepseek": {"type": "api_key", "key": "from-pi"}}));
+        let from_pi = api_key(&bare).unwrap();
+        assert!(api_key(&env).unwrap() == from_pi, "pi's key wins over the environment's");
+        assert!(api_key(&Sources::for_tests(tmp.path()).with_settings("[deepseek]\napi_key = \"from-config\"\n")).unwrap() == from_pi);
+    }
+
+    #[tokio::test]
+    async fn without_a_key_the_provider_gives_nothing_and_is_listed_as_not_connected() {
+        let tmp = tempfile::tempdir().unwrap();
+        assert!(fetch(&Sources::for_tests(tmp.path()), 0).await.is_none());
     }
 }

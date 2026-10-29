@@ -1,6 +1,7 @@
 //! Kimi Code (Kimi For Coding) quotas: the 5-hour rate limit, the weekly request quota, and the monthly Total usage pool, in
 //! CodexBar's order (as herdr-gpui reads them):
 //!
+//! 0. pi's Kimi sign-in (`kimi-coding` in `~/.pi/agent/auth.json`), while it has not expired;
 //! 1. a Kimi Code API key (`[usage.kimi] api_key`, `KIMI_CODE_API_KEY`), sent to `GET {api}/coding/v1/usages`;
 //! 2. the Kimi Code CLI's own sign-in, `$KIMI_CODE_HOME/credentials/kimi-code.json` (default `~/.kimi-code`), while its access
 //!    token is fresh (it lives 15 minutes and only the CLI renews it), with the CLI's device headers (China region only, as the
@@ -11,7 +12,7 @@
 //! With a web token, the membership pool (`GetSubscriptionStats`) and the plan title (`GetSubscription`) are added; failures
 //! there never fail the report. Not ported: reading the cookie from a browser, and several labelled web accounts.
 
-use super::{number, parse_json, ts_ms, Timestamp};
+use super::{number, parse_json, pi_oauth, ts_ms, Timestamp};
 use crate::plans::http::{self, Fail, Request, Res, Secret};
 use crate::plans::model::{group, Account, Kind, Report, Section, Window, MIN, MONTH, SESSION, WEEK};
 use crate::plans::Sources;
@@ -53,6 +54,13 @@ impl Region {
 pub async fn fetch(src: &Sources, now: u64) -> Option<Res<Report>> {
     let region = Region::from(src.text(ID, "region").as_deref());
     let web = src.secret(ID, "token", &["KIMI_AUTH_TOKEN"]);
+    // pi's Kimi sign-in (`kimi-coding` in its `auth.json`) is asked with first; pi renews it when it runs, the planner never does
+    let pi = pi_oauth(src, "kimi-coding");
+    let pi_dead = pi.as_ref().is_some_and(|c| c.stale(now));
+    if let Some(cred) = pi.filter(|c| !c.stale(now)) {
+        let req = Request::get(ID, usages_url(region.api())).bearer(&cred.token);
+        return Some(code(req, web.as_ref(), region).await);
+    }
     if let Some(key) = src.secret(ID, "api_key", &["KIMI_CODE_API_KEY"]) {
         let req = Request::get(ID, usages_url(region.api())).bearer(&key);
         return Some(code(req, web.as_ref(), region).await);
@@ -87,7 +95,7 @@ pub async fn fetch(src: &Sources, now: u64) -> Option<Res<Report>> {
             }
         }
     }
-    let token = web?;
+    let Some(token) = web else { return pi_dead.then_some(Err(Fail::Expired)) };
     Some(web_usage(&token, region).await)
 }
 

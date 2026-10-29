@@ -20,7 +20,7 @@
 // Run the planner on it (run-checks.sh does this):
 //   HERDR_PROJECTS_BIN=DIR/bin/herdr-projects HERDR_SOCKET_PATH=DIR/herdr.sock
 //   OMARCHY_THEME_DIR=DIR/theme XDG_STATE_HOME=DIR/state XDG_CONFIG_HOME=DIR/cfg
-//   CLAUDE_CONFIG_DIR=DIR/claude CODEX_HOME=DIR/codex KIMI_CODE_HOME=DIR/kimi DEEPSEEK_API_KEY=fixture HERDR_PLANNER_USAGE_STUB=DIR/usage-stub PATH=DIR/bin:$PATH
+//   CLAUDE_CONFIG_DIR=DIR/claude CODEX_HOME=DIR/codex KIMI_CODE_HOME=DIR/kimi PI_CODING_AGENT_DIR=DIR/pi-agent HERDR_PLANNER_USAGE_STUB=DIR/usage-stub PATH=DIR/bin:$PATH
 //   herdr-planner --port N --data DIR/board
 // The time-dependent parts (created, mtimes, rate limits) are relative to now; the rest is fixed.
 
@@ -1631,6 +1631,8 @@ fs.utimesSync(path.join(usageDir, 'pi.json'), old, old);
   write(path.join(dir, 'codex', 'auth.json'), JSON.stringify({ tokens: { access_token: `${b64u({ alg: 'none' })}.${b64u({ exp: FAR })}.sig`, account_id: 'fixture-account' } }));
   write(path.join(dir, 'kimi', 'credentials', 'kimi-code.json'), JSON.stringify({ access_token: 'fixture-kimi-token', expires_at: FAR }));
   write(path.join(dir, 'kimi', 'device_id'), 'fixture-device\n');
+  // pi's own sign-in file is where the planner looks first: the DeepSeek key lives there, as it does on a real machine
+  write(path.join(dir, 'pi-agent', 'auth.json'), JSON.stringify({ deepseek: { type: 'api_key', key: 'fixture-deepseek-key' } }));
   const stub = path.join(dir, 'usage-stub');
   const at = (ms) => new Date(usageAt + ms).toISOString();
   const H = 3600 * 1000;

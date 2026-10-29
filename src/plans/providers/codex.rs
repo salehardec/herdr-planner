@@ -1,7 +1,7 @@
-//! Codex plan usage, read with the Codex CLI's ChatGPT sign-in (`$CODEX_HOME/auth.json`, default `~/.codex`), falling back to
+//! Codex plan usage, read with pi's ChatGPT sign-in (`~/.pi/agent/auth.json`), else the Codex CLI's ChatGPT sign-in (`$CODEX_HOME/auth.json`, default `~/.codex`), falling back to
 //! OpenCode's OpenAI OAuth sign-in. API keys do not provide plan usage. The CLI renews its token when it runs.
 
-use super::{jwt_exp_ms, number, parse_json, ts_ms, Timestamp};
+use super::{first_fresh, jwt_claim, number, parse_json, pi_oauth, ts_ms, Cred, Timestamp};
 use crate::plans::http::{self, text_at, Fail, Request, Res, Secret};
 use crate::plans::model::{title_case, Account, Kind, Report, Section, Window, SESSION, WEEK};
 use crate::plans::Sources;
@@ -14,12 +14,12 @@ const AGENT: &str = "codex-cli";
 const SLACK_MS: u64 = 60_000;
 
 pub async fn fetch(src: &Sources, now: u64) -> Option<Res<Report>> {
-    let (token, account_id) = codex_auth(src).or_else(|| opencode_auth(src))?;
-    if jwt_exp_ms(&token).is_some_and(|exp| exp <= now) {
-        return Some(Err(Fail::Expired));
-    }
+    let (cred, account_id) = match choose(src, now)? {
+        Ok(found) => found,
+        Err(fail) => return Some(Err(fail)),
+    };
     let mut req = Request::get(ID, URL)
-        .bearer(&token)
+        .bearer(&cred.token)
         .header("User-Agent", AGENT)
         .header("OpenAI-Beta", "codex-1")
         .header("originator", "Codex Desktop");
@@ -29,19 +29,34 @@ pub async fn fetch(src: &Sources, now: u64) -> Option<Res<Report>> {
     Some(http::body(req).await.and_then(|body| parse(&body)))
 }
 
-fn codex_auth(src: &Sources) -> Option<(Secret, Option<Secret>)> {
+/// The sign-in to ask with, best first: pi's ChatGPT sign-in (`openai` in its `auth.json`), the Codex CLI's, OpenCode's. The first that has
+/// not expired wins; when all have, that is the reason. None of them is renewed here.
+pub fn choose(src: &Sources, now: u64) -> Option<Res<(Cred, Option<Secret>)>> {
+    let mut candidates = Vec::new();
+    if let Some(cred) = pi_oauth(src, "openai") {
+        // pi keeps no account id of its own: it is in the token
+        let account = jwt_claim(&cred.token, &["https://api.openai.com/auth", "chatgpt_account_id"]).and_then(Secret::new);
+        candidates.push((cred, account));
+    }
+    candidates.extend(codex_auth(src));
+    candidates.extend(opencode_auth(src));
+    first_fresh(candidates, now)
+}
+
+fn codex_auth(src: &Sources) -> Option<(Cred, Option<Secret>)> {
     let auth = http::read_json(&src.codex_dir.join("auth.json"))?;
     let token = http::secret_at(&auth, &["tokens", "access_token"])?;
-    Some((token, http::secret_at(&auth, &["tokens", "account_id"])))
+    Some((Cred { token, expires_ms: None }, http::secret_at(&auth, &["tokens", "account_id"])))
 }
 
 /// OpenCode renews and saves this token itself; each poll reads the current file.
-fn opencode_auth(src: &Sources) -> Option<(Secret, Option<Secret>)> {
+fn opencode_auth(src: &Sources) -> Option<(Cred, Option<Secret>)> {
     let auth = http::read_json(&src.opencode_auth)?;
     if text_at(&auth, &["openai", "type"]).as_deref() != Some("oauth") {
         return None;
     }
-    Some((http::secret_at(&auth, &["openai", "access"])?, http::secret_at(&auth, &["openai", "accountId"])))
+    let token = http::secret_at(&auth, &["openai", "access"])?;
+    Some((Cred { token, expires_ms: auth.pointer("/openai/expires").and_then(|v| v.as_u64()) }, http::secret_at(&auth, &["openai", "accountId"])))
 }
 
 pub fn parse(body: &str) -> Res<Report> {
@@ -164,5 +179,31 @@ mod tests {
     fn nothing_to_show_is_a_failure_not_an_empty_card() {
         assert_eq!(parse(r#"{"email":"a@b.c"}"#), Err(Fail::NoPlan));
         assert_eq!(parse("nope"), Err(Fail::Parse));
+    }
+
+    #[test]
+    fn pis_chatgpt_sign_in_comes_first_with_its_account_id_then_the_codex_cli() {
+        use crate::plans::providers::tests::{jwt, pi_file};
+        let tmp = tempfile::tempdir().unwrap();
+        let src = Sources::for_tests(tmp.path());
+        let now = 1_792_000_000_000u64;
+        assert!(choose(&src, now).is_none());
+        std::fs::create_dir_all(&src.codex_dir).unwrap();
+        let cli = jwt(&serde_json::json!({"exp": 4102444800u64}));
+        std::fs::write(src.codex_dir.join("auth.json"), serde_json::json!({"tokens": {"access_token": cli, "account_id": "cli-acct"}}).to_string()).unwrap();
+        let (cred, account) = choose(&src, now).unwrap().unwrap();
+        assert!(account.is_some() && !cred.stale(now));
+        let access = jwt(&serde_json::json!({"exp": 4102444800u64, "https://api.openai.com/auth": {"chatgpt_account_id": "pi-acct"}}));
+        pi_file(tmp.path(), &serde_json::json!({"openai": {"type": "oauth", "access": access, "refresh": "r", "expires": 4102444800000u64}}));
+        let (pi_cred, pi_account) = choose(&src, now).unwrap().unwrap();
+        assert_ne!(pi_cred.token, cred.token, "pi's token, not the CLI's");
+        assert!(pi_account.is_some());
+        // pi's has expired, the CLI's has not
+        pi_file(tmp.path(), &serde_json::json!({"openai": {"type": "oauth", "access": access, "expires": 5u64}}));
+        assert_eq!(choose(&src, now).unwrap().unwrap().0.token, cred.token);
+        // the CLI's token is a JWT that expired: nothing works, and that is said
+        let old = jwt(&serde_json::json!({"exp": 1000u64}));
+        std::fs::write(src.codex_dir.join("auth.json"), serde_json::json!({"tokens": {"access_token": old}}).to_string()).unwrap();
+        assert_eq!(choose(&src, now).unwrap().err(), Some(Fail::Expired));
     }
 }

@@ -224,12 +224,17 @@ curl -fsSL …/install.sh | sh -s -- uninstall      # снять планиро�
 herdr-gpui (крейт `herdr-usage`, по образцу CodexBar), но свой код: ни крейта, ни программы, ни файлов herdr-gpui он не берёт
 (`src/plans/`). Записи Omarchy остаются запасным источником и единственным — для программ, которых планировщик не читает.
 
-| Провайдер | Откуда вход | Что спрашивает |
+Сначала ищется вход в **pi** (`~/.pi/agent/auth.json`, или `$PI_CODING_AGENT_DIR`: `deepseek` — ключ, `kimi-coding`, `openai`,
+`anthropic` — OAuth), потом вход самой программы, потом ключи в `[usage.<провайдер>]` файла `~/.config/herdr-planner/config.toml`,
+и только в последнюю очередь переменные окружения службы. Файл pi планировщик **только читает**: не переписывает и не тратит refresh-токены
+(pi обновляет свои входы сам; просроченный вход — «вход просрочен: откройте программу», тогда берётся следующий источник).
+
+| Провайдер | Откуда вход (по порядку) | Что спрашивает |
 |---|---|---|
-| Claude | `.credentials.json` Claude Code (`$CLAUDE_CONFIG_DIR`, иначе `~/.claude`) | `api.anthropic.com/api/oauth/usage`: сессия, неделя, окна по моделям, «This week by surface», «Extra usage»; аккаунт — из `.claude.json`, тариф (Max 5x) — из входа. Если Claude Code смотрит на другой адрес или берёт ключ через `apiKeyHelper`, вход не используется |
-| Codex | `auth.json` Codex CLI (`$CODEX_HOME`, иначе `~/.codex`); запасной — вход OpenCode | `chatgpt.com/backend-api/wham/usage`: окна по их длине (5 ч, 7 дн), окно проверки кода, кредиты |
-| Kimi Code | ключ API (`[usage.kimi] api_key`, `KIMI_CODE_API_KEY`), вход Kimi Code CLI (`$KIMI_CODE_HOME`, иначе `~/.kimi-code`, пока его токен свеж), токен веба (`[usage.kimi] token`, `KIMI_AUTH_TOKEN`) | `/coding/v1/usages` или консоль `GetUsages`: сессия, неделя, «Total usage» за месяц; план и пул — из консоли, если есть токен веба |
-| DeepSeek | ключ API: `[usage.deepseek] api_key` в `~/.config/herdr-planner/config.toml` или `DEEPSEEK_API_KEY` / `DEEPSEEK_KEY` в окружении планировщика; запасной — `platform_token` | `api.deepseek.com/user/balance`: баланс, оплаченное и подаренное |
+| Claude | pi `anthropic`; `.credentials.json` Claude Code (`$CLAUDE_CONFIG_DIR`, иначе `~/.claude`) | `api.anthropic.com/api/oauth/usage`: сессия, неделя, окна по моделям, «This week by surface», «Extra usage»; аккаунт — из `.claude.json`, тариф (Max 5x) — из входа Claude Code. Если Claude Code смотрит на другой адрес или берёт ключ через `apiKeyHelper`, его вход не используется |
+| Codex | pi `openai` (id аккаунта — из токена); `auth.json` Codex CLI (`$CODEX_HOME`, иначе `~/.codex`); вход OpenCode | `chatgpt.com/backend-api/wham/usage`: окна по их длине (5 ч, 7 дн), окно проверки кода, кредиты |
+| Kimi Code | pi `kimi-coding`; ключ API (`[usage.kimi] api_key`, `KIMI_CODE_API_KEY`); вход Kimi Code CLI (`$KIMI_CODE_HOME`, иначе `~/.kimi-code`, пока его токен свеж); токен веба (`[usage.kimi] token`, `KIMI_AUTH_TOKEN`) | `/coding/v1/usages` или консоль `GetUsages`: сессия, неделя, «Total usage» за месяц; план и пул — из консоли, если есть токен веба |
+| DeepSeek | pi `deepseek`; `[usage.deepseek] api_key`; `DEEPSEEK_API_KEY` / `DEEPSEEK_KEY` в окружении службы; запасной — `platform_token` | `api.deepseek.com/user/balance`: баланс, оплаченное и подаренное |
 
 `[usage] hide = ["kimi"]` в том же `config.toml` убирает провайдера совсем. Не читаются: остальные провайдеры herdr-gpui (на этой
 машине входа в них нет), cookies из браузера, несколько аккаунтов Claude (claude-swap). Провайдер без входа не прячется молча:
