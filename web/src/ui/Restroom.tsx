@@ -135,6 +135,8 @@ export function Restroom(): JSX.Element {
   const open = roomOpen.value;
   const ir = iris.value;
   useInertBehind(room, open);
+  // a narrow window scrolls the room: it opens from the top
+  useEffect(() => { if (open && room.current) room.current.scrollTop = 0; }, [open]);
   const wall = wallId.value === 'custom' && customWall.value ? `url("${customWall.value}")` : wallCss(WALLS.find((w) => w.id === wallId.value) ?? WALLS[0]);
   return (
     <>

@@ -4040,6 +4040,8 @@ section('rest room', async () => {
       const narrow = document.documentElement.classList.contains('bp900');
       const k = R('#rm-console'); if (k && (k.l < 0 || k.r > innerWidth || k.t < 0 || (!narrow && k.b > innerHeight))) out.push('console off-screen ' + JSON.stringify(k));
       return out; })()`);
+    if (w < 700) await evalJs('document.querySelector("#rm").scrollTop = 0; true');
+    if (w < 700) await shot(`restroom-narrow-${w}.png`);
     check(`${w}×${h}: the wall panel, the exit button, the notices and the console do not cover one another, and the console is inside the window`, Array.isArray(hit) && hit.length === 0, JSON.stringify(hit));
   }
   await send('Emulation.setDeviceMetricsOverride', { width: 1500, height: 950, deviceScaleFactor: 1, mobile: false });
