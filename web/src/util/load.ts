@@ -44,11 +44,25 @@ export const worstMeter = (ms: Meter[]): Meter => ms.reduce((a, b) => (RANK[b.le
 export const tierFor = (rem: number): 'host' | 'full' | 'stack' | 'sum' | 'dot' | 'none' =>
   rem >= 31 ? 'host' : rem >= 22 ? 'full' : rem >= 12.5 ? 'stack' : rem >= 5.6 ? 'sum' : rem >= 3.8 ? 'dot' : 'none';
 
-/** The top bar's monitoring group (the bars, then the subscription chip) in the room (rem) the menu and the crumbs leave: the chip keeps its
- *  words (the agent and the window) while the bars still get the full form, else it shrinks to its percentage, and with no room at all
- *  it steps aside. `gap` is the space between the two. */
-export function monFit(room: number, chipFull: number, chipPct: number, gap: number): { chip: 'full' | 'pct' | 'none'; tier: ReturnType<typeof tierFor> } {
-  if (room - chipFull - gap >= 12.5) return { chip: 'full', tier: tierFor(room - chipFull - gap) };
-  if (room >= chipPct) return { chip: 'pct', tier: tierFor(room - chipPct - gap) };
-  return { chip: 'none', tier: 'none' };
+/** The forms of the subscription row, widest first: every provider with the two tightest windows (`full`), with the tightest one
+ *  (`one`), the first `words` providers with their words and the rest as a share (`mix`), every provider as a share with a small gauge
+ *  (`pct`), only the provider closest to its limit and only its share (`worst`), or nothing. */
+export type RowForm = 'full' | 'one' | 'mix' | 'pct' | 'worst' | 'none';
+
+export interface RowStep { form: Exclude<RowForm, 'worst' | 'none'>; words: number; w: number }
+
+/** What the machine bars keep at least (rem): their dot. The subscription row has the first claim on the rest. */
+export const BARS_LEAST = 3.8;
+
+/** The top bar's monitoring group (the bars, then the subscription row) in the room (rem) the menu and the crumbs leave. The row has
+ *  the first claim on it: the widest of the `steps` (given widest first, each with its width) that still leaves the bars at least their
+ *  dot; else the one provider closest to its limit while there is room at all (`worst`, of width `worstW`); else nothing. `gap` is
+ *  the space between the two, and `idx` the place of the step chosen (the steps' count for `worst`, one more for none). */
+export function rowFit(room: number, steps: RowStep[], worstW: number, gap: number): { chip: RowForm; words: number; tier: ReturnType<typeof tierFor>; idx: number } {
+  const left = (x: number): number => room - x - gap;
+  for (let i = 0; i < steps.length; i++) {
+    if (left(steps[i].w) >= BARS_LEAST) return { chip: steps[i].form, words: steps[i].words, tier: tierFor(left(steps[i].w)), idx: i };
+  }
+  if (room >= worstW) return { chip: 'worst', words: 0, tier: tierFor(left(worstW)), idx: steps.length };
+  return { chip: 'none', words: 0, tier: 'none', idx: steps.length + 1 };
 }

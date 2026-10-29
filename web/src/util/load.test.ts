@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { gb, levelOf, meters, monFit, pct, staleLoad, tierFor, worse, worstMeter } from './load';
+import { gb, levelOf, meters, pct, rowFit, staleLoad, tierFor, worse, worstMeter } from './load';
 
 describe('load levels', () => {
   it('changes colour at 70 and 90', () => {
@@ -24,14 +24,29 @@ describe('load levels', () => {
   it('takes the form that fits the room the crumbs leave', () => {
     expect([32, 24, 14, 8, 4, 3].map(tierFor)).toEqual(['host', 'full', 'stack', 'sum', 'dot', 'none']);
   });
-  it('gives the subscription chip its words only while the bars keep at least the stack form', () => {
-    expect(monFit(40, 13, 3.6, 0.5)).toEqual({ chip: 'full', tier: 'full' });
-    expect(monFit(50, 13, 3.6, 0.5)).toEqual({ chip: 'full', tier: 'host' });
-    expect(monFit(28, 13, 3.6, 0.5)).toEqual({ chip: 'full', tier: 'stack' });
-    expect(monFit(25, 13, 3.6, 0.5)).toEqual({ chip: 'pct', tier: 'stack' });
-    expect(monFit(10, 13, 3.6, 0.5)).toEqual({ chip: 'pct', tier: 'sum' });
-    expect(monFit(4, 13, 3.6, 0.5)).toEqual({ chip: 'pct', tier: 'none' });
-    expect(monFit(3, 13, 3.6, 0.5)).toEqual({ chip: 'none', tier: 'none' });
+  it('gives the subscription row the first claim on the room, then shrinks it step by step', () => {
+    const steps = [
+      { form: 'full' as const, words: 4, w: 13 },
+      { form: 'one' as const, words: 4, w: 9 },
+      { form: 'mix' as const, words: 3, w: 8 },
+      { form: 'mix' as const, words: 1, w: 6.5 },
+      { form: 'pct' as const, words: 0, w: 5 },
+    ];
+    expect(rowFit(40, steps, 3.6, 0.5)).toEqual({ chip: 'full', words: 4, tier: 'full', idx: 0 });
+    expect(rowFit(50, steps, 3.6, 0.5)).toEqual({ chip: 'full', words: 4, tier: 'host', idx: 0 });
+    // the words give way first to the tightest window of each provider, while the bars keep at least their summary…
+    expect(rowFit(17.4, steps, 3.6, 0.5)).toEqual({ chip: 'full', words: 4, tier: 'dot', idx: 0 });
+    expect(rowFit(17.2, steps, 3.6, 0.5)).toEqual({ chip: 'one', words: 4, tier: 'sum', idx: 1 });
+    // …then to fewer providers with their words, the rest as shares…
+    expect(rowFit(12.4, steps, 3.6, 0.5)).toEqual({ chip: 'mix', words: 3, tier: 'dot', idx: 2 });
+    expect(rowFit(10.9, steps, 3.6, 0.5)).toEqual({ chip: 'mix', words: 1, tier: 'dot', idx: 3 });
+    // …then to shares only…
+    expect(rowFit(9.4, steps, 3.6, 0.5)).toEqual({ chip: 'pct', words: 0, tier: 'dot', idx: 4 });
+    // …then to the one provider closest to its limit, whatever is left for the bars, …
+    expect(rowFit(9.2, steps, 3.6, 0.5)).toEqual({ chip: 'worst', words: 0, tier: 'dot', idx: 5 });
+    expect(rowFit(4, steps, 3.6, 0.5)).toEqual({ chip: 'worst', words: 0, tier: 'none', idx: 5 });
+    // …and at last to nothing
+    expect(rowFit(3, steps, 3.6, 0.5)).toEqual({ chip: 'none', words: 0, tier: 'none', idx: 6 });
   });
   it('knows an old reading by the machine\'s own clock and by how long the stream was quiet', () => {
     expect(staleLoad(0, 5000, 0, 3000)).toBe(true);

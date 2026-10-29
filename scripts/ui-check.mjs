@@ -574,11 +574,11 @@ section('panel widths', async () => {
 section('buttons', async () => {
   await resetUi();
   // Every visible button of the interface: its label starts with a capital letter. A value (the
-  // machine's host in the crumbs, a program's name in a picker, the load reading «orion CPU 92%…»,
+  // machine's host in the crumbs, a program's name in a picker, the load reading «orion CPU 92%…», the subscription row «91 % исп. 1д 6ч…»,
   // a runner's id «vm-r», the agent on a task in the navigator «ревью · pi/k3.1-pro») is not a label, so those are left out; a label that starts with an arrow
   // or a digit has no first letter to capitalise.
   const smallLabels = () => evalJs(`(() => {
-    const skip = '#crumbs, [data-prog], .prog, #load-chip, .ti .seat, .rf-task .k, .menu-opt:not(.own)';
+    const skip = '#crumbs, [data-prog], .prog, #load-chip, #hud-limits, .ti .seat, .rf-task .k, .menu-opt:not(.own)';
     const bad = [];
     for (const b of document.querySelectorAll('button')) {
       const r = b.getBoundingClientRect();
@@ -2412,8 +2412,8 @@ section('links', async () => {
   await evalJs('world.connect("alpha/11", "gamma/2")');
   check('a wait on an archived task keeps its id and is drawn as a far star', await waitFor(`plannerSnap().links.some((l) => l.from === 'gamma/2' && l.to === 'alpha/11' && l.kind === 'far' && l.label === 'GAM-2')`, 15000), JSON.stringify((await debug())?.links));
   await evalJs('world.connect("alpha/11", "alpha/9")');
-  check('a later link edit keeps the archived wait', await waitFor(`plannerSnap().links.some((l) => l.from === 'alpha/9' && l.to === 'alpha/11') && plannerSnap().links.some((l) => l.from === 'gamma/2' && l.to === 'alpha/11')`, 15000));
-  check('the after call carries the archived id, not its tag', await waitLog(() => calls().some((c) => c.argv[0] === 'after' && c.argv[1] === 'alpha/11' && String(c.argv[2]).includes('gamma/2')), 8000), JSON.stringify(lastCall()));
+  check('a later link edit keeps the archived wait', await waitFor(`plannerSnap().links.some((l) => l.from === 'alpha/9' && l.to === 'alpha/11') && plannerSnap().links.some((l) => l.from === 'gamma/2' && l.to === 'alpha/11')`, 15000), JSON.stringify({ links: (await debug())?.links, call: lastCall() }));
+  check('the after call carries the archived id, not its tag', await waitLog(() => calls().some((c) => c.argv[0] === 'after' && c.argv[1] === 'alpha/11' && String(c.argv[2]).includes('gamma/2') && String(c.argv[2]).includes('alpha/9')), 8000), JSON.stringify(lastCall()));
   // A task may wait for a task of another machine (`vm-a:OMG-1`): the board keeps it, the page lists it and does not fly there.
   const hasFar = await post('/api/action', { action: 'after', id: 'alpha/10', after: ['alpha/9', 'vm-a:OMG-1'] });
   check('a task of this machine can wait for a task of another (vm-a:OMG-1): it is a link of the board', hasFar[0] === 200 && await waitFor(`plannerSnap().links.some((l) => l.to === 'alpha/10' && l.kind === 'far' && String(l.from).includes('vm-a:'))`, 15000), JSON.stringify(hasFar).slice(0, 200));
@@ -2634,6 +2634,7 @@ const topRects = () => evalJs(`(() => {
   const chip = document.querySelector('#hud-limits');
   return { menu: r('#menu-btn'), crumbs: r('#crumbs'), load: r('#load-chip'), lim: r('#hud-limits'), gate: r('#gate-chip'), q: r('#q'), wait: r('#wait-btn'), mode: r('#mode'),
     form: chip?.dataset.form, tier: document.querySelector('#loadbar')?.dataset.tier, limText: chip ? chip.innerText.trim() : '', limTip: chip ? chip.getAttribute('aria-label') || '' : '',
+    fit: chip?.dataset.fit, provs: document.querySelectorAll('#hud-limits .lp').length, bars: [...document.querySelectorAll('#hud-limits .lp-bar')].filter((e) => e.offsetParent).length, provIcons: document.querySelectorAll('#hud-limits .lp svg').length,
     limClipped: chip ? chip.scrollWidth > chip.clientWidth + 1 || [...chip.querySelectorAll('.lim-ag')].some((e) => e.offsetParent && e.scrollWidth > e.clientWidth + 1) : false, sw: document.documentElement.scrollWidth, phone: document.documentElement.classList.contains('bp900') };
 })()`);
 
@@ -2686,15 +2687,17 @@ section('top bar', async () => {
       }
       check(`${at}: the crumbs are whole unless the window is a phone's`, await evalJs(`[...document.querySelectorAll('#crumbs button')].every((b) => b.scrollWidth <= b.clientWidth + 1) || document.documentElement.classList.contains('bp900')`), JSON.stringify(m));
       check(`${at}: the subscription chip (${m.form}) is whole; shortened to its percentage it keeps the words in its tooltip`, !m.limClipped
-        && (m.form === 'none' ? !m.lim : !!m.lim) && (m.form !== 'pct' || (/^\d+\s*%$/.test(m.limText) && m.limTip.includes(' · ') && /\d/.test(m.limTip))) && (m.form !== 'full' || /^\d+\s*%\s+\S/.test(m.limText)), JSON.stringify(m));
-      if (m.phone || scale === 200) check(`${at}: narrow: the chip is a percentage and the bars the worst one`, m.form === 'pct' || m.form === 'none', JSON.stringify(m));
+        && (m.form === 'none' ? !m.lim : !!m.lim) && ((m.form !== 'pct' && m.form !== 'worst') || (/^[\d\s%$.]+$/.test(m.limText) && m.limText.includes('%') && m.limTip.includes(' · ') && /\d/.test(m.limTip))) && (m.form === 'pct' || m.form === 'worst' || m.form === 'none' || /^\d+\s*%\s+\S/.test(m.limText)), JSON.stringify(m));
+      if (!m.phone && w >= 1920 && scale === 'auto') check(`${at}: with a task selected (the longest crumbs) the row still has a gauge for every provider and the words of the leading one`, ['full', 'one', 'mix'].includes(m.form) && /\d+\s*%\s+исп\.\s+\S/.test(m.limText) && m.bars >= 3 && !m.limClipped, JSON.stringify({ form: m.form, fit: m.fit, bars: m.bars, lim: m.lim, load: m.load, q: m.q }));
+      if (m.phone || scale === 200) check(`${at}: narrow: the chip is a percentage and the bars the worst one`, m.form === 'pct' || m.form === 'worst' || m.form === 'none', JSON.stringify(m));
+      check(`${at}: the row has a provider after provider, each with its icon (${m.provs})`, m.form === 'none' || m.provs >= 4, JSON.stringify(m));
       if (w >= 1920 && scale === 'auto') {
         // with the short crumbs of the Galaxy there is room: the chip keeps the agent and the window, whole (not cut by an ellipsis)
         await evalJs('planner.goHome(); true');
         await waitFor('plannerDebug().selected === null && world.debug().flight === "idle"', 12000);
         await beat();
         const h = await topRects();
-        check(`${at}: with room to spare the chip keeps the program, whole`, h.form === 'full' && /^\d+\s*%\s+\S/.test(h.limText) && !h.limText.includes(' · ') && !h.limClipped, JSON.stringify(h));
+        check(`${at}: with room to spare the row has gauges and words («N % исп. <сброс>») for the leading providers and every provider's share, whole`, ['full', 'one', 'mix'].includes(h.form) && /^\d+\s*%\s+исп\.\s+\S/.test(h.limText) && h.bars >= 3 && !h.limClipped && h.provIcons === h.provs, JSON.stringify({ form: h.form, tier: h.tier, text: h.limText, bars: h.bars, clipped: h.limClipped, provs: h.provs, icons: h.provIcons, lim: h.lim, load: h.load }));
       }
       if (scale === 'auto' && w === 1920) await shot(`topbar-${theme}.png`);
     }
@@ -2716,7 +2719,12 @@ section('top bar', async () => {
     const m = await topRects();
     const shown = Object.values(m).filter((v) => v && typeof v === 'object' && 'l' in v);
     check(`${w}×${h}: nothing overlaps and the page does not scroll sideways`, shown.every((a, i) => shown.slice(i + 1).every((b) => apart(a, b))) && shown.every((a) => a.l >= -1 && a.r <= w + 1) && m.sw <= w + 1, JSON.stringify(m));
-    check(`${w}×${h}: the chip is a percentage with a label`, m.form === 'pct' && /^\d+\s*%$/.test(m.limText) && m.limTip.length > 8, JSON.stringify(m));
+    await click('#hud-limits');
+    await waitFor('!!document.querySelector("#top-card[data-card=limits]")', 3000);
+    await click('#top-card [data-tab="kimi"]');
+    check(`${w}×${h}: with another provider's tab open the narrow chip still shows the one closest to its limit`, await evalJs(`(() => { const v = [...document.querySelectorAll('#hud-limits .lp')].filter((e) => e.offsetParent); return v.length === 1 && v[0].dataset.p === 'claude' && /97/.test(v[0].innerText); })()`));
+    await press('Escape');
+    check(`${w}×${h}: the chip is the worst provider's percentage with a label`, m.form === 'worst' && /^[\d\s%$.]+$/.test(m.limText) && m.limTip.length > 8, JSON.stringify(m));
     await click('#menu-btn');
     check(`${w}×${h}: the menu is inside the window`, await waitFor('!!document.querySelector(".menupop")', 3000) && await evalJs(`(() => { const p = document.querySelector('.menupop').getBoundingClientRect(); return p.left >= -1 && p.right <= innerWidth + 1; })()`));
     await click('#menu-btn');
@@ -2735,7 +2743,7 @@ section('top bar', async () => {
 
 section('limits', async () => {
   await resetUi();
-  check('the top bar has a limits chip naming the worst window', await waitFor('!!document.querySelector("#hud-limits")', 8000) && /3\s*%/.test(await text('#hud-limits')), await text('#hud-limits'));
+  check('the top bar has the subscription row, naming the worst window among the providers', await waitFor('!!document.querySelector("#hud-limits")', 8000) && await waitFor('/97\\s*%/.test(document.querySelector("#hud-limits")?.innerText || "")', 8000), await text('#hud-limits'));
   await clearToasts();
   await click('#hud-limits');
   check('a click on the chip opens the card with all the subscriptions, not the panel', await waitFor('!!document.querySelector("#top-card[data-card=limits]")', 3000) && !(await exists('.pop.limits')));
@@ -2749,15 +2757,31 @@ section('limits', async () => {
   })()`);
   check('the limits panel is above the others and fully in view', box.inView && box.top && box.center, JSON.stringify(box));
   const lt = (await text('.pop.limits')).replace(/\s+/g, ' ');
-  check('the panel lists Claude, omp and pi', /Claude/.test(lt) && /OMP/.test(lt) && /Pi/.test(lt), lt.slice(0, 200));
+  check('the panel lists Claude, Codex, Kimi Code, DeepSeek, omp and pi', ['Claude', 'Codex', 'Kimi Code', 'DeepSeek', 'OMP', 'Pi'].every((n) => lt.includes(n)), lt.slice(0, 200));
+  check('the panel carries the account and the pace of a window, and says where Omarchy\'s record stood in', /fixture@example\.test/.test(lt) && /запас \d+ % · хватит до сброса/.test(lt) && /перерасход \d+ % · кончится через/.test(lt), lt.slice(0, 500));
   check('remaining is the inverse of the used share', /Осталось 79 %/.test(lt) && /Осталось 9 %/.test(lt) && /Осталось 3 %/.test(lt), lt.slice(0, 260));
   check('80% is a warning and 95% is critical', (await evalJs('document.querySelectorAll(".lim-win.warn").length')) === 1 && (await evalJs('document.querySelectorAll(".lim-win.crit").length')) === 1);
   check('omp and pi honestly say there is no data; an old record is stale', await hasText('.lim-agent[data-agent="omp"]', 'нет данных') && lt.toLowerCase().includes('устарело'));
-  check('the world draws one arc per agent with limits and the Quasar flickers on 95%', (await debug())?.limitArcs === 1 && (await debug())?.limitCrit === true, JSON.stringify({ a: (await debug())?.limitArcs, c: (await debug())?.limitCrit }));
+  check('the world draws one arc per agent with windows (Claude, Codex, Kimi Code) and the Quasar flickers on 95%', (await debug())?.limitArcs === 3 && (await debug())?.limitCrit === true, JSON.stringify({ a: (await debug())?.limitArcs, c: (await debug())?.limitCrit }));
   const alert = await api('/api/limits');
   check('the bar alert names the worst live window', alert[0] === 200 && alert[1].level === 'crit' && alert[1].worst.label === 'Fable Weekly', JSON.stringify(alert[1]));
   await press('KeyQ', 'q');
   check('Q closes the limits panel', await waitFor('!document.querySelector(".pop.limits")', 3000));
+
+  // the row as in herdr-gpui's status bar: a window as wide as the bar needs, the page at 100 %
+  await send('Emulation.setDeviceMetricsOverride', { width: 3840, height: 1600, deviceScaleFactor: 1, mobile: false });
+  await evalJs(`try { localStorage.setItem('herdr-planner.uiScale', '100'); } catch {} true`);
+  await navigate(base + '/?noauto&nocoach&bloom=0');
+  await resized();
+  await waitFor('document.querySelectorAll("#hud-limits .lp").length >= 4', 8000);
+  await beat();
+  const wide = await topRects();
+  check('with the room of a wide window the row says it all: «91 % исп. 1д 5ч · 97 % исп. Fable Weekly», «35 % исп. … · 21 % исп. Total usage», the balance', wide.form === 'full' && !wide.limClipped
+    && /\d+ % исп\. \S+ \S* ?· \d+ % исп\. Fable Weekly/.test(wide.limText.replace(/\s+/g, ' ')) && /35 % исп\. \d+м · 21 % исп\. Total usage/.test(wide.limText.replace(/\s+/g, ' ')) && /\$11\.92/.test(wide.limText) && wide.provIcons === wide.provs, JSON.stringify({ form: wide.form, text: wide.limText, clipped: wide.limClipped, lim: wide.lim }));
+  await shot('topbar-limits-wide.png');
+  await evalJs(`try { localStorage.removeItem('herdr-planner.uiScale'); } catch {} true`);
+  await send('Emulation.setDeviceMetricsOverride', { width: 1500, height: 950, deviceScaleFactor: 1, mobile: false });
+  await navigate(base + '/?noauto&nocoach&bloom=0');
 });
 
 
@@ -2784,7 +2808,8 @@ section('top cards', async () => {
   await mouseTo(700, 600);
 
   const chipText = (await text('#hud-limits')).trim();
-  check('the subscription chip is short: the share and the program, no window name', /^\d+\s*%\s+\S/.test(chipText) && !chipText.includes('·') && !/week|session|weekly|Fable/i.test(chipText), chipText);
+  check('the subscription row: a provider after provider (Claude, Codex, Kimi Code, DeepSeek), each with its icon, a gauge and what is used', await evalJs(`[...document.querySelectorAll('#hud-limits .lp')].map((e) => e.dataset.p).sort().join() === 'claude,codex,deepseek,kimi' && [...document.querySelectorAll('#hud-limits .lp')].every((e) => e.querySelector('svg')) && document.querySelectorAll('#hud-limits .lp-bar').length === 3`) && /\d+\s*%/.test(chipText), chipText);
+  check('the row says «used» and when the window resets, and a balance as money', await evalJs(`(() => { const a = document.querySelector('#hud-limits').getAttribute('aria-label'); return /Kimi Code: 35 % исп\\.[^;]* · 21 % исп\\. Total usage/.test(a) && /DeepSeek: \\$11\\.92/.test(a) && /Codex: 4 % исп\\. 1ч \\d+м · 12 % исп\\. \\d+д \\d+ч/.test(a); })()`), await evalJs(`document.querySelector('#hud-limits').getAttribute('aria-label')`));
   check('the bars carry no long captions: only CPU, MEM, GPU and the numbers', !/ядер|ГБ|обновлено|видеопамять/i.test(await text('#load-chip')), await text('#load-chip'));
   check('no card is open before anyone asks', !(await exists('#top-card')));
 
@@ -2843,7 +2868,9 @@ section('top cards', async () => {
   await press('Tab');
   check('and the next Tab goes on to the subscription chip, whose card opens', await waitFor('document.activeElement?.id === "hud-limits"', 3000) && await cardOpen('limits'));
   await press('Tab');
-  check('Tab from the chip lands on «Лимиты подписок»', await waitFor('document.activeElement?.id === "limits-more"', 3000));
+  check('Tab from the chip lands on the first control of its card: Refresh', await waitFor('document.activeElement?.id === "limits-refresh"', 3000) && !!(await cardRect()));
+  for (let i = 0; i < 4; i++) await press('Tab');
+  check('Tab goes on through Usage Dashboard, Status Page and the open tab to «Лимиты подписок»', await waitFor('document.activeElement?.id === "limits-more"', 3000) && !!(await cardRect()));
   await press('Escape');
   check('Esc on the link closes the card and gives the focus back to the chip', await cardGone() && (await evalJs('document.activeElement?.id')) === 'hud-limits');
   await evalJs('document.activeElement?.blur(); true');
@@ -2853,8 +2880,25 @@ section('top cards', async () => {
   check('the pointer over the chip opens the subscriptions card', await cardOpen('limits'));
   await cardPlace('#hud-limits', 'subscriptions', 1500, 950, 'hover');
   const lt = (await text('#top-card')).replace(/\s+/g, ' ');
-  check('the card lists Claude, omp and pi, each limit with what is left, the reset time and «через N»', /Claude/.test(lt) && /OMP/.test(lt) && /Pi/.test(lt) && /Осталось 79 %/.test(lt) && /Осталось 9 %/.test(lt) && /Осталось 3 %/.test(lt) && /Сброс [\d:., ]+ · через \d+ ч/.test(lt), lt.slice(0, 400));
-  check('all the windows of the subscription are there (more than the chip\'s one), with the thresholds in colour', (await evalJs('document.querySelectorAll("#top-card .lim-win").length')) >= 3 && (await evalJs('document.querySelectorAll("#top-card .lim-win.warn").length')) === 1 && (await evalJs('document.querySelectorAll("#top-card .lim-win.crit").length')) === 1);
+  check('the card opens on the provider closest to its limit (Claude), with its account and plan, each window with what is left and when it resets', /^Claude fixture@example\.test/.test(lt) && /Вход: из Claude Code/.test(lt) && /Max 5x/.test(lt) && /Сессия: осталось 79 %/.test(lt) && /Неделя: осталось 9 %/.test(lt) && /Fable Weekly: осталось 3 %/.test(lt) && /Сброс через (1ч \d+м|2ч 0м)/.test(lt), lt.slice(0, 500));
+  check('all the windows of the provider are there, with the thresholds in colour', (await evalJs('document.querySelectorAll("#top-card .lc-win").length')) === 3 && (await evalJs('document.querySelectorAll("#top-card .lc-win.warn").length')) === 1 && (await evalJs('document.querySelectorAll("#top-card .lc-win.crit").length')) === 1);
+  check('the pace: a session with room to spare «lasts until reset», a weekly one that is spent too fast says when it runs out', /запас \d+ % · хватит до сброса/.test(lt) && /перерасход \d+ % · кончится через/.test(lt), lt.slice(0, 700));
+  check('every window has a tick where an even spend would stand, and the sections: surfaces and extra usage', (await evalJs('document.querySelectorAll("#top-card .lc-win .lc-tick").length')) === 3 && /На этой неделе по клиентам Claude Code 100%/.test(lt) && /Дополнительный расход Статус выкл\./.test(lt), lt.slice(0, 900));
+  check('the actions are Refresh, the usage page and the status page; the tabs of the providers are at the bottom, Claude\'s open', await evalJs(`(() => { const c = document.querySelector('#top-card'); const a = [...c.querySelectorAll('.lc-act')].map((e) => e.innerText.trim()); const t = [...c.querySelectorAll('.lc-tab')]; return a.join('|') === 'Обновить|Страница расхода|Статус сервиса' && c.querySelector('a.lc-act').href.startsWith('https://claude.ai/') && t.map((e) => e.dataset.tab).join() === 'codex,claude,kimi,deepseek' && t.find((e) => e.getAttribute('aria-selected') === 'true')?.dataset.tab === 'claude' && t.every((e) => e.querySelector('svg')); })()`));
+  // a tab switches the provider without leaving the card
+  await click('#top-card [data-tab="kimi"]');
+  check('the Kimi Code tab: its plan, «35% used» as «осталось 65 %», the monthly total as a window of its own', await waitFor('document.querySelector("#top-card .lc-body")?.dataset.agent === "kimi"', 3000) && (await text('#top-card')).replace(/\s+/g, ' ').includes('Сессия: осталось 65 %') && /Total usage: осталось 79 %/.test((await text('#top-card')).replace(/\s+/g, ' ')) && /Allegretto/.test(await text('#top-card')) && /Вход: из Kimi Code CLI/.test(await text('#top-card')), (await text('#top-card')).replace(/\s+/g, ' ').slice(0, 400));
+  await shot('topcard-limits-kimi.png');
+  await click('#top-card [data-tab="deepseek"]');
+  check('the DeepSeek tab: the balance as money and the paid and granted parts, no windows', await waitFor('document.querySelector("#top-card .lc-body")?.dataset.agent === "deepseek"', 3000) && /остаток \$11\.92/.test((await text('#top-card')).replace(/\s+/g, ' ')) && /Вход: из pi/.test(await text('#top-card')) && /Оплачено \$11\.92/.test((await text('#top-card')).replace(/\s+/g, ' ')) && (await evalJs('document.querySelectorAll("#top-card .lc-win").length')) === 0);
+  await click('#top-card [data-tab="codex"]');
+  check('the Codex tab: the plan and the account, the review limit as one more window, the credits', await waitFor('document.querySelector("#top-card .lc-body")?.dataset.agent === "codex"', 3000) && /Plus/.test(await text('#top-card')) && /codex@example\.test/.test(await text('#top-card')) && /Вход: из Codex CLI/.test(await text('#top-card')) && (await evalJs('document.querySelectorAll("#top-card .lc-win").length')) === 3 && /Code review: осталось 97 %/.test((await text('#top-card')).replace(/\s+/g, ' ')) && /Кредиты Баланс 7\.50/.test((await text('#top-card')).replace(/\s+/g, ' ')));
+  await click('#top-card [data-tab="claude"]');
+  await waitFor('document.querySelector("#top-card .lc-body")?.dataset.agent === "claude"', 3000);
+  check('the bar follows the tab picked: the provider of the open tab leads the row', await evalJs(`document.querySelector('#hud-limits .lp').dataset.p === 'claude'`));
+  // Refresh asks the planner to read the providers again, and the card says so
+  await click('#limits-refresh');
+  check('Refresh is pressed: the card shows it while the providers are read again', await waitFor('document.querySelector("#limits-refresh")?.disabled === true || /Обновляю/.test(document.querySelector("#limits-refresh")?.innerText || "")', 3000) || (await text('#limits-refresh')).includes('Обновить'));
   check('the card links to «Лимиты подписок»', (await text('#limits-more')) === 'Лимиты подписок');
   await shot('topcard-limits.png');
   await press('Escape');
@@ -2891,7 +2935,7 @@ section('top cards', async () => {
   check('a tap on the chip opens the subscriptions card and keeps it', await cardOpen('limits') && (await evalJs('document.querySelector("#top-card")?.dataset.pinned')) === 'true');
   await sleep(500);
   check('it stays (a finger has no hover to keep it)', !!(await cardRect()));
-  await tap(700, 600);
+  await tap(900, 700);
   check('a tap elsewhere closes it', await cardGone());
   await tap(...centre(await rectOf('#load-chip')));
   check('a tap on the bars opens the machine card', await cardOpen('load'));
@@ -2905,7 +2949,7 @@ section('top cards', async () => {
   await evalJs('document.querySelector("#hud-limits").focus(); true');
   await cardOpen('limits');
   const le = (await text('#top-card')).replace(/\s+/g, ' ');
-  check('English: the subscriptions card, with capitals and «in N h»', /Subscriptions/.test(le) && /Resets [\d:., ]+ · in \d+ h/.test(le) && /\d+ % left/.test(le) && le.includes('Subscription limits'), le.slice(0, 300));
+  check('English: the card, as in herdr-gpui: «Session 79% left», «Resets in 1h 59m», «in reserve · Lasts until reset», the actions', /Claude fixture@example\.test/.test(le) && /Sign-in: from Claude Code/.test(le) && /Session 79% left/.test(le) && /Resets in (1h \d+m|2h 0m)/.test(le) && /\d+% in reserve · Lasts until reset/.test(le) && /\d+% in deficit · Runs out in/.test(le) && /This week by surface/.test(le) && /Extra usage Status Off/.test(le) && /Refresh Usage Dashboard Status Page/.test(le) && le.includes('Subscription limits'), le.slice(0, 700));
   await evalJs('document.querySelector("#load-chip").focus(); true');
   await cardOpen('load');
   const me = (await text('#top-card')).replace(/\s+/g, ' ');
@@ -3385,7 +3429,7 @@ section('remote client', async () => {
   const terminalsBefore = calls('terminal.jsonl').length;
   await navigate(remoteURL);
   check('a non-loopback page is a remote client', await waitFor('window.planner && !["127.0.0.1","localhost"].includes(location.hostname)', 8000));
-  check('a remote page still shows the limits chip', await waitFor('document.querySelector("#hud-limits")?.innerText.includes("3%")', 10000), await text('#hud-limits'));
+  check('a remote page still shows the limits chip', await waitFor('/9[17]\\s*%/.test(document.querySelector("#hud-limits")?.innerText || "")', 10000), await text('#hud-limits'));
   await click('#menu-btn');
   check('the menu of a page opened from another machine leads to the light version', await waitFor('[...document.querySelectorAll(".menupop button")].some((b) => b.innerText.includes("Лёгкая версия"))', 3000));
   await click('#menu-btn');
@@ -3503,7 +3547,8 @@ section('station', async () => {
   await click('[data-act="st-edit-light"]');
   await waitFor('!!document.querySelector(\'[id="st-prog-light"]\')', 5000);
   await typeIn('[id="st-prog-light"]', 'claude');
-  await waitFor('document.querySelectorAll(\'select[id="st-model-light"] option\').length >= 3', 15000);
+  // on a slow runner the program's model list comes late: wait for the very model that is picked, not for any three
+  await waitFor('[...document.querySelectorAll(\'select[id="st-model-light"] option\')].some((o) => o.value === "claude/claude-haiku-5-5")', 45000);
   await typeIn('[id="st-model-light"]', 'claude/claude-haiku-5-5');
   await click('[id="st-next-light"]');
   await readyCard();
@@ -3564,6 +3609,14 @@ section('crew', async () => {
   const spent = JSON.parse(usageWas);
   spent.limits = [{ label: 'Session (5-hour)', percent: 1, resetsAt: new Date(Date.now() + 3 * 3600 * 1000).toISOString() }];
   writeFileSync(usageFile, JSON.stringify(spent));
+  // the planner's own reading of Claude (PLN-84) comes first, so the stand-in service says the same, and the planner is asked to read it again
+  const stubFile = join(fixture, 'usage-stub', 'claude.json');
+  const stubWas = readFileSync(stubFile, 'utf8');
+  const stubSpent = JSON.parse(stubWas);
+  stubSpent.limits[0] = { kind: 'session', percent: 100, resets_at: new Date(Date.now() + 3 * 3600 * 1000).toISOString() };
+  writeFileSync(stubFile, JSON.stringify(stubSpent));
+  await post('/api/refresh?limits=1', {});
+  await waitFor('plannerSnap().limits.agents.find((a) => a.id === "claude")?.limits?.[0]?.percent === 1', 15000);
   await click('#station header button');
   await waitFor('!document.querySelector("#station")', 4000);
   await menuPick('Станция');
@@ -3571,6 +3624,10 @@ section('crew', async () => {
     && (await evalJs('document.querySelector(\'[data-program="claude"]\')?.dataset.state')) === 'limited', await text('#st-summary-down'));
   await shot('crew-summary.png');
   writeFileSync(usageFile, usageWas);
+  writeFileSync(stubFile, stubWas);
+  await sleep(10500);
+  await post('/api/refresh?limits=1', {});
+  await waitFor('plannerSnap().limits.agents.find((a) => a.id === "claude")?.limits?.[0]?.percent === 0.21', 15000);
 
   // presets: save the current crew, edit it, apply it
   const before = (await stationOf()).presets.list.length;
@@ -3997,9 +4054,9 @@ section('rest room', async () => {
   await opened();
   await press('KeyM', 'm');
   check('M goes to the menu', await ROOM('g.mode') === 'menu');
-  await evalJs(`(() => { const b = document.querySelector('#rm-console [data-pad="down"]'); const o = { bubbles: true, cancelable: true, pointerId: 1 }; b.dispatchEvent(new PointerEvent('pointerdown', o)); b.dispatchEvent(new PointerEvent('pointerup', o)); return true; })()`);
+  await mouseClick('#rm-console [data-pad="down"]');
   check('the pad on the shell presses the same buttons: ↓ chooses the bricks', await ROOM('g.sel') === 1);
-  await evalJs(`(() => { const b = document.querySelector('#rm-console [data-pad="a"]'); const o = { bubbles: true, cancelable: true, pointerId: 1 }; b.dispatchEvent(new PointerEvent('pointerdown', o)); b.dispatchEvent(new PointerEvent('pointerup', o)); return true; })()`);
+  await mouseClick('#rm-console [data-pad="a"]');
   check('and A starts it: «Кирпичики» are played', await ROOM('g.mode') === 'bricks' && await screenHas('КИРПИЧИКИ'));
   await press('ArrowUp', 'ArrowUp'); await press('Space', ' ');
   check('the piece turns and drops to the floor and locks', await ROOM('g.b.grid[22].some(Boolean)') === true);
@@ -6944,7 +7001,7 @@ section('light page', async () => {
     await openPhone(TABLET, mode);
     const at = `tablet ${TABLET.join('×')} ${mode}`;
     check(`${at}: the list and the chat stand side by side`, await waitFor(`(() => { const a = document.querySelector('#p-wait')?.getBoundingClientRect(); const b = document.querySelector('#p-chat')?.getBoundingClientRect(); return !!a && !!b && a.width > 250 && b.width > 350 && a.right <= b.left + 1 && Math.abs(a.top - b.top) < 4; })()`, 6000));
-    check(`${at}: the nav has the list tabs only and nothing scrolls sideways`, (await evalJs('document.querySelectorAll(".nav button").length')) === 2 && await noSideways(TABLET[0]));
+    check(`${at}: the nav has the list tabs only and nothing scrolls sideways`, (await evalJs('document.querySelectorAll(".nav [data-tab]").length')) === 2 && await noSideways(TABLET[0]));
     check(`${at}: the chat fills the right side down to the line`, await evalJs(`(() => { const r = document.querySelector('#ask').getBoundingClientRect(); return r.bottom <= innerHeight && r.bottom > innerHeight - 140 && r.width > 350; })()`));
     check(`${at}: the buttons are 44 px`, (await smallTargets()).length === 0, JSON.stringify(await smallTargets()));
     await shot(`m-tablet-${mode}.png`);
@@ -6963,6 +7020,111 @@ section('light page', async () => {
   await backToDesk();
   await navigate(base + '/?noauto&nocoach&bloom=0');
 }, { retry: true });
+
+// The same room through /m, driven by actual browser touch events rather than keyboard or element.click().
+section('light page rest room', async () => {
+  await send('Emulation.setTouchEmulationEnabled', { enabled: true, maxTouchPoints: 5 });
+  const point = (sel, id = 1) => evalJs(`(() => { const r = document.querySelector(${JSON.stringify(sel)}).getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2, id: ${id} }; })()`);
+  const touch = (type, points = []) => send('Input.dispatchTouchEvent', { type, touchPoints: points });
+  const tap = async (sel) => { await touch('touchStart', [await point(sel)]); await touch('touchEnd'); await pageTurn(); };
+  const pad = (name) => `#rm [data-pad="${name}"]`;
+  for (const [w, h] of [PHONE, TABLET, [844, 390], [1180, 820], [375, 812], [320, 568], [360, 640], [667, 375]]) {
+    const at = `${w}×${h}`;
+    await openPhone([w, h], 'dark');
+    await tap('#m-rest');
+    check(`${at}: touch opens the shared room over /m`, await waitFor('restroomState().open && document.querySelector(".mob").inert', 4000) && await hasText('#rm-back', 'Назад в планировщик'));
+    check(`${at}: the screen and every game button fit and are hit-testable (at least 44×44)`, await evalJs(`(() => {
+      const selectors = ['#rm-back', '#rm-screen', ...[...document.querySelectorAll('#rm [data-pad]')].map((e) => '#rm [data-pad="' + e.dataset.pad + '"]')];
+      return selectors.every((s) => { const e = document.querySelector(s), r = e.getBoundingClientRect(); const hit = document.elementFromPoint(r.x + r.width/2, r.y + r.height/2);
+        return r.left >= 0 && r.right <= innerWidth + 1 && r.top >= 0 && r.bottom <= innerHeight && (s === '#rm-screen' || (r.width >= 44 && r.height >= 44)) && (e === hit || e.contains(hit)); }); })()`));
+    await tap(pad('a'));
+    check(`${at}: A starts the shooter`, await waitFor('restroomGame.mode === "shoot"', 4000));
+    const x = await evalJs('restroomGame.s.x');
+    const left = await point(pad('left'), 1), fire = await point(pad('a'), 2);
+    await touch('touchStart', [left]);
+    await touch('touchStart', [left, fire]);
+    check(`${at}: two fingers move and fire together`, await waitFor(`restroomGame.s.x < ${x} - 15 && (restroomGame.s.bul.length > 0 || restroomGame.s.score > 0)`, 8000));
+    await touch('touchMove', [{ ...left, x: left.x + 12, y: left.y - 25 }, fire]);
+    check(`${at}: dragging a held finger neither scrolls nor zooms`, await evalJs('document.querySelector("#rm").scrollTop === 0 && scrollY === 0 && visualViewport.scale === 1'));
+    await touch('touchEnd');
+    check(`${at}: releasing fingers clears held buttons`, await waitFor('restroomGame.held.size === 0 && !document.querySelector("#rm .dn")', 4000));
+    await tap(pad('start'));
+    check(`${at}: START pauses`, await evalJs('restroomGame.paused'));
+    await tap(pad('start'));
+    check(`${at}: START resumes`, !(await evalJs('restroomGame.paused')));
+    await tap(pad('select')); await tap(pad('down')); await tap(pad('a'));
+    check(`${at}: touch selects and starts bricks`, await waitFor('restroomGame.mode === "bricks"', 4000));
+    const bx = await evalJs('restroomGame.b.p.x');
+    await touch('touchStart', [await point(pad('left'))]);
+    check(`${at}: holding repeats movement in bricks`, await waitFor(`restroomGame.b.p.x < ${bx} - 1`, 8000));
+    await touch('touchCancel');
+    check(`${at}: cancellation releases capture and game input`, await waitFor('restroomGame.held.size === 0 && !document.querySelector("#rm .dn")', 4000));
+    await shot(`m-restroom-${w}-${h}.png`);
+    await tap('#rm-back');
+    check(`${at}: exit returns to the same /m tab and pauses the game`, await waitFor('!restroomState().open && !document.querySelector(".mob").inert', 4000) && await evalJs('location.pathname === "/m" && restroomGame.paused && mobile.tab.value === "wait"'));
+    await tap('#m-rest');
+    check(`${at}: reentry keeps the paused game`, await waitFor('restroomState().open && restroomGame.mode === "bricks" && restroomGame.paused', 4000));
+    await tap('#rm-back');
+  }
+  await openPhone(PHONE, 'light'); await tap('#m-rest');
+  await click('#rm-wp-min');
+  await evalJs('document.querySelector("#rm-wp").scrollIntoView({block:"nearest"}); true');
+  await tap('#rm-thumbs [data-wall="sea"]');
+  check('phone: a wallpaper is chosen and saved locally', await waitFor('restroomState().wall === "sea" && localStorage.getItem("herdr-planner.restroom.wall") === "sea"', 3000));
+  await evalJs(`(async () => { const c = document.createElement('canvas'); c.width = 64; c.height = 36; const x = c.getContext('2d'); x.fillStyle = '#c0392b'; x.fillRect(0, 0, 64, 36);
+    const blob = await new Promise((r) => c.toBlob(r, 'image/png')); const dt = new DataTransfer(); dt.items.add(new File([blob], 'wall.png', { type: 'image/png' }));
+    const i = document.querySelector('#rm-file'); i.files = dt.files; i.dispatchEvent(new Event('change', { bubbles: true })); return true; })()`);
+  check('phone: a custom wallpaper is kept in browser storage', await waitFor('restroomState().wall === "custom" && localStorage.getItem("herdr-planner.restroom.custom").startsWith("data:image/")', 4000));
+  await evalJs('document.querySelector("#rm").scrollTop = 0; true'); await tap('#rm-back');
+  await openPhone(PHONE, 'light'); await tap('#m-rest');
+  check('phone: custom wallpaper survives reload', await waitFor('restroomState().wall === "custom"', 4000));
+  await shot('m-restroom-light.png');
+  // A new notice must be visible and actionable during play, without knowing to scroll the room.
+  const taskFile = join(fixture, 'state', 'board.json');
+  const original = readFileSync(taskFile, 'utf8');
+  try {
+    for (const [w, h, mode = 'dark'] of [PHONE, [844, 390], TABLET, [320, 568], [390, 844, 'light']]) {
+      const id = 'alpha/923';
+      await openPhone([w, h], mode); await tap('#m-rest'); await tap(pad('a'));
+      check(`${w}×${h}: playing before a notice arrives`, await waitFor('restroomGame.mode === "shoot" && !restroomGame.paused', 4000));
+      const board = JSON.parse(original);
+      board.rows.push({ id, app: 'claude', state: 'blocked', kind: 'question', stage: 'working', title: 'Вопрос с телефона', msg: 'Нужно уточнение с телефона' });
+      writeFileSync(taskFile, JSON.stringify(board));
+      await post('/api/refresh', {});
+      check(`${w}×${h}: a new waiting task appears during play`, await waitFor(`!!document.querySelector('#rm-notes [data-note="${id}"]')`, 20000));
+      const noticeVisible = () => waitFor(`(() => {
+        const note = document.querySelector('#rm-notes [data-note="${id}"]');
+        return !!note && Number(getComputedStyle(note).opacity) >= .99 && document.querySelector('#rm').scrollTop === 0 && [note, note.querySelector('[data-act="fly"]'), note.querySelector('[data-act="later"]'), document.querySelector('#rm-back'), ...document.querySelectorAll('#rm [data-pad]')].every((e) => {
+          const r = e.getBoundingClientRect(), hit = document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2);
+          return r.top >= 0 && r.bottom <= innerHeight && r.left >= 0 && r.right <= innerWidth && (hit === e || e.contains(hit));
+        }); })()`, 4000);
+      check(`${w}×${h}: notice, actions, exit and game controls are visible without scrolling`, await noticeVisible());
+      check(`${w}×${h}: notice has a readable panel background`, await evalJs(`(() => {
+        const c = getComputedStyle(document.querySelector('#rm-notes .rm-note')).backgroundColor;
+        const canvas = document.createElement('canvas'), g = canvas.getContext('2d'); g.fillStyle = c; g.fillRect(0, 0, 1, 1);
+        return g.getImageData(0, 0, 1, 1).data[3] >= 240;
+      })()`));
+      await shot(`m-restroom-notice-${w}-${h}-${mode}.png`);
+      await tap('#rm-notes [data-act="later"]');
+      check(`${w}×${h}: «Позже» dismisses the notice and leaves the game playable`, await waitFor('!document.querySelector("#rm-notes .rm-note") && restroomGame.mode === "shoot" && !restroomGame.paused', 4000));
+      // Reenter so this request can arrive as new again; then fly directly from the overlay.
+      await tap('#rm-back');
+      writeFileSync(taskFile, original); await post('/api/refresh', {});
+      await waitFor(`!plannerSnap().tasks.some((t) => t.id === "${id}")`, 15000);
+      await tap('#m-rest'); await tap(pad('start'));
+      writeFileSync(taskFile, JSON.stringify(board)); await post('/api/refresh', {});
+      await waitFor(`!!document.querySelector('#rm-notes [data-note="${id}"]')`, 20000);
+      check(`${w}×${h}: a subsequent notice stays in view too`, await noticeVisible());
+      await tap('#rm-notes [data-act="fly"]');
+      check(`${w}×${h}: «Лететь» opens the task sheet directly from play`, await waitFor(`!restroomState().open && mobile.sheet.value?.kind === "task" && mobile.sheet.value.id === "${id}" && !!document.querySelector("#sheet.on")`, 5000) && await evalJs('location.pathname === "/m"'));
+      writeFileSync(taskFile, original); await post('/api/refresh', {});
+      await waitFor(`!plannerSnap().tasks.some((t) => t.id === "${id}")`, 15000);
+    }
+  } finally { writeFileSync(taskFile, original); }
+  await evalJs('localStorage.removeItem("herdr-planner.restroom.wall"); localStorage.removeItem("herdr-planner.restroom.custom"); true');
+  await send('Emulation.setTouchEmulationEnabled', { enabled: false });
+  await backToDesk(); await navigate(base + '/?noauto&nocoach&bloom=0');
+});
 
 section('light page actions', async () => {
   await openPhone(PHONE, 'dark');

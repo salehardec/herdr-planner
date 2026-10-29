@@ -9,7 +9,9 @@
 #   sh install.sh password [--user NAME] [--listen ADDR] [--password-stdin | --password-file FILE]
 #   sh install.sh tls --cert FILE --key FILE
 #
-# Steps: [1/7] platform, [2/7] packages, [3/7] herdr (mise), [4/7] herdr-projects plugin,
+# HERDR_PROJECTS_REF: ref of the herdr-projects plugin (default legacy-herdr-projects, the board v1; main is Shepherdr 2).
+#
+# Steps: [1/7] platform, [2/7] packages, [3/7] herdr (mise), [4/7] herdr-projects plugin (v1, pinned to a ref),
 # [5/7] herdr-planner (release archive, checksum checked; --from-source builds the clone),
 # [6/7] service and launcher, [7/7] login and address.
 #
@@ -33,6 +35,9 @@ releases=${HERDR_PLANNER_RELEASES:-https://github.com/salehardec/herdr-planner/r
 herdr_min=0.9.3
 plugin_repo=eliasstravik/herdr-projects
 plugin_name=herdr-projects
+# Pinned: the branch of the last v1 (Shepherdr 2 took main). HERDR_PROJECTS_REF names another ref.
+plugin_v1_ref=legacy-herdr-projects
+plugin_ref=${HERDR_PROJECTS_REF:-$plugin_v1_ref}
 label=dev.herdr.planner
 unit=herdr-planner.service
 plugin_id=salehardec.herdr-planner
@@ -74,6 +79,9 @@ Herdr Planner: установка для текущего пользовател
   --no-herdr --no-plugin --no-service
   --user NAME --listen ADDR --password-stdin --password-file FILE
   --no-hypr --no-shell --key "SUPER + ALT + P"      только Omarchy
+
+Плагин herdr-projects ставится как доска v1 с ветки legacy-herdr-projects (HERDR_PROJECTS_REF — другая ветка
+или тег); herdr plugin update не вызывается. Если стоит Shepherdr 2, скрипт отказывается и называет команду.
 
 Без клона одной строкой:
   curl -fsSL https://github.com/salehardec/herdr-planner/releases/latest/download/install.sh | sh
@@ -412,8 +420,12 @@ step_herdr() {
 
 # ---- step 4: the herdr-projects plugin ----
 
-# herdr asks before installing or updating a plugin, and refuses without --yes when stdin is not a
-# terminal (as with `curl … | sh`). --yes on the installer also means yes here.
+# The plugin is the board (v1). Upstream renamed it: the same plugin id now carries Shepherdr 2.0, another program
+# (the shepherdr command, data in ~/.shepherdr) that the planner cannot drive. So the plugin is always installed at
+# a ref (plugin_ref: the branch of the last v1) and `herdr plugin update` is never called: it follows main.
+
+# herdr asks before installing a plugin, and refuses without --yes when stdin is not a terminal (as with
+# `curl … | sh`). --yes on the installer also means yes here.
 plugin_yes() { [ "$yes" -eq 1 ] || [ ! -t 0 ]; }
 plugin_run() { # subcommand and its arguments
   if plugin_yes; then herdr plugin "$@" --yes; else herdr plugin "$@"; fi
@@ -421,54 +433,129 @@ plugin_run() { # subcommand and its arguments
 plugin_run_dry() { # the line plugin_run would run
   if plugin_yes; then dry_say "herdr plugin $* --yes"; else dry_say "herdr plugin $*"; fi
 }
+plugin_pin_cmd() { say "  herdr plugin install $plugin_repo --ref $plugin_v1_ref --yes"; }
+
+json_str() { # key, json: the first "key":"value" in it
+  printf '%s' "$2" | grep -o "\"$1\":\"[^\"]*\"" | head -n 1 | sed 's/^"[^"]*":"//; s/"$//'
+}
+
+# What herdr says about the plugin: p_listed (0 or 1), p_name, p_version, p_root (the checkout it runs from),
+# p_commit, p_text (its line in the plain list; the fallback for a herdr whose --json lacks the fields).
+plugin_probe() {
+  p_listed=0; p_name=; p_version=; p_root=; p_commit=; p_text=
+  have herdr || return 0
+  js=$(herdr plugin list --plugin "$plugin_name" --json 2>/dev/null || true)
+  p_name=$(json_str name "$js")
+  p_version=$(json_str version "$js")
+  p_root=$(json_str plugin_root "$js")
+  p_commit=$(json_str resolved_commit "$js")
+  p_text=$(herdr plugin list 2>/dev/null | grep -E "^(- )?$plugin_name( |\$)" | head -n 1 || true)
+  if [ -n "$p_version$p_root$p_text" ]; then p_listed=1; fi
+}
+
+plugin_is_v2() { # Shepherdr by name, or a major version of 2 and up
+  # p_text is "- herdr-projects (<name>) enabled [github:<owner>/<repo>@<commit>]": only what comes before the
+  # source counts, the repo may be the renamed one (eliasstravik/shepherdr) with v1 in it.
+  case $p_name in *[Ss]hepherdr*) return 0 ;; esac
+  case ${p_text%%\[*} in *[Ss]hepherdr*) return 0 ;; esac
+  major=${p_version%%.*}
+  case $major in '' | *[!0-9]*) return 1 ;; esac
+  [ "$major" -ge 2 ]
+}
+
+plugin_refuse_v2() {
+  say "install.sh: плагин $plugin_name на этой машине — Shepherdr 2, а не доска v1 (herdr сообщает: ${p_name:-?} ${p_version:-?})." >&2
+  say "Herdr Planner работает с доской v1: у Shepherdr другие команды (shepherdr вместо herdr-projects) и данные" >&2
+  say "(~/.shepherdr), задач доски он не видит. Плагин не тронут, ничего не установлено." >&2
+  say "Вернуть v1 (Shepherdr лучше остановить сначала: herdr plugin action invoke $plugin_name.stop):" >&2
+  plugin_pin_cmd >&2
+  say "Потом запустите установку снова. Подробности: README, раздел «Shepherdr v2»." >&2
+  exit 1
+}
+
+plugin_at_ref() { # the installed commit is the one the ref points to now (git unreachable: no)
+  [ -n "$p_commit" ] && have git || return 1
+  remote=$(GIT_TERMINAL_PROMPT=0 git ls-remote --heads --tags "https://github.com/$plugin_repo" "$plugin_ref" 2>/dev/null | awk '{ print $1 }') || return 1
+  case "
+$remote
+" in *"
+$p_commit
+"*) return 0 ;; esac
+  return 1
+}
+
+launcher_program() { # the program a launcher runs: its  exec '<program>' "$@"  line
+  l=$(grep '^exec ' "$1" 2>/dev/null | head -n 1 || true)
+  l=${l#exec \'}
+  l=${l%\' \"\$@\"}
+  printf '%s' "$l"
+}
+launcher_ok() { # runs a program inside the plugin's checkout (any, when herdr does not tell where it is)
+  [ -x "$hp" ] && [ ! -L "$hp" ] || return 1
+  prog=$(launcher_program "$hp")
+  [ -n "$prog" ] && [ -x "$prog" ] || return 1
+  [ -z "$p_root" ] && return 0
+  case $prog in "$p_root"/*) return 0 ;; esac
+  return 1
+}
+
+# After the install: it is v1, the launcher in the data folder runs the plugin's current checkout, and
+# ~/.local/bin/herdr-projects leads to the launcher. The launcher is rewritten by the plugin itself (v1's own
+# `bin/run.sh install`); a link is ours. What cannot be put right here is named with the command.
+plugin_verify() {
+  if [ "$p_listed" -eq 0 ]; then return 0; fi
+  if plugin_is_v2; then
+    say "install.sh: после установки ($plugin_ref) плагин $plugin_name — Shepherdr 2, не доска v1 (herdr сообщает: ${p_name:-?} ${p_version:-?})." >&2
+    say "Ref $plugin_ref дал не v1. Поставьте v1 и запустите установку снова:" >&2
+    plugin_pin_cmd >&2
+    exit 1
+  fi
+  if ! launcher_ok && [ -n "$p_root" ] && [ -f "$p_root/bin/run.sh" ]; then
+    sh "$p_root/bin/run.sh" install >/dev/null 2>&1 || true
+  fi
+  if ! launcher_ok; then
+    res "ВНИМАНИЕ: $hp не запускает программу из $p_root (агенты и хуки пойдут мимо плагина)."
+    res "Выполните: sh '${p_root:-<каталог плагина>}/bin/run.sh' install"
+    return 0
+  fi
+  mkdir -p "$bin_dir"
+  if [ "$(readlink "$bin_dir/herdr-projects" 2>/dev/null || true)" != "$hp" ]; then ln -sf "$hp" "$bin_dir/herdr-projects"; fi
+}
 
 step_plugin() {
   step 4 "плагин herdr-projects"
   if [ "$want_plugin" -eq 0 ]; then res "пропущено (--no-plugin)"; return 0; fi
   if [ "$dry" -eq 0 ] && ! have herdr; then res "herdr не найден: плагин пропущен"; return 0; fi
-  before=$(hp_version || true)
-  listed=0
-  if have herdr && herdr plugin list 2>/dev/null | grep -q "$plugin_name"; then listed=1; fi
-  newest=0
-  if [ "$listed" -eq 1 ]; then
-    if [ "$dry" -eq 1 ]; then
-      plugin_run_dry update "$plugin_name"
-    else
-      # Only this plugin: an unnamed update would also update (and with --yes approve) every other GitHub
-      # plugin, and its output is one line per plugin, which would hide whether this one is current.
-      # herdr compares the remote commit itself: at the same one it prints
-      # «herdr-projects is already up to date.» and reinstalls nothing, so there is nothing to skip here.
-      # stdout is read for that line; stderr stays on the terminal, where herdr asks its question.
-      out=$(plugin_run update "$plugin_name") || { say "$out"; fail "herdr plugin update не удался"; }
-      say "$out"
-      case "$out" in
-        *"$plugin_name is already up to date"*) newest=1 ;;
-      esac
-    fi
-  elif [ -n "${HERDR_PROJECTS_REF:-}" ]; then
-    if [ "$dry" -eq 1 ]; then plugin_run_dry install "$plugin_repo" --ref "$HERDR_PROJECTS_REF"
-    else plugin_run install "$plugin_repo" --ref "$HERDR_PROJECTS_REF" || fail "herdr plugin install не удался"
-    fi
-  else
-    if [ "$dry" -eq 1 ]; then plugin_run_dry install "$plugin_repo"
-    else plugin_run install "$plugin_repo" || fail "herdr plugin install не удался"
-    fi
-  fi
   hp=$HOME/.herdr-projects/data/bin/herdr-projects
+  before=$(hp_version || true)
+  plugin_probe
+  if [ "$p_listed" -eq 1 ] && plugin_is_v2; then plugin_refuse_v2; fi
+  newest=0
+  if [ "$p_listed" -eq 1 ] && plugin_at_ref; then
+    newest=1
+  elif [ "$dry" -eq 1 ]; then
+    plugin_run_dry install "$plugin_repo" --ref "$plugin_ref"
+  else
+    # install, not update: update follows the repository's main, which is Shepherdr 2. Over a plugin that is
+    # already there it replaces it (herdr's own way back from v2 is the same command).
+    plugin_run install "$plugin_repo" --ref "$plugin_ref" || fail "herdr plugin install не удался"
+  fi
   if [ "$dry" -eq 1 ]; then
     dry_say "ln -sf $hp $bin_dir/herdr-projects"
     return 0
   fi
-  if [ -x "$hp" ]; then
-    mkdir -p "$bin_dir"
-    ln -sf "$hp" "$bin_dir/herdr-projects"
-  fi
+  plugin_probe
+  plugin_verify
   after=$(hp_version || true)
   if [ -z "$after" ]; then res "herdr-projects не найден (проверьте: herdr plugin list)"; return 0; fi
-  if [ "$newest" -eq 1 ]; then res "уже новейший: $after"
-  elif [ -z "$before" ]; then res "поставлен: $after"
-  elif [ "$after" = "$before" ]; then res "уже стоит: $after"
-  else res "обновлён: $before → $after"
+  case $after in
+    1.*) ;;
+    *) fail "herdr-projects $after: нужна доска v1 (1.x). Поставьте её: herdr plugin install $plugin_repo --ref $plugin_ref --yes" ;;
+  esac
+  if [ "$newest" -eq 1 ]; then res "уже на $plugin_ref: $after"
+  elif [ -z "$before" ]; then res "поставлен ($plugin_ref): $after"
+  elif [ "$after" = "$before" ]; then res "переустановлен ($plugin_ref): $after"
+  else res "обновлён ($plugin_ref): $before → $after"
   fi
 }
 
@@ -980,8 +1067,19 @@ summary() {
 
 # ---- actions ----
 
+# Before any step changes anything: a ref that is no ref, or Shepherdr 2 where the board should be.
+plugin_guard() {
+  [ "$want_plugin" -eq 1 ] || return 0
+  case $plugin_ref in
+    -* | *[!A-Za-z0-9._/+@-]*) stop "HERDR_PROJECTS_REF: '$plugin_ref' не похоже на ветку или тег" ;;
+  esac
+  plugin_probe
+  if [ "$p_listed" -eq 1 ] && plugin_is_v2; then plugin_refuse_v2; fi
+}
+
 do_install() {
   if [ "$dry" -eq 1 ]; then say "Пробный прогон (--dry-run): ничего не меняю, только печатаю шаги."; fi
+  plugin_guard
   step_platform
   step_packages
   step_herdr

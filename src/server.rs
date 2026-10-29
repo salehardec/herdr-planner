@@ -911,7 +911,16 @@ async fn run_herdr_with(args: &[&str], wait: Duration, color: bool) -> Result<St
     Ok(stdout)
 }
 
-async fn api_refresh(State(app): State<Shared>) -> Response {
+#[derive(Deserialize)]
+struct RefreshQuery {
+    /// The card's Refresh button: the providers are asked for their limits again, not for more than once in ten seconds.
+    limits: Option<String>,
+}
+
+async fn api_refresh(State(app): State<Shared>, Query(q): Query<RefreshQuery>) -> Response {
+    if q.limits.is_some() {
+        crate::plans::refresh_now();
+    }
     refresh(&app).await;
     Json(json!({"ok": true})).into_response()
 }
