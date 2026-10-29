@@ -1513,6 +1513,42 @@ esac"#,
     }
 
     #[tokio::test]
+    async fn a_preset_that_holds_an_own_role_changes_the_role_and_asks_the_board_nothing_for_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let (app, log) = app_with_board(dir.path(), "");
+        let rid = roles::edit_store(&app.cfg, |s| {
+            roles::add_role(s, &roles::RoleInput { name: "Дизайнер".into(), kind: "worker".into(), agent: "claude/claude-sonnet-5-5".into(), effort: "high".into(), ..Default::default() })
+        })
+        .unwrap();
+        let want = crew_roles(&[("light", "", "", "")]);
+        let mut held = want.clone();
+        held.insert(roles::preset_key(&rid), crew::RoleSet { agent: "codex/gpt-6-luna".into(), effort: "ultra".into(), fallback: "none".into() });
+        let id = crew::edit_store(&app.cfg, |s| crew::add_preset(s, "Дизайн дешевле", &held)).unwrap();
+        wait_models(&app, &["claude", "codex"]).await;
+        let body = || ApplyBody { id: id.clone(), repo: None, confirm: Some(true) };
+        let (_, prev) = json_of(station_preset_preview(State(app.clone()), headers(), Json(ApplyBody { confirm: None, ..body() })).await).await;
+        let own: Vec<&Value> = prev["steps"].as_array().unwrap().iter().filter(|s| s["role"] == "custom").collect();
+        let fields: Vec<String> = own.iter().map(|s| format!("{} {} {} → {}", s["label"].as_str().unwrap(), s["field"].as_str().unwrap(), s["was"].as_str().unwrap(), s["now"].as_str().unwrap_or("unset"))).collect();
+        assert_eq!(fields, ["Дизайнер agent claude/claude-sonnet-5-5 → codex/gpt-6-luna", "Дизайнер effort high → ultra", "Дизайнер fallback  → none"], "{prev}");
+        assert!(own.iter().all(|s| s["command"] == ""), "the role is the planner's own: no board command");
+        assert_eq!(prev["valid"], true, "{prev}");
+        // at a repository's level the roles are not touched, and the card says so
+        let (_, at_repo) = json_of(station_preset_preview(State(app.clone()), headers(), Json(ApplyBody { repo: Some("alpha".into()), confirm: None, ..body() })).await).await;
+        assert!(at_repo["steps"].as_array().unwrap().iter().all(|s| s["role"] != "custom"));
+        assert_eq!(at_repo["roles_skipped"], true);
+        // the presets list counts the role's steps in the difference
+        let listed = presets_json(&app.cfg, &[], "", "");
+        assert_eq!(listed["list"][0]["diff"], 3, "{listed}");
+
+        let (code, done) = json_of(station_preset_apply(State(app.clone()), headers(), Json(body())).await).await;
+        assert_eq!(code, StatusCode::OK, "{done}");
+        assert!(board_commands(&log).is_empty(), "nothing was set on the board");
+        let r = &roles::read_store(&app.cfg).roles[0];
+        assert_eq!((r.agent.as_str(), r.effort.as_str(), r.fallback.as_str()), ("codex/gpt-6-luna", "ultra", "none"));
+        assert_eq!(presets_json(&app.cfg, &[], "", "")["list"][0]["diff"], 0, "applied: the crew matches the preset");
+    }
+
+    #[tokio::test]
     async fn a_refusal_stops_the_run_and_says_what_was_done() {
         let dir = tempfile::tempdir().unwrap();
         let (app, log) = app_with_board(dir.path(), "worker.effort");

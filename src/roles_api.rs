@@ -547,6 +547,250 @@ mod tests {
         assert_eq!(pick_of(Some("r1f")), Pick::Role("r1f".into()));
     }
 
+    /* The board's commands a role makes, through a stand-in board that writes down what it is told. */
+
+    use axum::body::to_bytes;
+    use std::path::{Path as FsPath, PathBuf};
+
+    const SHOW: &str = r#"{"settings":[{"name":"worker.agent","kind":"work","value":"claude/claude-opus-5-5","from":"you","place":"you","own":true,"note":""},{"name":"worker.effort","kind":"work","value":"low","from":"you","place":"you","own":true,"note":""}]}"#;
+
+    fn stand_in(dir: &FsPath) -> (Shared, PathBuf) {
+        let log = dir.join("board.log");
+        let script = dir.join("board.sh");
+        let body = format!(
+            "#!/bin/sh\ncase \"$1\" in\n  list|coordinator) echo '[]';;\n  show) echo '{SHOW}';;\n  models) case \"$2\" in claude) printf 'claude takes a short name.\\n\\nclaude/claude-opus-5-5\\nclaude/claude-sonnet-5-5\\n\\nEffort (worker.effort and the like): low, medium, high (from x).\\n';; *) echo 'unknown' >&2; exit 2;; esac;;\n  add) echo \"$@\" | tr '\\n' ' ' >> {log}; echo >> {log}; echo 'alpha/9: added';;\n  set|unset) echo \"$@\" | tr '\\n' ' ' >> {log}; echo >> {log};;\n  *) exit 1;;\nesac\n",
+            log = log.display()
+        );
+        crate::testutil::write_exec(&script, body);
+        let cfg = crate::config::AppConfig { herdr_projects: script.display().to_string(), ..crate::testutil::test_cfg(dir) };
+        (app::App::new(cfg), log)
+    }
+
+    fn commands(log: &FsPath) -> Vec<String> {
+        std::fs::read_to_string(log).unwrap_or_default().lines().map(|l| l.trim_end().to_string()).collect()
+    }
+
+    async fn json_of(resp: Response) -> (StatusCode, Value) {
+        let status = resp.status();
+        let bytes = to_bytes(resp.into_body(), 1 << 20).await.unwrap();
+        (status, serde_json::from_slice(&bytes).unwrap_or(Value::Null))
+    }
+
+    async fn live_task(app: &Shared) {
+        let mut snap = app.snapshot.write().await;
+        snap.tasks = vec![Task {
+            id: "alpha/1".into(),
+            repo: "alpha".into(),
+            n: 1,
+            tag: "ALP-1".into(),
+            title: "Вход по паролю".into(),
+            status: Status::Working,
+            ..Task::default()
+        }];
+    }
+
+    fn headers() -> HeaderMap {
+        HeaderMap::new()
+    }
+
+    fn designer() -> roles::RoleInput {
+        roles::RoleInput {
+            name: "Дизайнер".into(),
+            kind: "worker".into(),
+            agent: "claude/claude-sonnet-5-5".into(),
+            effort: "high".into(),
+            instructions: "Следи за единым видом".into(),
+            ..Default::default()
+        }
+    }
+
+    fn put_body(role: &str, how: &str, confirm: bool) -> PutBody {
+        PutBody { role: role.into(), task: "alpha/1".into(), how: Some(how.into()), confirm: Some(confirm).filter(|c| *c) }
+    }
+
+    #[tokio::test]
+    async fn a_worker_role_is_previewed_and_then_set_on_the_task_by_the_boards_own_commands() {
+        let dir = tempfile::tempdir().unwrap();
+        let (app, log) = stand_in(dir.path());
+        live_task(&app).await;
+        let id = roles::edit_store(&app.cfg, |s| roles::add_role(s, &designer())).unwrap();
+
+        let (code, prev) = json_of(role_preview(State(app.clone()), headers(), Json(put_body(&id, "", false))).await).await;
+        assert_eq!(code, StatusCode::OK, "{prev}");
+        let steps: Vec<String> = prev["steps"].as_array().unwrap().iter().map(|s| format!("{} {} → {}", s["setting"].as_str().unwrap(), s["was"].as_str().unwrap(), s["now"].as_str().unwrap())).collect();
+        assert_eq!(
+            steps,
+            ["worker.agent claude/claude-opus-5-5 → claude/claude-sonnet-5-5", "worker.effort low → high", "worker.instructions  → Следи за единым видом"]
+        );
+        assert_eq!(prev["steps"][0]["command"], "herdr-projects set worker.agent claude/claude-sonnet-5-5 --task alpha/1");
+        assert_eq!((prev["valid"].clone(), prev["started"].clone(), prev["how"].clone()), (json!(true), json!(true), json!("worker")));
+        assert!(commands(&log).is_empty(), "the preview changes nothing");
+
+        let (code, _) = json_of(role_apply(State(app.clone()), headers(), Json(put_body(&id, "", false))).await).await;
+        assert_eq!(code, StatusCode::BAD_REQUEST, "not without the confirmation");
+        assert!(commands(&log).is_empty());
+
+        let (code, done) = json_of(role_apply(State(app.clone()), headers(), Json(put_body(&id, "", true))).await).await;
+        assert_eq!(code, StatusCode::OK, "{done}");
+        assert_eq!(
+            commands(&log),
+            [
+                "set worker.agent claude/claude-sonnet-5-5 --task alpha/1",
+                "set worker.effort high --task alpha/1",
+                "set worker.instructions Следи за единым видом --task alpha/1",
+            ]
+        );
+        let store = roles::read_store(&app.cfg);
+        let marks = roles::marks_of(&store);
+        assert_eq!(marks["alpha/1"][0].name, "Дизайнер");
+        assert_eq!(marks["alpha/1"][0].by, "chosen");
+        assert_eq!(store.assigned[0].settings, ["worker.agent", "worker.effort", "worker.instructions"]);
+    }
+
+    #[tokio::test]
+    async fn a_reviewer_role_goes_instead_of_the_reviewer_or_as_a_research_task_after_the_task() {
+        let dir = tempfile::tempdir().unwrap();
+        let (app, log) = stand_in(dir.path());
+        live_task(&app).await;
+        let id = roles::edit_store(&app.cfg, |s| roles::enable_suggested(s, "security")).unwrap();
+
+        // instead: the task's reviewer.* is the role's
+        let (code, done) = json_of(role_apply(State(app.clone()), headers(), Json(put_body(&id, "instead", true))).await).await;
+        assert_eq!(code, StatusCode::OK, "{done}");
+        let said = commands(&log);
+        assert_eq!(said.len(), 1, "{said:?}");
+        assert!(said[0].starts_with("set reviewer.instructions Ты проверяешь изменения только с точки зрения безопасности"), "{}", said[0]);
+        assert!(said[0].ends_with("--task alpha/1"));
+
+        // after: a research task of its own, queued after the task, with the role's settings as its worker's
+        live_task(&app).await;
+        let (code, prev) = json_of(role_preview(State(app.clone()), headers(), Json(put_body(&id, "after", false))).await).await;
+        assert_eq!(code, StatusCode::OK, "{prev}");
+        assert_eq!(prev["steps"][0]["kind"], "add");
+        let (code, done) = json_of(role_apply(State(app.clone()), headers(), Json(put_body(&id, "after", true))).await).await;
+        assert_eq!(code, StatusCode::OK, "{done}");
+        assert_eq!(done["follow"], "alpha/9");
+        let said = commands(&log);
+        let add = said.last().unwrap();
+        for part in ["add Ревьюер безопасности: ALP-1 Вход по паролю", "--repo alpha", "--research", "--after alpha/1", "--delegate", "--worker.instructions Ты проверяешь"] {
+            assert!(add.contains(part), "{part} not in {add}");
+        }
+        assert!(!add.contains("--reviewer."), "the check is a worker of its own");
+        let store = roles::read_store(&app.cfg);
+        let marks = roles::marks_of(&store);
+        let on_task: Vec<&str> = marks["alpha/1"].iter().map(|m| m.how.as_str()).collect();
+        assert_eq!(on_task, ["instead", "after"], "the two places of one task");
+        assert_eq!((marks["alpha/9"][0].how.as_str(), marks["alpha/9"][0].of.as_str()), ("followup", "alpha/1"), "the check's own task says what it is about");
+
+        // the same extra check is not started twice
+        live_task(&app).await;
+        let (code, dup) = json_of(role_apply(State(app.clone()), headers(), Json(put_body(&id, "after", true))).await).await;
+        assert_eq!(code, StatusCode::CONFLICT, "{dup}");
+        let (_, prev) = json_of(role_preview(State(app.clone()), headers(), Json(put_body(&id, "after", false))).await).await;
+        assert_eq!((prev["duplicate"].clone(), prev["valid"].clone()), (json!(true), json!(false)));
+    }
+
+    #[tokio::test]
+    async fn a_task_that_is_started_gets_the_rules_role_once_and_a_chosen_none_gets_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let (app, log) = stand_in(dir.path());
+        let id = roles::edit_store(&app.cfg, |s| roles::add_role(s, &designer())).unwrap();
+        roles::edit_store(&app.cfg, |s| roles::add_rule(s, &roles::RuleInput { role: id.clone(), repo: "alpha".into(), ..Default::default() })).unwrap();
+        live_task(&app).await;
+        on_start(&app, "alpha/1", &Pick::Nothing, "").await.unwrap();
+        assert!(commands(&log).is_empty(), "the human said no role");
+        on_start(&app, "alpha/1", &Pick::Rules, "").await.unwrap();
+        assert_eq!(commands(&log).len(), 3);
+        let marks = roles::marks_of(&roles::read_store(&app.cfg));
+        assert_eq!((marks["alpha/1"][0].by.as_str(), marks["alpha/1"][0].rule.as_str()), ("rule", "репозиторий alpha"));
+        // the place is filled: starting it again does not run the rule over it
+        live_task(&app).await;
+        on_start(&app, "alpha/1", &Pick::Rules, "").await.unwrap();
+        assert_eq!(commands(&log).len(), 3);
+        // a repository the rule does not name gets nothing
+        {
+            let mut snap = app.snapshot.write().await;
+            snap.tasks = vec![Task { id: "beta/1".into(), repo: "beta".into(), n: 1, tag: "BET-1".into(), title: "x".into(), status: Status::Queued, ..Task::default() }];
+        }
+        on_start(&app, "beta/1", &Pick::Rules, "").await.unwrap();
+        assert_eq!(commands(&log).len(), 3);
+    }
+
+    #[tokio::test]
+    async fn a_new_task_from_the_list_gets_the_role_as_flags_of_add_and_an_after_role_follows_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let (app, log) = stand_in(dir.path());
+        let id = roles::edit_store(&app.cfg, |s| roles::add_role(s, &designer())).unwrap();
+        let (chosen, flags) = plan_new(&app, &Pick::Role(id), "", "alpha", "Кнопка").await.unwrap().unwrap();
+        assert_eq!(flags[..4], ["--worker.agent", "claude/claude-sonnet-5-5", "--worker.effort", "high"]);
+        assert!(after_add(&app, &chosen, "alpha/9: added\n", "alpha", "Кнопка", "").await.is_none());
+        let marks = roles::marks_of(&roles::read_store(&app.cfg));
+        assert_eq!(marks["alpha/9"][0].name, "Дизайнер");
+        assert!(commands(&log).is_empty(), "the flags already went with `add`: nothing more is set");
+
+        let sec = roles::edit_store(&app.cfg, |s| roles::enable_suggested(s, "security")).unwrap();
+        let (after, flags) = plan_new(&app, &Pick::Role(sec), "after", "alpha", "Кнопка").await.unwrap().unwrap();
+        assert!(flags.is_empty(), "an «after» role adds no flags to the task itself");
+        assert!(after_add(&app, &after, "alpha/9: added\n", "alpha", "Кнопка", "").await.is_none());
+        assert!(commands(&log).last().unwrap().contains("--research --after alpha/9 --delegate"));
+        assert!(plan_new(&app, &Pick::Role("nope".into()), "", "alpha", "x").await.is_err());
+    }
+
+    #[tokio::test]
+    async fn a_role_that_is_used_is_deleted_only_on_a_second_word_and_takes_its_rules_and_presets_with_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let (app, _log) = stand_in(dir.path());
+        live_task(&app).await;
+        let id = roles::edit_store(&app.cfg, |s| roles::add_role(s, &designer())).unwrap();
+        roles::edit_store(&app.cfg, |s| roles::add_rule(s, &roles::RuleInput { role: id.clone(), repo: "alpha".into(), ..Default::default() })).unwrap();
+        let held = roles::capture(&roles::read_store(&app.cfg).roles);
+        crew::edit_store(&app.cfg, |s| crew::add_preset(s, "Дизайн", &held)).unwrap();
+        let (code, _) = json_of(role_apply(State(app.clone()), headers(), Json(put_body(&id, "", true))).await).await;
+        assert_eq!(code, StatusCode::OK);
+        live_task(&app).await;
+
+        let ask = |force: bool| RolesBody { op: "delete".into(), id: Some(id.clone()), role: None, rule: None, key: None, force: Some(force) };
+        let (code, said) = json_of(roles_post(State(app.clone()), headers(), Json(ask(false))).await).await;
+        assert_eq!(code, StatusCode::CONFLICT, "{said}");
+        assert_eq!(said["usage"]["tasks"][0]["tag"], "ALP-1");
+        assert_eq!(said["usage"]["rules"], 1);
+        assert_eq!(said["usage"]["presets"][0], "Дизайн");
+        assert_eq!(roles::read_store(&app.cfg).roles.len(), 1, "nothing was deleted");
+
+        let (code, done) = json_of(roles_post(State(app.clone()), headers(), Json(ask(true))).await).await;
+        assert_eq!(code, StatusCode::OK, "{done}");
+        let store = roles::read_store(&app.cfg);
+        assert!((store.roles.is_empty(), store.rules.is_empty()) == (true, true));
+        assert!(crew::read_store(&app.cfg).presets[0].roles.is_empty(), "the preset lost the role");
+        assert_eq!(roles::marks_of(&store)["alpha/1"][0].name, "Дизайнер", "the task's row keeps the name");
+
+        // an unused role goes at once
+        let free = roles::edit_store(&app.cfg, |s| roles::add_role(s, &roles::RoleInput { name: "Другая".into(), ..designer() })).unwrap();
+        let ask_free = RolesBody { op: "delete".into(), id: Some(free), role: None, rule: None, key: None, force: None };
+        assert_eq!(json_of(roles_post(State(app.clone()), headers(), Json(ask_free)).await).await.0, StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn the_role_window_reads_what_each_role_sets_and_where_it_stands() {
+        let dir = tempfile::tempdir().unwrap();
+        let (app, _log) = stand_in(dir.path());
+        live_task(&app).await;
+        let sec = roles::edit_store(&app.cfg, |s| roles::enable_suggested(s, "security")).unwrap();
+        let v = roles_read(&app).await;
+        assert_eq!(v["suggested"].as_array().unwrap().len(), 0, "the suggested role is on now");
+        let r = &v["roles"][0];
+        assert_eq!(r["id"], sec.as_str());
+        assert_eq!(r["sets"]["instead"][0]["setting"], "reviewer.instructions");
+        assert_eq!(r["sets"]["after"][0]["setting"], "worker.instructions");
+        assert_eq!(r["usage"]["tasks"].as_array().unwrap().len(), 0);
+        // before it is on, it is offered
+        let other = tempfile::tempdir().unwrap();
+        let (app2, _) = stand_in(other.path());
+        let v = roles_read(&app2).await;
+        assert_eq!(v["suggested"][0]["name"], "Ревьюер безопасности");
+        assert_eq!(v["roles"].as_array().unwrap().len(), 0, "nothing is on by default");
+    }
+
     fn store_with_rule() -> (roles::Store, String) {
         let mut s = roles::Store::default();
         let id = roles::add_role(

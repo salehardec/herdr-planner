@@ -1302,6 +1302,20 @@ mod tests {
     }
 
     #[test]
+    fn the_watcher_is_a_role_of_a_preset_like_the_others() {
+        let p = preset(&[("watcher", "claude/claude-haiku-5-5", "", "")]);
+        let steps = plan(&p, &crew(), "", "");
+        assert_eq!(steps.len(), 1);
+        assert_eq!((steps[0].role, steps[0].setting.as_str(), steps[0].was.as_str()), ("watcher", "watcher.agent", ""));
+        assert_eq!(command_of(&steps[0], "").unwrap(), vec!["set", "watcher.agent", "claude/claude-haiku-5-5"]);
+        // a preset may also hold an own role's key; the built-in plan leaves it to the roles
+        let own = preset(&[("role:r1f", "codex", "", "")]);
+        assert!(plan(&own, &crew(), "", "").is_empty());
+        assert!(clean_roles(&own.roles).is_ok());
+        assert!(clean_roles(&roles(&[("role:../x", "", "", "")])).is_err());
+    }
+
+    #[test]
     fn the_light_preset_changes_only_for_me() {
         let p = preset(&[("light", "codex/gpt-6-luna", "", "")]);
         assert_eq!(plan(&p, &crew(), "", "alpha").len(), 0);
