@@ -347,7 +347,7 @@ const META = {
   'alpha/10': { ago: 30 * HOUR, desc: 'Follow-up of the nightly import: fix retries once ALP-9 is merged.', afterDone: [] },
   'alpha/11': { ago: 9 * DAY, desc: 'Заметка на потом: проверить, нужен ли HTTP-кеш для экспорта.' },
   'alpha/13': { ago: 9 * DAY, desc: 'Старое дело: убрать устаревший флаг совместимости из конфига.', noExit: true },
-  'alpha/15': { ago: 4 * HOUR, desc: 'Export button now shows progress; the job reports percent through the existing event channel.' },
+  'alpha/15': { ago: 4 * HOUR, exitedAgo: 4 * HOUR, desc: 'Export button now shows progress; the job reports percent through the existing event channel.' },
   'alpha/16': { ago: 12 * MIN, desc: 'Find and remove the old branches work/1–work/9; they are all merged into main, work/10 stays.' },
   'alpha/20': { ago: 8 * MIN, desc: 'Агент ждёт ответа, но доска не отдала ни строки вопроса: текст бывает только на экране агента.' },
   'alpha/21': { ago: 6 * MIN, desc: 'Агент остановился на диалоге разрешения; доска знает только «Needs you» и вид «вопрос».' },
@@ -515,7 +515,9 @@ for (const r of rows) {
     worktree: path.join(dir, 'worktrees', `${repo}-${n}`),
     branch: `work/${n}`,
     // noExit: the shape of most done tasks on a real board: no exitedAt, the board only saw the pane gone (last.gone).
-    exitedAt: m.noExit ? null : (r.exitedAt ?? (r.state === 'done' || r.archivedAt ? Math.min(NOW, created + 40 * MIN) : null)),
+    // exitedAgo: the task finished that long ago, also when the clock is in the first hours after midnight (`created` is held
+    // inside today then, and a check that counts the hours since the finish needs them to be real)
+    exitedAt: m.noExit ? null : (m.exitedAgo ? NOW - m.exitedAgo : r.exitedAt ?? (r.state === 'done' || r.archivedAt ? Math.min(NOW, created + 40 * MIN) : null)),
     gone: !!m.noExit,
     afterDone: m.afterDone || [],
   };

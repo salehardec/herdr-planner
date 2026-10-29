@@ -8,7 +8,7 @@ import { App } from './ui/App';
 import {
   aim, answered, armed, attention, currentView, edge, filter, flight, fresh, hover, invertY, level, locked, mode, narrow, notifyOn,
   panels, QUERY, requests, selected, sensitivity, showQuiet, simple, snap, speed, universe, webgl, SIMPLE_KEY, persist,
-  linkSel,
+  linkSel, gate,
 } from './store';
 import { connect, dropDetails, onState } from './api';
 import { setLang, lang, t } from './i18n';
@@ -158,7 +158,8 @@ let seenSuggest: Set<string> | null = null;
 onState((s: Snapshot) => {
   // Lines proposed for a universe's memory after a task was done: say so once (not for what was waiting at the start).
   const sug = s.memory_suggestions ?? [];
-  if (seenSuggest) {
+  // (the memory belongs to the machine itself: through the gate there is nothing to open)
+  if (seenSuggest && !gate.value) {
     for (const m of sug.filter((x) => !seenSuggest!.has(x.task))) {
       toast(t('mem.suggestToast', { tag: m.tag, repo: m.repo }), {
         action: () => { void navigateTo({ kind: 'universe', id: m.repo }); }, label: t('mem.suggestOpen'),
@@ -221,6 +222,7 @@ render(h(App, null), $('app'));
 // so the page has to have drawn them first; the room the chat and the todos need follows those widths
 installPanelWidths();
 installWideRoom();
+effect(() => { document.body.classList.toggle('via-gate', gate.value !== null); });
 connect();
 
 /* handles for the checks and for the console */
@@ -233,6 +235,7 @@ w.plannerDebug = () => ({
   armed: armed.value,
 });
 w.setLang = setLang;
+w.plannerGate = gate;
 w.plannerSnap = () => snap.value;
 /* the page's own commands, for the checks */
 w.planner = { navigateTo, goHome, goOverview, openRequest, escape, back, setMode, connectTasks: (a: string, b: string) => connectTasks(a, b) };

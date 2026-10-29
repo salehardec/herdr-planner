@@ -235,12 +235,23 @@ fn authed(app: &Shared, headers: &HeaderMap) -> bool {
         .unwrap_or(false)
 }
 
-async fn index(State(app): State<Shared>, headers: HeaderMap) -> Response {
+async fn index(State(app): State<Shared>, class: Option<Extension<crate::gate::Class>>, headers: HeaderMap) -> Response {
     if !authed(&app, &headers) {
         return Redirect::to("/login").into_response();
     }
     match Dist::get("index.html") {
-        Some(f) => Html(String::from_utf8_lossy(&f.data).into_owned()).into_response(),
+        Some(f) => {
+            let page = String::from_utf8_lossy(&f.data).into_owned();
+            // A page that came through the gate says so (and whether it can have the event stream): the banner, the
+            // pace of its asking and the menu without what only this machine may do follow from it.
+            let page = if matches!(class, Some(Extension(crate::gate::Class::Tunnel))) {
+                let events = if api::gate_streams(&app) { "stream" } else { "poll" };
+                page.replace("</head>", &format!("<meta name=\"herdr-gate\" content=\"{events}\"></head>"))
+            } else {
+                page
+            };
+            Html(page).into_response()
+        }
         None => error(StatusCode::NOT_FOUND, "the page is not built"),
     }
 }
@@ -511,8 +522,14 @@ async fn api_logout(State(app): State<Shared>, headers: HeaderMap) -> Response {
     res
 }
 
-async fn api_state(State(app): State<Shared>) -> Json<app::Snapshot> {
-    Json(app.snapshot.read().await.clone())
+/// The snapshot, and how often the Coordinator's transcript has grown (`chat_rev`): the page that cannot have the event
+/// stream (through a quick tunnel) learns of a new message from the number.
+async fn api_state(State(app): State<Shared>) -> Json<serde_json::Value> {
+    let mut state = serde_json::to_value(&*app.snapshot.read().await).unwrap_or_default();
+    if let Some(map) = state.as_object_mut() {
+        map.insert("chat_rev".into(), app.bus.chat_rev().into());
+    }
+    Json(state)
 }
 
 /// Just enough for the bar widget to draw a dot: the worst limit and whether
@@ -1263,13 +1280,16 @@ pub(crate) fn valid_agent(a: &str) -> bool {
 async fn api_action(
     State(app): State<Shared>,
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    class: Option<Extension<crate::gate::Class>>,
     headers: HeaderMap,
     Json(body): Json<ActionBody>,
 ) -> Response {
     if !same_origin(&headers) {
         return error(StatusCode::FORBIDDEN, "cross-origin request refused");
     }
-    let local = client_is_local(addr, &headers);
+    // What opens a window on this machine (the folder of a task in a file manager) is not for a request from the gate,
+    // whatever headers it carries.
+    let local = client_is_local(addr, &headers) && !matches!(class, Some(Extension(crate::gate::Class::Tunnel)));
     perform_action(&app, body, local).await
 }
 
@@ -2193,7 +2213,7 @@ mod tests {
         let mut foreign = HeaderMap::new();
         foreign.insert(header::HOST, HeaderValue::from_static("localhost:7117"));
         foreign.insert(header::ORIGIN, HeaderValue::from_static("http://attacker.example"));
-        let res = api_action(State(app.clone()), peer([127, 0, 0, 1]), foreign, Json(act(json!({"action": "stop", "id": "alpha/1"})))).await;
+        let res = api_action(State(app.clone()), peer([127, 0, 0, 1]), None, foreign, Json(act(json!({"action": "stop", "id": "alpha/1"})))).await;
         assert_eq!(res.status(), StatusCode::FORBIDDEN);
         let (status, body) = status_of(perform_action(&app, act(json!({"action": "fly"})), true).await).await;
         assert_eq!(status, StatusCode::BAD_REQUEST);
@@ -2300,10 +2320,14 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let (app, _log) = fake_board(dir.path());
         let (addr, h) = tunnelled();
-        let res = api_action(State(app.clone()), addr, h, Json(act(json!({"action": "yazi", "id": "alpha/1"})))).await;
+        let res = api_action(State(app.clone()), addr, None, h, Json(act(json!({"action": "yazi", "id": "alpha/1"})))).await;
         assert_eq!(res.status(), StatusCode::FORBIDDEN);
-        let res = api_action(State(app), peer([127, 0, 0, 1]), HeaderMap::new(), Json(act(json!({"action": "yazi", "id": "alpha/1"})))).await;
+        let res = api_action(State(app.clone()), peer([127, 0, 0, 1]), None, HeaderMap::new(), Json(act(json!({"action": "yazi", "id": "alpha/1"})))).await;
         assert_eq!(res.status(), StatusCode::NOT_FOUND);
+        // a request the gate classed as a tunnel's is not local even if it carries no header that says so
+        let tunnel = Some(Extension(crate::gate::Class::Tunnel));
+        let res = api_action(State(app), peer([127, 0, 0, 1]), tunnel, HeaderMap::new(), Json(act(json!({"action": "yazi", "id": "alpha/1"})))).await;
+        assert_eq!(res.status(), StatusCode::FORBIDDEN);
     }
 
     #[tokio::test]

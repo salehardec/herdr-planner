@@ -3,7 +3,7 @@
 
 use super::*;
 use crate::app::{self, Shared};
-use crate::config::{now_ms, AppConfig};
+use crate::config::{now_ms, AppConfig, TunnelMode};
 use crate::devices::COOKIE as DEVICE_COOKIE;
 use crate::testutil::test_cfg;
 use std::net::SocketAddr;
@@ -105,12 +105,18 @@ struct Rig {
 
 /// The planner with its gate open. `full`: «the full version for computers» is on; `password`: the planner has one.
 async fn rig(full: bool, password: bool) -> Rig {
+    rig_of(full, password, TunnelMode::Quick).await
+}
+
+/// …and the kind of tunnel it is open on (only a named one passes an event stream).
+async fn rig_of(full: bool, password: bool, mode: TunnelMode) -> Rig {
     let dir = tempfile::tempdir().unwrap();
     let cfg = AppConfig {
         password_hash: if password { bcrypt::hash(PASSWORD, 4).unwrap() } else { String::new() },
         user: "me".into(),
         tunnel_confirm_devices: false,
         tunnel_full_allowed: full,
+        tunnel_mode: mode,
         ..test_cfg(dir.path())
     };
     let app = app::App::new(cfg);
@@ -461,28 +467,69 @@ async fn raised(r: &Rig) -> Device<'_> {
 #[tokio::test]
 async fn an_open_event_stream_ends_when_the_full_version_is_taken_away() {
     // the setting is switched off
-    let r = rig(true, true).await;
+    let r = rig_of(true, true, TunnelMode::Named).await;
     let pc = raised(&r).await;
     let s = open_stream(&r, &pc).await;
     r.app.devices.set_settings(crate::devices::Settings { full_allowed: false, ..r.app.devices.settings() });
     assert!(ended(s).await, "the stream outlived the setting");
     // the owner switches the device off
-    let r = rig(true, true).await;
+    let r = rig_of(true, true, TunnelMode::Named).await;
     let pc = raised(&r).await;
     let s = open_stream(&r, &pc).await;
     let id = r.app.devices.list_at(now_ms())[0].id.clone();
     r.app.devices.decide_at(now_ms(), &id, crate::devices::Op::Revoke).unwrap();
     assert!(ended(s).await, "the stream outlived the device");
     // the gate closes
-    let r = rig(true, true).await;
+    let r = rig_of(true, true, TunnelMode::Named).await;
     let pc = raised(&r).await;
     let s = open_stream(&r, &pc).await;
     r.app.devices.end();
     assert!(ended(s).await, "the stream outlived the gate");
     // …and a device that keeps its right keeps its stream
-    let r = rig(true, true).await;
+    let r = rig_of(true, true, TunnelMode::Named).await;
     let pc = raised(&r).await;
     let s = open_stream(&r, &pc).await;
     r.app.bus.send("devices", "{}".to_string());
     assert!(!ended(s).await, "the stream of a device that is in with the full version goes on");
+}
+
+#[tokio::test]
+async fn a_quick_tunnel_has_no_event_stream_and_the_page_is_told_to_ask() {
+    let r = rig(true, true).await;
+    let pc = raised(&r).await;
+    let owned = pc.headers();
+    let h: Vec<(&str, &str)> = owned.iter().map(|(k, v)| (*k, v.as_str())).collect();
+    let (status, _, body) = ask(r.addr, "GET", "/api/events", &h, None).await;
+    assert_eq!(status, 410, "{body}");
+    assert_eq!(serde_json::from_str::<serde_json::Value>(&body).unwrap()["poll_ms"], 5000);
+    // the planner's page says how it comes: through the gate, without the stream; and the number that tells it of a new message
+    let (status, _, page) = ask(r.addr, "GET", "/", &h, None).await;
+    assert_eq!(status, 200);
+    assert!(page.contains("<meta name=\"herdr-gate\" content=\"poll\">"), "{page}");
+    let (_, _, state) = ask(r.addr, "GET", "/api/state", &h, None).await;
+    let before = serde_json::from_str::<serde_json::Value>(&state).unwrap()["chat_rev"].as_u64().unwrap();
+    r.app.bus.send("chat", "{}".to_string());
+    let (_, _, state) = ask(r.addr, "GET", "/api/state", &h, None).await;
+    assert_eq!(serde_json::from_str::<serde_json::Value>(&state).unwrap()["chat_rev"].as_u64().unwrap(), before + 1);
+    // this machine's own page is what it was: a stream, and no mention of a gate
+    let r = rig(true, false).await;
+    let local = [("Host", "localhost:7117")];
+    let (_, _, page) = ask(r.addr, "GET", "/", &local, None).await;
+    assert!(page.contains("<html") && !page.contains("herdr-gate"), "{page}");
+    let mut s = tokio::net::TcpStream::connect(r.addr).await.unwrap();
+    s.write_all(b"GET /api/events HTTP/1.1\r\nHost: localhost:7117\r\nAccept: text/event-stream\r\n\r\n").await.unwrap();
+    let mut buf = [0u8; 256];
+    let n = tokio::time::timeout(Duration::from_secs(10), s.read(&mut buf)).await.unwrap().unwrap();
+    assert!(String::from_utf8_lossy(&buf[..n]).starts_with("HTTP/1.1 200"));
+}
+
+#[tokio::test]
+async fn a_named_tunnel_passes_the_event_stream() {
+    let r = rig_of(true, true, TunnelMode::Named).await;
+    let pc = raised(&r).await;
+    drop(open_stream(&r, &pc).await);
+    let owned = pc.headers();
+    let h: Vec<(&str, &str)> = owned.iter().map(|(k, v)| (*k, v.as_str())).collect();
+    let (_, _, page) = ask(r.addr, "GET", "/", &h, None).await;
+    assert!(page.contains("<meta name=\"herdr-gate\" content=\"stream\">"), "{page}");
 }

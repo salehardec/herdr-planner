@@ -21,12 +21,27 @@ use std::net::SocketAddr;
 use std::time::Duration;
 use tokio::sync::broadcast::error::RecvError;
 
+/// How often the full page asks again where it cannot have the event stream (a quick tunnel; see `events`).
+pub const GATE_POLL_MS: u64 = 5000;
+
+/// Does an event stream make it through the gate? A quick tunnel does not pass one (Cloudflare's own documentation), and may
+/// hold the events back instead of failing; a tunnel of the owner's own does.
+pub fn gate_streams(app: &Shared) -> bool {
+    app.tunnel.settings().mode == crate::config::TunnelMode::Named
+}
+
 /// `GET /api/events`: the first event is the whole snapshot, then every change.
+///
+/// Through a quick tunnel it is `410 Gone` at once, with the pace the page asks at instead (`GATE_POLL_MS`).
 ///
 /// Through the gate the stream is the full version's, and it ends when the device is no longer in with it: the
 /// setting was switched off, the owner switched the device off, its session ran out or the gate closed.
 pub async fn events(State(app): State<Shared>, class: Option<Extension<Class>>, headers: HeaderMap) -> Response {
-    let device = matches!(class, Some(Extension(Class::Tunnel))).then(|| cookie_value(&headers, crate::devices::COOKIE).unwrap_or_default());
+    let through_gate = matches!(class, Some(Extension(Class::Tunnel)));
+    if through_gate && !gate_streams(&app) {
+        return (StatusCode::GONE, Json(json!({"error": "no event stream through a quick tunnel; ask /api/state", "poll_ms": GATE_POLL_MS}))).into_response();
+    }
+    let device = through_gate.then(|| cookie_value(&headers, crate::devices::COOKIE).unwrap_or_default());
     // Subscribe first: nothing published between the two steps is lost.
     let mut rx = app.bus.subscribe();
     let first = serde_json::to_string(&*app.snapshot.read().await).unwrap_or_default();

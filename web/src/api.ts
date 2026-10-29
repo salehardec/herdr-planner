@@ -1,5 +1,5 @@
 /* Talking to the server: JSON calls, and the event stream that replaces polling. */
-import { chat, details, lastError, live, setLoad, snap } from './store';
+import { chat, details, GATE_POLL_MS, gate, lastError, live, setLoad, snap } from './store';
 import { t } from './i18n';
 import { toast } from './toast';
 import type { LoadInfo, Snapshot } from './types';
@@ -35,6 +35,12 @@ export async function api<T = any>(path: string, opts: RequestInit = {}): Promis
     throw new ApiError('unauthorized');
   }
   const data = await r.json().catch(() => ({}));
+  // Through the gate what only the machine itself may do does not exist (404): say so rather than «not found».
+  if (gate.value && r.status === 404 && data.error === 'not found') {
+    const e = new ApiError(t('gate.local'));
+    e.status = 404;
+    throw e;
+  }
   if (!r.ok) {
     const e = new ApiError(data.error || `HTTP ${r.status}`);
     e.status = r.status;
@@ -85,6 +91,10 @@ async function pollOnce(): Promise<void> {
     if (!lite) setLoad(await api<LoadInfo>('/api/load'));
   } catch (e) {
     if ((e as Error).message !== 'unauthorized') lastError.value = (e as Error).message;
+    // a page that lives on asking has no stream to tell it that the server went away
+    if (gate.value === 'poll') live.value = false;
+    // the device lost the full version (the owner took it away): the planner's address leads on to the light page
+    if (gate.value && (e as ApiError).status === 403) location.href = '/';
   } finally {
     polling = false;
   }
@@ -92,8 +102,13 @@ async function pollOnce(): Promise<void> {
 
 export const refreshNow = pollOnce;
 
-/** Opens the event stream. If it breaks, the page asks every 30 s until the stream is back. */
+/** Opens the event stream. If it breaks, the page asks every 30 s until the stream is back. Where the stream is not to be had
+ *  (through a quick tunnel: the server answers `/api/events` with 410) the page does not try it, and asks every few seconds. */
 export function connect(): void {
+  if (gate.value === 'poll') {
+    connectEvery(GATE_POLL_MS);
+    return;
+  }
   const open = (): void => {
     es?.close();
     es = new EventSource('/api/events');
@@ -124,6 +139,13 @@ export function connect(): void {
     };
   };
   open();
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) void pollOnce(); });
+}
+
+/** The news without the event stream for the whole planner: the state and the load every `ms`, none while the page is hidden. */
+function connectEvery(ms: number): void {
+  void pollOnce();
+  window.setInterval(() => { if (!document.hidden) void pollOnce(); }, ms);
   document.addEventListener('visibilitychange', () => { if (!document.hidden) void pollOnce(); });
 }
 

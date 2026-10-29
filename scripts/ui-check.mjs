@@ -3161,6 +3161,37 @@ section('gate', async () => {
   await navigate(base + '/?noauto&nocoach&bloom=0');
 });
 
+// The planner's page as it is through the gate (a tunnel): the server writes `<meta name="herdr-gate">` into it; here the
+// page is told the same by hand. The banner, the top bar without the gate's plaque, the menu without what is the machine's own.
+section('gate page', async () => {
+  const inWindow = (sel) => evalJs(`(() => { const r = document.querySelector(${JSON.stringify(sel)})?.getBoundingClientRect(); return !!r && r.left >= -1 && r.top >= -1 && r.right <= innerWidth + 1 && r.bottom <= innerHeight + 1; })()`);
+  await resetUi();
+  await navigate(base + '/?noauto&nocoach&bloom=0');
+  check('from this machine: no banner, the plaque is there, the menu has the station', !(await exists('#gatebar')) && await waitFor('!!document.querySelector("#gate")', 8000)
+    && await menuPick('Станция') && await waitFor('!!document.querySelector("#station")', 6000));
+  await resetUi();
+  await evalJs('plannerGate.value = "poll"; true');
+  check('through a quick tunnel: the banner says it asks every 5 s and gives the way to the light version', await waitFor('!!document.querySelector("#gatebar")', 3000)
+    && /раз в 5 с/.test(await text('#gatebar')) && (await evalJs('document.querySelector("#gate-lite").getAttribute("href")')) === '/g/view?v=lite', await text('#gatebar'));
+  check('…the plaque of the gate is gone from the top bar', !(await exists('#gate')));
+  await click('#menu-btn');
+  check('…the menu has no universe, station, crew or ship; the rest is there', await waitFor('!!document.querySelector(".menupop")', 3000)
+    && !(await evalJs(`[...document.querySelectorAll('.menupop button')].some((b) => /Добавить вселенную|Станция|Бортовой компьютер/.test(b.innerText))`))
+    && await evalJs(`[...document.querySelectorAll('.menupop button')].some((b) => b.innerText.includes('Журнал доски'))`));
+  await click('#menu-btn');
+  check('…the banner sits under the top bar, inside the window', await inWindow('#gatebar'));
+  await shot('gate-page.png');
+  await evalJs('plannerGate.value = "stream"; true');
+  check('through a tunnel of the owner\'s own: the banner does not speak of asking', await waitFor('!!document.querySelector("#gatebar") && !/раз в/.test(document.querySelector("#gatebar").innerText)', 3000));
+  await send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 1, mobile: false });
+  await resized();
+  check('narrow: the banner stays inside the window and the page does not scroll sideways', await inWindow('#gatebar') && await evalJs('document.documentElement.scrollWidth <= innerWidth + 1'));
+  await send('Emulation.setDeviceMetricsOverride', { width: 1500, height: 950, deviceScaleFactor: 1, mobile: false });
+  await evalJs('plannerGate.value = null; true');
+  check('the banner goes when the page is not through the gate', await waitFor('!document.querySelector("#gatebar") && !!document.querySelector("#gate")', 3000));
+  await navigate(base + '/?noauto&nocoach&bloom=0');
+});
+
 section('lag', async () => {
   await resetUi();
   await evalJs('planner.goHome()');

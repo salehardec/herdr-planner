@@ -1,7 +1,7 @@
 import { signal } from '@preact/signals';
 import type { JSX } from 'preact';
 import {
-  aim, edge, flight, locked, mode, panels, snap, speed, webgl, selected,
+  aim, edge, flight, gate, GATE_POLL_MS, locked, mode, panels, snap, speed, webgl, selected,
 } from '../store';
 import { t } from '../i18n';
 import { refreshNow } from '../api';
@@ -16,6 +16,18 @@ export function Banner(): JSX.Element | null {
       <Gl n="failed" />
       <span class="grow">{t('banner.down', { at: new Date(s.board.stale_at || s.at).toLocaleTimeString() })}</span>
       <button class="btn sm" type="button" data-act="refresh" onClick={() => { void refreshNow(); }}><Gl n="refresh" />{t('banner.retry')}</button>
+    </div>
+  );
+}
+
+/** The page came through the gate: what is different there, and the way to the phone's light version. */
+export function GateBanner(): JSX.Element | null {
+  if (!gate.value) return null;
+  return (
+    <div class="gatebar" id="gatebar" role="status">
+      <Gl n="globe" />
+      <span class="grow">{gate.value === 'poll' ? t('gate.banner.poll', { s: GATE_POLL_MS / 1000 }) : t('gate.banner.stream')}</span>
+      <a class="btn sm" id="gate-lite" href="/g/view?v=lite"><Gl n="phone" />{t('menu.lite')}</a>
     </div>
   );
 }
