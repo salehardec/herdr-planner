@@ -13,7 +13,7 @@ export const ru: Record<string, string | string[]> = {
   'stage.queue': 'Очередь', 'stage.work': 'План и работа', 'stage.review': 'Ревью', 'stage.appr': 'К одобрению', 'stage.done': 'Сделано',
   'kanban.aria': 'Стадии задач', 'kanban.waits': 'ждут {n}',
   'nav.title': 'Навигатор', 'nav.aria': 'Навигатор по Галактике', 'nav.today': 'Сегодня', 'nav.quiet': 'Тихие вселенные',
-  'nav.thisMachine': 'эта машина', 'nav.addUniverse': 'Добавить вселенную в {galaxy}…',
+  'nav.addUniverse': 'Добавить вселенную в {galaxy}…',
   'grip.label': 'Ширина панели «{panel}»', 'grip.tip': 'Потяни, чтобы изменить ширину; двойной щелчок — по умолчанию',
   'crumbs.aria': 'Где я',
   'search.aria': 'Космический поиск', 'search.placeholder': 'Космический поиск: задача, проект, дело, чат…',

@@ -293,6 +293,7 @@ section('live', async () => {
 section('navigator', async () => {
   check('the navigator starts with this machine\'s Galaxy', await hasText('#nav [data-kind="galaxy"]', HOST), await text('#nav [data-kind="galaxy"]'));
   check('the Quasar is its own item', await exists('#nav [data-kind="quasar"]'));
+  check('the galaxy row has no «эта машина» mark: one machine, nothing to tell apart', !(await text('#nav [data-kind="galaxy"]')).includes('эта машина') && !(await evalJs('document.querySelector("#nav [data-kind=\\"galaxy\\"]").title')).includes('эта машина'), await text('#nav [data-kind="galaxy"]'));
   // The board lists other machines (`herdr-projects machines`, `herdr machine list`: vm-a, vm-b); the planner works with this board only.
   await quiet();
   check('other machines of the board are not shown: no vm-a, no vm-b, no «Добавить галактику»', !/vm-a|vm-b/.test(await text('#nav')) && !(await text('#nav')).includes('Добавить галактику') && !(await exists('#nav [data-kind="addGalaxy"]')), (await text('#nav')).replace(/\s+/g, ' ').slice(-200));
@@ -300,14 +301,27 @@ section('navigator', async () => {
   check('"Add a universe" is there', await hasText('#nav', 'Добавить вселенную'));
   const groups = await evalJs('[...document.querySelectorAll("#nav [data-kind=\\"group\\"]")].map((e) => ({ t: e.innerText.replace(/\\s+/g, " ").trim(), open: e.getAttribute("aria-expanded") }))');
   check('the first group of a universe is «Сегодня» and it is open', groups?.[0]?.t.startsWith('Сегодня') && groups[0].open === 'true', JSON.stringify(groups?.slice(0, 3)));
-  check('older days are dd.mm.yyyy and folded', groups?.some((g) => /^\d\d\.\d\d\.\d{4}/.test(g.t) && g.open === 'false'), JSON.stringify(groups));
+  check('older days are dd.mm.yyyy', groups?.some((g) => /^\d\d\.\d\d\.\d{4}/.test(g.t)), JSON.stringify(groups));
+  // A past day with a live task (working, plan, review, waiting…) starts open, so the task is seen; only a day of finished tasks starts folded.
+  const dayState = await evalJs(`(() => {
+    const tasks = plannerSnap().tasks, pad = (n) => String(n).padStart(2, "0");
+    const day = (ms) => { const d = new Date(ms); return pad(d.getDate()) + "." + pad(d.getMonth() + 1) + "." + d.getFullYear(); };
+    return [...document.querySelectorAll("#nav [data-kind=\\"group\\"]")].map((e) => e.dataset.nav.split("|")).filter((k) => k[2] !== "today").map((k) => ({
+      day: k[2], repo: k[1], open: document.querySelector('[data-nav="' + k.join("|") + '"]').getAttribute("aria-expanded") === "true",
+      live: tasks.some((x) => x.repo === k[1] && day(x.created) === k[2] && x.status !== "done" && !x.archived),
+    }));
+  })()`);
+  check('a past day with a live task is open, a day of finished tasks is folded', Array.isArray(dayState) && dayState.length > 0 && dayState.every((g) => g.open === g.live) && dayState.some((g) => g.live), JSON.stringify(dayState));
   // Each universe has its own run of days: «Сегодня» starts a new one.
   const runs = []; for (const g of groups || []) { if (g.t.startsWith('Сегодня')) runs.push([]); if (/^\d\d\.\d\d\.\d{4}/.test(g.t) && runs.length) runs.at(-1).push(g.t.slice(0, 10).split('.').reverse().join('')); }
   check('the days are newest first', runs.every((r) => r.every((v, i) => i === 0 || r[i - 1] >= v)) && runs.some((r) => r.length > 1), JSON.stringify(runs));
   const planets = await evalJs('[...document.querySelectorAll("#nav [data-kind=\\"planet\\"]")].map((e) => e.innerText.replace(/\\s+/g, " ").trim())');
   check('today\'s planets are listed with their key and status', planets?.some((p) => p.includes('ALP-2') && p.includes('ждёт')), JSON.stringify(planets?.slice(0, 4)));
+  const openDays = await evalJs('document.querySelectorAll("#nav [data-kind=\\"group\\"][aria-expanded=\\"true\\"]").length');
+  await evalJs('document.querySelector("#nav [data-kind=\\"group\\"][aria-expanded=\\"true\\"]:not([data-nav$=\\"today\\"])").click()');
+  check('a click folds a day', await waitFor(`document.querySelectorAll("#nav [data-kind=\\"group\\"][aria-expanded=\\"true\\"]").length === ${openDays - 1}`, 3000));
   await evalJs('document.querySelector("#nav [data-kind=\\"group\\"][aria-expanded=\\"false\\"]").click()');
-  check('a click folds and unfolds a day', await waitFor('document.querySelectorAll("#nav [data-kind=\\"group\\"][aria-expanded=\\"true\\"]").length >= 2', 3000));
+  check('a click unfolds it again', await waitFor(`document.querySelectorAll("#nav [data-kind=\\"group\\"][aria-expanded=\\"true\\"]").length === ${openDays}`, 3000));
   const moons = await evalJs('[...document.querySelectorAll("#nav [data-kind=\\"moon\\"]")].map((e) => e.innerText.replace(/\\s+/g, " ").trim())');
   check('sub-agents are under their planet (Explore under ALP-2)', moons?.some((m) => m.includes('Explore')), JSON.stringify(moons));
   await evalJs('document.querySelector("#nav [data-kind=\\"planet\\"]").focus()');

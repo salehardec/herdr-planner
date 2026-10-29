@@ -26,20 +26,37 @@ describe('navigator tree', () => {
     expect(rows[2]).toMatchObject({ kind: 'universe', label: 'alpha' });
   });
 
-  it('opens «Сегодня» and keeps the dates folded, newest first', () => {
+  it('opens «Сегодня» and the dates with live tasks, newest first, and folds the finished ones', () => {
     const rows = build(view(tasks));
     const groups = rows.filter((r) => r.kind === 'group');
     expect(groups.map((g) => g.label)).toEqual(['Сегодня', '19.10.2026', '14.10.2026']);
-    expect(groups.map((g) => g.open)).toEqual([true, false, false]);
+    expect(groups.map((g) => g.open)).toEqual([true, true, false]);
     const planets = rows.filter((r) => r.kind === 'planet');
-    expect(planets.map((p) => p.entity?.id)).toEqual(['alpha/2', 'alpha/1']);
+    expect(planets.map((p) => p.entity?.id)).toEqual(['alpha/2', 'alpha/1', 'alpha/5', 'alpha/3']);
+  });
+
+  it('opens a past date that holds a live task, and keeps the dates of finished tasks folded', () => {
+    const rows = build(view([task(1, day(20, 9)), task(2, day(19, 9), 'review'), task(3, day(14, 9), 'done'), task(4, day(14, 10), 'done', { archived: true })]));
+    const groups = rows.filter((r) => r.kind === 'group');
+    expect(groups.map((g) => [g.label, g.open])).toEqual([['Сегодня', true], ['19.10.2026', true], ['14.10.2026', false]]);
+    expect(rows.filter((r) => r.kind === 'planet').map((p) => p.entity?.id)).toEqual(['alpha/1', 'alpha/2']);
+  });
+
+  it('respects a date the operator folded by hand, even with a live task in it', () => {
+    const rows = build(view([task(1, day(19, 9), 'working')]), { 'grp|alpha|19.10.2026': false });
+    expect(rows.filter((r) => r.kind === 'group').map((g) => g.open)).toEqual([false]);
+    expect(rows.filter((r) => r.kind === 'planet')).toEqual([]);
+  });
+
+  it('shows no «this machine» mark on the galaxy', () => {
+    expect(build(view(tasks))[0].sub).toBeUndefined();
   });
 
   it('opens a date when the operator folded it open, and the choice wins', () => {
-    const rows = build(view(tasks), { 'grp|alpha|19.10.2026': true, 'grp|alpha|today': false });
+    const rows = build(view(tasks), { 'grp|alpha|14.10.2026': true, 'grp|alpha|today': false });
     const groups = rows.filter((r) => r.kind === 'group');
-    expect(groups.map((g) => g.open)).toEqual([false, true, false]);
-    expect(rows.filter((r) => r.kind === 'planet').map((p) => p.entity?.id)).toEqual(['alpha/5', 'alpha/3']);
+    expect(groups.map((g) => g.open)).toEqual([false, true, true]);
+    expect(rows.filter((r) => r.kind === 'planet').map((p) => p.entity?.id)).toEqual(['alpha/5', 'alpha/3', 'alpha/4']);
   });
 
   it('puts the quiet universes in one folded group', () => {
