@@ -6980,12 +6980,18 @@ section('chat unread', async () => {
   const away = (await send('Page.addScriptToEvaluateOnNewDocument', { source: 'document.hasFocus = () => false;' })).result.identifier;
   await navigate(base + '/?noauto&nocoach&bloom=0');
   check('after a reload the wide chat is open and the acknowledged queue stays cleared', await waitFor('!!document.querySelector("#chat.wide:not(.off)") && !document.querySelector("#bchat-n") && !document.querySelector("#cunread")', CHAT_WAIT), await evalJs(`JSON.stringify({ turns: [...document.querySelectorAll('#clog .turn')].map((e) => e.dataset.n), top: document.querySelector('#clog').scrollTop, header: document.querySelector('#cunread')?.innerText })`));
+  // This scenario covers gap-fill and unread counting, not the separate older/latest race. Finish the restored jump and
+  // any older-load it started, then stay at the end where scrolling cannot start another older-load during the gap.
+  if (await exists('#tolast')) await click('#tolast');
+  await waitFor(`${dist} < 24`, CHAT_WAIT);
+  await quiet();
+  await calmLog();
   // A slow network: the last turns come first and hold no answer (only board lines), the covering of the history comes after.
   // The jump to the first unread waits for it, and the end of the chat reads nothing before that.
   const first3 = say(14);
   for (let i = 0; i < 30; i++) ask(`[Уведомление доски] gamma/${i + 1} готова`);
   const lastBoard = next - 2;
-  check('a tall answer and thirty board lines after it: one is counted', await waitFor(`document.querySelector('#bchat-n')?.innerText.trim() === '1' && !!document.querySelector('#clog .turn[data-n="${lastBoard}"]')`, CHAT_WAIT), await text('#bchat'));
+  check('a tall answer and thirty board lines after it: one is counted', await waitFor(`document.querySelector('#bchat-n')?.innerText.trim() === '1' && !!document.querySelector('#clog .turn[data-n="${lastBoard}"]')`, 10000), await text('#bchat'));
   await send('Page.removeScriptToEvaluateOnNewDocument', { identifier: away });
   const front = (await send('Page.addScriptToEvaluateOnNewDocument', { source: 'document.hasFocus = () => true;' })).result.identifier;
   await send('Network.enable', {});
