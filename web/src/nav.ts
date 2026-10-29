@@ -11,6 +11,7 @@ import {
 import type { CamState, World } from './world';
 import type { Entity } from './types';
 import { api } from './api';
+import { requestEntity } from './requests';
 
 let world: World | null = null;
 export const setWorld = (w: World): void => { world = w; };
@@ -126,12 +127,7 @@ export async function openRequest(index: number): Promise<void> {
   if (!r) return;
   queueCursor.value = index;
   pushFrame();
-  const entity: Entity = r.type === 'runner-alert'
-    ? { kind: 'runner', id: r.id }
-    : r.id === 'coordinator'
-      ? { kind: 'quasar', id: 'quasar' }
-      : { kind: 'planet', id: r.id };
-  await navigateTo(entity, { push: false });
+  await navigateTo(requestEntity(r), { push: false });
   fromQueue.value = true;
 }
 

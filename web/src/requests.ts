@@ -1,5 +1,5 @@
 /* Requests to the human: one list from the board's tasks, the Coordinator and the shipyards' alarms. */
-import type { Request, Runner, RunnerAlert, Task, Status, CoordinatorState, MemorySuggestion } from './types';
+import type { Entity, Request, Runner, RunnerAlert, Task, Status, CoordinatorState, MemorySuggestion } from './types';
 import { firstSentence } from './util/format';
 import { t } from './i18n';
 
@@ -104,6 +104,12 @@ export function alertText(a: RunnerAlert): string {
   return a.tag
     ? t('runner.alert.forgotten', { name: a.name ?? '', tag: a.tag })
     : t('runner.alert.forgottenNoTag', { name: a.name ?? '' });
+}
+
+/** What a request leads to: its task's planet, the Quasar for the Coordinator, the yard for an alarm. */
+export function requestEntity(r: Pick<Request, 'type' | 'id'>): Entity {
+  if (r.type === 'runner-alert') return { kind: 'runner', id: r.id };
+  return r.id === 'coordinator' ? { kind: 'quasar', id: 'quasar' } : { kind: 'planet', id: r.id };
 }
 
 export const requestTitle = (type: string): string => t(TITLE_KEY[type] ?? 'req.other');

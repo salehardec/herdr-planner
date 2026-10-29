@@ -15,6 +15,8 @@ import { resetScale, stepScale } from './scale';
 import { chatBack } from './chat-wide';
 import { card, closeCard } from './ui/hovercard';
 import { closeTunnelCard, tunnelCard } from './ui/tunnel-api';
+import { ROOM_KEY } from './restroom/keymap';
+import { openRestroom } from './restroom/open';
 
 export function setMode(m: 'auto' | 'manual', lock = false): void {
   const w = getWorld();
@@ -155,6 +157,7 @@ export function installKeys(): void {
       case 'KeyL': setLinkMode(!linkMode.value); return;
       case 'KeyQ': e.preventDefault(); panels.limits.value = !panels.limits.value; return;
       case 'KeyH': void goHome(); return;
+      case ROOM_KEY: if (!e.repeat) openRestroom(document.activeElement as HTMLElement | null); return;
       case 'Digit0': case 'Home': e.preventDefault(); void goOverview(); return;
       case 'Enter': if (selected.value) { const w = getWorld(); if (w) void w.flyTo({ kind: 'entity', entity: selected.value }); } return;
       // Tab walks the interface's own controls (a button, a link, the edge of a panel); elsewhere it is the next planet

@@ -3841,7 +3841,7 @@ section('ship', async () => {
   check('the ship’s computer opens from the menu', await menuPick('Бортовой компьютер') && await waitFor('!!document.querySelector("#ship-dir")', 6000));
   check('it names the planner version the page got from /api/state', (await text('#ship-version')).includes(await evalJs('plannerSnap().version')), await text('#ship-version'));
   check('it shows the folder for new universes as it is', (await evalJs('document.querySelector("#ship-dir").value')) === (await evalJs('plannerSnap().server.projects_dir')));
-  check('no wallpaper of the rest room is offered (it does not exist in this product)', !(await text('#ship')).includes('обои'));
+  check('the ship\'s computer has no wallpaper setting: the wallpapers are chosen in the rest room itself', !(await text('#ship')).includes('обои'));
   check('the TLS line says it comes later', await hasText('#ship-tls', 'позже'), await text('#ship-tls'));
 
   // the folder: live, after «было → стало» and two presses
@@ -3922,6 +3922,238 @@ section('ship login', async () => {
   check('a wrong old password is refused in the server’s words, and the page stays open', await waitFor('(document.querySelector("#ship-err")?.innerText || "").includes("старый пароль не подходит")', 8000) && (await evalJs('location.pathname')) === '/', await text('#ship-change'));
   await resetUi();
 });
+
+// The rest room (PLN-85, from the mockup of PLN-13): the doors into it, the console and its game, the way out, the wallpapers.
+section('rest room', async () => {
+  const ROOM = (expr) => evalJs(`(() => { const g = window.restroomGame, s = window.restroomState(); return ${expr}; })()`);
+  const isOpen = () => evalJs('document.querySelector("#rm").classList.contains("on")');
+  const rectOf = (sel) => evalJs(`(() => { const r = document.querySelector(${JSON.stringify(sel)}).getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; })()`);
+  // a real mouse click (the page then focuses the button, as for a person), not element.click()
+  const mouseClick = async (sel) => {
+    const p = await rectOf(sel);
+    await send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: p.x, y: p.y });
+    await send('Input.dispatchMouseEvent', { type: 'mousePressed', x: p.x, y: p.y, button: 'left', buttons: 1, clickCount: 1 });
+    await send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: p.x, y: p.y, button: 'left', buttons: 0, clickCount: 1 });
+  };
+  const opened = () => waitFor('document.querySelector("#rm").classList.contains("on") && !document.querySelector("#rm-iris").classList.contains("shut")', 10000);
+  const closed = () => waitFor('!document.querySelector("#rm").classList.contains("on") && !document.querySelector("#rm-iris").classList.contains("shut")', 10000);
+  // the words the screen drew (the canvas has no text to read): the last strings handed to fillText on its context
+  const tapScreen = () => evalJs(`(() => { if (window.__rmText) return true; window.__rmText = []; const f = CanvasRenderingContext2D.prototype.fillText;
+    CanvasRenderingContext2D.prototype.fillText = function (s, ...a) { if (this.canvas && this.canvas.id === 'rm-screen') { window.__rmText.push(String(s)); if (window.__rmText.length > 80) window.__rmText.shift(); } return f.call(this, s, ...a); }; return true; })()`);
+  await tapScreen();
+  const screenHas = (str) => waitFor(`window.__rmText.some((s) => s.includes(${JSON.stringify(str)}))`, 6000);
+
+  await resetUi();
+  await evalJs('localStorage.removeItem("herdr-planner.restroom.wall"); localStorage.removeItem("herdr-planner.restroom.custom"); true');
+  await evalJs('planner.goHome(); true');
+  await waitFor('plannerDebug().selected === null', 8000);
+  await pageTurn();
+
+  // ── the doors
+  check('the dock has «☕ Отдых» (at the bottom, with the todos and the chat) and the navigator a «Корабль» block with the rest room', (await text('#rest-btn')).includes('Отдых') && await hasText('#nav-ship', 'Корабль', 4000, true) && await hasText('#rm-nav-btn', 'Комната отдыха') && await hasText('#rm-nav-btn', 'O'), `${await text('#rest-btn')} | ${await text('#nav-ship')}`);
+  check('the room is closed and hidden from the page at first', !(await isOpen()) && (await evalJs('getComputedStyle(document.querySelector("#rm")).visibility')) === 'hidden', await evalJs('document.querySelector("#rm").className'));
+  // the key map: O is free (no other action answers it), the letters around it keep theirs
+  const nav0 = await evalJs('plannerDebug().panels.nav');
+  const mode0 = await evalJs('plannerDebug().mode');
+
+  // ── in with O, from the Galaxy
+  await press('KeyO', 'o');
+  check('the O key opens the room', await opened(), await evalJs('document.querySelector("#rm").className + " " + document.querySelector("#rm-iris").className'));
+  check('the button that leaves it names the place: «Назад в Галактику»', await hasText('#rm-back', 'Назад в Галактику'), await text('#rm-back'));
+  check('the page behind is inert: no focus or Tab reaches it', await evalJs('document.querySelector("#top").inert === true && document.querySelector("#nav").inert === true && document.querySelector("#rm").inert !== true'));
+  check('the console starts with its menu, the power light is on', await ROOM('g.mode') === 'menu' && await screenHas('ЗВЁЗДНЫЙ ЗАСЛОН') && await screenHas('КИРПИЧИКИ') && await evalJs('document.querySelector(".rm-led i").classList.contains("on")'), JSON.stringify(await evalJs('window.__rmText.slice(-6)')));
+  await shot('restroom.png');
+  // the keys belong to the room now: P is «pause» of the console, not the autopilot; N does not fold the navigator behind it
+  await press('KeyN', 'n'); await press('KeyP', 'p'); await press('KeyH', 'h');
+  await pageTurn();
+  check('the page behind gets no keys: the flight mode and the panels stand', (await evalJs('plannerDebug().mode')) === mode0 && (await evalJs('plannerDebug().panels.nav')) === nav0 && (await evalJs('plannerDebug().selected')) === null);
+
+  // ── the game
+  await press('ArrowDown', 'ArrowDown');
+  check('↓ moves along the menu', await ROOM('g.sel') === 1);
+  await press('ArrowUp', 'ArrowUp');
+  await press('Space', ' ');
+  check('Space starts «Звёздный заслон»: the score, the lives and the wave are drawn', await waitFor('restroomGame.mode === "shoot"', 4000) && await screenHas('СЧЁТ') && await screenHas('ВОЛНА'), await ROOM('g.mode'));
+  const x0 = await ROOM('g.s.x');
+  check('← moves the ship while it is held', await hold('ArrowLeft', 'ArrowLeft', `restroomGame.s.x < ${x0} - 20`, 15000));
+  check('Space fires', await hold('Space', ' ', 'restroomGame.s.bul.length > 0 || restroomGame.s.score > 0', 15000));
+  await press('KeyP', 'p');
+  check('P pauses and says so on the screen', await ROOM('g.paused') === true && await screenHas('ПАУЗА'));
+  const xp = await ROOM('g.s.x');
+  await evalJs(`document.body.dispatchEvent(new KeyboardEvent('keydown', { code: 'ArrowRight', key: 'ArrowRight', bubbles: true, cancelable: true }))`);
+  await frames(8);
+  await evalJs(`document.body.dispatchEvent(new KeyboardEvent('keyup', { code: 'ArrowRight', key: 'ArrowRight', bubbles: true }))`);
+  check('on pause the ship stands', await ROOM('g.s.x') === xp);
+  await press('KeyP', 'p');
+  check('P goes on', await ROOM('g.paused') === false);
+  // the game over waits for a new press
+  await evalJs('(() => { const s = restroomGame.s; s.score = 70; s.lives = 0; s.over = true; return true; })()');
+  check('«ИГРА ОКОНЧЕНА» is drawn with the score', await screenHas('ИГРА ОКОНЧЕНА') && await screenHas('счёт 70'), JSON.stringify(await evalJs('window.__rmText.slice(-5)')));
+  await evalJs(`(() => { for (let i = 0; i < 12; i++) document.body.dispatchEvent(new KeyboardEvent('keydown', { code: 'Space', key: ' ', repeat: true, bubbles: true, cancelable: true })); return true; })()`);
+  await frames(10);
+  check('a held Space (the key repeating) does not restart it: the score can be read', await ROOM('g.s.over') === true && await ROOM('g.s.score') === 70);
+  await evalJs(`document.body.dispatchEvent(new KeyboardEvent('keyup', { code: 'Space', key: ' ', bubbles: true }))`);
+  await press('Space', ' ');
+  check('a new press of Space starts the game again', await waitFor('restroomGame.s.over === false && restroomGame.s.score === 0', 4000), JSON.stringify(await ROOM('g.s.over')));
+  await evalJs('(() => { restroomGame.s.score = 120; restroomGame.s.wave = 3; return true; })()');
+  await shot('restroom-game.png');
+
+  // ── out with Esc: the same place, the game on pause
+  await press('Escape', 'Escape');
+  check('Esc leaves the room', await closed());
+  check('…and only the room: nothing else took the Esc (no step back, nothing selected)', (await evalJs('plannerDebug().selected')) === null && (await evalJs('plannerDebug().mode')) === mode0);
+  const left = JSON.stringify(await ROOM('({ mode: g.mode, score: g.s.score, wave: g.s.wave, x: g.s.x, al: g.s.al[0].x })'));
+  await frames(6);
+  check('the game waits on pause, nothing moves: the same score and wave', await ROOM('g.paused') === true && await ROOM('g.mode') === 'shoot' && JSON.stringify(await ROOM('({ mode: g.mode, score: g.s.score, wave: g.s.wave, x: g.s.x, al: g.s.al[0].x })')) === left, left);
+  check('the page behind works again: keys reach it, nothing is inert', await evalJs('document.querySelector("#top").inert !== true && document.querySelector("#nav").inert !== true'));
+  await press('KeyN', 'n');
+  check('N folds the navigator again', await waitFor(`plannerDebug().panels.nav === ${!nav0}`, 3000));
+  await press('KeyN', 'n');
+
+  // ── in again: the same game, still on pause, from the top bar button
+  await click('#rest-btn');
+  check('the top bar button opens it again', await opened());
+  check('entering again does not reset the game: the same game, still on pause', JSON.stringify(await ROOM('({ mode: g.mode, score: g.s.score, wave: g.s.wave, x: g.s.x, al: g.s.al[0].x })')) === left && await ROOM('g.paused') === true && await screenHas('ПАУЗА'), left);
+  await press('KeyP', 'p');
+  check('P goes on from where it stood', await ROOM('g.paused') === false && await ROOM('g.mode') === 'shoot');
+  // the back button
+  await mouseClick('#rm-back');
+  check('the «Назад» button leaves too', await closed());
+
+  // ── the pad on the shell: the mouse plays too
+  await click('#rest-btn');
+  await opened();
+  await press('KeyM', 'm');
+  check('M goes to the menu', await ROOM('g.mode') === 'menu');
+  await evalJs(`(() => { const b = document.querySelector('#rm-console [data-pad="down"]'); const o = { bubbles: true, cancelable: true, pointerId: 1 }; b.dispatchEvent(new PointerEvent('pointerdown', o)); b.dispatchEvent(new PointerEvent('pointerup', o)); return true; })()`);
+  check('the pad on the shell presses the same buttons: ↓ chooses the bricks', await ROOM('g.sel') === 1);
+  await evalJs(`(() => { const b = document.querySelector('#rm-console [data-pad="a"]'); const o = { bubbles: true, cancelable: true, pointerId: 1 }; b.dispatchEvent(new PointerEvent('pointerdown', o)); b.dispatchEvent(new PointerEvent('pointerup', o)); return true; })()`);
+  check('and A starts it: «Кирпичики» are played', await ROOM('g.mode') === 'bricks' && await screenHas('КИРПИЧИКИ'));
+  await press('ArrowUp', 'ArrowUp'); await press('Space', ' ');
+  check('the piece turns and drops to the floor and locks', await ROOM('g.b.grid[22].some(Boolean)') === true);
+  await press('KeyM', 'm');
+  check('the wallpaper choice below does not change the games (M: menu again)', await ROOM('g.mode') === 'menu');
+
+  // ── wallpapers
+  check('the wallpapers are the Earth with the garden at first, with a pressed mark on it', await ROOM('s.wall') === 'earth' && await evalJs('document.querySelector("#rm-thumbs [data-wall=\\"earth\\"]").getAttribute("aria-pressed") === "true"'));
+  check('three pictures and «Обзор…» are offered', (await evalJs('document.querySelectorAll("#rm-thumbs .rm-thumb[data-wall]").length')) === 3 && await exists('#rm-browse'));
+  if (await evalJs('document.querySelector("#rm-wp").classList.contains("min")')) await mouseClick('#rm-wp-min');
+  await waitFor('!document.querySelector("#rm-wp").classList.contains("min")', 3000);
+  await mouseClick('#rm-thumbs [data-wall="sea"]');
+  check('a click on «Море» changes the wall and keeps the choice', await waitFor('document.querySelector("#rm-wall-img").dataset.wall === "sea"', 3000) && (await evalJs('localStorage.getItem("herdr-planner.restroom.wall")')) === 'sea');
+  check('the click left no focus on the button: Space goes to the game, not to the panel', await evalJs('document.activeElement === document.body || !document.activeElement.closest("#rm-wp")'), await evalJs('document.activeElement.outerHTML.slice(0, 80)'));
+  await press('Space', ' ');
+  check('…Space started a game (from the menu)', await waitFor('restroomGame.mode === "shoot" || restroomGame.mode === "bricks"', 3000), await ROOM('g.mode'));
+  await press('KeyM', 'm');
+  // from the keyboard (Tab) the focus stays on the button, and Space/Enter press it, not the game
+  await evalJs('document.querySelector("#rm-thumbs [data-wall=\\"aurora\\"]").focus(); true');
+  await press('Space', ' ');
+  check('Space on a focused panel button is left to the button: the game does not start', await ROOM('g.mode') === 'menu', await ROOM('g.mode'));
+  // a picture of one's own
+  await evalJs(`(async () => { const c = document.createElement('canvas'); c.width = 64; c.height = 36; const x = c.getContext('2d'); x.fillStyle = '#c0392b'; x.fillRect(0, 0, 64, 36);
+    const blob = await new Promise((r) => c.toBlob(r, 'image/png')); const dt = new DataTransfer(); dt.items.add(new File([blob], 'wall.png', { type: 'image/png' }));
+    const i = document.querySelector('#rm-file'); i.files = dt.files; i.dispatchEvent(new Event('change', { bubbles: true })); return true; })()`);
+  check('a picture of one\'s own appears as «Свои» and is on the wall', await waitFor('document.querySelector("#rm-wall-img").dataset.wall === "custom" && !!document.querySelector("#rm-thumbs [data-wall=\\"custom\\"]")', 6000));
+  check('it is kept in the browser', (await evalJs('localStorage.getItem("herdr-planner.restroom.custom")'))?.startsWith('data:image/') && (await evalJs('localStorage.getItem("herdr-planner.restroom.wall")')) === 'custom');
+  check('and the file that is not a picture is refused', await evalJs(`(async () => { const dt = new DataTransfer(); dt.items.add(new File(['hello'], 'a.txt', { type: 'text/plain' })); const i = document.querySelector('#rm-file'); i.files = dt.files; i.dispatchEvent(new Event('change', { bubbles: true })); return true; })()`) && await waitFor('document.querySelector("#toasts").innerText.includes("не картинка")', 4000) && (await ROOM('s.wall')) === 'custom');
+  await press('Escape', 'Escape');
+  await closed();
+  // the wall is remembered across a reload
+  await navigate(base + '/?noauto&nocoach&bloom=0');
+  await waitFor('window.world && world.debug().planets > 0', 20000);
+  await tapScreen();
+  await press('KeyO', 'o');
+  await opened();
+  check('after a reload the wall is the same picture of one\'s own', await ROOM('s.wall') === 'custom' && await evalJs('document.querySelector("#rm-thumbs [data-wall=\\"custom\\"]").getAttribute("aria-pressed") === "true"'));
+  check('the game is new after a reload (the menu), the room is the same', await ROOM('g.mode') === 'menu');
+  await mouseClick('#rm-thumbs [data-wall="earth"]');
+  await waitFor('document.querySelector("#rm-wall-img").dataset.wall === "earth"', 3000);
+
+  // ── «Лететь»: a request that came while resting
+  const boardFile = join(fixture, 'state', 'board.json');
+  const boardEdit = (f) => { const w = JSON.parse(readFileSync(boardFile, 'utf8')); f(w); writeFileSync(boardFile, JSON.stringify(w, null, 1)); };
+  const waitingBefore = await evalJs('plannerSnap().tasks.filter((t) => t.status === "waiting").length');
+  check('what waited before the room was entered is no news: no notice yet', (await evalJs('document.querySelectorAll("#rm-notes .rm-note").length')) === 0 && waitingBefore > 0, String(waitingBefore));
+  boardEdit((w) => { if (!w.rows.some((r) => r.id === 'alpha/23')) w.rows.push({ id: 'alpha/23', app: 'claude', state: 'blocked', kind: 'question', stage: 'working', title: 'Вопрос из комнаты отдыха', msg: 'Оставить старый файл настроек или удалить?' }); });
+  await post('/api/refresh', {});
+  check('a request that comes while resting is a notice in the corner, with the words', await waitFor('!!document.querySelector("#rm-notes .rm-note[data-note=\\"alpha/23\\"]")', 15000) && await hasText('#rm-notes', 'Оставить старый файл'), await text('#rm-notes'));
+  check('with «Позже» and «Лететь →»', await exists('#rm-notes [data-act="later"]') && await hasText('#rm-notes [data-act="fly"]', 'Лететь'));
+  // the panels do not cover the console, at three window sizes (the wall panel open, a notice shown)
+  for (const [w, h] of [[1500, 950], [1280, 720], [1024, 700], [600, 700], [390, 700]]) {
+    await send('Emulation.setDeviceMetricsOverride', { width: w, height: h, deviceScaleFactor: 1, mobile: false });
+    await resized(); await frames(2);
+    const hit = await evalJs(`(() => { const R = (s) => { const e = document.querySelector(s); if (!e) return null; const r = e.getBoundingClientRect(); return { l: r.left, t: r.top, r: r.right, b: r.bottom }; };
+      const c = R('#rm-console .rm-shell'), over = (a, b) => a && b && a.l < b.r && a.r > b.l && a.t < b.b && a.b > b.t; const out = [];
+      const parts = { wp: R('#rm-wp'), exit: R('#rm-exit'), note: R('#rm-notes .rm-note'), console: c, hint: R('#rm-console .rm-hint') };
+      const names = Object.keys(parts).filter((k) => parts[k]);
+      for (const [i, x] of names.entries()) for (const y of names.slice(i + 1)) if (over(parts[x], parts[y])) out.push(x + ' over ' + y + JSON.stringify([parts[x], parts[y], innerWidth, document.documentElement.className]));
+      const narrow = document.documentElement.classList.contains('bp900');
+      const k = R('#rm-console'); if (k && (k.l < 0 || k.r > innerWidth || k.t < 0 || (!narrow && k.b > innerHeight))) out.push('console off-screen ' + JSON.stringify(k));
+      // what is drawn must be seen: the centre of each is its own, not the wall's
+      for (const q of ['#rm-exit', '#rm-wp', '#rm-console .rm-shell']) { const e = document.querySelector(q); e.scrollIntoView({ block: 'nearest' }); const r = e.getBoundingClientRect(); const top = document.elementFromPoint(Math.min(innerWidth - 1, r.left + r.width / 2), Math.min(innerHeight - 1, Math.max(0, r.top + Math.min(r.height / 2, 20)))); if (!top || !e.contains(top)) out.push(q + ' is covered by ' + (top && (top.id || top.className))); }
+      document.querySelector('#rm').scrollTop = 0;
+      return out; })()`);
+    if (w < 700) await evalJs('document.querySelector("#rm").scrollTop = 0; true');
+    if (w < 700) await shot(`restroom-narrow-${w}.png`);
+    check(`${w}×${h}: the wall panel, the exit button, the notices and the console do not cover one another, and the console is inside the window`, Array.isArray(hit) && hit.length === 0, JSON.stringify(hit));
+  }
+  await send('Emulation.setDeviceMetricsOverride', { width: 1500, height: 950, deviceScaleFactor: 1, mobile: false });
+  await resized();
+  await shot('restroom-notice.png');
+  await mouseClick('#rm-notes [data-act="later"]');
+  check('«Позже» takes the notice away', await waitFor('!document.querySelector("#rm-notes .rm-note[data-note=\\"alpha/23\\"]")', 3000));
+  // the exit button is readable in the light theme too (the wall is dark; the button is its own ground)
+  const contrast = () => evalJs(`(() => { const e = document.querySelector('#rm-back'); const cs = getComputedStyle(e);
+    const px = (col) => { const c = document.createElement('canvas'); c.width = c.height = 1; const x = c.getContext('2d'); x.fillStyle = '#000'; x.fillRect(0, 0, 1, 1); x.fillStyle = col; x.fillRect(0, 0, 1, 1); return [...x.getImageData(0, 0, 1, 1).data].slice(0, 3); };
+    const lum = ([r, g, b]) => { const f = (v) => { v /= 255; return v <= .03928 ? v / 12.92 : Math.pow((v + .055) / 1.055, 2.4); }; return .2126 * f(r) + .7152 * f(g) + .0722 * f(b); };
+    const a = lum(px(cs.color)), b = lum(px(cs.backgroundColor)); return Math.round(((Math.max(a, b) + .05) / (Math.min(a, b) + .05)) * 10) / 10; })()`);
+  const lightVars = { bg: '#eff1f5', 'bg-dark': '#e3e4e8', 'bg-darker': '#d8dae0', 'bg-light': '#dce0e8', fg: '#4c4f69', 'fg-dim': '#6c6f85', 'fg-bright': '#4c4f69', muted: '#9ca0b0', accent: '#1e66f5' };
+  const darkContrast = await contrast();
+  await evalJs(`(() => { const d = document.documentElement; window.__keep = d.getAttribute('style'); d.dataset.mode = 'light'; for (const [k, v] of Object.entries(${JSON.stringify(lightVars)})) d.style.setProperty('--c-' + k, v); return true; })()`);
+  await pageTurn();
+  const lightContrast = await contrast();
+  await shot('restroom-light.png');
+  check('the exit button is readable in the dark theme and in the light one (contrast 4.5 or more)', darkContrast >= 4.5 && lightContrast >= 4.5, `dark ${darkContrast}, light ${lightContrast}`);
+  await evalJs(`(() => { const d = document.documentElement; d.dataset.mode = 'dark'; if (window.__keep === null) d.removeAttribute('style'); else d.setAttribute('style', window.__keep); return true; })()`);
+  await press('Escape', 'Escape');
+  await closed();
+  // a new entry: what waits now is the base again; a second request is the news
+  await go('alpha/4');
+  await press('KeyO', 'o');
+  await opened();
+  check('entered from a task, the button says where it leads: «Назад к ALP-4»', await hasText('#rm-back', 'Назад к ALP-4'), await text('#rm-back'));
+  boardEdit((w) => { if (!w.rows.some((r) => r.id === 'alpha/24')) w.rows.push({ id: 'alpha/24', app: 'claude', state: 'blocked', kind: 'question', stage: 'working', title: 'Ещё вопрос', msg: 'Брать ли новую схему?' }); });
+  await post('/api/refresh', {});
+  check('a request that comes meanwhile is a notice again', await waitFor('!!document.querySelector("#rm-notes .rm-note[data-note=\\"alpha/24\\"]")', 15000), await text('#rm-notes'));
+  await press('Space', ' ');
+  await click('#rm-notes .rm-note[data-note="alpha/24"] [data-act="fly"]');
+  check('«Лететь →» leaves the room and flies to the task of the notice', await closed() && await waitFor('plannerDebug().selected?.id === "alpha/24"', 15000), JSON.stringify(await pd()));
+  check('…and the game it left is on pause', await ROOM('g.mode') === 'shoot' && await ROOM('g.paused') === true, await ROOM('g.mode'));
+  boardEdit((w) => { w.rows = w.rows.filter((r) => r.id !== 'alpha/23' && r.id !== 'alpha/24'); });
+  await post('/api/refresh', {});
+
+  // ── from the navigator: back to the navigator, focus returned to what opened it
+  await evalJs('planner.goHome(); true');
+  await waitFor('plannerDebug().selected === null', 8000);
+  await evalJs('document.querySelector("#rm-nav-btn").focus(); true');
+  await press('Enter', 'Enter');
+  // Enter on the button is a click only for a real key; a click by script stands in when the page did not count it
+  if (!(await isOpen())) await click('#rm-nav-btn');
+  check('«Корабль → Комната отдыха» opens it, and «Назад» names the navigator', await opened() && await hasText('#rm-back', 'Назад в навигатор'), await text('#rm-back'));
+  await press('Escape', 'Escape');
+  check('Esc brings the person back', await closed());
+
+  // ── English
+  await evalJs('setLang("en"); true');
+  check('English: the doors and the room', (await text('#rest-btn')).includes('Rest') && await hasText('#rm-nav-btn', 'Rest room'), `${await text('#rest-btn')} | ${await text('#rm-nav-btn')}`);
+  await click('#rest-btn');
+  await opened();
+  check('English: the back button, the wallpapers, the game', await hasText('#rm-back', 'Back to the Galaxy') && await hasText('#rm-wp', 'Wallpaper') && await screenHas('SCORE'), `${await text('#rm-back')} | ${await evalJs('window.__rmText.slice(-5)')}`);
+  await press('Escape', 'Escape');
+  await closed();
+  await evalJs('setLang("ru"); localStorage.removeItem("herdr-planner.restroom.wall"); localStorage.removeItem("herdr-planner.restroom.custom"); true');
+  await resetUi();
+}, { retry: true });
 
 section('theme and language', async () => {
   await resetUi();
