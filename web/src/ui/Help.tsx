@@ -6,7 +6,7 @@ import { STATUS_ORDER } from '../types';
 
 const ROWS: [string, string][] = [
   ['Ctrl+K', 'help.search'], ['P', 'help.mode'], ['/', 'help.chat'], ['N', 'help.nav'], ['F', 'help.focus'], ['T', 'help.todo'],
-  ['B', 'help.wait'], ['J', 'help.log'], ['R', 'help.archive'], ['Q', 'help.limits'], ['L', 'help.link'], ['H', 'help.home'],
+  ['B', 'help.wait'], ['J', 'help.log'], ['R', 'help.archive'], ['Q', 'help.limits'], ['L', 'help.link'], ['H', 'help.home'], ['O', 'help.rest'],
   ['0 / Home', 'help.overview'], ['Enter', 'help.fly'], ['Tab / Shift+Tab', 'help.tab'], ['[ / ]', 'help.universe'], ['1–9', 'help.nth'],
   ['+ / −', 'help.zoom'], ['W A S D / ← ↑ → ↓', 'help.wasd'], ['Space / C', 'help.updown'], ['Shift', 'help.boost'], ['X', 'help.stop'],
   ['Ctrl+= / Ctrl+− / Ctrl+0', 'help.scale'], ['Esc', 'help.esc'], ['?', 'help.help'],

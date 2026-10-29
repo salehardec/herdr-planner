@@ -166,7 +166,7 @@ else
   for only in "boot,live,navigator,panel widths,buttons,autopilot,manual,stack,queue,search" \
               "chat,todo,hints" \
               "lag,universes,framing,remote,scale,runners,menu card,light page" \
-              "station,strays,crew,ship,theme,simple,planet states,narrow,top cards" \
+              "station,strays,crew,ship,rest room,theme,simple,planet states,narrow,top cards" \
               "focus,agent screen,requests,links,archive,load,top bar,limits,gate,memory,layout narrow" \
               "layout 1280" "layout 1920,layout 1600" "layout 2560" "layout 1366,layout big"; do
     n=$((n + 1))
