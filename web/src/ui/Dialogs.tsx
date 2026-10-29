@@ -1,6 +1,6 @@
 import { signal } from '@preact/signals';
 import type { JSX } from 'preact';
-import { useEffect } from 'preact/hooks';
+import { useEffect, useState } from 'preact/hooks';
 import { addDialogs, todoDraft } from '../dialogs';
 import { currentView, snap, taskOf } from '../store';
 import { todoAssign, todoSend, todoToTask, todoUpdate } from '../actions';
@@ -10,6 +10,7 @@ import { loadModels, modelList } from './Todo';
 import { AddUniverse } from './AddUniverse';
 import { AddRunner } from './AddRunner';
 import { lightPreset } from './station-api';
+import { rolesGet, roleMatch, RoleMatch, RolesData } from './crew-roles-api';
 import { SavedFiles } from './Attached';
 import { AutoTextarea } from './AutoText';
 import { toast } from '../toast';
@@ -19,6 +20,9 @@ import './dialogs.css';
 
 const popProgram = signal('claude');
 const popModel = signal('');
+/** The crew's own role for the new task: `auto` (the rules decide), `none`, or a role's id; and the way a reviewer role goes on. */
+const popRole = signal('auto');
+const popHow = signal('');
 const editText = todoDraft.text;
 const editFiles = todoDraft.files;
 
@@ -51,17 +55,57 @@ function DraftFields(props: { prefix: string; onSend: () => void; hint: string }
   );
 }
 
+/** Which of the crew's own roles the new task gets: by the rules (and which they give now), none, or one picked. */
+function PopRole(props: { repo: string; text: string }): JSX.Element | null {
+  const [roles, setRoles] = useState<RolesData | null>(null);
+  const [match, setMatch] = useState<RoleMatch | null>(null);
+  useEffect(() => { let alive = true; rolesGet().then((d) => { if (alive) setRoles(d); }).catch(() => undefined); return () => { alive = false; }; }, []);
+  const title = props.text.split('\n').find((l) => l.trim()) ?? '';
+  useEffect(() => {
+    let alive = true;
+    roleMatch({ repo: props.repo, title }).then((m) => { if (alive) setMatch(m); }).catch(() => { if (alive) setMatch(null); });
+    return () => { alive = false; };
+  }, [props.repo, title]);
+  if (!roles || roles.roles.length === 0) return null;
+  const picked = roles.roles.find((r) => r.id === popRole.value);
+  return (
+    <div class="pop-role" id="pop-role-box">
+      <label>{t('cr.pop.role')}
+        <select class="field" id="pop-role" value={popRole.value} onChange={(e) => { popRole.value = (e.target as HTMLSelectElement).value; popHow.value = ''; }}>
+          <option value="auto">{t('cr.pop.auto')}</option>
+          <option value="none">{t('cr.pop.none')}</option>
+          {roles.roles.map((r) => <option key={r.id} value={r.id}>{r.name}</option>)}
+        </select>
+      </label>
+      {popRole.value === 'auto' && (
+        <div class="hint" id="pop-role-match" data-match={match?.role?.name ?? ''}>
+          {match?.role ? t('cr.pop.byRule', { name: match.role.name, rule: match.rule ?? '' }) : t('cr.pop.noRule')}
+        </div>
+      )}
+      {picked?.kind === 'reviewer' && (
+        <label>{t('cr.put.how')}
+          <select class="field" id="pop-role-how" value={popHow.value || picked.how} onChange={(e) => { popHow.value = (e.target as HTMLSelectElement).value; }}>
+            <option value="instead">{t('cr.way.instead')} — {t('cr.way.insteadHint')}</option>
+            <option value="after">{t('cr.way.after')} — {t('cr.way.afterHint')}</option>
+          </select>
+        </label>
+      )}
+    </div>
+  );
+}
+
 /** Dropping a list item on a universe: the text and the files to correct, which project, which program and which model. */
 function TodoPopover(): JSX.Element | null {
   const p = addDialogs.popover.value;
   const projects = currentView.value.projects;
   const list = modelList.value;
   useEffect(() => { if (p) void loadModels(popProgram.value); }, [p?.id, popProgram.value]);
+  useEffect(() => { popRole.value = 'auto'; popHow.value = ''; }, [p?.id]);
   if (!p) return null;
   const go = async (): Promise<void> => {
     const agent = popModel.value.trim() ? (popModel.value.includes('/') ? popModel.value.trim() : `${popProgram.value}/${popModel.value.trim()}`) : '';
     if (!(await saveDraft(p.id))) return;
-    const ok = await todoToTask(p.id, p.repo, agent);
+    const ok = await todoToTask(p.id, p.repo, agent, popRole.value, popHow.value);
     if (ok) addDialogs.popover.value = null;
   };
   return (
@@ -75,6 +119,7 @@ function TodoPopover(): JSX.Element | null {
               {projects.map((x) => <option value={x.name}>{x.name}</option>)}
             </select>
           </label>
+          <PopRole repo={p.repo} text={editText.value} />
           <label>{t('todo.popProgram')}</label>
           <div class="prog">
             {['claude', 'codex', 'pi', 'omp'].map((x) => (

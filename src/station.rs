@@ -8,6 +8,7 @@ use crate::config::{now_ms, AppConfig};
 use crate::crew;
 use crate::failover;
 use crate::models;
+use crate::roles;
 use crate::server::{clip, error, same_origin};
 use crate::taskmeta;
 use crate::usage;
@@ -76,6 +77,8 @@ pub struct Program {
 pub struct Fail {
     status: StatusCode,
     message: String,
+    /// What else the answer carries next to the words (a role in use: what uses it).
+    usage: Option<Value>,
 }
 
 impl Fail {
@@ -83,7 +86,13 @@ impl Fail {
         Self {
             status: StatusCode::from_u16(status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR),
             message: message.into(),
+            usage: None,
         }
+    }
+
+    /// A refusal that needs a second, explicit word: 409, the words, and what is in the way.
+    pub fn in_use(message: impl Into<String>, usage: Value) -> Self {
+        Self { status: StatusCode::CONFLICT, message: message.into(), usage: Some(usage) }
     }
 
     /// A board that answered with an error is a refusal (422), not a board that did not answer (502).
@@ -99,7 +108,11 @@ impl Fail {
     }
 
     pub fn into_response(self) -> Response {
-        (self.status, Json(json!({ "error": self.message }))).into_response()
+        let body = match self.usage {
+            Some(u) => json!({ "error": self.message, "usage": u }),
+            None => json!({ "error": self.message }),
+        };
+        (self.status, Json(body)).into_response()
     }
 }
 
@@ -107,7 +120,7 @@ impl Fail {
 #[derive(Debug, Default)]
 pub(crate) struct Out {
     code: Option<i32>,
-    stdout: String,
+    pub(crate) stdout: String,
     stderr: String,
 }
 
@@ -477,14 +490,14 @@ pub(crate) fn available() -> Vec<String> {
 }
 
 /// A program's models and effort levels, as its `models` answer gives them.
-struct Listed {
-    names: Vec<String>,
-    effort: Vec<String>,
+pub(crate) struct Listed {
+    pub(crate) names: Vec<String>,
+    pub(crate) effort: Vec<String>,
     note: String,
-    loading: bool,
+    pub(crate) loading: bool,
 }
 
-async fn models_of(app: &Shared, program: &str) -> Listed {
+pub(crate) async fn models_of(app: &Shared, program: &str) -> Listed {
     let m = models::get(&app.cfg, program).await;
     Listed {
         names: m.names,
@@ -651,10 +664,11 @@ fn programs_json(gathered: &[Gathered], settings: &[Setting], light: &str, tasks
 /// The presets with how far each is from the crew now, and which is active.
 fn presets_json(cfg: &AppConfig, settings: &[Setting], light: &str, repo: &str) -> Value {
     let store = crew::read_store(cfg);
+    let custom = roles::read_store(cfg).roles;
     let diffs: Vec<(String, usize)> = store
         .presets
         .iter()
-        .map(|p| (p.id.clone(), crew::plan(p, settings, light, repo).len()))
+        .map(|p| (p.id.clone(), crew::plan(p, settings, light, repo).len() + roles::preset_steps(p, &custom, repo).len()))
         .collect();
     let list: Vec<Value> = store
         .presets
@@ -991,10 +1005,11 @@ async fn presets_change(app: &Shared, body: PresetBody) -> Result<Value, Fail> {
         "capture" => {
             let repo = level_of(body.repo.clone())?;
             let settings = read_settings(&app.cfg, &repo).await.map_err(Fail::refused)?;
-            let roles = crew::capture(&settings, &read_light(&app.cfg));
+            let mut held = crew::capture(&settings, &read_light(&app.cfg));
+            held.extend(roles::capture(&roles::read_store(&app.cfg).roles));
             // A preset made from the crew as it is, is the active one: later edits of the crew show as a difference from it.
             crew::edit_store(&app.cfg, |s| {
-                let id = crew::add_preset(s, &name, &roles)?;
+                let id = crew::add_preset(s, &name, &held)?;
                 s.active.insert(repo.clone(), id.clone());
                 Ok(id)
             })
@@ -1075,6 +1090,7 @@ async fn prepared(app: &Shared, id: &str, repo: &str) -> Result<(crew::Preset, V
     let settings = read_settings(&app.cfg, repo).await.map_err(Fail::refused)?;
     let light = read_light(&app.cfg);
     let mut steps = crew::plan(&preset, &settings, &light, repo);
+    steps.extend(roles::preset_steps(&preset, &roles::read_store(&app.cfg).roles, repo));
     let mut programs: Vec<String> = Vec::new();
     for set in preset.roles.values() {
         for p in std::iter::once(crew::program_of(&set.agent).to_string()).chain(crew::chain_programs(&set.fallback)) {
@@ -1125,6 +1141,7 @@ pub async fn station_preset_preview(
         let (preset, steps, loading) = prepared(&app, &body.id, &repo).await?;
         let tasks: Vec<Task> = app.snapshot.read().await.tasks.clone();
         let light_skipped = !repo.is_empty() && preset.roles.get("light").is_some_and(|r| !r.agent.is_empty());
+        let roles_skipped = !repo.is_empty() && preset.roles.keys().any(|k| roles::role_of_key(k).is_some());
         let rows: Vec<Value> = steps
             .iter()
             .map(|s| {
@@ -1143,7 +1160,9 @@ pub async fn station_preset_preview(
             "valid": steps.iter().all(|s| s.error.is_empty()),
             "loading": loading,
             "light_skipped": light_skipped,
-            "affects": crew::affected(&tasks, &repo),
+            "roles_skipped": roles_skipped,
+            // only the board's settings touch the tasks: a preset that changes the planner's own (the light preset, own roles) touches none
+            "affects": if steps.iter().all(|s| s.own()) { crew::affected(&[], &repo) } else { crew::affected(&tasks, &repo) },
         }))
     }
     .await;
@@ -1177,6 +1196,8 @@ pub async fn station_preset_apply(
         for step in &steps {
             let done = if step.light() {
                 write_light(&app.cfg, step.now.as_deref().unwrap_or(""))
+            } else if !step.custom.is_empty() {
+                roles::edit_store(&app.cfg, |s| roles::apply_step(s, &step.custom, step.field, step.now.as_deref()))
             } else {
                 let args = crew::command_of(step, &repo).unwrap_or_default();
                 let out = board_run(&app.cfg, &args, BOARD_WAIT).await;
@@ -1555,6 +1576,43 @@ esac"#,
         );
         assert_eq!(read_light(&app.cfg), "omp/deepseek/deepseek-v4-flash", "the light preset is kept by the planner");
         assert_eq!(crew::read_store(&app.cfg).active[""], id, "the planner remembers which preset it applied");
+    }
+
+    #[tokio::test]
+    async fn a_preset_that_holds_an_own_role_changes_the_role_and_asks_the_board_nothing_for_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let (app, log) = app_with_board(dir.path(), "");
+        let rid = roles::edit_store(&app.cfg, |s| {
+            roles::add_role(s, &roles::RoleInput { name: "Дизайнер".into(), kind: "worker".into(), agent: "claude/claude-sonnet-5-5".into(), effort: "high".into(), ..Default::default() })
+        })
+        .unwrap();
+        let want = crew_roles(&[("light", "", "", "")]);
+        let mut held = want.clone();
+        held.insert(roles::preset_key(&rid), crew::RoleSet { agent: "codex/gpt-6-luna".into(), effort: "ultra".into(), fallback: "none".into() });
+        let id = crew::edit_store(&app.cfg, |s| crew::add_preset(s, "Дизайн дешевле", &held)).unwrap();
+        wait_models(&app, &["claude", "codex"]).await;
+        let body = || ApplyBody { id: id.clone(), repo: None, confirm: Some(true) };
+        let (_, prev) = json_of(station_preset_preview(State(app.clone()), headers(), Json(ApplyBody { confirm: None, ..body() })).await).await;
+        let own: Vec<&Value> = prev["steps"].as_array().unwrap().iter().filter(|s| s["role"] == "custom").collect();
+        let fields: Vec<String> = own.iter().map(|s| format!("{} {} {} → {}", s["label"].as_str().unwrap(), s["field"].as_str().unwrap(), s["was"].as_str().unwrap(), s["now"].as_str().unwrap_or("unset"))).collect();
+        assert_eq!(fields, ["Дизайнер agent claude/claude-sonnet-5-5 → codex/gpt-6-luna", "Дизайнер effort high → ultra", "Дизайнер fallback  → none"], "{prev}");
+        assert!(own.iter().all(|s| s["command"] == ""), "the role is the planner's own: no board command");
+        assert_eq!(prev["valid"], true, "{prev}");
+        assert_eq!((prev["affects"]["running"].as_array().unwrap().len(), prev["affects"]["waiting"].as_array().unwrap().len()), (0, 0), "the planner's own roles touch no task");
+        // at a repository's level the roles are not touched, and the card says so
+        let (_, at_repo) = json_of(station_preset_preview(State(app.clone()), headers(), Json(ApplyBody { repo: Some("alpha".into()), confirm: None, ..body() })).await).await;
+        assert!(at_repo["steps"].as_array().unwrap().iter().all(|s| s["role"] != "custom"));
+        assert_eq!(at_repo["roles_skipped"], true);
+        // the presets list counts the role's steps in the difference
+        let listed = presets_json(&app.cfg, &[], "", "");
+        assert_eq!(listed["list"][0]["diff"], 3, "{listed}");
+
+        let (code, done) = json_of(station_preset_apply(State(app.clone()), headers(), Json(body())).await).await;
+        assert_eq!(code, StatusCode::OK, "{done}");
+        assert!(board_commands(&log).is_empty(), "nothing was set on the board");
+        let r = &roles::read_store(&app.cfg).roles[0];
+        assert_eq!((r.agent.as_str(), r.effort.as_str(), r.fallback.as_str()), ("codex/gpt-6-luna", "ultra", "none"));
+        assert_eq!(presets_json(&app.cfg, &[], "", "")["list"][0]["diff"], 0, "applied: the crew matches the preset");
     }
 
     #[tokio::test]

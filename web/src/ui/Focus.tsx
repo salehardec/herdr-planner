@@ -28,6 +28,7 @@ import type { Entity, Subagent, Task } from '../types';
 import { UniverseFocus, QuasarFocus, ArchiveFocus, RunnerFocus } from './FocusOther';
 import { SuggestionCard, suggestionsOfTask } from './MemoryPanel';
 import { openRemember } from './memory-api';
+import { TaskRoles } from './CrewRoles';
 import './focus.css';
 
 const linkLabel = (l: { from: string; label?: string; kind: string }): string => l.label || (l.kind === 'far' ? l.from : taskOf(l.from)?.tag ?? l.from);
@@ -165,6 +166,7 @@ function TaskFocus(props: { task: Task }): JSX.Element {
         )}
         {clean && yard[0] && <CleanCard runner={yard[0].r.id} ids={yard.map((x) => x.c.id)} onClose={() => setClean(false)} onDone={() => setClean(false)} />}
       </section>
+      <TaskRoles task={task} />
       <TellBox task={task} />
 
       {(task.status === 'done' || cl?.text) && (
