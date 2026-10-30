@@ -7,7 +7,7 @@ import { prepareAnswer } from './nav';
 import { reconcileEchoes, restoreEchoes, type Echo } from './chat-echo';
 import type { TurnData } from './types';
 import { t } from './i18n';
-import { makeShelf, type SavedFile } from './attach';
+import { backspaceTakesFile, makeShelf, type SavedFile } from './attach';
 import { chatRead, settleRead } from './chat-unread';
 
 /** The files waiting in the message line. */
@@ -15,6 +15,8 @@ const shelf = makeShelf();
 export const pendingFiles = shelf.files;
 export const addFiles = shelf.add;
 export const removeFile = shelf.remove;
+/** Backspace in the empty field: the last file goes. */
+export const backspaceFile = (e: KeyboardEvent, field: { value: string }): boolean => backspaceTakesFile(e, field, shelf);
 export const sending = signal(false);
 export const ECHO_KEY = 'planner.chat.echoes';
 const readEchoes = (): Echo[] => {

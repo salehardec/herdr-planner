@@ -145,3 +145,21 @@ export function pastedFiles(e: ClipboardEvent): File[] {
 }
 
 export const hasFiles = (dt: DataTransfer | null | undefined): boolean => !!dt && [...dt.types].includes('Files');
+
+/**
+ * Backspace in an empty field takes the last file off the shelf (then the one before it, and so on).
+ * Returns true when it did, so the caller leaves the key alone.
+ */
+export function backspaceTakesFile(
+  e: { key: string; shiftKey?: boolean; ctrlKey?: boolean; metaKey?: boolean; altKey?: boolean; isComposing?: boolean; preventDefault: () => void },
+  field: { value: string },
+  shelf: { files: { value: { key: number }[] }; remove: (key: number) => void },
+): boolean {
+  if (e.key !== 'Backspace' || e.shiftKey || e.ctrlKey || e.metaKey || e.altKey || e.isComposing) return false;
+  if (field.value !== '') return false;
+  const last = shelf.files.value[shelf.files.value.length - 1];
+  if (!last) return false;
+  e.preventDefault();
+  shelf.remove(last.key);
+  return true;
+}

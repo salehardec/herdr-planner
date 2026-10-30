@@ -11,7 +11,7 @@ import { openNewTask, openTell } from '../dialogs';
 import { getWorld } from '../nav';
 import type { TodoItem } from '../types';
 import { drawerItems } from '../anim';
-import { hasFiles, makeShelf, pastedFiles } from '../attach';
+import { backspaceTakesFile, hasFiles, makeShelf, pastedFiles } from '../attach';
 import { dragTodo, endDrag, overId, startDrag } from '../todo-drag';
 import { draftTodos } from '../chat';
 import { PendingFiles, SavedFiles } from './Attached';
@@ -110,6 +110,7 @@ export function Todo(): JSX.Element {
         <AutoTextarea
           id="todo-in" elRef={inputRef} class="field"
           placeholder={t('todo.new')} aria-label={t('todo.new')} onSend={() => void submit()}
+          onKeyDown={(e) => { backspaceTakesFile(e, e.currentTarget, shelf); }}
         />
         <label class="btn browse" id="todo-browse" title={t('todo.browseTip')}>
           <Gl n="attach" />{t('todo.browse')}
