@@ -35,7 +35,9 @@ button{cursor:pointer}
 kbd{display:inline-block;min-width:1.7em;padding:0 .35em;border:1px solid var(--pl-line);border-bottom-width:2px;border-radius:0.25rem;background:var(--pl-tile);text-align:center;font:inherit;font-size:.88em}
 mark{background:color-mix(in srgb,var(--pl-accent) 38%,transparent);color:inherit;border-radius:2px}
 
-.win{position:fixed;inset:0;width:100vw;height:100vh;overflow:hidden;color:var(--pl-text);background:var(--c-bg-darker)}
+/* The cockpit must never scroll, including when scrollIntoView or focus reveals a message in a panel.
+   hidden still creates a scroll container; clip keeps all scrolling inside the panels (PLN-97). */
+.win{position:fixed;inset:0;width:100vw;height:100vh;overflow:clip;color:var(--pl-text);background:var(--c-bg-darker)}
 #scene{position:absolute;inset:0;display:block;width:100%;height:100%;touch-action:none;cursor:grab}
 #scene:active{cursor:grabbing}
 #scene.link-mode{cursor:crosshair}

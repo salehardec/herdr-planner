@@ -1,7 +1,7 @@
 /* The pickers of the crew screen: a program and one of ITS models (from `herdr-projects models`, never typed), an effort
    level, and a fallback chain of subscriptions. Used by the role cards, the fallback form and the preset editor. */
 import type { JSX } from 'preact';
-import { useEffect, useState } from 'preact/hooks';
+import { useEffect, useLayoutEffect, useState } from 'preact/hooks';
 import { t } from '../i18n';
 import { callError, ModelsData, programOf, stationModels, StationProgram } from './station-api';
 import { chainOf, chainValue, modelOptions, offerable, programName, untilLabel } from './crew-view';
@@ -74,9 +74,9 @@ export function AgentPick(props: AgentPickProps): JSX.Element {
   const { data, loading, error } = useModels(prog);
   const opts = modelOptions(prog, data, value.startsWith(`${prog}/`) || value === prog ? value : '', !!props.bare);
   const mine = prog && (value === prog || value.startsWith(`${prog}/`));
-  // A program was chosen and its models arrived: take the first (or the program alone), unless the value already is one of its.
-  useEffect(() => {
-    if (!prog || !data || data.loading || mine) return;
+  // Set the initial model before the list becomes interactive: a deferred effect can overwrite a choice made as it arrives.
+  useLayoutEffect(() => {
+    if (!prog || !data || data.program !== prog || data.loading || mine) return;
     if (opts.length) onChange(opts[0].value);
   }, [prog, data, mine]);
   const listed = programsFor(programs, fromValue || prog).filter((p) => !(props.skip ?? []).includes(p.name) || p.name === prog);
