@@ -5,7 +5,7 @@ import {
   answered, armed, attention, chat, currentView, linkMode, mode, panels, requests, searchState, selected,
   simple, filter, universe, SIMPLE_KEY, persist, locked, level, selectedTask,
 } from './store';
-import { back, getWorld, goHome, goOverview, navigateTo, openRequest, pushFrame, queueCursor, fromQueue } from './nav';
+import { back, getWorld, goHome, goOverview, navigateTo, openRequest, pushFrame, queueCursor, fromQueue, stepRequest } from './nav';
 import { STATUS_ORDER } from './types';
 import type { Entity } from './types';
 import { toast } from './toast';
@@ -139,6 +139,7 @@ export function installKeys(): void {
       return;
     }
     if (typing(target) || e.ctrlKey || e.metaKey || e.altKey) return;
+    if (e.shiftKey && (code === 'KeyJ' || code === 'KeyK')) { e.preventDefault(); void stepRequest(code === 'KeyJ' ? 1 : -1); return; }
     if (e.key === '/') { e.preventDefault(); openChat(true); return; }
     if (/^Digit[1-9]$/.test(code)) {
       const list = requests.value.filter((x) => x.type !== 'coordinator-options');

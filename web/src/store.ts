@@ -1,10 +1,11 @@
 /* The page's state: signals. The world and the panels both read from here. */
-import { computed, signal } from '@preact/signals';
+import { computed, effect, signal } from '@preact/signals';
 import type {
   LoadInfo, Entity, GalaxyView, Level, Request, Runner, Snapshot, Status, Task, TurnData,
 } from './types';
 import { ATTENTION, STATUS_ORDER } from './types';
 import { collectRequests } from './requests';
+import { forgetChangedRequests, pendingRequests, resolvedRequests } from './request-queue';
 
 const QS = new URLSearchParams(location.search);
 const mq = matchMedia('(prefers-reduced-motion: reduce)');
@@ -82,7 +83,7 @@ export const armed = signal<{ key: string; at: number } | null>(null);
 export const narrow = signal(innerWidth < 900);
 export const details = signal<Record<string, any>>({});
 export const screens = signal<Record<string, any>>({});
-export const answered = signal<Set<string>>(new Set());
+export const answered = computed(() => new Set(resolvedRequests.value.keys()));
 export const navFolds = signal<Record<string, boolean>>(JSON.parse(store('herdr-planner.nav.folds', '{}') || '{}'));
 export const fresh = signal<Record<string, number>>({});
 export const tellDraft = signal<Record<string, string>>({});
@@ -126,11 +127,14 @@ export const tasksIndex = computed(() => {
 
 export const taskOf = (id: string): Task | undefined => tasksIndex.value.get(id);
 
-export const requests = computed<Request[]>(() => {
+const allRequests = computed<Request[]>(() => {
   const s = snap.value;
   if (!s) return [];
   return collectRequests({ tasks: currentView.value.tasks, coordinator: s.coordinator, runners: s.runners, suggestions: s.memory_suggestions });
 });
+
+effect(() => forgetChangedRequests(allRequests.value));
+export const requests = computed(() => pendingRequests(allRequests.value));
 
 export const attention = computed(() => requests.value.filter((r) => r.type !== 'coordinator-options').length);
 

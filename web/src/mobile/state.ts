@@ -5,8 +5,8 @@ import { persist } from '../store';
 
 export type Tab = 'wait' | 'chat' | 'board';
 export type Sheet =
-  | { kind: 'task'; id: string }
-  | { kind: 'plan'; id: string }
+  | { kind: 'task'; id: string; queue?: string }
+  | { kind: 'plan'; id: string; queue?: string }
   | { kind: 'limits' }
   | { kind: 'settings' }
   | null;

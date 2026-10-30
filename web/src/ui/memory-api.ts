@@ -1,8 +1,10 @@
 /* The Galaxy's memory (Markdown files, three levels): the state of its panels, the «В память» dialog and the calls they
    make. The calls mirror src/memory_api.rs. */
 import { signal } from '@preact/signals';
-import { api, post } from '../api';
+import { api, post, refreshNow } from '../api';
 import { t } from '../i18n';
+import { toast } from '../toast';
+import { restoreRequest } from '../request-queue';
 
 export const KINDS = ['rule', 'preference', 'decision', 'convention', 'pitfall', 'reference'] as const;
 export type MemKind = (typeof KINDS)[number];
@@ -231,10 +233,20 @@ type Line = { kind: string; text: string };
 export const previewSuggestion = (task: string, lines: Line[]): Promise<MemPreview> =>
   post<MemPreview>('/api/memory/suggestion', { task, action: 'accept', lines });
 
-export const keepSuggestion = (task: string, lines: Line[], token: string, a: Accept = {}): Promise<{ saved: MemEntry[] }> =>
-  post<{ saved: MemEntry[] }>('/api/memory/suggestion', { task, action: 'accept', lines, ...gate(token, a) });
+export const keepSuggestion = (task: string, lines: Line[], token: string, a: Accept = {}): Promise<{ saved: MemEntry[]; undo: string }> =>
+  post<{ saved: MemEntry[]; undo: string }>('/api/memory/suggestion', { task, action: 'accept', lines, ...gate(token, a) });
 
-export const dismissSuggestion = (task: string): Promise<unknown> => post('/api/memory/suggestion', { task, action: 'dismiss' });
+export const dismissSuggestion = (task: string): Promise<{ undo: string }> => post('/api/memory/suggestion', { task, action: 'dismiss' });
+
+export function suggestionToast(task: string, repo: string, msg: string, token: string): void {
+  toast(msg, { timeout: 10000, label: t('act.undo'), action: () => {
+    void post('/api/memory/suggestion', { task, action: 'undo', token }).then(async () => {
+      restoreRequest(`memory:${task}`);
+      await Promise.all([loadMemory(repo), refreshNow()]);
+      toast(t('wait.undone'));
+    }).catch((e) => toast((e as Error).message, { icon: 'failed' }));
+  } });
+}
 
 /** The memory window over the page: the list of one level (`repo` empty: the Galaxy; `program`: the memory another program
  *  keeps, read only), with the search the human typed in the panel and the entry to open. */

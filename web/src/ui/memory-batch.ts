@@ -2,11 +2,13 @@
    all of them. The selection and the edits live here, not in a card, so a row of «Ждёт тебя» and a card of the universe's
    panel show the same ticks. */
 import { signal } from '@preact/signals';
-import { snap } from '../store';
+import { prepareAnswer } from '../nav';
+import { resolveRequest } from '../request-queue';
+import { requests, snap } from '../store';
 import type { MemorySuggestion } from '../types';
 import { t } from '../i18n';
 import { toast } from '../toast';
-import { dismissSuggestion, keepSuggestion, loadMemory, previewSuggestion, type Accept, type MemPreview } from './memory-api';
+import { dismissSuggestion, keepSuggestion, loadMemory, previewSuggestion, suggestionToast, type Accept, type MemPreview } from './memory-api';
 
 type Line = { kind: string; text: string };
 
@@ -82,18 +84,24 @@ export async function batchKeep(): Promise<void> {
   const b = memBatch.value;
   if (!b || b.busy) return;
   memBatch.value = { ...b, busy: true, err: '' };
+  const completions = b.items.map((it) => ({ row: requests.value.find((r) => r.key === `memory:${it.s.task}`), done: prepareAnswer(it.s.task, 'memory') }));
+  const successful: typeof completions = [];
   const failed: Batch['items'] = [];
   const why: string[] = [];
   let lines = 0;
   const repos = new Set<string>();
-  for (const it of b.items) {
+  for (const [index, it] of b.items.entries()) {
     const a: Accept = it.p.risk === 'block' ? { accept_public: true } : it.p.risk === 'confirm' ? { accept_risk: true } : {};
     try {
-      await keepSuggestion(it.s.task, it.lines, it.p.token, a);
+      const result = await keepSuggestion(it.s.task, it.lines, it.p.token, a);
+      suggestionToast(it.s.task, it.s.repo, t('mem.suggestKept', { repo: it.s.repo }), result.undo);
+      successful.push(completions[index]);
       lines += it.lines.length;
       repos.add(it.s.repo);
     } catch (e) { failed.push(it); why.push(`${it.s.tag}: ${(e as Error)?.message || t('mem.failed')}`); }
   }
+  for (const c of successful) if (c.row) resolveRequest(c.row);
+  for (const c of successful) await c.done();
   for (const r of repos) void loadMemory(r);
   const done = b.items.length - failed.length;
   if (done) toast(t('mem.batchKept', { n: lines, c: done }));
@@ -104,11 +112,15 @@ export async function batchKeep(): Promise<void> {
 export async function batchDismiss(list: MemorySuggestion[]): Promise<void> {
   const chosen = picked(list);
   if (!chosen.length) return;
+  const completions = chosen.map((c) => ({ row: requests.value.find((r) => r.key === `memory:${c.s.task}`), done: prepareAnswer(c.s.task, 'memory') }));
+  const successful: typeof completions = [];
   let done = 0;
   const repos = new Set<string>();
-  for (const c of chosen) {
-    try { await dismissSuggestion(c.s.task); done++; repos.add(c.s.repo); } catch (e) { toast(`${c.s.tag}: ${(e as Error)?.message || t('mem.failed')}`, { icon: 'failed' }); }
+  for (const [index, c] of chosen.entries()) {
+    try { const result = await dismissSuggestion(c.s.task); suggestionToast(c.s.task, c.s.repo, t('wait.dismissed'), result.undo); successful.push(completions[index]); done++; repos.add(c.s.repo); } catch (e) { toast(`${c.s.tag}: ${(e as Error)?.message || t('mem.failed')}`, { icon: 'failed' }); }
   }
+  for (const c of successful) if (c.row) resolveRequest(c.row);
+  for (const c of successful) await c.done();
   for (const r of repos) void loadMemory(r);
   if (done) toast(t('mem.batchDismissed', { n: done }));
 }

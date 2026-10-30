@@ -1,17 +1,18 @@
 /* Where the operator is, and how to go back.
    The rule of the whole page — «don't fly away from the place of action»:
-   an action leaves the operator where they are; Esc is exactly one step back,
+   actions outside the waiting queue leave the operator where they are; Esc is exactly one step back,
    like the browser's «back»: close a panel → leave the focus → leave the nebula.
    A move the operator makes themself (navigator, search, a click on a thing,
    a task key, manual flight) flies there and puts the place they left on the stack. */
 import { batch, signal } from '@preact/signals';
 import {
-  answered, details, mode, panels, requests, selected, universe,
+  details, mode, panels, requests, selected, universe,
 } from './store';
 import type { CamState, World } from './world';
-import type { Entity } from './types';
+import type { Entity, Request } from './types';
 import { api } from './api';
 import { requestEntity } from './requests';
+import { nextRequest, resolveRequest } from './request-queue';
 
 let world: World | null = null;
 export const setWorld = (w: World): void => { world = w; };
@@ -27,6 +28,7 @@ interface Frame {
   focus: boolean;
   cursor: number;
   fromQueue: boolean;
+  request: Request | null;
 }
 
 const stack: Frame[] = [];
@@ -35,6 +37,21 @@ export const depth = signal(0);
 export const queueCursor = signal(0);
 /** The place being looked at was opened from the «Ждёт тебя» list. */
 export const fromQueue = signal(false);
+export const queueRequest = signal<Request | null>(null);
+let navigation = 0;
+/** Additional surfaces (the phone) capture their location before the write starts. */
+const answerNavigators = new Set<(r: Request, order: string[]) => (() => void) | undefined>();
+export function onQueueAnswer(fn: (r: Request, order: string[]) => (() => void) | undefined): () => void {
+  answerNavigators.add(fn);
+  return () => { answerNavigators.delete(fn); };
+}
+
+/** Manual selection, including a link selected without flying, leaves queue traversal. */
+export function leaveQueue(): void {
+  navigation++;
+  fromQueue.value = false;
+  queueRequest.value = null;
+}
 
 function capture(): Frame {
   return {
@@ -47,6 +64,7 @@ function capture(): Frame {
     focus: panels.focus.value,
     cursor: queueCursor.value,
     fromQueue: fromQueue.value,
+    request: queueRequest.value,
   };
 }
 
@@ -62,6 +80,7 @@ export function clearStack(): void {
 }
 
 async function restore(f: Frame): Promise<void> {
+  navigation++;
   batch(() => {
     selected.value = f.sel;
     panels.wait.value = f.wait;
@@ -71,6 +90,7 @@ async function restore(f: Frame): Promise<void> {
     panels.focus.value = f.focus;
     queueCursor.value = f.cursor;
     fromQueue.value = f.fromQueue;
+    queueRequest.value = f.request;
   });
   if (!world) return;
   world.setSelection(f.sel);
@@ -88,69 +108,84 @@ export async function back(): Promise<boolean> {
 
 /** Goes to a thing: flies there and selects it. The place left is kept for Esc. */
 export async function navigateTo(e: Entity, o: { push?: boolean } = {}): Promise<void> {
-  if (!world) return;
   if (o.push !== false) pushFrame();
-  fromQueue.value = false;
+  leaveQueue();
   batch(() => {
     selected.value = e;
     panels.focus.value = true;
     panels.archive.value = false;
     if (e.kind === 'universe') universe.value = e.id;
   });
-  world.setSelection(e);
-  await world.flyTo({ kind: 'entity', entity: e });
+  world?.setSelection(e);
+  await world?.flyTo({ kind: 'entity', entity: e });
 }
 
 /** Back to the whole Galaxy (the camera pulls out); the selection is dropped. */
 export async function goOverview(o: { push?: boolean } = {}): Promise<void> {
-  if (!world) return;
   if (o.push !== false) pushFrame();
-  fromQueue.value = false;
+  leaveQueue();
   batch(() => { selected.value = null; });
-  world.setSelection(null);
-  await world.flyTo({ kind: 'overview' });
+  world?.setSelection(null);
+  await world?.flyTo({ kind: 'overview' });
 }
 
 /** Home: the Galaxy as a whole. */
 export async function goHome(): Promise<void> {
-  if (!world) return;
   pushFrame();
-  fromQueue.value = false;
+  leaveQueue();
   batch(() => { selected.value = null; });
-  world.setSelection(null);
-  await world.flyTo({ kind: 'overview' });
+  world?.setSelection(null);
+  await world?.flyTo({ kind: 'overview' });
 }
 
-/** From the «Ждёт тебя» list into a request: the list and the camera are kept for the way back. */
-export async function openRequest(index: number): Promise<void> {
+/** Open a queue row. Automatic moves replace it without growing the Back stack. */
+export async function openRequest(index: number, push = true): Promise<void> {
   const r = requests.value.filter((x) => x.type !== 'coordinator-options')[index];
   if (!r) return;
+  if (push && !fromQueue.value) pushFrame();
   queueCursor.value = index;
-  pushFrame();
-  await navigateTo(requestEntity(r), { push: false });
+  const flight = navigateTo(requestEntity(r), { push: false });
   fromQueue.value = true;
+  queueRequest.value = r;
+  await flight;
 }
 
-/** After an action that answers a request: out of it, back to the list with the cursor on the next one. */
-export async function afterAnswered(id: string): Promise<void> {
-  const set = new Set(answered.value);
-  set.add(id);
-  answered.value = set;
-  setTimeout(() => {
-    const s = new Set(answered.value);
-    s.delete(id);
-    answered.value = s;
-  }, 5000);
-  if (!fromQueue.value) return;
-  const list = requests.value.filter((x) => x.type !== 'coordinator-options');
-  const here = list.findIndex((r) => r.id === id);
-  let next = here;
-  for (let i = 1; i <= list.length; i++) {
-    const k = (here + i) % list.length;
-    if (!set.has(list[k].id) && k !== here) { next = k; break; }
-  }
-  await back();
-  queueCursor.value = Math.max(0, next);
+export async function stepRequest(delta: number): Promise<void> {
+  const list = requests.value.filter((r) => r.type !== 'coordinator-options');
+  if (!list.length) return;
+  const at = list.findIndex((r) => r.key === queueRequest.value?.key);
+  await openRequest((at + delta + list.length) % list.length);
+}
+
+/** Capture before the write: SSE may remove the row before its HTTP response arrives. Call only on success. */
+export function prepareAnswer(id: string, kind: 'task' | 'memory' = 'task'): () => Promise<void> {
+  const list = requests.value;
+  const r = list.find((r) => r.id === id && (kind === 'memory' ? r.type === 'memory' : r.type !== 'memory'));
+  const order = list.map((r) => r.key);
+  const origin = navigation;
+  const advance = r && fromQueue.value && queueRequest.value?.id === id;
+  const extra = r ? [...answerNavigators].map((fn) => fn(r, order)).filter((fn) => !!fn) : [];
+  let complete = false;
+  return async () => {
+    if (!r || complete) return;
+    complete = true;
+    if (requests.value.some((current) => current.key === r.key)) resolveRequest(r);
+    extra.forEach((fn) => fn?.());
+    // A late response must not move a person who opened something else meanwhile.
+    if (!advance || navigation !== origin || !fromQueue.value) return;
+    const pending = requests.value.filter((r) => r.type !== 'coordinator-options');
+    const next = nextRequest(order, r.key, pending);
+    if (next) await openRequest(pending.findIndex((r) => r.key === next.key), false);
+    else {
+      navigation++;
+      batch(() => {
+        selected.value = null;
+        queueRequest.value = null;
+        panels.focus.value = true;
+      });
+      world?.setSelection(null);
+    }
+  };
 }
 
 /* ───────── details of a task ───────── */
