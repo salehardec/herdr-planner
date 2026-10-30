@@ -1396,9 +1396,19 @@ async function settled(sels, ok, ms = 6000) {
   const end = Date.now() + ms * WAIT_SCALE;
   let r = {};
   while (Date.now() < end) {
-    r = {};
-    for (const k of Object.keys(sels)) r[k] = await rectOf(sels[k]);
-    if (ok(r)) return [true, r];
+    // One browser task gives a coherent snapshot; separate CDP requests can span different animation frames.
+    const sample = await evalJs(`(() => {
+      const r = {}; let moving = false;
+      for (const [key, selector] of Object.entries(${JSON.stringify(sels)})) {
+        const el = document.querySelector(selector);
+        const b = el?.getBoundingClientRect();
+        r[key] = b ? { l: b.left, t: b.top, r: b.right, b: b.bottom, w: b.width, h: b.height } : null;
+        if (el?.getAnimations().some((a) => a instanceof CSSTransition && (a.playState === 'running' || a.pending))) moving = true;
+      }
+      return { r, moving };
+    })()`);
+    r = sample.r;
+    if (!sample.moving && ok(r)) return [true, r];
     await sleep(250);
   }
   return [false, r];
@@ -1863,12 +1873,20 @@ section('chat wide', async () => {
     await send('Emulation.setDeviceMetricsOverride', { width: w, height: h, deviceScaleFactor: 1, mobile: false });
     await resized();
     const [ok, r] = await settled({ nav: '#nav', todo: '#todo', chat: '#chat', focus: '#focus', inp: '#ask-in' }, (x) => x.chat.w >= 340 && x.inp.w >= 160 && x.chat.r <= w + 1 && apart(x.todo, x.chat) && apart(x.todo, x.nav) && apart(x.chat, x.nav) && apart(x.chat, x.focus), 9000);
+    const moving = await evalJs(`[...document.querySelectorAll('#nav, #todo, #chat, #focus')].filter((e) => e.getAnimations().some((a) => a instanceof CSSTransition && (a.playState === 'running' || a.pending))).map((e) => e.id)`);
+    check(`${label}${w}px: panel resize transitions finish before geometry is checked`, moving.length === 0, moving.join(', '));
     const focusShown = await evalJs('document.querySelector("#focus").getBoundingClientRect().left < innerWidth - 20');
     check(`${label}${w}px, wide chat with the todos open: the chat ${Math.round(r.chat.w)} px (input ${Math.round(r.inp.w)}), nothing over anything${focusShown ? '' : ', the focus card stepped aside'}`, ok, JSON.stringify(r));
     return r;
   };
   const wideRooms = {};
-  for (const [w, h] of [[1920, 1080], [1500, 950], [1366, 768], [1280, 800], [1100, 800]]) wideRooms[w] = await useful(w, h, '');
+  // Keep resize transitions visibly in flight: an intermediate, non-overlapping rectangle is not the final layout.
+  await evalJs('document.querySelector("#chat").style.transitionDuration = "2s"; true');
+  try {
+    for (const [w, h] of [[1920, 1080], [1500, 950], [1366, 768], [1280, 800], [1100, 800]]) wideRooms[w] = await useful(w, h, '');
+  } finally {
+    await evalJs('document.querySelector("#chat").style.removeProperty("transition-duration"); true');
+  }
   check('where there is room the focus card stays beside the chat (1920) and a chat is never narrower than 30 rem by choice (1500 and up)', wideRooms[1920].chat.w >= 480 && wideRooms[1500].chat.w >= 440 && wideRooms[1366].chat.w >= 440 && wideRooms[1280].chat.w >= 440, JSON.stringify(Object.fromEntries(Object.entries(wideRooms).map(([k, v]) => [k, Math.round(v.chat.w)]))));
   await send('Emulation.setDeviceMetricsOverride', { width: 1500, height: 950, deviceScaleFactor: 1, mobile: false });
   await resized();
