@@ -4,7 +4,7 @@ import type { JSX } from 'preact';
 import { useEffect, useState } from 'preact/hooks';
 import { armed } from '../store';
 import { confirmStep } from '../actions';
-import { api, post, refreshNow } from '../api';
+import { api, post } from '../api';
 import { prepareAnswer } from '../nav';
 import { t, tn } from '../i18n';
 import { toast } from '../toast';
@@ -66,7 +66,7 @@ export function CleanCard(props: { runner: string; ids?: string[]; onDone?: () =
           '/api/runner/clean', { runner: props.runner, token: p.token, ids, confirm: true },
         );
         toast(t('runner.cleanDone', { n: r.removed.containers }), { icon: r.ok ? 'done' : 'failed' });
-        void refreshNow().then(answered);
+        void answered();
         props.onDone?.();
         props.onClose?.();
       } catch (e) {

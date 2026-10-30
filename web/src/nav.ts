@@ -10,7 +10,7 @@ import {
 } from './store';
 import type { CamState, World } from './world';
 import type { Entity, Request } from './types';
-import { api } from './api';
+import { api, refreshNow } from './api';
 import { requestEntity } from './requests';
 import { nextRequest, resolveRequest } from './request-queue';
 
@@ -174,10 +174,17 @@ export function prepareAnswer(id: string, kind: 'task' | 'memory' | 'coordinator
   return async () => {
     if (!r || complete) return;
     complete = true;
-    // An alarm stays until the yard says it is gone (the caller has read the board again): then no move.
-    const still = requests.value.some((current) => current.key === r.key);
-    if (kind === 'runner' && still) return;
-    if (still) resolveRequest(r);
+    const present = (): boolean => requests.value.some((current) => current.key === r.key);
+    // An alarm stays until the yard says it is gone: read the board again (a read in flight may predate the action),
+    // and if it is still there, the action did not clear it: no move.
+    if (kind === 'runner') {
+      for (let i = 0; i < 4 && present(); i++) {
+        if (i) await new Promise((resolve) => setTimeout(resolve, 700));
+        await refreshNow();
+      }
+      if (present()) return;
+    }
+    if (present()) resolveRequest(r);
     extra.forEach((fn) => fn?.());
     // A late response must not move a person who opened something else meanwhile.
     if (!advance || navigation !== origin || !fromQueue.value) return;
