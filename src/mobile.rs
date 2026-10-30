@@ -74,6 +74,8 @@ fn task(t: &Task) -> Task {
         board_label: t.board_label.clone(),
         review_failed: t.review_failed,
         merge_blocked: t.merge_blocked,
+        merge_via_mr: t.merge_via_mr,
+        merge_request: t.merge_request.clone(),
         archived: t.archived,
         // only what the phone can do; `answer` is the page's own word for opening the agent's screen
         actions: t.actions.iter().copied().filter(|a| *a == "answer" || ACTIONS.contains(a)).collect(),

@@ -79,6 +79,7 @@ export const en: Record<string, string | string[]> = {
   'focus.link': 'Link', 'focus.linkText': '{a} starts after {b}', 'focus.linkRemote': 'This is another machine: remove it there.', 'focus.unlink': 'Remove link',
   'focus.review': 'Review', 'focus.reviewTally': 'Review: {v}', 'focus.reviewFailed': 'The review failed — send the remarks back to the agent or merge anyway.',
   'focus.checks': 'Checks', 'focus.failure': 'Error', 'focus.plan': 'Plan', 'focus.planLoading': 'Loading the plan…', 'focus.next': 'Next', 'focus.detailsLoading': 'Loading the task details…',
+  'req.mergeViaMr': 'Merged through an MR in GitLab — ask the Coordinator to “merge”', 'm.openMr': 'Open the MR',
   'act.approve': 'Approve', 'act.anyway': 'Merge anyway', 'act.retry': 'Retry', 'act.review': 'Send the review back to the agent', 'act.stop': 'Stop',
   'act.delegate': 'Start now', 'act.archive': 'Archive', 'act.restore': 'Restore from archive', 'act.answer': 'Answer', 'act.fix': 'Fix the error',
   'act.finish': 'Finish as is', 'act.undo': 'Undo',

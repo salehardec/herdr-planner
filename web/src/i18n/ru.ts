@@ -84,6 +84,7 @@ export const ru: Record<string, string | string[]> = {
   'focus.link': 'Связь', 'focus.linkText': '{a} начнётся после {b}', 'focus.linkRemote': 'Это чужая машина: снять там.', 'focus.unlink': 'Снять связь',
   'focus.review': 'Ревью', 'focus.reviewTally': 'Ревью: {v}', 'focus.reviewFailed': 'Ревью не прошло — можно вернуть замечания агенту или влить «всё равно».',
   'focus.checks': 'Проверки', 'focus.failure': 'Ошибка', 'focus.plan': 'План', 'focus.planLoading': 'План загружается…', 'focus.next': 'Дальше', 'focus.detailsLoading': 'Загружаю детали задачи…',
+  'req.mergeViaMr': 'Сливается через MR в GitLab — напишите Координатору «сливай»', 'm.openMr': 'Смотреть MR',
   'act.approve': 'Одобрить', 'act.anyway': 'Всё равно влить', 'act.retry': 'Повторить', 'act.review': 'Вернуть ревью агенту', 'act.stop': 'Остановить',
   'act.delegate': 'Запустить сейчас', 'act.archive': 'В архив', 'act.restore': 'Вернуть из архива', 'act.answer': 'Ответить', 'act.fix': 'Исправить ошибку',
   'act.finish': 'Завершить как есть', 'act.undo': 'Отменить',

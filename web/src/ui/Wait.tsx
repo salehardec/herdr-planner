@@ -9,6 +9,7 @@ import { Grip } from './Grip';
 import { BatchBar } from './MemoryBatch';
 import { cardPick, memPick, toggleCard } from './memory-batch';
 import './wait.css';
+import { MergeHandoff } from './Request';
 
 /** «Ждёт тебя» as a queue to work through: open one, answer, and come back to the list with the cursor on the next. */
 export function Wait(): JSX.Element {
@@ -66,7 +67,7 @@ export function Wait(): JSX.Element {
               <button class="btn sm" type="button" data-act="plan-return" data-id={task.id} onClick={() => void returnWithNotes(i)}>{t('req.returnWithNotes')}</button>
             </div>
           );
-          if (!sug) return <div class="qline" key={r.key}>{row}{acts}</div>;
+          if (!sug) return <div class="qline" key={r.key}>{row}{acts}{task?.merge_via_mr && <MergeHandoff task={task} />}</div>;
           return (
             <div class="qw" key={r.key}>
               <input

@@ -120,7 +120,7 @@ export function collectRequests(input: { tasks: Task[]; coordinator: Coordinator
     if (!ATTN.has(task.status)) continue;
     const type = requestType(task);
     // A ready plan says exactly what it waits for; the agent's own words go on the Focus card.
-    const text = type === 'plan'
+    const text = task.merge_via_mr ? t('req.mergeViaMr') : type === 'plan'
       ? requestTitle('plan')
       : firstSentence(task.msg || task.board_label || '') || requestTitle(type);
     out.push({

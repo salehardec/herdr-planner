@@ -57,6 +57,8 @@ export interface Task {
   board_label: string;
   review_failed: boolean;
   merge_blocked: boolean;
+  merge_via_mr?: boolean;
+  merge_request?: string;
   archived: boolean;
   actions: string[];
   created: number;

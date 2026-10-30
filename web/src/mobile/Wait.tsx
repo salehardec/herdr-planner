@@ -215,7 +215,7 @@ export function Card(props: { r: Request; inSheet?: boolean }): JSX.Element {
         : <Fold text={text} />}
       {task && plan.block === 'pick' && <Picks task={task} />}
       <Actions r={r} plan={plan} />
-      {plan.note && <div class="hintline">{t(plan.note)}</div>}
+      {plan.note && <div class="hintline" role={task?.merge_via_mr ? 'status' : undefined}>{t(plan.note)}</div>}
       {!props.inSheet && task && <button class="linkbtn" type="button" data-act="open-task" data-id={task.id} onClick={open}>{t('m.details')}</button>}
     </article>
   );
@@ -252,7 +252,7 @@ function Actions(props: { r: Request; plan: CardPlan }): JSX.Element | null {
           {plan.approve && plan.block === 'plan' && <ArmBtn task={task} cmd="approve" label={t('req.approvePlan')} armLabel={t('m.again')} />}
           {plan.approve && plan.block === 'approval' && <ArmBtn task={task} cmd="approve" label={t('m.approveMerge')} armLabel={t('m.again')} />}
           {plan.retry && <button class="btn go" type="button" data-act="retry" data-id={task.id} aria-disabled={!boardOk()} onClick={() => runTaskAction('retry', task)}>{plan.block === 'limit' ? t('req.continue') : t('act.retry')}</button>}
-          {plan.pr && <a class="btn" href={plan.pr} target="_blank" rel="noopener noreferrer" data-act="pr">{t('m.openPr')}<Gl n="ext" /></a>}
+          {plan.pr && <a class="btn" href={plan.pr} target="_blank" rel="noopener noreferrer" data-act="pr">{t(task?.merge_via_mr ? 'm.openMr' : 'm.openPr')}<Gl n="ext" /></a>}
         </div>
       )}
       {plan.tell && (

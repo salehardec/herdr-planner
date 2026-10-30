@@ -112,6 +112,10 @@ pub struct Task {
     pub review_failed: bool,
     /// Finished work the board will not merge by a plain yes.
     pub merge_blocked: bool,
+    /// Local merge refused for a checkout in a repository with `merge.pr false`: hand off to the Coordinator.
+    pub merge_via_mr: bool,
+    /// A GitLab MR address found in the task's notes or journal.
+    pub merge_request: String,
     pub archived: bool,
     /// The board commands the page may offer.
     pub actions: Vec<&'static str>,
@@ -278,6 +282,30 @@ pub fn says_merge_blocked(msg: &str) -> bool {
     .any(|w| m.contains(w))
 }
 
+pub fn says_checkout_refused(msg: &str) -> bool {
+    let m = msg.to_lowercase();
+    ["merge needs a clean checkout", "your checkout is on another branch", "task is on the wrong branch"]
+        .iter().any(|s| m.contains(s))
+}
+
+/// Apply the repository's merge route after its settings have been read. Unknown settings keep the usual retry.
+pub fn apply_merge_route(t: &mut Task, pr: Option<bool>) {
+    t.merge_via_mr = pr == Some(false) && t.state == "blocked" && t.stage == "approval" && says_checkout_refused(&t.msg);
+    t.actions = actions_for(t);
+}
+
+/// Find an actual GitLab MR URL, including on self-hosted GitLab, rather than a project or an unsafe link.
+pub fn merge_request_url(text: &str) -> String {
+    text.split(|c: char| c.is_whitespace() || matches!(c, '"' | '\'' | '<' | '>' | '`'))
+        .filter_map(|word| {
+            let start = word.find("https://").or_else(|| word.find("http://"))?;
+            let url = word[start..].trim_end_matches([')', ']', '}', ',', '.', ';']);
+            let (_, n) = url.split_once("/-/merge_requests/")?;
+            let n = n.split(['/', '?', '#']).next()?;
+            (!n.is_empty() && n.chars().all(|c| c.is_ascii_digit())).then(|| url.to_string())
+        }).last().unwrap_or_default()
+}
+
 /// The board's own, more specific words for a task.
 pub fn board_label(t: &Task) -> String {
     let state = t.state.as_str();
@@ -395,6 +423,9 @@ pub fn classify(t: &Task) -> Status {
 }
 
 fn actions_for(t: &Task) -> Vec<&'static str> {
+    if t.merge_via_mr {
+        return vec!["review", "tell"];
+    }
     match t.status {
         Status::Waiting if t.stage == "pick" => vec![],
         Status::Waiting if t.stage == "stopped" => vec!["retry", "tell"],
@@ -952,6 +983,33 @@ mod tests {
         );
         assert_eq!(plain.status, Status::Ready);
         assert!(!plain.merge_blocked);
+    }
+
+    #[test]
+    fn checkout_refusal_hands_off_only_when_the_repository_disables_prs() {
+        for msg in ["Merge needs a clean checkout", "Your checkout is on another branch", "Task is on the wrong branch"] {
+            for pr in [Some(false), Some(true), None] {
+                let mut t = task(json!({"id":"p/1","state":"blocked","kind":"permission","stage":"approval","msg":msg}));
+                apply_merge_route(&mut t, pr);
+                assert_eq!(t.merge_via_mr, pr == Some(false));
+                assert_eq!(t.actions.contains(&"approve"), pr != Some(false));
+                assert_eq!(t.actions.contains(&"anyway"), pr != Some(false));
+            }
+        }
+        for (state, stage, msg) in [("blocked", "approval", "Review: Pass"), ("blocked", "plan", "Merge needs a clean checkout"), ("done", "done", "Merge needs a clean checkout")] {
+            let mut t = task(json!({"id":"p/1","state":state,"kind":"permission","stage":stage,"msg":msg}));
+            apply_merge_route(&mut t, Some(false));
+            assert!(!t.merge_via_mr, "{state} {stage} {msg}");
+            if state == "blocked" { assert!(t.actions.contains(&"approve")); }
+        }
+    }
+
+    #[test]
+    fn mr_addresses_are_http_links_to_a_numbered_mr() {
+        assert_eq!(merge_request_url("MR: [view](https://git.example.org/a/b/-/merge_requests/42)."), "https://git.example.org/a/b/-/merge_requests/42");
+        for text in ["javascript:alert(1)", "https://git.example.org/a/b", "https://git.example.org/a/b/-/merge_requests/nope"] {
+            assert!(merge_request_url(text).is_empty());
+        }
     }
 
     #[test]

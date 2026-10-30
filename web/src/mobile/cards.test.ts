@@ -30,7 +30,7 @@ describe('the phone\'s cards', () => {
 
   it('a merge refused for the checkout keeps approve for the retry and says what to fix', () => {
     const refused = task({
-      id: 'all-gis-services-next/3', repo: 'all-gis-services-next', n: 3, tag: 'AGSVN-3',
+      id: 'alpha/3', repo: 'alpha', n: 3, tag: 'ALP-3',
       status: 'ready', kind: 'permission', stage: 'approval', msg: 'Review: Pass · 1 minor · Merge needs a clean checkout',
       merge_blocked: false, actions: ['approve', 'anyway', 'review', 'tell'], pr: '',
     });
@@ -47,6 +47,19 @@ describe('the phone\'s cards', () => {
       })));
       expect(p, msg).toMatchObject({ approve: true, note: 'm.note.mergeBlockedCheckout' });
     }
+  });
+
+  it('a GitLab checkout refusal hands off to the Coordinator with its MR instead of approving again', () => {
+    for (const msg of ['Merge needs a clean checkout', 'Your checkout is on another branch', 'Task is on the wrong branch']) {
+      const p = planOf(reqOf(task({
+        status: 'ready', kind: 'permission', stage: 'approval', msg,
+        merge_via_mr: true, merge_request: 'https://gitlab.example.org/a/b/-/merge_requests/4',
+        actions: ['review', 'tell'],
+      })));
+      expect(p, msg).toMatchObject({ block: 'approval', approve: false, note: 'req.mergeViaMr', pr: 'https://gitlab.example.org/a/b/-/merge_requests/4' });
+    }
+    const noLink = planOf(reqOf(task({ status: 'ready', stage: 'approval', merge_via_mr: true, actions: ['tell'] })));
+    expect(noLink).toMatchObject({ approve: false, note: 'req.mergeViaMr', pr: '' });
   });
 
   it('other merge blocks keep the board reason and offer the computer or the Coordinator', () => {

@@ -153,6 +153,17 @@ async fn a_task_keeps_the_actions_the_phone_has() {
     assert_eq!(super::task(&task_named("alpha/3", Status::Review, vec!["review", "anyway"])).actions, Vec::<&str>::new());
 }
 
+#[test]
+fn mr_handoff_and_its_address_reach_the_phone_together() {
+    let mut t = task_named("alpha/1", Status::Ready, vec!["review", "tell"]);
+    t.merge_via_mr = true;
+    t.merge_request = "https://git.example.org/a/b/-/merge_requests/7".into();
+    let p = super::task(&t);
+    assert!(p.merge_via_mr);
+    assert_eq!(p.merge_request, t.merge_request);
+    assert_eq!(p.actions, ["tell"]);
+}
+
 #[tokio::test]
 async fn the_projections_number_moves_with_what_the_phone_draws_and_not_with_the_clock() {
     let dir = tempfile::tempdir().unwrap();

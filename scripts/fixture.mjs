@@ -366,7 +366,7 @@ const WORKER_BY_APP = { claude: 'claude/claude-sonnet-5-5', omp: 'omp/deepseek/d
 const MODEL_BY_APP = { claude: 'claude-sonnet-5-5', omp: 'deepseek-v4-flash', pi: null, codex: 'gpt-5-codex' };
 const CLOSING = {
   'sigma/2': 'Итог SIG-2: лицензия зависимости совместима, оставляем. Решение: зависимость берём только из реестра, не из форка.\n',
-  'delta/1': 'Итог DEL-1: переписали кэш delta. Проверки линта падают на шаге форматирования — это известно и не относится к задаче.\n',
+  'delta/1': 'Итог DEL-1: переписали кэш delta. Проверки линта падают на шаге форматирования — это известно и не относится к задаче.\nMR: https://gitlab.example.org/team/delta/-/merge_requests/4\n',
   'alpha/4': [
     'Итог ALP-4: тёмная тема для страницы отчётов готова.',
     '- Цвета берутся из палитры Omarchy, контраст не ниже AA.',
@@ -800,6 +800,7 @@ const BOARD = {
       'coordinator.instructions': 'Мои правила, поверх общих:\n1. Настройки меняй только с моего явного согласия.\n2. Если непонятно, к какой задаче это относится, — спроси.',
     },
     alpha: { 'worker.effort': 'max' },
+    delta: { 'merge.pr': false, 'merge.checks': 'none' },
   },
   doctor: {
     home: [
@@ -1686,9 +1687,9 @@ fs.utimesSync(path.join(usageDir, 'pi.json'), old, old);
   write(path.join(stub, 'deepseek.json'), JSON.stringify({ is_available: true, balance_infos: [{ currency: 'USD', total_balance: '11.92', granted_balance: '0.00', topped_up_balance: '11.92' }] }));
 }
 // The board's own settings (show, set and unset read and write this file): the board with its repo alpha.
-write(path.join(dir, 'state', 'board-settings.json'), JSON.stringify({ '': BOARD.seed.home, alpha: BOARD.seed.alpha }, null, 1));
+write(path.join(dir, 'state', 'board-settings.json'), JSON.stringify({ '': BOARD.seed.home, alpha: BOARD.seed.alpha, delta: BOARD.seed.delta }, null, 1));
 // The same levels in the board's real shape (settings/config.json), as the planner reads a scope's own instructions.
-write(path.join(dir, 'settings', 'config.json'), '{}');
+write(path.join(dir, 'settings', 'config.json'), JSON.stringify({ repos: { delta: { merge: { pr: false, checks: 'none' } } } }));
 // The planner's own list of shipyards, at the path it reads: <data>/../settings/runners.json.
 write(path.join(dir, 'settings', 'runners.json'), JSON.stringify({
   version: 1, updated_at_ms: NOW, default: 'vm-r',

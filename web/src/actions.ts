@@ -56,6 +56,7 @@ export function runTaskAction(cmd: string, task: Task): void {
     if (ANSWERING.has(cmd)) await afterAnswered(task.id);
   };
   if (cmd === 'approve' || cmd === 'anyway') {
+    if (task.merge_via_mr) { toast(t('req.mergeViaMr')); return; }
     confirmStep(`${task.id}:${cmd}`, async () => {
       try {
         await sendAction(cmd, { id: task.id, confirm: true });
