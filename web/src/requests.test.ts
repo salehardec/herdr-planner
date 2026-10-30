@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { attentionLabel, collectRequests, parseOptions, requestType, waitReason } from './requests';
+import { attentionLabel, collectRequests, optionShort, parseOptions, requestType, waitReason } from './requests';
 import type { Task } from './types';
 
 const task = (over: Partial<Task>): Task => ({
@@ -14,7 +14,32 @@ describe('answer options', () => {
     expect(parseOptions('Что делаем?\n- один\n- два')).toEqual([]);
   });
   it('numbered options after the question are answers', () => {
-    expect(parseOptions('Что делаем?\n1) **Да**\n2) `Нет`')).toEqual([{ label: '1)', value: 'Да' }, { label: '2)', value: 'Нет' }]);
+    expect(parseOptions('Что делаем?\n1) **Да**\n2) `Нет`')).toEqual([{ label: '1)', value: 'Да', short: 'Да' }, { label: '2)', value: 'Нет', short: 'Нет' }]);
+  });
+});
+
+describe('option captions', () => {
+  const long = 'Ставим LineageOS вместо Linux. Заведу задачу на сборку образа и проверку всех драйверов, потом вернусь с отчётом';
+  it('takes the first phrase of a long option, and the button still sends the whole line', () => {
+    expect(optionShort(long)).toBe('Ставим LineageOS вместо Linux');
+    const [a] = parseOptions(`Что делаем?\n1) ${long}\n2) Остаёмся на Linux`);
+    expect(a).toEqual({ label: '1)', value: long, short: 'Ставим LineageOS вместо Linux' });
+  });
+  it('prefers the bold start', () => {
+    expect(optionShort('**Остаёмся на Linux**: ничего не меняем, доделываем текущее')).toBe('Остаёмся на Linux');
+    const [a] = parseOptions('Что делаем?\n1) **Остаёмся на Linux** — ничего не меняем\n2) Да');
+    expect(a.value).toBe('Остаёмся на Linux — ничего не меняем');
+    expect(a.short).toBe('Остаёмся на Linux');
+  });
+  it('cuts a phrase without punctuation at a word, with an ellipsis', () => {
+    const s = optionShort('Перенести всю сборку на новую машину и заодно переписать скрипты установки целиком');
+    expect(s.length).toBeLessThanOrEqual(48);
+    expect(s.endsWith('…')).toBe(true);
+    expect(s).toBe('Перенести всю сборку на новую машину и заодно…');
+  });
+  it('keeps a short option as it is', () => {
+    expect(optionShort('Показать план на день')).toBe('Показать план на день');
+    expect(optionShort('Да')).toBe('Да');
   });
 });
 

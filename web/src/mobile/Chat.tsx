@@ -186,7 +186,11 @@ export function ChatPage(): JSX.Element {
       )}
       {options.length > 0 && (
         <div class="quick" id="cvariants">
-          {options.map((o, i) => <button type="button" key={i} data-variant={i} onClick={() => void submit(o.value)}>{o.label} {o.value}</button>)}
+          {options.map((o, i) => (
+            <button type="button" key={i} data-variant={i} title={o.short === o.value ? undefined : o.value} onClick={() => void submit(o.value)}>
+              <span class="vk">{o.label}</span><span class="vt">{o.short}</span>
+            </button>
+          ))}
         </div>
       )}
       <div class="quick" id="cquick">
