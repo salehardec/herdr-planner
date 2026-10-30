@@ -100,7 +100,19 @@ export function RequestActions(props: { task: Task; input?: string }): JSX.Eleme
   const type = requestType(task);
   const attention = ['waiting', 'failed', 'ready', 'plan'].includes(task.status);
   if (!attention) return null;
-  if (task.merge_via_mr) return <MergeHandoff task={task} />;
+  if (task.merge_via_mr) {
+    // The merge itself is the Coordinator's; sending the review back to the agent stays the human's.
+    return (
+      <>
+        <MergeHandoff task={task} />
+        {task.actions.includes('review') && (
+          <div class="row">
+            <ArmBtn id={task.id} cmd="review" label={t('req.returnReview')} armLabel={t('req.confirmReturn')} cls="" task={task} />
+          </div>
+        )}
+      </>
+    );
+  }
   const d = details.value[task.id];
   const dis = !boardOk();
   const input = props.input ?? 'tell';

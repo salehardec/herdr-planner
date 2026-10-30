@@ -103,7 +103,7 @@ pub fn read_task(data_dir: &Path, repo: &str, n: u64) -> Option<TaskMeta> {
     let mut meta = parse_task(&v);
     if meta.merge_request.is_empty() && v.get("stage").and_then(Value::as_str) == Some("approval") {
         if let Some(closing) = read_closing(data_dir, repo, n, CLOSING_MAX_BYTES) {
-            meta.merge_request = crate::board::merge_request_url(&closing.text);
+            meta.merge_request = crate::board::merge_request_ref(&closing.text);
         }
     }
     Some(meta)
@@ -165,8 +165,11 @@ fn parse_task(v: &Value) -> TaskMeta {
         })
         .unwrap_or_default();
     TaskMeta {
-        merge_request: ["pr", "description", "msg", "summary", "ownNote", "notes", "said", "events"]
-            .iter().filter_map(|key| v.get(key)).map(mr_in_value).find(|url| !url.is_empty()).unwrap_or_default(),
+        // The agent's own words first; the human's description only last, and only for a full address (it cites older MRs).
+        merge_request: ["pr", "msg", "summary", "ownNote", "notes", "said", "events"]
+            .iter().filter_map(|key| v.get(key)).map(mr_in_value).find(|url| !url.is_empty())
+            .or_else(|| v.get("description").map(mr_in_value).filter(|url| !url.starts_with('!')))
+            .unwrap_or_default(),
         created_ms: millis("created"),
         description: text("description"),
         app,
@@ -198,7 +201,7 @@ fn parse_task(v: &Value) -> TaskMeta {
 
 fn mr_in_value(v: &Value) -> String {
     match v {
-        Value::String(s) => crate::board::merge_request_url(s),
+        Value::String(s) => crate::board::merge_request_ref(s),
         Value::Array(a) => a.iter().rev().map(mr_in_value).find(|u| !u.is_empty()).unwrap_or_default(),
         Value::Object(o) => o.values().map(mr_in_value).find(|u| !u.is_empty()).unwrap_or_default(),
         _ => String::new(),
@@ -392,6 +395,19 @@ mod tests {
         assert_eq!(parse_task(&v).merge_request, url);
         let dir = data_with(&[("tasks/p/1/task.json", r#"{"stage":"approval"}"#), ("tasks/p/1/closing.md", url)]);
         assert_eq!(read_task(dir.path(), "p", 1).unwrap().merge_request, url);
+    }
+
+    #[test]
+    fn the_agents_own_mr_beats_the_one_the_description_cites_as_context() {
+        let url = "https://git.example.org/team/project/-/merge_requests/9";
+        let v = serde_json::json!({"description":"Что на проде после MR !250","summary":"Готово, MR !254"});
+        assert_eq!(parse_task(&v).merge_request, "!254");
+        let v = serde_json::json!({"description":format!("см. {url}"),"summary":"Готово, MR !254"});
+        assert_eq!(parse_task(&v).merge_request, "!254");
+        let v = serde_json::json!({"description":"Что на проде после MR !250"});
+        assert_eq!(parse_task(&v).merge_request, "", "a number in the description is only context");
+        let v = serde_json::json!({"description":format!("см. {url}")});
+        assert_eq!(parse_task(&v).merge_request, url);
     }
 
     #[test]

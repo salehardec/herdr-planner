@@ -2311,6 +2311,7 @@ section('requests', async () => {
   await resetUi();
   await go('delta/1');
   check('the GitLab Focus explains the MR handoff with no local merge buttons', await hasText('#focus .merge-handoff', 'Координатору', 8000) && !(await exists('#focus [data-act="approve"], #focus [data-act="anyway"]')) && (await evalJs(`document.querySelector('#focus [data-act="mr"]')?.href`)) === 'https://gitlab.example.org/team/delta/-/merge_requests/4', await text('#focus'));
+  check('and the review can still be sent back to the agent from it', await exists('#focus [data-act="review"]'));
   await shot('mr-handoff-focus.png');
   const mrAgain = await post('/api/action', { action: 'approve', id: 'delta/1', confirm: true });
   check('a stale desktop approve explains the handoff without calling the board', mrAgain[0] === 409 && JSON.stringify(mrAgain[1]).includes('Координатору') && !calls().some((c) => c.argv[0] === 'approve' && c.argv[1] === 'delta/1'), JSON.stringify(mrAgain));
@@ -2325,6 +2326,7 @@ section('requests', async () => {
       && !Object.values(whys).includes('ждёт'),
     JSON.stringify(whys));
   check('a ready plan says exactly what it waits for in the queue', await evalJs(`[...document.querySelectorAll('#drawer-wait .q')].some((e) => e.dataset.sel === 'alpha/3' && e.innerText.includes('План готов — ждёт твоего одобрения'))`), await evalJs(`[...document.querySelectorAll('#drawer-wait .q')].find((e) => e.dataset.sel === 'alpha/3')?.innerText || ''`));
+  check('the queue row keeps the board\'s own reason and the status stands once, under it', await evalJs(`(() => { const row = [...document.querySelectorAll('#drawer-wait .q')].find((e) => e.dataset.sel === 'delta/1'); return !!row && row.innerText.includes('clean checkout') && !row.innerText.includes('Сливается через MR') && document.querySelectorAll('#drawer-wait .merge-handoff').length === 1; })()`), await evalJs(`[...document.querySelectorAll('#drawer-wait .q')].find((e) => e.dataset.sel === 'delta/1')?.innerText || ''`));
   check('the waiting queue shows the Coordinator status and an MR link', await hasText('#drawer-wait .merge-handoff', 'Координатору', 5000) && await exists('#drawer-wait [data-act="mr"]'));
   await shot('mr-handoff-queue.png');
   await evalJs('document.querySelector("#drawer-wait .wlist").focus()');

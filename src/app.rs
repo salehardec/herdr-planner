@@ -909,6 +909,7 @@ async fn refresh_inner(app: &Shared) {
             let roots2 = roots.clone();
             let keys2 = keys.clone();
             let settings_file = cfg.settings_file();
+            let origins: HashMap<String, String> = app.lag.lock().await.iter().map(|(k, l)| (k.clone(), l.origin.clone())).collect();
             let journal = app.journal.lock().await.entries.iter().cloned().collect::<Vec<_>>();
             // Who is on each task now needs what the repository gives its tasks: asked for the busy repositories only.
             let busy_repos: Vec<String> = {
@@ -934,16 +935,17 @@ async fn refresh_inner(app: &Shared) {
                     apply_meta(t, meta.as_ref(), &key);
                     let pr = taskmeta::merge_pr(&settings, &t.repo);
                     board::apply_merge_route(t, pr);
-                    if t.merge_via_mr && t.merge_request.is_empty() {
-                        t.merge_request = board::merge_request_url(&t.pr);
-                        if t.merge_request.is_empty() {
-                            t.merge_request = board::merge_request_url(&t.msg);
-                        }
-                        if t.merge_request.is_empty() {
-                            t.merge_request = journal.iter().rev().filter(|e| e.id == t.id)
-                                .map(|e| board::merge_request_url(&e.text)).find(|url| !url.is_empty()).unwrap_or_default();
-                        }
-                    }
+                    // What the task's record found, then the board's PR field, its message and the journal, newest first:
+                    // the first MR that gets an address (an `!N` needs the clone's GitLab origin).
+                    let origin = origins.get(&t.repo).map(String::as_str).unwrap_or_default();
+                    let found = std::mem::take(&mut t.merge_request);
+                    t.merge_request = if t.merge_via_mr {
+                        let notes: Vec<&str> = [t.pr.as_str(), t.msg.as_str()].into_iter()
+                            .chain(journal.iter().filter(|e| e.id == t.id).map(|e| e.text.as_str())).collect();
+                        board::pick_merge_request(&found, &notes, origin)
+                    } else {
+                        String::new()
+                    };
                     t.crew_roles = marks.get(&t.id).cloned().unwrap_or_default();
                     if let Some(m) = &meta {
                         t.seat = crate::seat::of(t, m, &crews.get(&t.repo).cloned().unwrap_or_default());

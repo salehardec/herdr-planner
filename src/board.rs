@@ -294,16 +294,58 @@ pub fn apply_merge_route(t: &mut Task, pr: Option<bool>) {
     t.actions = actions_for(t);
 }
 
-/// Find an actual GitLab MR URL, including on self-hosted GitLab, rather than a project or an unsafe link.
-pub fn merge_request_url(text: &str) -> String {
-    text.split(|c: char| c.is_whitespace() || matches!(c, '"' | '\'' | '<' | '>' | '`'))
-        .filter_map(|word| {
-            let start = word.find("https://").or_else(|| word.find("http://"))?;
-            let url = word[start..].trim_end_matches([')', ']', '}', ',', '.', ';']);
-            let (_, n) = url.split_once("/-/merge_requests/")?;
-            let n = n.split(['/', '?', '#']).next()?;
-            (!n.is_empty() && n.chars().all(|c| c.is_ascii_digit())).then(|| url.to_string())
-        }).last().unwrap_or_default()
+/// The last MR a text names: a GitLab MR address (also on self-hosted GitLab) or, as the board's notes write it,
+/// `MR !251` (kept as `!251` until the repository's address is known). A project link or an unsafe one is not an MR.
+pub fn merge_request_ref(text: &str) -> String {
+    let words: Vec<&str> = text
+        .split(|c: char| c.is_whitespace() || matches!(c, '"' | '\'' | '<' | '>' | '`'))
+        .collect();
+    let mut found = String::new();
+    for (i, word) in words.iter().enumerate() {
+        if let Some(url) = mr_url_in(word) {
+            found = url;
+            continue;
+        }
+        let w = word.trim_matches(|c: char| !c.is_alphanumeric() && c != '!');
+        let (named, num) = match w.split_once('!') {
+            Some((head, num)) if head.is_empty() => (i.checked_sub(1).map(|p| words[p].trim_matches(|c: char| !c.is_alphanumeric()).to_lowercase()), num),
+            Some((head, num)) => (Some(head.to_lowercase()), num),
+            None => continue,
+        };
+        let num: String = num.chars().take_while(char::is_ascii_digit).collect();
+        if !num.is_empty() && matches!(named.as_deref(), Some("mr" | "мр" | "request")) {
+            found = format!("!{num}");
+        }
+    }
+    found
+}
+
+fn mr_url_in(word: &str) -> Option<String> {
+    let start = word.find("https://").or_else(|| word.find("http://"))?;
+    let url = word[start..].trim_end_matches([')', ']', '}', ',', '.', ';']);
+    let (_, n) = url.split_once("/-/merge_requests/")?;
+    let n = n.split(['/', '?', '#']).next()?;
+    (!n.is_empty() && n.chars().all(|c| c.is_ascii_digit())).then(|| url.to_string())
+}
+
+/// An MR address as the page may link it: a full address stays, `!N` is joined to the repository's GitLab address
+/// (`host/group/project`, as the clone's origin gives it); with no GitLab origin to join to there is no link.
+pub fn merge_request_link(found: &str, origin: &str) -> String {
+    let Some(n) = found.strip_prefix('!') else { return found.to_string() };
+    let host = origin.split('/').next().unwrap_or_default();
+    if origin.is_empty() || host.is_empty() || host == "github.com" || n.is_empty() {
+        return String::new();
+    }
+    format!("https://{origin}/-/merge_requests/{n}")
+}
+
+/// The MR link for a task handed off to the Coordinator: what its record found, then the texts in order (the board's PR
+/// field, its message, the journal newest first); the first MR that gets an address wins.
+pub fn pick_merge_request(found: &str, texts: &[&str], origin: &str) -> String {
+    std::iter::once(merge_request_link(found, origin))
+        .chain(texts.iter().map(|text| merge_request_link(&merge_request_ref(text), origin)))
+        .find(|url| !url.is_empty())
+        .unwrap_or_default()
 }
 
 /// The board's own, more specific words for a task.
@@ -1006,9 +1048,43 @@ mod tests {
 
     #[test]
     fn mr_addresses_are_http_links_to_a_numbered_mr() {
-        assert_eq!(merge_request_url("MR: [view](https://git.example.org/a/b/-/merge_requests/42)."), "https://git.example.org/a/b/-/merge_requests/42");
-        for text in ["javascript:alert(1)", "https://git.example.org/a/b", "https://git.example.org/a/b/-/merge_requests/nope"] {
-            assert!(merge_request_url(text).is_empty());
+        assert_eq!(merge_request_ref("MR: [view](https://git.example.org/a/b/-/merge_requests/42)."), "https://git.example.org/a/b/-/merge_requests/42");
+        for text in ["javascript:alert(1)", "https://git.example.org/a/b", "https://git.example.org/a/b/-/merge_requests/nope", "MR !", "see !7", "MR !x"] {
+            assert!(merge_request_ref(text).is_empty(), "{text}");
+        }
+    }
+
+    #[test]
+    fn mrs_named_the_way_the_notes_write_them_are_found_and_the_last_one_wins() {
+        for (text, want) in [
+            ("после MR !250, проверено", "!250"),
+            ("AGSVN-3 (MR !251) откачен на проде (MR !254)", "!254"),
+            ("MR!12 готов", "!12"),
+            ("(mr !9).", "!9"),
+            ("merge request !33", "!33"),
+            ("MR !250 и https://git.example.org/a/b/-/merge_requests/7", "https://git.example.org/a/b/-/merge_requests/7"),
+        ] {
+            assert_eq!(merge_request_ref(text), want, "{text}");
+        }
+    }
+
+    #[test]
+    fn the_first_mr_that_gets_an_address_wins_and_the_journal_goes_newest_first() {
+        let origin = "gitlab.example.org/team/p";
+        let pick = |found: &str, texts: &[&str]| pick_merge_request(found, texts, origin);
+        assert_eq!(pick("!5", &["MR !9"]), "https://gitlab.example.org/team/p/-/merge_requests/5");
+        assert_eq!(pick("", &["", "Review: Pass", "MR !254 слит", "MR !250"]), "https://gitlab.example.org/team/p/-/merge_requests/254");
+        assert_eq!(pick("", &["MR !7"]), "https://gitlab.example.org/team/p/-/merge_requests/7");
+        assert_eq!(pick_merge_request("", &["MR !7"], ""), "", "no GitLab origin, no guessed address");
+        assert_eq!(pick_merge_request("", &["MR !7", "https://g.example.org/a/-/merge_requests/3"], ""), "https://g.example.org/a/-/merge_requests/3");
+    }
+
+    #[test]
+    fn an_mr_number_gets_the_repositorys_gitlab_address_and_never_a_github_one() {
+        assert_eq!(merge_request_link("!251", "gitlab.yanao.ru/abaydulin/all-gis-services-next"), "https://gitlab.yanao.ru/abaydulin/all-gis-services-next/-/merge_requests/251");
+        assert_eq!(merge_request_link("https://g.example.org/a/-/merge_requests/1", ""), "https://g.example.org/a/-/merge_requests/1");
+        for origin in ["", "github.com/o/r"] {
+            assert!(merge_request_link("!251", origin).is_empty(), "{origin}");
         }
     }
 
