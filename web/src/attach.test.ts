@@ -41,6 +41,8 @@ it('Backspace in an empty field takes the last file, one by one', async () => {
   expect(backspaceTakesFile(key('Delete'), { value: '' }, shelf)).toBe(false);
   expect(backspaceTakesFile(key('Backspace', { ctrlKey: true }), { value: '' }, shelf)).toBe(false);
   expect(backspaceTakesFile(key('Backspace', { isComposing: true }), { value: '' }, shelf)).toBe(false);
+  // a held key (autorepeat) that has just wiped the text does not go on to the files
+  expect(backspaceTakesFile(key('Backspace', { repeat: true }), { value: '' }, shelf)).toBe(false);
   expect(shelf.files.value).toHaveLength(1);
   expect(backspaceTakesFile(key(), { value: '' }, shelf)).toBe(true);
   // nothing left: the key is not taken

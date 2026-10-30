@@ -1144,6 +1144,8 @@ section('chat', async () => {
   await evalJs(`(() => { const dt = new DataTransfer(); dt.items.add(__shot('again.png')); document.querySelector('#ask-in').dispatchEvent(new ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true })); return true; })()`);
   check('a pasted image comes back after that', await waitFor('document.querySelectorAll("#attach .att").length === 1', 6000));
   await waitFor('document.querySelector("#attach .att")?.dataset.state === "ready"', 10000);
+  await evalJs(`(() => { const ta = document.querySelector('#ask-in'); ta.focus(); ta.value = ''; for (let i = 0; i < 3; i++) ta.dispatchEvent(new KeyboardEvent('keydown', { key: 'Backspace', code: 'Backspace', repeat: true, bubbles: true, cancelable: true })); return true; })()`);
+  check('a held Backspace (autorepeat) in the emptied field leaves the previews alone', await evalJs('document.querySelectorAll("#attach .att").length === 1'));
   await evalJs(`(() => { const dt = new DataTransfer(); dt.items.add(__shot('picker.png')); const input = document.querySelector('#file-in'); input.files = dt.files; input.dispatchEvent(new Event('change', { bubbles: true })); return true; })()`);
   check('the file picker adds another image', await waitFor('document.querySelectorAll("#attach .att").length === 2', 6000));
   check('both images are ready', await waitFor('[...document.querySelectorAll("#attach .att")].every((a) => a.dataset.state === "ready")', 10000));
