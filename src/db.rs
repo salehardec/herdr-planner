@@ -819,6 +819,16 @@ impl Db {
         })
     }
 
+    /// Compare-and-set keeps concurrent answers and undo from taking the same suggestion twice.
+    pub fn suggest_transition(&self, task: &str, from: &str, to: &str) -> bool {
+        self.with("suggest_transition", |c| {
+            Ok(c.execute(
+                "UPDATE memory_suggest SET state = ?3 WHERE task = ?1 AND state = ?2",
+                params![task, from, to],
+            )? > 0)
+        })
+    }
+
     pub fn suggest_set_state(&self, task: &str, state: &str) -> bool {
         self.with("suggest_set_state", |c| {
             Ok(c.execute(
@@ -1698,6 +1708,10 @@ mod tests {
         assert!(db.suggest_pending().is_empty());
         assert_eq!(db.suggest_get("a/1").unwrap().state, "done");
         assert!(!db.suggest_claim("a/1", "a", "A-1", 30), "a kept suggestion is not made again");
+        assert!(!db.suggest_transition("a/1", "pending", "dismissed"), "cannot overwrite a later answer");
+        assert!(db.suggest_transition("a/1", "done", "pending"));
+        assert!(db.suggest_transition("a/1", "pending", "dismissed"));
+        assert!(db.suggest_transition("a/1", "dismissed", "pending"), "a dismissed suggestion can wait again");
         assert!(!db.suggest_set_state("zzz", "done"));
         assert!(db.suggest_get("zzz").is_none());
     }

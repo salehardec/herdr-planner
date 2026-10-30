@@ -3,9 +3,10 @@ import type { JSX } from 'preact';
 import { useEffect, useState } from 'preact/hooks';
 import { armed, details, requests, screens } from '../store';
 import { answerMenu, boardOk, fetchScreen, pickAttempt, runTaskAction, tellTask } from '../actions';
-import { fetchDetails } from '../nav';
+import { fetchDetails, onQueueAnswer, prepareAnswer } from '../nav';
 import { send } from '../chat';
 import { boardPlaceholder, questionText, taskPermission, type PermissionNote, type PermissionPrompt } from '../permission';
+import { nextRequest } from '../request-queue';
 import { requestType } from '../requests';
 import { t } from '../i18n';
 import { toast } from '../toast';
@@ -13,7 +14,7 @@ import type { MenuData, Request, Task } from '../types';
 import { Gl } from '../ui/Gl';
 import { MenuSlot } from '../ui/MenuCard';
 import { planOf, listed, type CardPlan } from './cards';
-import { drafts, dropDraft, setDraft, sheet, tab } from './state';
+import { drafts, dropDraft, setDraft, sheet, tab, listTab } from './state';
 
 /** A text longer than this folds, with «Ещё». */
 const FOLD = 260;
@@ -198,9 +199,9 @@ export function Card(props: { r: Request; inSheet?: boolean }): JSX.Element {
   const shown = task ? screens.value[task.id] : undefined;
   const menu: MenuData | null = shown && !shown.error && shown.menu ? shown.menu : null;
   const text = bodyOf(r, menu);
-  const open = (): void => { if (task) sheet.value = { kind: 'task', id: task.id }; };
+  const open = (): void => { if (task) sheet.value = { kind: 'task', id: task.id, queue: r.key }; };
   return (
-    <article class={`card s-${status}`} data-card={r.key} data-type={r.type}>
+    <article class={`card s-${status}`} tabIndex={-1} data-card={r.key} data-type={r.type}>
       <div class="chead">
         <span class="tag">{r.tag}</span>
         {r.why && <span class="why">{r.why}</span>}
@@ -231,7 +232,7 @@ function Options(props: { r: Request }): JSX.Element {
         {(props.r.options ?? []).map((o) => (
           <button
             class="btn opt" type="button" key={o.label} data-act="variant" aria-disabled={busy}
-            onClick={() => { setBusy(true); void send(o.value).finally(() => setBusy(false)); }}
+            onClick={() => { const done = prepareAnswer(props.r.id); setBusy(true); void send(o.value).then((ok) => { if (ok) void done(); }).finally(() => setBusy(false)); }}
           ><b>{o.label}</b><span class="optx">{o.value}</span></button>
         ))}
       </div>
@@ -244,11 +245,13 @@ function Actions(props: { r: Request; plan: CardPlan }): JSX.Element | null {
   const task = r.task;
   if (!task) return null;
   const remarks = plan.block === 'plan' || plan.block === 'approval';
+  const currentSheet = sheet.value;
+  const queueOrigin = currentSheet ? ('queue' in currentSheet ? currentSheet.queue : undefined) : r.key;
   return (
     <>
       {(plan.approve || plan.retry || plan.plan || plan.pr) && (
         <div class="acts">
-          {plan.plan && <button class="btn" type="button" data-act="plan-open" data-id={task.id} onClick={() => { sheet.value = { kind: 'plan', id: task.id }; }}>{t('req.planOpen')}</button>}
+          {plan.plan && <button class="btn" type="button" data-act="plan-open" data-id={task.id} onClick={() => { sheet.value = { kind: 'plan', id: task.id, queue: queueOrigin }; }}>{t('req.planOpen')}</button>}
           {plan.approve && plan.block === 'plan' && <ArmBtn task={task} cmd="approve" label={t('req.approvePlan')} armLabel={t('m.again')} />}
           {plan.approve && plan.block === 'approval' && <ArmBtn task={task} cmd="approve" label={t('m.approveMerge')} armLabel={t('m.again')} />}
           {plan.retry && <button class="btn go" type="button" data-act="retry" data-id={task.id} aria-disabled={!boardOk()} onClick={() => runTaskAction('retry', task)}>{plan.block === 'limit' ? t('req.continue') : t('act.retry')}</button>}
@@ -268,13 +271,30 @@ function Actions(props: { r: Request; plan: CardPlan }): JSX.Element | null {
 }
 
 export function WaitPage(): JSX.Element {
+  useEffect(() => onQueueAnswer((r, order) => {
+    const origin = sheet.value;
+    const page = tab.value;
+    if (listTab.value !== 'wait' || (origin && (!('queue' in origin) || !origin.queue))) return;
+    return () => {
+      if (sheet.value !== origin || tab.value !== page) return;
+      if (origin) sheet.value = null;
+      const next = nextRequest(order, r.key, listed(requests.value));
+      requestAnimationFrame(() => {
+        if (sheet.value || tab.value !== page || listTab.value !== 'wait') return;
+        const el = [...document.querySelectorAll<HTMLElement>('#p-wait [data-card]')].find((el) => el.dataset.card === next?.key)
+          ?? document.querySelector<HTMLElement>('#p-wait .empty');
+        el?.focus({ preventScroll: true });
+        el?.scrollIntoView({ block: 'start', behavior: 'instant' });
+      });
+    };
+  }), []);
   const list = listed(requests.value);
   return (
     <section class="page" id="p-wait" aria-label={t('wait.title')}>
       {list.length > 0 && <div class="sect">{t('wait.title')} · {list.length}<i /></div>}
       {list.map((r) => <Card key={r.key} r={r} />)}
       {list.length === 0 && (
-        <div class="empty"><b>{t('m.nothing')}</b>{t('m.nothingSub')}</div>
+        <div class="empty" tabIndex={-1} role="status"><b>{t('wait.done')}</b>{t('m.nothingSub')}</div>
       )}
     </section>
   );

@@ -5,6 +5,7 @@ import { useEffect, useState } from 'preact/hooks';
 import { armed } from '../store';
 import { confirmStep } from '../actions';
 import { api, post } from '../api';
+import { prepareAnswer } from '../nav';
 import { t, tn } from '../i18n';
 import { toast } from '../toast';
 import { duration } from '../util/format';
@@ -59,11 +60,13 @@ export function CleanCard(props: { runner: string; ids?: string[]; onDone?: () =
     if (!ids.length) { toast(t('runner.cleanNone'), { icon: 'failed' }); return; }
     confirmStep(key, async () => {
       setBusy(true);
+      const answered = prepareAnswer(props.runner, 'runner');
       try {
         const r = await post<{ ok: boolean; removed: { containers: number; networks: number; volumes: number }; failed: { id: string; error: string }[] }>(
           '/api/runner/clean', { runner: props.runner, token: p.token, ids, confirm: true },
         );
         toast(t('runner.cleanDone', { n: r.removed.containers }), { icon: r.ok ? 'done' : 'failed' });
+        void answered();
         props.onDone?.();
         props.onClose?.();
       } catch (e) {

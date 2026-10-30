@@ -14,7 +14,7 @@ import { connect, dropDetails, onState } from './api';
 import { setLang, lang, t } from './i18n';
 import { createWorld } from './world';
 import { freeArea } from './free-area';
-import { clearStack, getWorld, goHome, goOverview, navigateTo, openRequest, setWorld, back } from './nav';
+import { clearStack, getWorld, goHome, goOverview, navigateTo, openRequest, setWorld, back, leaveQueue } from './nav';
 import { escape, installKeys, setMode } from './keys';
 import { installCard } from './ui/hovercard';
 import { effectiveWidth, installScale } from './scale';
@@ -65,6 +65,7 @@ h2.onPick = (e) => { void navigateTo(e); };
 h2.onDive = (e) => { void navigateTo(e); };
 h2.onEmpty = () => { linkSel.value = null; };
 h2.onLink = (l) => {
+  leaveQueue();
   linkSel.value = { ...l };
   selected.value = { kind: 'planet', id: l.to };
   world.setSelection(selected.value);

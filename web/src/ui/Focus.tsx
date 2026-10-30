@@ -6,7 +6,7 @@ import {
 } from '../store';
 import { api } from '../api';
 import { openFiles, removeLink, archiveAllDone } from '../actions';
-import { fetchDetails, navigateTo } from '../nav';
+import { fetchDetails, navigateTo, fromQueue, queueRequest, onQueueAnswer } from '../nav';
 import { closing, loadClosing } from '../closing';
 import { addDialogs } from '../dialogs';
 import { t } from '../i18n';
@@ -78,7 +78,7 @@ function TaskFocus(props: { task: Task }): JSX.Element {
   useEffect(() => { void loadHistory(); }, [stamp]);
 
   return (
-    <div class="fbody" data-focus="task">
+    <div class="fbody" tabIndex={-1} data-focus="task">
       <div class="fhd">
         <span class="lbl">{t('focus.title')} · <span class="tagk">{task.tag}</span></span>
         <Badge status={task.status} label={attentionLabel(task, !!taskPermission(task, screens.value[task.id]?.menu))} />
@@ -299,12 +299,35 @@ const fullCards = signal<Record<string, Subagent>>({});
 export function Focus(): JSX.Element {
   const e = selected.value;
   const open = panels.focus.value;
+  useEffect(() => onQueueAnswer((r) => {
+    const request = queueRequest.value;
+    if (!fromQueue.value || request?.id !== r.id) return;
+    const screen = addDialogs.screen.value;
+    const summary = addDialogs.summary.value;
+    return () => {
+      if (!fromQueue.value || queueRequest.value !== request) return;
+      if (screen?.task === r.id && addDialogs.screen.value === screen) addDialogs.screen.value = null;
+      if (summary?.task === r.id && addDialogs.summary.value === summary) addDialogs.summary.value = null;
+    };
+  }), []);
+  const requestKey = fromQueue.value ? queueRequest.value?.key ?? 'empty' : '';
+  useEffect(() => {
+    if (!requestKey || !open) return;
+    const scroll = document.querySelector<HTMLElement>('#focus .fscroll');
+    if (scroll) scroll.scrollTop = 0;
+    if (addDialogs.screen.value || addDialogs.summary.value) return;
+    document.querySelector<HTMLElement>('#focus .fbody')?.focus({ preventScroll: true });
+    if (queueRequest.value?.type === 'memory') {
+      document.querySelector<HTMLElement>('#focus .mm-sug')?.scrollIntoView({ block: 'start', behavior: 'instant' });
+    }
+  }, [requestKey, open]);
   let body: JSX.Element;
   if (panels.archive.value) body = <ArchiveFocus />;
+  else if (!e && fromQueue.value) body = <div class="fbody" tabIndex={-1} data-focus="queue-empty" role="status"><h2>{t('wait.done')}</h2><p>{t('m.nothingSub')}</p></div>;
   else if (!e) body = <Welcome />;
   else if (e.kind === 'planet') {
     const task = taskOf(e.id);
-    body = task ? <TaskFocus task={task} /> : <div class="fbody"><h2>{t('focus.gone')}</h2></div>;
+    body = task ? <TaskFocus key={task.id} task={task} /> : <div class="fbody"><h2>{t('focus.gone')}</h2></div>;
   } else if (e.kind === 'universe') body = <UniverseFocus entity={e} />;
   else if (e.kind === 'quasar') body = <QuasarFocus />;
   else if (e.kind === 'runner') body = <RunnerFocus entity={e} />;

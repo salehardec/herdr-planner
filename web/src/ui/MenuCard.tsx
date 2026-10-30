@@ -1,3 +1,4 @@
+import { toast } from '../toast';
 /* A selection menu of an agent's program (Claude Code's question with options, Codex's approval, omp's ask) as a card
    with buttons. A button gives the choice: the server reads the screen again and presses the keys that make it.
    Several questions come one at a time (the screen shows one); a multiple choice has boxes and «Отправить»;
@@ -91,7 +92,7 @@ function MenuCardBody(props: Props): JSX.Element {
       : undefined;
     const r = await answerMenu(props.target, props.role ?? '', menu.sig, answer, note);
     setBusy(false);
-    if (r.ok) { setDone({ sig: menu.sig, label, at: Date.now() }); props.onDone?.(label); }
+    if (r.ok) { toast(t('amenu.answered', { a: label })); setDone({ sig: menu.sig, label, at: Date.now() }); props.onDone?.(label); }
     else setErr(r.gone ? t('amenu.gone') : t('amenu.failed', { why: r.error }));
     props.onAnswered?.();
   };

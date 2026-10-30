@@ -6,6 +6,7 @@ import { useEffect, useRef, useState } from 'preact/hooks';
 import { armed } from '../store';
 import { confirmStep } from '../actions';
 import { post } from '../api';
+import { prepareAnswer } from '../nav';
 import { t, tn } from '../i18n';
 import { toast } from '../toast';
 import { Gl } from './Gl';
@@ -116,6 +117,7 @@ export function DiskCard(props: { runner: string; onClose?: () => void }): JSX.E
     if (nothing(r)) { toast(t('disk.none'), { icon: 'failed' }); return; }
     confirmStep(key, async () => {
       setBusy(true);
+      const answered = prepareAnswer(props.runner, 'runner');
       try {
         const res = await post<Done>('/api/runner/disk/clean', {
           runner: props.runner, token: r.token, confirm: true, images, cache,
@@ -124,6 +126,7 @@ export function DiskCard(props: { runner: string; onClose?: () => void }): JSX.E
         setDone(res);
         if (res.after) take(res.after);
         toast(res.ok ? t('disk.done', { size: size(res.bytes) }) : t('disk.partial'), { icon: res.ok ? 'done' : 'failed' });
+        void answered();
       } catch (e) {
         toast((e as Error).message, { icon: 'failed' });
       } finally {

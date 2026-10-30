@@ -1275,7 +1275,7 @@ pub async fn suggest_for(app: &Shared, t: &Task) {
 #[derive(Deserialize)]
 pub struct ResolveBody {
     task: String,
-    /// `accept` or `dismiss`.
+    /// `accept`, `dismiss`, or `undo` with the token returned by a successful answer.
     action: String,
     /// The lines as the human left them (edited, some removed); none sent: the suggested ones. Sent and all blank:
     /// nothing to keep.
@@ -1291,6 +1291,50 @@ pub struct ResolveReq {
     gate: Gate,
 }
 
+/// A brief undo window for a suggestion's own additions. Never remove a later edit or an entry sent to a task.
+#[derive(Serialize, Deserialize)]
+struct SuggestionUndo {
+    token: String,
+    until: u64,
+    draft: bool,
+    saved: Vec<Entry>,
+}
+
+fn remember_suggestion_undo(app: &Shared, task: &str, result: &mut Value) {
+    let undo = SuggestionUndo {
+        token: format!("{:032x}", rand::random::<u128>()),
+        until: now_ms() + 30_000,
+        draft: result["draft"].as_bool().unwrap_or(false),
+        saved: serde_json::from_value(result["saved"].clone()).unwrap_or_default(),
+    };
+    app.db.meta_set(&format!("memory.undo:{task}"), &serde_json::to_string(&undo).unwrap_or_default());
+    result["undo"] = json!(undo.token);
+}
+
+fn undo_suggestion_entries(local: &Local, undo: &SuggestionUndo) -> Result<(), Fail> {
+    // Check the entire set before removing anything. A sent draft, a changed entry or a new checkout refuses the undo.
+    if !undo.saved.is_empty() && undo.draft != local.drafts.is_some() {
+        return Err(Fail::new(409, "место записи изменилось: отмена недоступна"));
+    }
+    for saved in &undo.saved {
+        let current = match &local.drafts {
+            Some(d) => d.puts().into_iter().find(|e| e.id == saved.id && local.store.get(&e.id).is_none() && !local.sent.contains(&e.id)),
+            None => local.store.get(&saved.id),
+        };
+        if current.as_ref().map(memory::render_entry).as_deref() != Some(memory::render_entry(saved).as_str()) {
+            return Err(Fail::new(409, "запись уже изменена или отправлена: отмена недоступна"));
+        }
+    }
+    for saved in &undo.saved {
+        match &local.drafts {
+            Some(d) if !d.discard(&saved.id) => return Err(Fail::new(500, "не удалось убрать черновик")),
+            Some(_) => {}
+            None => { local.store.delete(&saved.id).map_err(|e| Fail::new(500, e))?; }
+        }
+    }
+    Ok(())
+}
+
 /// `POST /api/memory/suggestion`: keeps the suggested lines in the universe's memory, or drops them. Keeping is a
 /// change like any other: without `confirm` the answer is «было → стало» and the check; with it the lines go to the
 /// universe's drafts (or its files, in a folder that is not in git), all or none.
@@ -1303,13 +1347,44 @@ pub async fn memory_suggestion(State(app): State<Shared>, headers: HeaderMap, Js
         let row = app
             .db
             .suggest_get(&body.task)
-            .filter(|r| r.state == "pending")
             .ok_or_else(|| Fail::new(404, "такого предложения нет"))?;
+        if body.action == "undo" {
+            let undo: SuggestionUndo = app.db.meta_get(&format!("memory.undo:{}", row.task))
+                .and_then(|s| serde_json::from_str(&s).ok())
+                .ok_or_else(|| Fail::new(409, "нечего отменять"))?;
+            if gate.token.as_deref() != Some(&undo.token) || now_ms() > undo.until || !matches!(row.state.as_str(), "done" | "dismissed") {
+                return Err(Fail::new(409, "срок отмены истёк или предложение уже изменено"));
+            }
+            if !app.db.suggest_transition(&row.task, &row.state, "saving") {
+                return Err(Fail::new(409, "предложение уже обрабатывается"));
+            }
+            let (cfg, repo) = (app.cfg.clone(), row.repo.clone());
+            let undone = tokio::task::spawn_blocking(move || {
+                if undo.saved.is_empty() { return Ok(()); }
+                undo_suggestion_entries(&Local::open(&cfg, &repo)?, &undo)
+            })
+                .await.map_err(|e| Fail::new(500, e.to_string())).and_then(|r| r);
+            if let Err(e) = undone {
+                app.db.suggest_set_state(&row.task, &row.state);
+                return Err(e);
+            }
+            app.db.suggest_set_state(&row.task, "pending");
+            app.db.meta_set(&format!("memory.undo:{}", row.task), "");
+            sync_snapshot(&app).await;
+            return Ok(json!({"ok": true}));
+        }
+        if row.state != "pending" {
+            return Err(Fail::new(409, "это предложение уже обработано"));
+        }
         match body.action.as_str() {
             "dismiss" => {
-                app.db.suggest_set_state(&row.task, "dismissed");
+                if !app.db.suggest_transition(&row.task, "pending", "dismissed") {
+                    return Err(Fail::new(409, "это предложение уже обработано"));
+                }
+                let mut result = json!({"ok": true, "saved": []});
+                remember_suggestion_undo(&app, &row.task, &mut result);
                 sync_snapshot(&app).await;
-                Ok(json!({"ok": true, "saved": []}))
+                Ok(result)
             }
             "accept" => {
                 let lines: Vec<Line> = body
@@ -1331,7 +1406,8 @@ pub async fn memory_suggestion(State(app): State<Shared>, headers: HeaderMap, Js
                     return Err(Fail::new(409, "это предложение уже обрабатывается"));
                 }
                 match run(&app, req, &gate).await {
-                    Ok(v) => {
+                    Ok(mut v) => {
+                        remember_suggestion_undo(&app, &row.task, &mut v);
                         app.db.suggest_set_state(&row.task, "done");
                         sync_snapshot(&app).await;
                         Ok(v)
@@ -1342,7 +1418,7 @@ pub async fn memory_suggestion(State(app): State<Shared>, headers: HeaderMap, Js
                     }
                 }
             }
-            _ => Err(Fail::new(400, "accept или dismiss")),
+            _ => Err(Fail::new(400, "accept, dismiss или undo")),
         }
     }
     .await;
@@ -1352,6 +1428,42 @@ pub async fn memory_suggestion(State(app): State<Shared>, headers: HeaderMap, Js
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn suggestion_undo_removes_only_its_own_unchanged_additions() {
+        for draft in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let cfg = crate::testutil::test_cfg(dir.path());
+            let local = Local {
+                store: memory::galaxy_store(&cfg),
+                drafts: draft.then(|| memory::Drafts::at(dir.path().join("drafts"))),
+                root: None, sent: Vec::new(),
+            };
+            let e = memory::complete(Entry { id: "new".into(), title: "Правило".into(), body: "Запись из предложения".into(), ..Entry::default() }, "decision", 0).unwrap();
+            if let Some(d) = &local.drafts { d.put(&e).unwrap(); } else { local.store.save(e.clone()).unwrap(); }
+            let undo = SuggestionUndo { token: "one".into(), until: u64::MAX, draft, saved: vec![e] };
+            assert!(undo_suggestion_entries(&local, &undo).is_ok());
+            assert!(local.get("new").is_none());
+        }
+    }
+
+    #[test]
+    fn suggestion_undo_checks_all_entries_before_removing_any() {
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = crate::testutil::test_cfg(dir.path());
+        let mut local = Local { store: memory::galaxy_store(&cfg), drafts: Some(memory::Drafts::at(dir.path().join("drafts"))), root: None, sent: Vec::new() };
+        let saved: Vec<Entry> = ["one", "two"].into_iter().map(|id| memory::complete(Entry { id: id.into(), title: id.into(), body: "Исходный текст".into(), ..Entry::default() }, "decision", 0).unwrap()).collect();
+        let undo = SuggestionUndo { token: "one".into(), until: u64::MAX, draft: true, saved: saved.clone() };
+        let d = local.drafts.as_ref().unwrap();
+        for e in &saved { d.put(e).unwrap(); }
+        d.put(&Entry { body: "Правка человека".into(), ..saved[1].clone() }).unwrap();
+        assert!(undo_suggestion_entries(&local, &undo).is_err());
+        assert_eq!(d.puts().len(), 2, "a later edit refuses the entire undo");
+        d.put(&saved[1]).unwrap();
+        local.sent.push("two".into());
+        assert!(undo_suggestion_entries(&local, &undo).is_err());
+        assert_eq!(local.drafts.as_ref().unwrap().puts().len(), 2, "sent entries stay too");
+    }
 
     fn plan_with(body: &str, vis: Option<Visibility>) -> Plan {
         let mut e = memory::complete(Entry { title: "Т".into(), body: body.into(), ..Entry::default() }, "decision", 0).unwrap();

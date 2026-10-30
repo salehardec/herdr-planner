@@ -1,5 +1,5 @@
 /* What the operator can do to tasks, links and the Coordinator. Every action asks twice
-   when it cannot be undone and leaves the operator where they are. */
+   when it cannot be undone; successful queue answers continue to the next card. */
 import { armed, details, panels, screens, snap, tellDraft, currentView, taskOf } from './store';
 import { draftMessage, draftSent } from './chat';
 import { endDrag } from './todo-drag';
@@ -7,7 +7,9 @@ import type { SavedFile } from './attach';
 import { ApiError, api, post, refreshNow } from './api';
 import { toast } from './toast';
 import { t } from './i18n';
-import { afterAnswered } from './nav';
+import { restoreRequest } from './request-queue';
+import { prepareAnswer } from './nav';
+import { requestType } from './requests';
 import type { Entity, MenuAnswer, Seat, Task } from './types';
 
 export const ACTION_LABEL: Record<string, string> = {
@@ -43,7 +45,7 @@ export function confirmStep(key: string, fire: () => void | Promise<void>): void
   void fire();
 }
 
-const ANSWERING = new Set(['approve', 'anyway', 'retry', 'fix', 'finish', 'stop', 'review', 'delegate', 'pick']);
+const ANSWERING = new Set(['approve', 'anyway', 'retry', 'fix', 'finish', 'stop', 'review', 'delegate', 'pick', 'archive']);
 
 export function boardOk(): boolean {
   return snap.value?.board.ok !== false;
@@ -51,9 +53,12 @@ export function boardOk(): boolean {
 
 export function runTaskAction(cmd: string, task: Task): void {
   if (!boardOk()) { toast(t('toast.boardDown'), { icon: 'failed' }); return; }
+  const answered = prepareAnswer(task.id);
   const done = async (msg: string): Promise<void> => {
-    toast(msg);
-    if (ANSWERING.has(cmd)) await afterAnswered(task.id);
+    toast(msg, cmd === 'archive' ? { label: t('act.undo'), action: () => {
+      void sendAction('restore', { id: task.id }).then(() => { restoreRequest(`${requestType(task)}:${task.id}`); }).catch(() => {});
+    } } : {});
+    if (ANSWERING.has(cmd)) await answered();
   };
   if (cmd === 'approve' || cmd === 'anyway') {
     if (task.merge_via_mr) { toast(t('req.mergeViaMr')); return; }
@@ -74,6 +79,7 @@ export function runTaskAction(cmd: string, task: Task): void {
 }
 
 export async function tellTask(task: Task, text: string): Promise<boolean> {
+  const answered = prepareAnswer(task.id);
   const body = text.trim();
   if (!body) return false;
   try {
@@ -82,16 +88,17 @@ export async function tellTask(task: Task, text: string): Promise<boolean> {
     delete d[task.id];
     tellDraft.value = d;
     toast(t('toast.told', { tag: task.tag }));
-    await afterAnswered(task.id);
+    await answered();
     return true;
   } catch { return false; }
 }
 
 export async function pickAttempt(task: Task, letter: string): Promise<void> {
+  const answered = prepareAnswer(task.id);
   try {
     await sendAction('pick', { id: task.id, letter });
     toast(t('toast.picked', { tag: task.tag, letter }));
-    await afterAnswered(task.id);
+    await answered();
   } catch { /* shown */ }
 }
 
@@ -124,6 +131,11 @@ export async function fetchScreen(target: string, role = ''): Promise<void> {
   screens.value = { ...screens.value, [target]: { ...(cur ?? {}), busy: true } };
   try {
     const r = await api('/api/coordinator/screen?target=' + encodeURIComponent(target) + (role ? '&role=' + encodeURIComponent(role) : ''));
+    if (r.menu?.sig && r.menu.sig !== cur?.menu?.sig) {
+      const task = taskOf(target);
+      if (task) restoreRequest(`${requestType(task)}:${target}`);
+      else if (target === 'coordinator') restoreRequest('coordinator-dialog');
+    }
     screens.value = { ...screens.value, [target]: { at: Date.now(), ...r, busy: false } };
   } catch (e) {
     screens.value = { ...screens.value, [target]: { error: (e as Error).message, busy: false } };
@@ -145,8 +157,10 @@ export type MenuResult = { ok: true } | { ok: false; gone: boolean; error: strin
 /** Answers a selection menu of an agent: the server reads the screen again and presses the keys that make the choice.
     `note` names a permission the human gave (`allow`, `always`, `deny`), so the Coordinator learns of it. */
 export async function answerMenu(target: string, role: string, sig: string, answer: MenuAnswer, note?: string): Promise<MenuResult> {
+  const answered = prepareAnswer(target);
   try {
     await post('/api/menu/answer', { target, role: role || undefined, sig, answer, note });
+    await answered();
     return { ok: true };
   } catch (e) {
     const err = e as ApiError;

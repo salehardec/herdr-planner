@@ -773,19 +773,74 @@ section('queue', async () => {
   const camBack = (await debug()).camera;
   check('the screen is as it was', camBackOk, JSON.stringify({ camList, camBack }));
   check('the cursor is where it was', (await evalJs('[...document.querySelectorAll("#drawer-wait .q")].findIndex((e) => e.classList.contains("cur"))')) === cursor);
-  // Work through one: answer a question with the dock's own action, and come back to the list.
+  // Work through one: failures stay; a successful answer opens the next card in list order.
+  // An earlier section already answered alpha/2; the fixture keeps it blocked, so the board asks a new question there.
+  const queueFile = join(fixture, 'state', 'board.json');
+  const queueBefore = readFileSync(queueFile, 'utf8');
+  const queueBoard = JSON.parse(queueBefore);
+  Object.assign(queueBoard.rows.find((r) => r.id === 'alpha/2'), { msg: 'A fresh queue question' });
+  writeFileSync(queueFile, JSON.stringify(queueBoard));
+  await post('/api/refresh');
+  await waitFor(`!!document.querySelector('#drawer-wait [data-request="question:alpha/2"]')`, 15000);
   const idx = await evalJs(`[...document.querySelectorAll('#drawer-wait .q')].findIndex((e) => e.dataset.sel === 'alpha/2')`);
   await evalJs(`document.querySelectorAll('#drawer-wait .q')[${idx}].click()`);
   await waitFor('plannerDebug().selected?.id === "alpha/2" && world.debug().flight === "idle"', 15000);
   await click('#focus [data-act="answer"]');
   await evalJs('(() => { const i = document.querySelector("#tell"); i.value = "оставь старую"; i.dispatchEvent(new Event("input", { bubbles: true })); return true; })()');
+  const nextId = await evalJs(`(() => { const rows = [...document.querySelectorAll('#drawer-wait .q')]; return rows[(${idx} + 1) % rows.length].dataset.sel; })()`);
+  writeFileSync(join(fixture, 'state', 'refuse'), 'queue refusal');
+  await click('#focus [data-act="tell-agent"]');
+  check('a refused answer stays on the same request and shows the board error', await hasText('#toasts', 'the merge has a conflict', 10000) && (await pd()).selected?.id === 'alpha/2' && await exists('#drawer-wait [data-request="question:alpha/2"]'));
+  unlinkSync(join(fixture, 'state', 'refuse'));
   await evalJs('document.querySelector("[data-act=\\"tell-agent\\"]").click()');
-  check('after the answer we are back in the list', await waitFor('plannerDebug().selected === null && document.querySelector("#drawer-wait").classList.contains("open")', 15000), JSON.stringify(await pd()));
-  check('the answered request is struck out', await waitFor('!!document.querySelector("#drawer-wait .q.resolved")', 4000));
+  check('a successful answer opens the next card in the list order', await waitFor(`plannerDebug().selected?.id === ${JSON.stringify(nextId)} && document.querySelector("#drawer-wait").classList.contains("open")`, 15000), JSON.stringify(await pd()));
+  check('the answered request leaves the queue', await waitFor(`!document.querySelector('#drawer-wait [data-request="question:alpha/2"]')`, 4000));
   check('the answer reached the agent', calls().some((c) => c.argv[0] === 'tell' && c.argv[1] === 'alpha/2' && c.argv[3] === 'оставь старую'), JSON.stringify(lastCall()));
-  void total; void opened;
   await shot('queue.png');
-  await resetUi();
+  // Manual opening does not opt into automatic movement.
+  await go('alpha/2');
+  await typeIn('#tell', 'ручной ответ');
+  await click('#focus [data-act="tell-agent"]');
+  check('a manually opened task stays selected after answering', await hasText('#toasts', 'ALP-2') && (await pd()).selected?.id === 'alpha/2');
+  await evalJs('document.activeElement?.blur(); true');
+  await press('KeyJ', 'J', 8);
+  check('Shift+J enters the queue and keeps J for the journal', await waitFor('plannerDebug().selected?.id !== "alpha/2"', 15000) && !(await evalJs('document.querySelector("#drawer-log").classList.contains("open")')));
+  const afterJ = (await pd()).selected?.id;
+  await press('KeyK', 'K', 8);
+  check('Shift+K opens the previous waiting request', await waitFor(`plannerDebug().selected?.id !== ${JSON.stringify(afterJ)}`, 15000));
+  // Isolate a final task; the normal fixture also has a runner alarm, answered through its own tools.
+  const finalFile = join(fixture, 'state', 'board.json');
+  const finalBefore = readFileSync(finalFile, 'utf8');
+  const finalYardFile = join(fixture, 'state', 'runner.json');
+  const finalYardBefore = readFileSync(finalYardFile, 'utf8');
+  try {
+    const w = JSON.parse(finalBefore);
+    for (const r of w.rows) Object.assign(r, { state: 'working', stage: 'working', kind: undefined });
+    Object.assign(w.rows.find((r) => r.id === 'alpha/2'), { state: 'blocked', kind: 'question', msg: 'The final queue question' });
+    const yard = JSON.parse(finalYardBefore);
+    yard.ids = (await stateApi()).runners.flatMap((r) => r.containers.map((c) => c.id));
+    writeFileSync(finalYardFile, JSON.stringify(yard));
+    writeFileSync(finalFile, JSON.stringify(w));
+    await post('/api/runner/ask', { id: 'vm-r' });
+    await post('/api/refresh');
+    check('the fixture now has one waiting request', await waitFor('document.querySelectorAll("#drawer-wait .q").length === 1', 15000));
+    await evalJs('planner.openRequest(0); true');
+    await waitFor('plannerDebug().selected?.id === "alpha/2" && !!document.querySelector("#tell")', 15000);
+    await typeIn('#tell', 'последний ответ');
+    await click('#focus [data-act="tell-agent"]');
+    check('the last answer shows All caught up in Focus, with no old task', await hasText('#focus [data-focus="queue-empty"]', 'Всё разобрано') && (await pd()).selected === null);
+    await waitFor('world.debug().flight === "idle"', 15000);
+    await shot('queue-empty.png');
+  } finally {
+    writeFileSync(finalFile, finalBefore);
+    writeFileSync(finalYardFile, finalYardBefore);
+    await post('/api/runner/ask', { id: 'vm-r' });
+    await post('/api/refresh');
+  }
+  writeFileSync(queueFile, queueBefore);
+  await post('/api/refresh');
+  void total; void opened;
+  await resetPage();
 });
 
 
@@ -3595,6 +3650,8 @@ section('universe framing', async () => {
     await waitFor(`world.debug().flight === "idle" && world.level === "nebula" && world.universe === ${JSON.stringify(name)}`, 20000);
     await calmCamera();
     await frames(3);
+    // the labels are placed by the frames drawn: on a loaded machine they come a little later
+    await waitFor(`[...document.querySelectorAll('#labels > div.planet')].some((e) => e.style.display !== 'none')`, 10000);
   };
   // Where the planets, their labels and the ship are on the screen, against the free area.
   const look = (name) => evalJs(`(() => {
@@ -5532,7 +5589,19 @@ section('memory suggestions', async () => {
   check('the edited lines become drafts with the task as the source', await waitLog(() => filesIn(draftsOf('alpha')).some((f) => { const t = readFile(join(draftsOf('alpha'), f)); return t.includes('source: task alpha/4') && t.includes('только localStorage'); }) && filesIn(draftsOf('alpha')).filter((f) => readFile(join(draftsOf('alpha'), f)).includes('source: task alpha/4')).length === 2, 10000), filesIn(draftsOf('alpha')).join(','));
   check('and the checkout of the universe is as it was: nothing written into docs/memory', gitStatus(alphaRoot) === alphaStatus && !filesIn(alphaMem).some((f) => readFile(join(alphaMem, f)).includes('source: task alpha/4')), gitStatus(alphaRoot));
   check('and the suggestion is gone', await waitFor('fetch("/api/state").then((r) => r.json()).then((s) => !s.memory_suggestions.some((m) => m.task === "alpha/4"))', 8000) && await waitFor('!document.querySelector(\'.mm-sug[data-sug="alpha/4"]\')', 8000));
-  await press('KeyB', 'b');
+  const keptToast = `[...document.querySelectorAll('#toasts .toast')].find((e) => e.innerText.includes('Записано в память вселенной') && e.querySelector('.undo'))`;
+  check('keeping memory offers Undo in its success toast', await waitFor(`!!(${keptToast})`, 8000));
+  await evalJs(`(${keptToast}).querySelector('.undo').click(); true`);
+  check('Undo removes the suggestion additions and restores the pending proposal', await waitFor('fetch("/api/state").then((r) => r.json()).then((s) => s.memory_suggestions.some((m) => m.task === "alpha/4"))', 8000)
+    && filesIn(draftsOf('alpha')).every((f) => !readFile(join(draftsOf('alpha'), f)).includes('source: task alpha/4')));
+  if (!(await evalJs('document.querySelector("#drawer-wait").classList.contains("open")'))) await press('KeyB', 'b');
+  await click(memRow('alpha/4'));
+  await waitFor(`plannerDebug().selected?.id === "alpha/4" && !!document.querySelector('#closing [data-act="mem-sug-accept"]')`, 15000);
+  await click('#closing [data-act="mem-sug-accept"]');
+  await waitCard(); await sayYes();
+  check('keeping a memory part from the queue opens the next waiting card', await waitFor('plannerDebug().selected?.id !== "alpha/4" && !!plannerDebug().selected', 15000));
+  await shot('memory-queue-next.png');
+  if (!(await evalJs('document.querySelector("#drawer-wait").classList.contains("open")'))) await press('KeyB', 'b');
   check('kept: the row leaves «Ждёт тебя» and the count goes down by one', await waitFor(`!document.querySelector('${memRow('alpha/4')}')`, 6000) && await waitFor(`document.querySelectorAll("#drawer-wait .q").length === ${waitedBefore - 1}`, 6000) && await waitFor(`Number((document.querySelector("#wait-btn")?.innerText || "").replace(/\\D+/g, "")) === ${waitedBefore - 1}`, 4000), `${await waitNum()} vs ${waitedBefore}`);
   await post('/api/refresh', {});
   await sleep(1500);
@@ -5562,6 +5631,11 @@ section('memory suggestions', async () => {
   check('the other proposal is in the list as well', !!(await evalJs(`!!document.querySelector('${memRow('delta/1')}')`)));
   await click('#closing [data-act="mem-sug-dismiss"]');
   check('«Не нужно» drops it and writes nothing', await waitFor('fetch("/api/state").then((r) => r.json()).then((s) => !s.memory_suggestions.some((m) => m.task === "delta/1"))', 8000) && !existsSync(join(fixture, 'projects', 'herdr', 'delta', 'docs', 'memory')));
+  await click('#toasts .toast:last-child .undo');
+  check('Undo restores a dismissed suggestion', await waitFor('fetch("/api/state").then((r) => r.json()).then((s) => s.memory_suggestions.some((m) => m.task === "delta/1"))', 8000));
+  const dismissedAgain = await post('/api/memory/suggestion', { task: 'delta/1', action: 'dismiss' });
+  const wrongUndo = await post('/api/memory/suggestion', { task: 'delta/1', action: 'undo', token: 'wrong' });
+  check('an invalid Undo token cannot restore a suggestion', dismissedAgain[0] === 200 && wrongUndo[0] === 409 && !(await pending()).includes('delta/1'));
   check('dropped: the row leaves «Ждёт тебя» and the count goes down by one', await waitFor(`!document.querySelector('${memRow('delta/1')}')`, 6000) && await waitFor(`Number((document.querySelector("#wait-btn")?.innerText || "").replace(/\\D+/g, "")) === ${waitedMid - 1}`, 4000), `${await waitNum()} vs ${waitedMid}`);
   // in bulk: tick cards or single lines, one button for all that are ticked. The fixture's board gets three more tasks to approve.
   const boardFile = join(fixture, 'state', 'board.json');
@@ -6805,6 +6879,26 @@ section('runners alerts', async () => {
 }, { retry: false });
 
 // One container of a task: the logs window and stop / restart / delete with «было → стало».
+// A disk alarm opened from «Ждёт тебя»: the cleaning that clears it takes the Focus to the next waiting request.
+section('runners disk queue', async () => {
+  const gone = { ids: ['b'.repeat(64)] };
+  yardReset({}, { ...gone, disk: { size: 100_000_000_000, avail: 8_000_000_000 } });
+  await post('/api/runner/ask', { id: 'vm-r' });
+  check('a little disk is an alarm of the yard', await waitFor('plannerSnap().runners.find((r) => r.id === "vm-r")?.alerts.map((a) => a.kind).join() === "disk"', 8000));
+  await click('#wait-btn');
+  await waitFor('!!document.querySelector("#drawer-wait [data-alert=disk]")', 5000);
+  await click('#drawer-wait [data-alert=disk]');
+  await waitFor('plannerDebug().selected?.kind === "runner" && !!document.querySelector("#rf-disk-open")', 15000);
+  await click('#rf-disk-open');
+  await waitFor('!!document.querySelector("#rf-disk [data-part=volumes]")', 30000);
+  // The yard has room once the cleaning is done.
+  await click('#dk-go');
+  yardReset({}, { ...gone, disk: { size: 100_000_000_000, avail: 60_000_000_000 } });
+  await secondPress('#dk-go');
+  check('the alarm is gone after the cleaning', await waitFor('(plannerSnap().runners.find((r) => r.id === "vm-r")?.alerts ?? []).length === 0', 30000));
+  check('the Focus moves to the next waiting request, not the yard', await waitFor('plannerDebug().selected?.kind !== "runner" && !!plannerDebug().selected', 15000), JSON.stringify(await pd()));
+}, { retry: false });
+
 section('runners ctl', async () => {
   const id = (c) => c.repeat(64);
   const btn = (name, kind) => `([...document.querySelectorAll("[data-focus=runner] tbody tr")].find((r) => r.querySelector("code")?.innerText === ${JSON.stringify(name)})?.querySelector('[data-ctl="${kind}"]'))`;
@@ -7573,12 +7667,23 @@ section('light page actions', async () => {
   const mergeCard = phoneCard('approval:alpha/4');
   check('a ready merge has approve in the projection and on its card', await evalJs(`plannerSnap().tasks.find((t) => t.id === 'alpha/4')?.actions.includes('approve') && !!document.querySelector('${mergeCard} [data-act="approve"]')`));
   writeFileSync(join(fixture, 'state', 'refuse'), 'refuse the board command');
+  const mergeNext = await evalJs(`(() => { const all = [...document.querySelectorAll('#p-wait [data-card]')]; const at = all.findIndex((e) => e.dataset.card === 'approval:alpha/4'); return all[(at + 1) % all.length].dataset.card; })()`);
   await twoPresses(`${mergeCard} [data-act="approve"]`);
   check('a merge refused by the board shows the board words and keeps the card', await hasText('#toasts', 'the merge has a conflict', 10000) && await exists(mergeCard), await text('#toasts'));
   unlinkSync(join(fixture, 'state', 'refuse'));
   await twoPresses(`${mergeCard} [data-act="approve"]`);
   check('a merge approved from «Ждёт тебя» reaches the board', await waitLog(() => calls().some((c) => c.argv[0] === 'approve' && c.argv[1] === 'alpha/4'), 15000), JSON.stringify(lastCall()));
   check('and its card leaves the list after the projection changes', await waitFor(`!document.querySelector('${mergeCard}')`, 15000));
+  check('after approval the phone focuses the next card in queue order', await waitFor(`document.activeElement?.dataset.card === ${JSON.stringify(mergeNext)}`, 8000));
+  await shot('m-queue-next.png');
+  await click('.nav [data-tab="board"]');
+  await click('#p-board [data-row="alpha/2"]');
+  await sheetOpen();
+  await typeIn('#sheet textarea', 'ответ из навигатора телефона');
+  await click('#sheet [data-act="tell"]');
+  check('a task opened from the phone board stays in its sheet after answering', await hasText('#toasts', 'ALP-2') && await sheetOpen() && (await evalJs('mobile.sheet.value.id')) === 'alpha/2');
+  await click('#sheet [data-s="close"]'); await sheetClosed();
+  await click('.nav [data-tab="wait"]');
   const checkoutCard = phoneCard('approval:delta/1');
   check('a GitLab checkout refusal removes approve from the projection and the phone', await evalJs(`!plannerSnap().tasks.find((t) => t.id === 'delta/1')?.actions.includes('approve') && !document.querySelector('${checkoutCard} [data-act="approve"]')`));
   const mrRefusal = await post('/m/api/action', { action: 'approve', id: 'delta/1', confirm: true });
@@ -7591,17 +7696,27 @@ section('light page actions', async () => {
   check('the repeated merge approval after a checkout fix reaches the board', await waitLog(() => calls().some((c) => c.argv[0] === 'approve' && c.argv[1] === 'delta/1'), 15000), JSON.stringify(lastCall()));
   check('and the retried card leaves the list', await waitFor(`!document.querySelector('${checkoutCard}')`, 15000));
   // a plan is approved with two presses, like on the computer
-  await click(`${phoneCard('plan:alpha/3')} [data-act="approve"]`);
-  check('the first press only arms the button', await hasText(`${phoneCard('plan:alpha/3')} [data-act="approve"]`, 'Нажми ещё раз', 2000) && !calls().some((c) => c.argv[0] === 'approve' && c.argv[1] === 'alpha/3'), JSON.stringify(lastCall()));
-  await secondPress(`${phoneCard('plan:alpha/3')} [data-act="approve"]`);
+  const planNext = await evalJs(`(() => { const all = [...document.querySelectorAll('#p-wait [data-card]')]; const at = all.findIndex((e) => e.dataset.card === 'plan:alpha/3'); return all[(at + 1) % all.length].dataset.card; })()`);
+  await click(`${phoneCard('plan:alpha/3')} [data-act="plan-open"]`);
+  await sheetOpen();
+  await click(`#sheet ${phoneCard('plan:alpha/3')} [data-act="approve"]`);
+  check('the first press only arms the button', await hasText(`#sheet ${phoneCard('plan:alpha/3')} [data-act="approve"]`, 'Нажми ещё раз', 2000) && !calls().some((c) => c.argv[0] === 'approve' && c.argv[1] === 'alpha/3'), JSON.stringify(lastCall()));
+  await secondPress(`#sheet ${phoneCard('plan:alpha/3')} [data-act="approve"]`);
   check('the second press approves the plan on the board', await waitLog(() => calls().some((c) => c.argv[0] === 'approve' && c.argv[1] === 'alpha/3'), 15000), JSON.stringify(lastCall()));
   check('and the card leaves the list', await waitFor(`!document.querySelector('${phoneCard('plan:alpha/3')}')`, 15000));
+  check('answering a plan sheet opened from the queue closes it and focuses the next card', await sheetClosed() && await waitFor(`document.activeElement?.dataset.card === ${JSON.stringify(planNext)}`, 8000));
   const journal = await evalJs('fetch("/api/state").then((r) => r.json()).then((s) => s.journal.map((j) => j.text).filter((x) => x.includes("с телефона")))');
   check('the journal says it was done from the phone', Array.isArray(journal) && journal.some((x) => x.includes('ALP-3') || x.includes('alpha/3')), JSON.stringify(journal));
   // a word to the agent of a failed task
   await evalJs(`(() => { const i = document.querySelector('${phoneCard('failed:alpha/8')} textarea'); const d = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(i), 'value'); d.set.call(i, 'попробуй ещё раз с телефона'); i.dispatchEvent(new Event('input', { bubbles: true })); })()`);
   await click(`${phoneCard('failed:alpha/8')} [data-act="tell"]`);
   check('a word written on the phone reaches the agent', await waitLog(() => calls().some((c) => c.argv[0] === 'tell' && c.argv[1] === 'alpha/8' && c.argv[3] === 'попробуй ещё раз с телефона'), 15000), JSON.stringify(lastCall()));
+  check('the answered failure leaves the phone queue', await waitFor(`!document.querySelector('${phoneCard('failed:alpha/8')}')`, 8000));
+  const retryBoardFile = join(fixture, 'state', 'board.json');
+  const retryWorld = JSON.parse(readFileSync(retryBoardFile, 'utf8'));
+  retryWorld.rows.find((r) => r.id === 'alpha/8').msg = 'A new failure after the answer';
+  writeFileSync(retryBoardFile, JSON.stringify(retryWorld));
+  check('a new request on the same task appears again', await waitFor(`!!document.querySelector('${phoneCard('failed:alpha/8')}')`, 15000));
   await click(`${phoneCard('failed:alpha/8')} [data-act="retry"]`);
   check('«Повторить» runs the retry', await waitLog(() => calls().some((c) => c.argv[0] === 'retry' && c.argv[1] === 'alpha/8'), 15000), JSON.stringify(lastCall()));
   // the chat: a message goes to the Coordinator
@@ -7628,6 +7743,41 @@ section('light page actions', async () => {
   // what the phone is not given stays out of reach of its page too: «anyway» is refused by the server
   const refused = await post('/m/api/action', { action: 'anyway', id: 'alpha/5', confirm: true });
   check('the phone\'s API refuses «anyway» and «stop»', refused[0] === 403 && (await post('/m/api/action', { action: 'stop', id: 'alpha/6' }))[0] === 403, JSON.stringify(refused));
+  const phoneFinalFile = join(fixture, 'state', 'board.json');
+  const phoneFinalBefore = readFileSync(phoneFinalFile, 'utf8');
+  const phoneYardFile = join(fixture, 'state', 'runner.json');
+  const phoneYardBefore = readFileSync(phoneYardFile, 'utf8');
+  const phoneDialogFile = join(fixture, 'state', 'dialog.txt');
+  const phoneDialogBefore = readFileSync(phoneDialogFile, 'utf8');
+  try {
+    const w = JSON.parse(phoneFinalBefore);
+    for (const r of w.rows) Object.assign(r, { state: 'working', stage: 'working', kind: undefined });
+    Object.assign(w.rows.find((r) => r.id === 'alpha/2'), { state: 'blocked', kind: 'question', msg: 'The final phone question' });
+    const yard = JSON.parse(phoneYardBefore);
+    yard.ids = (await stateApi()).runners.flatMap((r) => r.containers.map((c) => c.id));
+    writeFileSync(phoneYardFile, JSON.stringify(yard));
+    writeFileSync(phoneFinalFile, JSON.stringify(w));
+    await post('/api/runner/ask', { id: 'vm-r' });
+    writeFileSync(phoneDialogFile, '');
+    await post('/api/refresh');
+    await evalJs('mobile.refresh(); true');
+    check('the phone now has one waiting card', await waitFor('document.querySelectorAll("#p-wait [data-card]").length === 1', 15000));
+    await typeIn(`${phoneCard('question:alpha/2')} textarea`, 'последний ответ телефона');
+    await click(`${phoneCard('question:alpha/2')} [data-act="tell"]`);
+    check('the last phone answer shows All caught up', await hasText('#p-wait .empty', 'Всё разобрано') && (await evalJs('document.querySelectorAll("#p-wait [data-card]").length')) === 0);
+    check('the success toast leaves the empty-state heading readable', await evalJs(`(() => {
+      const title = document.querySelector('#p-wait .empty b')?.getBoundingClientRect();
+      const toast = document.querySelector('#toasts')?.getBoundingClientRect();
+      return !!title && !!toast && (toast.bottom <= title.top || toast.top >= title.bottom);
+    })()`));
+    await shot('m-queue-empty.png');
+  } finally {
+    writeFileSync(phoneFinalFile, phoneFinalBefore);
+    writeFileSync(phoneYardFile, phoneYardBefore);
+    await post('/api/runner/ask', { id: 'vm-r' });
+    writeFileSync(phoneDialogFile, phoneDialogBefore);
+    await post('/api/refresh');
+  }
   await backToDesk();
   await navigate(base + '/?noauto&nocoach&bloom=0');
 }, { retry: false });
