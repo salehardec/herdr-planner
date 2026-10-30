@@ -3703,13 +3703,30 @@ section('station', async () => {
   await waitFor('!!document.querySelector(\'[data-act="st-edit-light"]\')', 8000);
   await click('[data-act="st-edit-light"]');
   await waitFor('!!document.querySelector(\'[id="st-prog-light"]\')', 5000);
+  // Select as soon as the async list is usable, before deferred effects get another turn (the CI ui4 race).
+  await evalJs(`(() => {
+    window.__lightPick = false;
+    const pick = () => {
+      const el = document.querySelector('[id="st-model-light"]');
+      if (!el || el.disabled || ![...el.options].some((o) => o.value === 'claude/claude-haiku-5-5')) return;
+      observer.disconnect();
+      el.value = 'claude/claude-haiku-5-5';
+      el.dispatchEvent(new Event('change', { bubbles: true }));
+      window.__lightPick = true;
+    };
+    const observer = new MutationObserver(pick);
+    observer.observe(document.querySelector('#crew'), { childList: true, subtree: true, attributes: true, attributeFilter: ['disabled'] });
+    window.__lightPickObserver = observer;
+    pick();
+    return true;
+  })()`);
   await typeIn('[id="st-prog-light"]', 'claude');
-  // on a slow runner the program's model list comes late: wait for the very model that is picked, not for any three
-  await waitFor('[...document.querySelectorAll(\'select[id="st-model-light"] option\')].some((o) => o.value === "claude/claude-haiku-5-5")', 45000);
-  await typeIn('[id="st-model-light"]', 'claude/claude-haiku-5-5');
+  const pickedLight = await waitFor('window.__lightPick', 45000);
+  await evalJs('window.__lightPickObserver?.disconnect(); delete window.__lightPickObserver; delete window.__lightPick; true');
+  check('the light model can be selected as soon as its list arrives', pickedLight);
   await click('[id="st-next-light"]');
   await readyCard();
-  check('the light preset shows was → now, and says it is kept by the planner', await hasText('#st-change', 'Лёгкие задачи') && await hasText('#st-change', 'не на доске'), await text('#st-change'));
+  check('the light preset keeps the selected model in its preview and says it is kept by the planner', await hasText('#st-change', 'Лёгкие задачи') && await hasText('#st-change', 'не на доске') && (await text('#st-now')) === 'claude/claude-haiku-5-5', await text('#st-change'));
   const lightLook = '({ card: document.querySelector("#st-change")?.innerText, armed: plannerDebug().armed, pending: window.__net?.pending, bad: window.__net?.bad?.slice(-3) })';
   const lightKept = await untilDone('the light preset confirmation', () => twoPresses('#st-confirm'), 'fetch("/api/station").then((r) => r.json()).then((d) => d.light === "claude/claude-haiku-5-5")', 15000, lightLook);
   check('the planner keeps the preset', lightKept, JSON.stringify(await evalJs(lightLook)));
