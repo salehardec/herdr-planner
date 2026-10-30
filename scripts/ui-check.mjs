@@ -1133,8 +1133,17 @@ section('chat', async () => {
   await evalJs(`(() => { const dt = new DataTransfer(); dt.items.add(__shot('drop.png')); document.querySelector('#chat').dispatchEvent(new DragEvent('drop', { dataTransfer: dt, bubbles: true, cancelable: true })); return true; })()`);
   check('dropping an image adds a second preview', await waitFor('document.querySelectorAll("#attach .att").length === 2', 6000));
   await waitFor('[...document.querySelectorAll("#attach .att")].every((a) => a.dataset.state === "ready")', 10000);
-  await click('#attach .att .rm');
+  check('the × of a preview is really on top (nothing hides it)', await evalJs(`(() => { const b = document.querySelector('#attach .att .att-rm'); if (!b) return false; const r = b.getBoundingClientRect(); return getComputedStyle(b).visibility === 'visible' && document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2) === b; })()`));
+  await click('#attach .att .att-rm');
   check('a preview can be removed before sending', await waitFor('document.querySelectorAll("#attach .att").length === 1', 3000));
+  await evalJs('document.querySelector("#ask-in").focus()');
+  await press('Backspace');
+  check('Backspace in the empty field takes the last preview', await waitFor('document.querySelectorAll("#attach .att").length === 0', 3000));
+  await press('Backspace');
+  check('and does nothing more once none is left', await evalJs('document.querySelectorAll("#attach .att").length === 0'));
+  await evalJs(`(() => { const dt = new DataTransfer(); dt.items.add(__shot('again.png')); document.querySelector('#ask-in').dispatchEvent(new ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true })); return true; })()`);
+  check('a pasted image comes back after that', await waitFor('document.querySelectorAll("#attach .att").length === 1', 6000));
+  await waitFor('document.querySelector("#attach .att")?.dataset.state === "ready"', 10000);
   await evalJs(`(() => { const dt = new DataTransfer(); dt.items.add(__shot('picker.png')); const input = document.querySelector('#file-in'); input.files = dt.files; input.dispatchEvent(new Event('change', { bubbles: true })); return true; })()`);
   check('the file picker adds another image', await waitFor('document.querySelectorAll("#attach .att").length === 2', 6000));
   check('both images are ready', await waitFor('[...document.querySelectorAll("#attach .att")].every((a) => a.dataset.state === "ready")', 10000));
@@ -1856,7 +1865,7 @@ section('todo files', async () => {
   await evalJs(`(() => { document.activeElement?.blur(); const dt = new DataTransfer(); dt.items.add(__pngFile('body.png')); document.body.dispatchEvent(new ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true })); return true; })()`);
   check('a paste anywhere on the page lands in the open drawer', await waitFor('document.querySelectorAll("#todo-attach .att[data-cls=image]").length === 2', 5000));
   check('all four are uploaded', await waitFor('[...document.querySelectorAll("#todo-attach .att")].length === 4 && [...document.querySelectorAll("#todo-attach .att")].every((a) => a.dataset.state === "ready")', 10000));
-  await click('#todo-attach .att[data-cls=image] .rm');
+  await click('#todo-attach .att[data-cls=image] .att-rm');
   check('a file can be taken away before saving', await waitFor('document.querySelectorAll("#todo-attach .att").length === 3'));
   // the wrong kind of file is refused with a word
   await clearToasts();

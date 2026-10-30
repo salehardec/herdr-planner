@@ -28,7 +28,7 @@ export function PendingFiles(props: { files: PendingFile[]; onRemove: (key: numb
             </>
           )}
           {p.state === 'uploading' && <span class="wait">{t('chat.uploading')}</span>}
-          <button class="rm" type="button" data-att-rm={p.key} aria-label={`${t('chat.remove')} ${p.name}`} onClick={() => props.onRemove(p.key)}>×</button>
+          <button class="att-rm" type="button" data-att-rm={p.key} aria-label={`${t('chat.remove')} ${p.name}`} onClick={() => props.onRemove(p.key)}>×</button>
         </div>
       ))}
     </div>
@@ -44,7 +44,7 @@ export function SavedFiles(props: { list: SavedFile[]; onRemove?: (id: string) =
     <div class={`saved ${props.class ?? ''}`}>
       {items.map((a) => {
         const cls = classOfSaved(a);
-        const rm = props.onRemove && <button class="rm" type="button" data-file-rm={a.id} aria-label={`${t('chat.remove')} ${a.name}`} onClick={() => props.onRemove?.(a.id)}>×</button>;
+        const rm = props.onRemove && <button class="att-rm" type="button" data-file-rm={a.id} aria-label={`${t('chat.remove')} ${a.name}`} onClick={() => props.onRemove?.(a.id)}>×</button>;
         if (cls === 'image') {
           const img = <img src={fileUrl(a)} alt={a.name || t('chat.image')} title={a.name} loading="lazy" />;
           return (
