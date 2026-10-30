@@ -1,5 +1,5 @@
 import type { JSX } from 'preact';
-import { answered, armed, panels, requests, snap } from '../store';
+import { armed, panels, requests, snap } from '../store';
 import { fromQueue, openRequest, queueCursor } from '../nav';
 import { boardOk, runTaskAction } from '../actions';
 import { addDialogs } from '../dialogs';
@@ -10,7 +10,7 @@ import { BatchBar } from './MemoryBatch';
 import { cardPick, memPick, toggleCard } from './memory-batch';
 import './wait.css';
 
-/** «Ждёт тебя» as a queue to work through: open one, answer, and come back to the list with the cursor on the next. */
+/** «Ждёт тебя» as a queue to work through: open one, answer, and continue with the next card. */
 export function Wait(): JSX.Element {
   const open = panels.wait.value;
   const list = requests.value.filter((r) => r.type !== 'coordinator-options');
@@ -35,7 +35,6 @@ export function Wait(): JSX.Element {
         {list.map((r, i) => {
           const alarm = r.type === 'runner-alert';
           const mem = r.type === 'memory';
-          const done = !alarm && answered.value.has(r.id);
           const sug = mem ? suggestions.find((m) => m.task === r.id) : undefined;
           const state = sug ? cardPick(sug) : 'none';
           const task = r.task;
@@ -44,7 +43,7 @@ export function Wait(): JSX.Element {
           const row = (
             <button
               key={r.key} type="button" data-request={r.key} data-alert={r.alert?.kind} data-sel={r.id === 'coordinator' ? '' : r.id}
-              class={`q s-${alarm ? 'failed' : mem ? 'done' : r.task?.status ?? 'waiting'} ${mem ? 'mem' : ''} ${i === cur ? 'cur' : ''} ${done ? 'resolved' : ''}`}
+              class={`q s-${alarm ? 'failed' : mem ? 'done' : r.task?.status ?? 'waiting'} ${mem ? 'mem' : ''} ${i === cur ? 'cur' : ''}`}
               title={mem ? t('req.memoryTip', { tag: r.tag, repo: r.repo }) : undefined}
               aria-selected={i === cur} onClick={() => void openRequest(i)}
             >
@@ -56,12 +55,12 @@ export function Wait(): JSX.Element {
           // The ready plan's own answers stand under the row the cursor is on (PLN-61).
           const acts = r.type === 'plan' && task && i === cur && (
             <div class="qacts">
-              <button class="btn sm" type="button" data-act="plan-open" data-id={task.id} onClick={() => { addDialogs.summary.value = { task: task.id, part: 'plan' }; }}>
+              <button class="btn sm" type="button" data-act="plan-open" data-id={task.id} onClick={() => { void openRequest(i); addDialogs.summary.value = { task: task.id, part: 'plan' }; }}>
                 <Gl n="expand" />{t('req.planOpen')}
               </button>
               <button
                 class={`btn sm go ${armedNow ? 'arm' : ''}`} type="button" data-act="approve" data-id={task.id} aria-disabled={!boardOk()}
-                onClick={() => runTaskAction('approve', task)}
+                onClick={() => { void openRequest(i); runTaskAction('approve', task); }}
               >{armedNow ? t('req.confirmApprovePlan') : t('req.approvePlan')}</button>
               <button class="btn sm" type="button" data-act="plan-return" data-id={task.id} onClick={() => void returnWithNotes(i)}>{t('req.returnWithNotes')}</button>
             </div>

@@ -4,7 +4,7 @@ import { useEffect, useRef, useState } from 'preact/hooks';
 import { armed, currentView, snap } from '../store';
 import { confirmStep } from '../actions';
 import { send } from '../chat';
-import { afterAnswered, navigateTo } from '../nav';
+import { prepareAnswer, navigateTo } from '../nav';
 import { t, tn } from '../i18n';
 import { toast } from '../toast';
 import { dayKey, dayTimeOf } from '../util/dates';
@@ -13,6 +13,7 @@ import { AutoTextarea, fitText } from './AutoText';
 import { BatchBar } from './MemoryBatch';
 import { cardPick, linesOf, setLines, toggleCard, toggleLine, memPick, pickKey } from './memory-batch';
 import {
+  suggestionToast,
   deleteEntry, digestText, discardDraft, discardStuck, dismissSuggestion, keepSuggestion, KINDS, kindLabel, loadMemory, memoryOf, openMemory, previewSend, sendMemory, stateOf,
   previewDelete, previewDiscard, previewDiscardStuck, previewSave, previewSuggestion, rememberDlg, saveEntry, connectMemory, setSuggest,
   type Accept, type MemAgentChange, type RememberInit, type MemData, type MemEntry, type MemPreview, type MemSuggestion, type SaveBody, type SentTask, forgetSent,
@@ -201,16 +202,18 @@ export function SuggestionCard(props: { s: MemSuggestion; compact?: boolean }): 
     if (!card) return;
     setBusy(true);
     setErr('');
+    const answered = prepareAnswer(s.task, 'memory');
     try {
-      await keepSuggestion(s.task, kept, card.token, a);
-      toast(t(card.draft ? 'mem.suggestKeptDraft' : 'mem.suggestKept', { repo: s.repo }));
+      const result = await keepSuggestion(s.task, kept, card.token, a);
+      suggestionToast(s.task, s.repo, t(card.draft ? 'mem.suggestKeptDraft' : 'mem.suggestKept', { repo: s.repo }), result.undo);
       void loadMemory(s.repo);
-      void afterAnswered(s.task);
+      void answered();
     } catch (e) { setErr(failWords(e)); setBusy(false); }
   };
   const dismiss = async (): Promise<void> => {
     setBusy(true);
-    try { await dismissSuggestion(s.task); void loadMemory(s.repo); void afterAnswered(s.task); } catch (e) { toast(failWords(e), { icon: 'failed' }); setBusy(false); }
+    const answered = prepareAnswer(s.task, 'memory');
+    try { const result = await dismissSuggestion(s.task); suggestionToast(s.task, s.repo, t('wait.dismissed'), result.undo); void loadMemory(s.repo); void answered(); } catch (e) { toast(failWords(e), { icon: 'failed' }); setBusy(false); }
   };
   // The lines without what was found; a new preview follows.
   const redact = (): void => {

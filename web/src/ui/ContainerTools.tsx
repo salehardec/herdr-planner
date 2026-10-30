@@ -5,6 +5,7 @@
 import type { JSX } from 'preact';
 import { useEffect, useRef, useState } from 'preact/hooks';
 import { ApiError, post } from '../api';
+import { prepareAnswer } from '../nav';
 import { confirmStep } from '../actions';
 import { addDialogs } from '../dialogs';
 import { t } from '../i18n';
@@ -282,8 +283,10 @@ export function ContainerAct(): JSX.Element | null {
     if (!p) return;
     confirmStep(pressKey, async () => {
       setBusy(true);
+      const answered = prepareAnswer(ref.runner, 'runner');
       try {
         await post('/api/runner/container/act', { runner: ref.runner, token: p.token, confirm: true });
+        void answered();
         toast(t(`ctl.done.${ref.act}`, { name: p.name }), { icon: 'done' });
         // The answer may come late: close only the card it was for, not one opened since.
         const now = addDialogs.ctlAct.value;
