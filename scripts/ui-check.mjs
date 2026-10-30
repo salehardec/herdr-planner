@@ -929,6 +929,9 @@ section('chat', async () => {
   const notice = await evalJs(`(() => { const t = document.querySelector('#clog .turn[data-n="6"]'); if (!t) return null; const n = t.querySelector('.msg.notice'); return { notice: !!n, q: !!t.querySelector('.msg.q'), who: n?.querySelector('.who')?.innerText || '', chip: !!n?.querySelector('.ntl [data-tag="ALP-7"]'), badge: n?.querySelector('.ntl > .badge')?.innerText || '', text: n?.innerText || '' }; })()`);
   check('turn 7 is a board notice: «Доска», the task as a chip, its name (with its own quotes) and its state, without the instruction', !!notice && notice.notice && !notice.q && notice.who === 'Доска' && notice.chip && notice.badge === 'ждёт тебя' && notice.text.includes('«Документация «API экспорта»: примеры»') && !notice.text.includes('Посмотри') && !notice.text.includes('[Уведомление'), JSON.stringify(notice));
   // the picture is an image block of the transcript record (Claude Code drops the path lines): the planner serves it from there
+  // Revealing older turns only inserts their lazy images; reveal the thumbnail in the log and wait for its bytes too.
+  await evalJs(`document.querySelector('#clog .turn[data-n="5"] .shot img')?.scrollIntoView({ block: 'nearest', behavior: 'instant' }); true`);
+  await waitFor(`(() => { const img = document.querySelector('#clog .turn[data-n="5"] .shot img'); return img?.complete && img.naturalWidth > 0; })()`, 8000);
   const thumb = await evalJs(`(() => { const t = document.querySelector('#clog .turn[data-n="5"]'); if (!t) return null; const img = t.querySelector('.msg.q .shot img'); return { src: img?.getAttribute('src') || '', w: img?.naturalWidth || 0, button: t.querySelector('.msg.q .shot')?.tagName, text: t.querySelector('.msg.q .txt')?.innerText || '', plate: !!t.querySelector('.pasted') }; })()`);
   check('turn 6 shows its image as a thumbnail out of the transcript, and neither the header nor the plate is in the bubble', !!thumb && thumb.src === '/api/chat/image/5/0' && thumb.w === 1 && thumb.button === 'BUTTON' && thumb.text === 'Вопрос 6: как дела по ALP-6? Вот снимок.' && !thumb.plate, JSON.stringify(thumb));
   const imgApi = await evalJs(`fetch('/api/chat/image/5/0').then(async (r) => [r.status, r.headers.get('content-type'), (await r.arrayBuffer()).byteLength])`);
@@ -1214,6 +1217,97 @@ section('chat echo', async () => {
   }
 });
 
+section('chat variants', async () => {
+  // PLN-100: the Coordinator's answer buttons (2–4 long options; one line is no choice for parseOptions) never leave the
+  // chat: the caption is the first phrase, the whole line is the title and what a press sends; a crowd of them scrolls in a box.
+  await resetUi();
+  await waitLog(() => calls('coordinator.jsonl').some((c) => String(c.text || '').startsWith('Верфь')), 30000);
+  const coordFile = join(fixture, 'state', 'coordinator.json');
+  const coordPoke = join(fixture, 'board', 'tasks', 'alpha', '11', 'task.json');
+  const before = readFileSync(coordFile, 'utf8');
+  const LONG = [
+    'Ставим LineageOS вместо Linux. Заведу задачу на сборку образа, проверку драйверов камеры, модема и сенсоров, затем вернусь с отчётом по каждому пункту и предложу порядок работ на неделю',
+    '**Остаёмся на Linux** — ничего не меняем в железе, доделываем текущую ветку, а вопрос про LineageOS возвращаем после релиза и первых отзывов на сборку',
+    'ОченьДлинноеСловоБезПробеловОченьДлинноеСловоБезПробеловОченьДлинноеСловоБезПробеловОченьДлинноеСловоБезПробелов и ещё хвост',
+    'Отложить решение до пятницы, когда будут результаты замеров батареи и тепловыделения на обеих сборках одновременно',
+  ];
+  const setReply = async (n) => {
+    const state = JSON.parse(before);
+    state.reply = `Что выбираем?\n${LONG.slice(0, n).map((o, i) => `${i + 1}) ${o}`).join('\n')}`;
+    writeFileSync(coordFile, JSON.stringify(state));
+    writeFileSync(coordPoke, readFileSync(coordPoke, 'utf8'));
+    return waitFor(`document.querySelectorAll('#cvariants button').length === ${n}`, 12000);
+  };
+  // Every button inside the box it sits in and the box inside the chat and the window.
+  const fit = (box) => evalJs(`(() => {
+    const v = document.querySelector('#cvariants'); const b = [...v.querySelectorAll('button')];
+    const host = document.querySelector(${JSON.stringify(box)}).getBoundingClientRect(); const chat = host; const vr = v.getBoundingClientRect();
+    const inside = b.every((e) => { const r = e.getBoundingClientRect(); return r.left >= vr.left - 1 && r.right <= vr.right + 1; });
+    return { n: b.length, inside, boxInHost: vr.left >= host.left - 1 && vr.right <= host.right + 1, noX: v.scrollWidth <= v.clientWidth + 1,
+      inWindow: vr.right <= innerWidth + 1, doc: document.documentElement.scrollWidth <= innerWidth + 1,
+      maxH: Math.max(...b.map((e) => e.getBoundingClientRect().height)), boxH: vr.height, seen: vr.top >= chat.top - 1 && vr.bottom <= chat.bottom + 1 && vr.height >= Math.min(...b.map((e) => e.getBoundingClientRect().height)) - 1,
+      title: b.map((e) => e.title), caps: b.map((e) => e.querySelector('.vt')?.innerText || '') };
+  })()`);
+  try {
+    for (const w of [480, 720, 1100]) {
+      await send('Emulation.setDeviceMetricsOverride', { width: w, height: 900, screenWidth: w, screenHeight: 900, deviceScaleFactor: 1, mobile: false });
+      await waitFor(`innerWidth === ${w}`, 5000);
+      await evalJs('try { localStorage.removeItem("herdr-planner.chatWide"); localStorage.removeItem("herdr-planner.chatWideTodo"); } catch {} true');
+      await evalJs('planner.goOverview(); true');
+      await waitFor('world.debug().flight === "idle" && plannerDebug().selected === null', 15000);
+      await resized();
+      // the navigator and the focus card off: in a narrow window they cover the chat, and its box would be measured under them
+      for (const [sel, key] of [['#nav', ['KeyN', 'n']], ['#focus', ['KeyF', 'f']]]) {
+        if (await evalJs(`!!document.querySelector(${JSON.stringify(sel)}) && !document.querySelector(${JSON.stringify(sel)}).classList.contains('off')`)) {
+          await evalJs('document.activeElement?.blur(); true');
+          await press(key[0], key[1]);
+          await waitFor(`document.querySelector(${JSON.stringify(sel)}).classList.contains('off')`, 4000);
+        }
+      }
+      if (await evalJs('document.querySelector("#chat").classList.contains("off")')) await press('Slash', '/');
+      await waitFor('!document.querySelector("#chat").classList.contains("off")', 3000);
+      for (const wide of [false, true]) {
+        const on = await evalJs('document.querySelector("#cwide")?.getAttribute("aria-pressed") === "true"');
+        if (wide !== on && await exists('#cwide')) { await click('#cwide'); await beat(); }
+        for (const n of [2, 3, 4]) {
+          const ok = await setReply(n);
+          const r = await fit('#chat');
+          const tag = `${w}px${wide ? ' wide' : ''}, ${n} options`;
+          check(`variants (${tag}): the buttons fit the chat, no sideways scroll`, ok && r.n === n && r.inside && r.boxInHost && r.seen && r.noX && r.inWindow && r.doc, JSON.stringify(r));
+          check(`variants (${tag}): a button is at most two lines tall and the caption is short`, r.maxH <= 60 && r.caps.every((c) => c.length > 0 && c.length <= 60), JSON.stringify(r.caps) + r.maxH);
+          check(`variants (${tag}): the whole option is the hover text`, r.title.every((x) => x.length > 60), JSON.stringify(r.title));
+          if (n === 4) check(`variants (${tag}): four of them keep the box small`, r.boxH <= 110 && r.boxH >= r.maxH, JSON.stringify(r));
+          if (n === 4 && w === 480 && !wide) await shot('chat-variants-480.png');
+          if (n === 4 && w === 1100 && wide) await shot('chat-variants-1100-wide.png');
+        }
+      }
+    }
+    // a press sends the whole line, not the caption
+    await setReply(2);
+    await click('#cvariants button:nth-child(1)');
+    check('a press sends the full text of the option', await waitLog(() => calls('coordinator.jsonl').some((c) => c.text === LONG[0].replace(/\*\*/g, '')), 8000), JSON.stringify(lastCall('coordinator.jsonl')));
+    // the phone
+    await setReply(4);
+    await send('Emulation.setDeviceMetricsOverride', { width: 400, height: 800, screenWidth: 400, screenHeight: 800, deviceScaleFactor: 1, mobile: false });
+    await navigate(base + '/m');
+    await click('.nav [data-tab="chat"]');
+    check('/m: four long options', await waitFor('document.querySelectorAll("#cvariants button").length === 4', 12000));
+    const m = await evalJs(`(() => {
+      const v = document.querySelector('#cvariants'); const vr = v.getBoundingClientRect();
+      return { x: v.scrollWidth <= v.clientWidth + 1, win: vr.right <= innerWidth + 1, doc: document.documentElement.scrollWidth <= innerWidth + 1,
+        inside: [...v.querySelectorAll('button')].every((b) => { const r = b.getBoundingClientRect(); return r.left >= vr.left - 1 && r.right <= vr.right + 1; }),
+        h: vr.height, title: [...v.querySelectorAll('button')].map((b) => b.title.length > 60) };
+    })()`);
+    check('/m: the options wrap inside the screen and scroll in a box of their own', m.x && m.win && m.doc && m.inside && m.h >= 40 && m.h <= 160 && m.title.every(Boolean), JSON.stringify(m));
+    await shot('chat-variants-m.png');
+  } finally {
+    writeFileSync(coordFile, before);
+    writeFileSync(coordPoke, readFileSync(coordPoke, 'utf8'));
+    await send('Emulation.setDeviceMetricsOverride', { width: 1500, height: 950, deviceScaleFactor: 1, mobile: false });
+    await navigate(base + '/?noauto&nocoach&bloom=0');
+  }
+});
+
 // ── the hints of `/` and `@`: the program's commands, and what to name in a message ──
 
 section('hints', async () => {
@@ -1393,9 +1487,19 @@ async function settled(sels, ok, ms = 6000) {
   const end = Date.now() + ms * WAIT_SCALE;
   let r = {};
   while (Date.now() < end) {
-    r = {};
-    for (const k of Object.keys(sels)) r[k] = await rectOf(sels[k]);
-    if (ok(r)) return [true, r];
+    // One browser task gives a coherent snapshot; separate CDP requests can span different animation frames.
+    const sample = await evalJs(`(() => {
+      const r = {}; let moving = false;
+      for (const [key, selector] of Object.entries(${JSON.stringify(sels)})) {
+        const el = document.querySelector(selector);
+        const b = el?.getBoundingClientRect();
+        r[key] = b ? { l: b.left, t: b.top, r: b.right, b: b.bottom, w: b.width, h: b.height } : null;
+        if (el?.getAnimations().some((a) => a instanceof CSSTransition && (a.playState === 'running' || a.pending))) moving = true;
+      }
+      return { r, moving };
+    })()`);
+    r = sample.r;
+    if (!sample.moving && ok(r)) return [true, r];
     await sleep(250);
   }
   return [false, r];
@@ -1860,12 +1964,20 @@ section('chat wide', async () => {
     await send('Emulation.setDeviceMetricsOverride', { width: w, height: h, deviceScaleFactor: 1, mobile: false });
     await resized();
     const [ok, r] = await settled({ nav: '#nav', todo: '#todo', chat: '#chat', focus: '#focus', inp: '#ask-in' }, (x) => x.chat.w >= 340 && x.inp.w >= 160 && x.chat.r <= w + 1 && apart(x.todo, x.chat) && apart(x.todo, x.nav) && apart(x.chat, x.nav) && apart(x.chat, x.focus), 9000);
+    const moving = await evalJs(`[...document.querySelectorAll('#nav, #todo, #chat, #focus')].filter((e) => e.getAnimations().some((a) => a instanceof CSSTransition && (a.playState === 'running' || a.pending))).map((e) => e.id)`);
+    check(`${label}${w}px: panel resize transitions finish before geometry is checked`, moving.length === 0, moving.join(', '));
     const focusShown = await evalJs('document.querySelector("#focus").getBoundingClientRect().left < innerWidth - 20');
     check(`${label}${w}px, wide chat with the todos open: the chat ${Math.round(r.chat.w)} px (input ${Math.round(r.inp.w)}), nothing over anything${focusShown ? '' : ', the focus card stepped aside'}`, ok, JSON.stringify(r));
     return r;
   };
   const wideRooms = {};
-  for (const [w, h] of [[1920, 1080], [1500, 950], [1366, 768], [1280, 800], [1100, 800]]) wideRooms[w] = await useful(w, h, '');
+  // Keep resize transitions visibly in flight: an intermediate, non-overlapping rectangle is not the final layout.
+  await evalJs('document.querySelector("#chat").style.transitionDuration = "2s"; true');
+  try {
+    for (const [w, h] of [[1920, 1080], [1500, 950], [1366, 768], [1280, 800], [1100, 800]]) wideRooms[w] = await useful(w, h, '');
+  } finally {
+    await evalJs('document.querySelector("#chat").style.removeProperty("transition-duration"); true');
+  }
   check('where there is room the focus card stays beside the chat (1920) and a chat is never narrower than 30 rem by choice (1500 and up)', wideRooms[1920].chat.w >= 480 && wideRooms[1500].chat.w >= 440 && wideRooms[1366].chat.w >= 440 && wideRooms[1280].chat.w >= 440, JSON.stringify(Object.fromEntries(Object.entries(wideRooms).map(([k, v]) => [k, Math.round(v.chat.w)]))));
   await send('Emulation.setDeviceMetricsOverride', { width: 1500, height: 950, deviceScaleFactor: 1, mobile: false });
   await resized();
@@ -2827,6 +2939,57 @@ section('top bar', async () => {
   await navigate(base + '/?noauto&nocoach&bloom=0');
 }, { retry: true });
 
+// A hidden-overflow ancestor still scrolls when a chat jump calls scrollIntoView. In a restored wide chat
+// that used to move the entire cockpit up: the panels reached y=0 and the header left the viewport (PLN-97).
+section('top bar visibility', async () => {
+  const folder = realpathSync(join(fixture, 'board', 'coordinator', 'default', 'chat')).replace(/[^A-Za-z0-9]/g, '-');
+  const file = join(fixture, 'claude', 'projects', folder, 'fixture.jsonl');
+  const original = readFileSync(file, 'utf8');
+  const marker = 'PLN-97: длинный ответ для перехода по истории';
+  appendFileSync(file, JSON.stringify({ type: 'user', timestamp: new Date().toISOString(), message: { role: 'user', content: marker } }) + '\n'
+    + JSON.stringify({ type: 'assistant', timestamp: new Date().toISOString(), message: { role: 'assistant', model: 'claude-opus-5-5', content: [{ type: 'text', text: Array.from({ length: 60 }, (_, i) => `${marker}, абзац ${i + 1}.`).join('\n\n') }] } }) + '\n');
+  try {
+    for (const [screenW, screenH] of [[1280, 720], [1920, 1080], [2560, 1440]]) {
+      for (const zoom of [1, 0.8, 1.25]) {
+        // Desktop browser zoom changes both the CSS viewport and DPR. PageScaleFactor would only simulate pinch zoom.
+        const w = Math.round(screenW / zoom), h = Math.round(screenH / zoom);
+        await send('Emulation.setDeviceMetricsOverride', { width: w, height: h, screenWidth: screenW, screenHeight: screenH, deviceScaleFactor: zoom, mobile: false });
+        await evalJs('localStorage.removeItem("herdr-planner.uiScale"); localStorage.setItem("herdr-planner.chatWide", "1"); localStorage.setItem("herdr-planner.chatWideTodo", "0"); true');
+        await navigate(base + '/?noauto&nocoach&bloom=0');
+        await resized();
+        check(`${screenW}×${screenH} zoom ${zoom * 100}%: the restored chat has the long response`, await waitFor(`document.querySelector('#clog')?.innerText.includes(${JSON.stringify(marker)}) && !!document.querySelector('#chat:not(.off)')`, 12000));
+        await clearToasts();
+        // Exercise the browser's reveal operation used by unread/search/history jumps, then ordinary input focus.
+        await evalJs(`(() => { const l = document.querySelector('#clog'); l.scrollTop = l.scrollHeight; l.querySelector('.turn:last-child')?.scrollIntoView({ block: 'start', behavior: 'instant' }); document.querySelector('#ask-in').focus(); return true; })()`);
+        await pageTurn();
+        const at = `${screenW}×${screenH} browser zoom ${zoom * 100}%`;
+        const m = await evalJs(`(() => {
+          const box = (e) => { const r = e.getBoundingClientRect(); return { l: r.left, t: r.top, r: r.right, b: r.bottom }; };
+          const top = document.querySelector('#top'); const r = box(top);
+          const controls = ['#menu-btn', '#crumbs', '#q', '#hud-limits', '#wait-btn', '#mode'].map((s) => {
+            const e = document.querySelector(s); const b = box(e);
+            const hits = [0.2, 0.5, 0.8].every((k) => e.contains(document.elementFromPoint(b.l + (b.r - b.l) * k, (b.t + b.b) / 2)));
+            return { s, ...b, hits };
+          });
+          const panels = ['#nav', '#chat', '#focus'].map((s) => ({ s, ...box(document.querySelector(s)) }));
+          return { top: r, controls, panels, dpr: devicePixelRatio, logTop: document.querySelector('#clog').scrollTop,
+            scroll: document.querySelector('#win').scrollTop, sw: document.documentElement.scrollWidth };
+        })()`);
+        check(`${at}: the header is fully visible and its controls are not covered after chat reveal/focus`,
+          m.top.t >= -1 && m.top.b <= h && m.controls.every((b) => b.hits && b.l >= -1 && b.r <= w + 1 && b.t >= m.top.t - 1 && b.b <= m.top.b + 1) && m.sw <= w + 1, JSON.stringify(m));
+        check(`${at}: navigator, chat and focus start below the header; only the chat log scrolls`,
+          m.panels.every((p) => p.t >= m.top.b - 1) && m.scroll === 0 && m.logTop > 0 && Math.abs(m.dpr - zoom) < 0.01, JSON.stringify(m));
+        await shot(`topbar-visible-${screenW}x${screenH}-zoom-${Math.round(zoom * 100)}.png`);
+      }
+    }
+  } finally {
+    writeFileSync(file, original);
+    await evalJs('localStorage.removeItem("herdr-planner.chatWide"); localStorage.removeItem("herdr-planner.chatWideTodo"); true');
+    await send('Emulation.setDeviceMetricsOverride', { width: 1500, height: 950, deviceScaleFactor: 1, mobile: false });
+    await navigate(base + '/?noauto&nocoach&bloom=0');
+  }
+});
+
 section('limits', async () => {
   await resetUi();
   check('the top bar has a compact summary naming the worst window among providers', await waitFor('!!document.querySelector("#hud-limits")', 8000) && await waitFor('/97\\s*%/.test(document.querySelector("#hud-limits")?.innerText || "")', 8000), await text('#hud-limits'));
@@ -3657,13 +3820,30 @@ section('station', async () => {
   await waitFor('!!document.querySelector(\'[data-act="st-edit-light"]\')', 8000);
   await click('[data-act="st-edit-light"]');
   await waitFor('!!document.querySelector(\'[id="st-prog-light"]\')', 5000);
+  // Select as soon as the async list is usable, before deferred effects get another turn (the CI ui4 race).
+  await evalJs(`(() => {
+    window.__lightPick = false;
+    const pick = () => {
+      const el = document.querySelector('[id="st-model-light"]');
+      if (!el || el.disabled || ![...el.options].some((o) => o.value === 'claude/claude-haiku-5-5')) return;
+      observer.disconnect();
+      el.value = 'claude/claude-haiku-5-5';
+      el.dispatchEvent(new Event('change', { bubbles: true }));
+      window.__lightPick = true;
+    };
+    const observer = new MutationObserver(pick);
+    observer.observe(document.querySelector('#crew'), { childList: true, subtree: true, attributes: true, attributeFilter: ['disabled'] });
+    window.__lightPickObserver = observer;
+    pick();
+    return true;
+  })()`);
   await typeIn('[id="st-prog-light"]', 'claude');
-  // on a slow runner the program's model list comes late: wait for the very model that is picked, not for any three
-  await waitFor('[...document.querySelectorAll(\'select[id="st-model-light"] option\')].some((o) => o.value === "claude/claude-haiku-5-5")', 45000);
-  await typeIn('[id="st-model-light"]', 'claude/claude-haiku-5-5');
+  const pickedLight = await waitFor('window.__lightPick', 45000);
+  await evalJs('window.__lightPickObserver?.disconnect(); delete window.__lightPickObserver; delete window.__lightPick; true');
+  check('the light model can be selected as soon as its list arrives', pickedLight);
   await click('[id="st-next-light"]');
   await readyCard();
-  check('the light preset shows was → now, and says it is kept by the planner', await hasText('#st-change', 'Лёгкие задачи') && await hasText('#st-change', 'не на доске'), await text('#st-change'));
+  check('the light preset keeps the selected model in its preview and says it is kept by the planner', await hasText('#st-change', 'Лёгкие задачи') && await hasText('#st-change', 'не на доске') && (await text('#st-now')) === 'claude/claude-haiku-5-5', await text('#st-change'));
   const lightLook = '({ card: document.querySelector("#st-change")?.innerText, armed: plannerDebug().armed, pending: window.__net?.pending, bad: window.__net?.bad?.slice(-3) })';
   const lightKept = await untilDone('the light preset confirmation', () => twoPresses('#st-confirm'), 'fetch("/api/station").then((r) => r.json()).then((d) => d.light === "claude/claude-haiku-5-5")', 15000, lightLook);
   check('the planner keeps the preset', lightKept, JSON.stringify(await evalJs(lightLook)));
@@ -6998,6 +7178,8 @@ section('chat unread', async () => {
   const scrollAway = async () => {
     await evalJs('(() => { const l = document.querySelector("#clog"); l.dispatchEvent(new WheelEvent("wheel", { bubbles: true, deltaY: 1 })); l.scrollTop = l.scrollHeight - l.clientHeight - 700; return true; })()');
     await waitFor(`${dist} >= 650 && !!document.querySelector("#tolast")`, CHAT_WAIT);
+    // The scroll position changes before Chromium dispatches scroll. Let the log handle it before an answer arrives.
+    await calmLog();
   };
   // Watch the browser's own scroll events. `started` lets a check add an answer or interrupt while the smooth jump is
   // actually running; `ended` is the barrier afterwards. No guess about how long the animation takes on this machine.
@@ -7556,7 +7738,7 @@ section('crew roles', async () => {
   await typeIn('#cr-rule-repo', 'gamma');
   await waitFor('!document.querySelector("#cr-rule-add").disabled', 5000);   // the page draws the typed value a moment later on a loaded machine
   await click('#cr-rule-add');
-  check('a rule «for the repository gamma» is added', await waitFor('!!document.querySelector(\'[data-rule-role="Дизайнер"]\') && (document.querySelector("#cr-rules-list")?.innerText || "").includes("gamma")', 8000), await text('#st-rules'));
+  check('a rule «for the repository gamma» is added and the form is ready for another', await waitFor('!!document.querySelector(\'[data-rule-role="Дизайнер"]\') && (document.querySelector("#cr-rules-list")?.innerText || "").includes("gamma") && document.querySelector("#cr-rule-repo").value === "" && document.querySelector("#cr-rule-title").value === ""', 8000), await text('#st-rules'));
   await typeIn('#cr-rule-role', sid);
   await typeIn('#cr-rule-title', '*безопас*');
   await waitFor('document.querySelector("#cr-rule-role").value === ' + JSON.stringify(sid) + ' && !document.querySelector("#cr-rule-add").disabled', 5000);

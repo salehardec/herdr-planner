@@ -144,6 +144,11 @@ textarea.in:focus,input.in:focus{border-color:var(--pl-focus)}
 .dock{padding:0 .75rem;background:var(--c-bg-dark);max-height:45%;overflow:auto}
 .quick{display:flex;gap:.375rem;overflow:auto;padding:.375rem .75rem 0;background:var(--c-bg-dark);scrollbar-width:none}
 .quick button{flex:none;min-height:2.75rem;border:1px solid var(--pl-line);background:none;border-radius:1.125rem;padding:.25rem .75rem;font-size:.75rem;color:var(--pl-dim);max-width:80%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+/* the Coordinator's options: buttons that wrap under each other and never wider than the screen; many of them scroll */
+#cvariants.quick{flex-wrap:wrap;max-height:9.5rem;overflow-y:auto;overscroll-behavior:contain;scrollbar-width:thin;min-width:0}
+#cvariants.quick button{flex:0 1 auto;display:inline-flex;align-items:baseline;gap:.375rem;min-width:0;max-width:100%;text-align:left;white-space:normal;border-radius:1rem;line-height:1.3}
+#cvariants .vk{flex:none}
+#cvariants .vt{min-width:0;display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;line-clamp:2;overflow:hidden;overflow-wrap:anywhere}
 .composer{display:flex;gap:.5rem;align-items:flex-end;padding:.5rem max(.75rem,env(safe-area-inset-right)) calc(.5rem + env(safe-area-inset-bottom,0px)) max(.75rem,env(safe-area-inset-left));border-top:1px solid var(--pl-line);background:var(--c-bg-dark)}
 .composer textarea{flex:1;max-height:7rem}
 .send{width:2.75rem;height:2.75rem;flex:none;display:grid;place-items:center;border:0;border-radius:50%;background:var(--pl-accent);color:var(--pl-on-accent)}
