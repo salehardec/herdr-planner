@@ -7,7 +7,7 @@ import type { SavedFile } from './attach';
 import { ApiError, api, post, refreshNow } from './api';
 import { toast } from './toast';
 import { t } from './i18n';
-import { restoreRequest } from './request-queue';
+import { markDialogAnswered, restoreRequest, screenReread } from './request-queue';
 import { prepareAnswer } from './nav';
 import { requestType } from './requests';
 import type { Entity, MenuAnswer, Seat, Task } from './types';
@@ -136,6 +136,7 @@ export async function fetchScreen(target: string, role = ''): Promise<void> {
       if (task) restoreRequest(`${requestType(task)}:${target}`);
       else if (target === 'coordinator') restoreRequest('coordinator-dialog');
     }
+    screenReread(target, r.menu?.sig);
     screens.value = { ...screens.value, [target]: { at: Date.now(), ...r, busy: false } };
   } catch (e) {
     screens.value = { ...screens.value, [target]: { error: (e as Error).message, busy: false } };
@@ -160,6 +161,13 @@ export async function answerMenu(target: string, role: string, sig: string, answ
   const answered = prepareAnswer(target);
   try {
     await post('/api/menu/answer', { target, role: role || undefined, sig, answer, note });
+    // The keys are in the agent's terminal; the board hears of it from the agent's hook a moment later. Until then the task
+    // must not look as if it still waits (the reviewer's pane is not the task's own dialog).
+    const task = role ? undefined : taskOf(target);
+    if (task) {
+      markDialogAnswered(task, sig);
+      setTimeout(() => { void refreshNow(); }, 800);
+    }
     await answered();
     return { ok: true };
   } catch (e) {

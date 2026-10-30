@@ -1,0 +1,8 @@
+> You are running Codex in /home/salehardec/.herdr/worktrees/xtool-hello/work-1
+
+  Do you trust the contents of this directory? Working with untrusted contents comes with higher risk of prompt injection.
+
+› 1. Yes, continue
+  2. No, quit
+
+  Press enter to continue

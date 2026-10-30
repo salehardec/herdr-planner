@@ -5,7 +5,7 @@ import { armed, details, requests, screens } from '../store';
 import { answerMenu, boardOk, fetchScreen, pickAttempt, runTaskAction, tellTask } from '../actions';
 import { fetchDetails, onQueueAnswer, prepareAnswer } from '../nav';
 import { send } from '../chat';
-import { boardPlaceholder, questionText, taskPermission, type PermissionNote, type PermissionPrompt } from '../permission';
+import { boardPlaceholder, dialogReach, questionText, taskPermission, type PermissionNote, type PermissionPrompt } from '../permission';
 import { nextRequest } from '../request-queue';
 import { requestType } from '../requests';
 import { t } from '../i18n';
@@ -245,6 +245,8 @@ function Actions(props: { r: Request; plan: CardPlan }): JSX.Element | null {
   const task = r.task;
   if (!task) return null;
   const remarks = plan.block === 'plan' || plan.block === 'approval';
+  // A dialog that only the agent's own screen can answer: words sent to it would only queue behind the dialog.
+  const onScreen = plan.block === 'permission' && dialogReach(task, screens.value[task.id]) === 'screen';
   const currentSheet = sheet.value;
   const queueOrigin = currentSheet ? ('queue' in currentSheet ? currentSheet.queue : undefined) : r.key;
   return (
@@ -258,7 +260,8 @@ function Actions(props: { r: Request; plan: CardPlan }): JSX.Element | null {
           {plan.pr && <a class="btn" href={plan.pr} target="_blank" rel="noopener noreferrer" data-act="pr">{t(task?.merge_via_mr ? 'm.openMr' : 'm.openPr')}<Gl n="ext" /></a>}
         </div>
       )}
-      {plan.tell && (
+      {onScreen && <div class="hintline" role="status" data-reach="screen">{t('m.note.dialogScreen')}</div>}
+      {plan.tell && !onScreen && (
         <Tell
           task={task} id={r.key}
           label={remarks ? t('req.returnWithNotes') : plan.block === 'failed' ? t('m.writeTask') : t('m.sendAnswer')}

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { boardPlaceholder, permissionPrompt, questionText, taskPermission } from './permission';
+import { boardPlaceholder, dialogReach, permissionPrompt, questionText, taskPermission, type ShownScreen } from './permission';
 import type { MenuData, Task } from './types';
 
 const menu = (labels: string[], over: Partial<MenuData> = {}): MenuData => ({
@@ -69,5 +69,38 @@ describe('the question of a task', () => {
     expect(questionText(task({ msg: 'Old or new?' }), m)).toBe('Old or new?');
     expect(questionText(task({}), m)).toBe('Which schema?');
     expect(questionText(task({}), null)).toBe('');
+  });
+});
+
+describe('what can be done about a dialog the board calls a permission (PLN-101)', () => {
+  const TRUST = menu(['Yes, I trust this folder', 'No, exit'], {
+    program: 'other', question: 'Quick safety check: Is this a project you created or one you trust?', context: 'Accessing workspace:\n/work/x',
+  });
+  const perm = task({ kind: 'permission', msg: 'Queued: open the agent and answer its dialog first' });
+  const read = (over: Partial<ShownScreen>): ShownScreen => ({ at: 1, text: '', menu: null, ...over });
+
+  it('reads the folder question as a yes and a no', () => {
+    expect(permissionPrompt(TRUST)).toMatchObject({ allow: 0, deny: 1, always: undefined });
+    // the board may also call the stopped agent a question, or nothing: the words of the question make it a permission
+    expect(taskPermission(task({ kind: 'question', msg: 'Needs you' }), TRUST)).not.toBeNull();
+    expect(taskPermission(task({ kind: '', msg: 'Needs you' }), TRUST)).not.toBeNull();
+  });
+  it('answers a yes/no dialog by keys', () => {
+    expect(dialogReach(perm, read({ menu: TRUST }))).toBe('buttons');
+  });
+  it('lets a menu with other rows be answered by its own card', () => {
+    expect(dialogReach(perm, read({ menu: menu(['Trust folder', 'Open read-only']) }))).toBe('menu');
+  });
+  it('sends a dialog it cannot read to the agent’s screen, and offers no words for it', () => {
+    expect(dialogReach(perm, read({ text: ' Do you trust this folder?\n\n Press ctrl+t to toggle\n\n Enter to confirm · Esc to cancel' }))).toBe('screen');
+    expect(dialogReach(perm, read({ text: '  ❯ 1. Trust\n    2. Exit' }))).toBe('screen');
+    expect(dialogReach(perm, { error: 'herdr не запущен' })).toBe('screen');
+  });
+  it('waits for the screen before offering anything, and keeps words for an agent that asked in words', () => {
+    expect(dialogReach(perm, undefined)).toBe('reading');
+    expect(dialogReach(perm, { busy: true })).toBe('reading');
+    expect(dialogReach(perm, read({ text: '● Работаю над задачей…\n\n❯ \n  ⏵⏵ accept edits on' }))).toBe('words');
+    // nobody reads the screen of an agent that has left
+    expect(dialogReach(task({ kind: 'permission', exited_at: 5 }), undefined)).toBe('words');
   });
 });
