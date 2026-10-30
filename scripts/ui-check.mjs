@@ -5357,6 +5357,10 @@ section('memory suggestions', async () => {
   check('it is not asked again for the same task', asked('ALP-4') === 1);
 
   // dismiss, from the task's own panel
+  // delta is a GitLab repo: its refused merge is the Coordinator's, so the board's regular PR route comes back first.
+  execFileSync(join(fixture, 'bin', 'herdr-projects'), ['set', 'merge.pr', 'true', '--repo', 'delta']);
+  await post('/api/refresh', {});
+  await waitFor('fetch("/api/state").then((r) => r.json()).then((s) => s.tasks.some((t) => t.id === "delta/1" && !t.merge_via_mr))', 15000);
   await post('/api/action', { action: 'approve', id: 'delta/1', confirm: true });
   check('another done task is proposed too', await waitFor('fetch("/api/state").then((r) => r.json()).then((s) => s.memory_suggestions.some((m) => m.task === "delta/1"))', 15000));
   // an accept that cannot work changes nothing: no lines at all, or one line too long among good ones
