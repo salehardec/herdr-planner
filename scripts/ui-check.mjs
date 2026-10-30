@@ -2819,6 +2819,57 @@ section('top bar', async () => {
   await navigate(base + '/?noauto&nocoach&bloom=0');
 }, { retry: true });
 
+// A hidden-overflow ancestor still scrolls when a chat jump calls scrollIntoView. In a restored wide chat
+// that used to move the entire cockpit up: the panels reached y=0 and the header left the viewport (PLN-97).
+section('top bar visibility', async () => {
+  const folder = realpathSync(join(fixture, 'board', 'coordinator', 'default', 'chat')).replace(/[^A-Za-z0-9]/g, '-');
+  const file = join(fixture, 'claude', 'projects', folder, 'fixture.jsonl');
+  const original = readFileSync(file, 'utf8');
+  const marker = 'PLN-97: длинный ответ для перехода по истории';
+  appendFileSync(file, JSON.stringify({ type: 'user', timestamp: new Date().toISOString(), message: { role: 'user', content: marker } }) + '\n'
+    + JSON.stringify({ type: 'assistant', timestamp: new Date().toISOString(), message: { role: 'assistant', model: 'claude-opus-5-5', content: [{ type: 'text', text: Array.from({ length: 60 }, (_, i) => `${marker}, абзац ${i + 1}.`).join('\n\n') }] } }) + '\n');
+  try {
+    for (const [screenW, screenH] of [[1280, 720], [1920, 1080], [2560, 1440]]) {
+      for (const zoom of [1, 0.8, 1.25]) {
+        // Desktop browser zoom changes both the CSS viewport and DPR. PageScaleFactor would only simulate pinch zoom.
+        const w = Math.round(screenW / zoom), h = Math.round(screenH / zoom);
+        await send('Emulation.setDeviceMetricsOverride', { width: w, height: h, screenWidth: screenW, screenHeight: screenH, deviceScaleFactor: zoom, mobile: false });
+        await evalJs('localStorage.removeItem("herdr-planner.uiScale"); localStorage.setItem("herdr-planner.chatWide", "1"); localStorage.setItem("herdr-planner.chatWideTodo", "0"); true');
+        await navigate(base + '/?noauto&nocoach&bloom=0');
+        await resized();
+        check(`${screenW}×${screenH} zoom ${zoom * 100}%: the restored chat has the long response`, await waitFor(`document.querySelector('#clog')?.innerText.includes(${JSON.stringify(marker)}) && !!document.querySelector('#chat:not(.off)')`, 12000));
+        await clearToasts();
+        // Exercise the browser's reveal operation used by unread/search/history jumps, then ordinary input focus.
+        await evalJs(`(() => { const l = document.querySelector('#clog'); l.scrollTop = l.scrollHeight; l.querySelector('.turn:last-child')?.scrollIntoView({ block: 'start', behavior: 'instant' }); document.querySelector('#ask-in').focus(); return true; })()`);
+        await pageTurn();
+        const at = `${screenW}×${screenH} browser zoom ${zoom * 100}%`;
+        const m = await evalJs(`(() => {
+          const box = (e) => { const r = e.getBoundingClientRect(); return { l: r.left, t: r.top, r: r.right, b: r.bottom }; };
+          const top = document.querySelector('#top'); const r = box(top);
+          const controls = ['#menu-btn', '#crumbs', '#q', '#hud-limits', '#wait-btn', '#mode'].map((s) => {
+            const e = document.querySelector(s); const b = box(e);
+            const hits = [0.2, 0.5, 0.8].every((k) => e.contains(document.elementFromPoint(b.l + (b.r - b.l) * k, (b.t + b.b) / 2)));
+            return { s, ...b, hits };
+          });
+          const panels = ['#nav', '#chat', '#focus'].map((s) => ({ s, ...box(document.querySelector(s)) }));
+          return { top: r, controls, panels, dpr: devicePixelRatio, logTop: document.querySelector('#clog').scrollTop,
+            scroll: document.querySelector('#win').scrollTop, sw: document.documentElement.scrollWidth };
+        })()`);
+        check(`${at}: the header is fully visible and its controls are not covered after chat reveal/focus`,
+          m.top.t >= -1 && m.top.b <= h && m.controls.every((b) => b.hits && b.l >= -1 && b.r <= w + 1 && b.t >= m.top.t - 1 && b.b <= m.top.b + 1) && m.sw <= w + 1, JSON.stringify(m));
+        check(`${at}: navigator, chat and focus start below the header; only the chat log scrolls`,
+          m.panels.every((p) => p.t >= m.top.b - 1) && m.scroll === 0 && m.logTop > 0 && Math.abs(m.dpr - zoom) < 0.01, JSON.stringify(m));
+        await shot(`topbar-visible-${screenW}x${screenH}-zoom-${Math.round(zoom * 100)}.png`);
+      }
+    }
+  } finally {
+    writeFileSync(file, original);
+    await evalJs('localStorage.removeItem("herdr-planner.chatWide"); localStorage.removeItem("herdr-planner.chatWideTodo"); true');
+    await send('Emulation.setDeviceMetricsOverride', { width: 1500, height: 950, deviceScaleFactor: 1, mobile: false });
+    await navigate(base + '/?noauto&nocoach&bloom=0');
+  }
+});
+
 section('limits', async () => {
   await resetUi();
   check('the top bar has a compact summary naming the worst window among providers', await waitFor('!!document.querySelector("#hud-limits")', 8000) && await waitFor('/97\\s*%/.test(document.querySelector("#hud-limits")?.innerText || "")', 8000), await text('#hud-limits'));
