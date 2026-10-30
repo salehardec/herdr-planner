@@ -145,4 +145,27 @@ describe('working through the waiting queue', () => {
     expect(moved).toHaveBeenCalledTimes(1);
     stop();
   });
+
+  it('moves on after a free answer to the Coordinator', async () => {
+    const dialog: Request = { id: 'coordinator', key: 'coordinator-dialog', type: 'coordinator-dialog', msg: 'Pick', title: '', text: '', tag: 'Q', repo: 'coordinator', urgency: -1 };
+    rows.value = [dialog, row('a/1'), row('a/2')];
+    await openRequest(0);
+    expect(store.selected.value?.kind).toBe('quasar');
+    await prepareAnswer('coordinator', 'coordinator')();
+    expect(store.selected.value?.id).toBe('a/1');
+    expect(pendingRequests(rows.value).map((r) => r.key)).toEqual(['question:a/1', 'question:a/2']);
+  });
+
+  it('moves on from a yard alarm only once the alarm is gone', async () => {
+    const alarm: Request = { id: 'vm', key: 'runner-alert:vm:disk', type: 'runner-alert', msg: 'Disk', title: '', text: '', tag: 'vm', repo: 'r', urgency: 3.5 };
+    rows.value = [alarm, row('a/1')];
+    await openRequest(0);
+    await prepareAnswer('vm', 'runner')();
+    expect(store.selected.value?.kind).toBe('runner');
+    expect(resolvedRequests.value.size).toBe(0);
+    const done = prepareAnswer('vm', 'runner');
+    rows.value = [row('a/1')];
+    await done();
+    expect(store.selected.value?.id).toBe('a/1');
+  });
 });

@@ -158,9 +158,14 @@ export async function stepRequest(delta: number): Promise<void> {
 }
 
 /** Capture before the write: SSE may remove the row before its HTTP response arrives. Call only on success. */
-export function prepareAnswer(id: string, kind: 'task' | 'memory' = 'task'): () => Promise<void> {
+export function prepareAnswer(id: string, kind: 'task' | 'memory' | 'coordinator' | 'runner' = 'task'): () => Promise<void> {
   const list = requests.value;
-  const r = list.find((r) => r.id === id && (kind === 'memory' ? r.type === 'memory' : r.type !== 'memory'));
+  const here = queueRequest.value;
+  const r = kind === 'runner'
+    // A yard may have several alarms: the one being worked on, else the first.
+    ? (here?.type === 'runner-alert' && here.id === id ? list.find((r) => r.key === here.key) : undefined) ?? list.find((r) => r.type === 'runner-alert' && r.id === id)
+    : kind === 'coordinator' ? list.find((r) => r.type === 'coordinator-dialog')
+    : list.find((r) => r.id === id && (kind === 'memory' ? r.type === 'memory' : r.type !== 'memory'));
   const order = list.map((r) => r.key);
   const origin = navigation;
   const advance = r && fromQueue.value && queueRequest.value?.id === id;
@@ -169,7 +174,10 @@ export function prepareAnswer(id: string, kind: 'task' | 'memory' = 'task'): () 
   return async () => {
     if (!r || complete) return;
     complete = true;
-    if (requests.value.some((current) => current.key === r.key)) resolveRequest(r);
+    // An alarm stays until the yard says it is gone (the caller has read the board again): then no move.
+    const still = requests.value.some((current) => current.key === r.key);
+    if (kind === 'runner' && still) return;
+    if (still) resolveRequest(r);
     extra.forEach((fn) => fn?.());
     // A late response must not move a person who opened something else meanwhile.
     if (!advance || navigation !== origin || !fromQueue.value) return;

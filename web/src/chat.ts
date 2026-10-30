@@ -3,6 +3,7 @@
 import { signal } from '@preact/signals';
 import { api, post, refreshNow } from './api';
 import { chat } from './store';
+import { prepareAnswer } from './nav';
 import { reconcileEchoes, restoreEchoes, type Echo } from './chat-echo';
 import type { TurnData } from './types';
 import { t } from './i18n';
@@ -202,8 +203,10 @@ export async function send(text: string): Promise<boolean> {
     const attachments = got.saved;
     update({ error: '' });
     const receipt = notePending(body, attachments);
+    const answered = prepareAnswer('coordinator', 'coordinator');
     try {
       await post('/api/chat', { text: body, attachments });
+      void answered();
       const keys = new Set(files.map((p) => p.key));
       for (const k of keys) shelf.remove(k);
       const sentTodos = draftTodos.value;

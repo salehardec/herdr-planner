@@ -5488,8 +5488,9 @@ section('memory suggestions', async () => {
   check('the edited lines become drafts with the task as the source', await waitLog(() => filesIn(draftsOf('alpha')).some((f) => { const t = readFile(join(draftsOf('alpha'), f)); return t.includes('source: task alpha/4') && t.includes('только localStorage'); }) && filesIn(draftsOf('alpha')).filter((f) => readFile(join(draftsOf('alpha'), f)).includes('source: task alpha/4')).length === 2, 10000), filesIn(draftsOf('alpha')).join(','));
   check('and the checkout of the universe is as it was: nothing written into docs/memory', gitStatus(alphaRoot) === alphaStatus && !filesIn(alphaMem).some((f) => readFile(join(alphaMem, f)).includes('source: task alpha/4')), gitStatus(alphaRoot));
   check('and the suggestion is gone', await waitFor('fetch("/api/state").then((r) => r.json()).then((s) => !s.memory_suggestions.some((m) => m.task === "alpha/4"))', 8000) && await waitFor('!document.querySelector(\'.mm-sug[data-sug="alpha/4"]\')', 8000));
-  check('keeping memory offers Undo in its success toast', await exists('#toasts .toast .undo'));
-  await click('#toasts .toast .undo');
+  const keptToast = `[...document.querySelectorAll('#toasts .toast')].find((e) => e.innerText.includes('Записано в память вселенной') && e.querySelector('.undo'))`;
+  check('keeping memory offers Undo in its success toast', await waitFor(`!!(${keptToast})`, 8000));
+  await evalJs(`(${keptToast}).querySelector('.undo').click(); true`);
   check('Undo removes the suggestion additions and restores the pending proposal', await waitFor('fetch("/api/state").then((r) => r.json()).then((s) => s.memory_suggestions.some((m) => m.task === "alpha/4"))', 8000)
     && filesIn(draftsOf('alpha')).every((f) => !readFile(join(draftsOf('alpha'), f)).includes('source: task alpha/4')));
   if (!(await evalJs('document.querySelector("#drawer-wait").classList.contains("open")'))) await press('KeyB', 'b');
