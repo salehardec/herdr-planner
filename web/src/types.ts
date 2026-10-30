@@ -580,7 +580,7 @@ export interface Request {
   /** Why the human is needed, in one word: «план», «разрешение», «вопрос», «упала», «к одобрению». */
   why?: string;
   task?: Task;
-  options?: { label: string; value: string }[];
+  options?: { label: string; value: string; short: string }[];
   /** An alarm of a shipyard: the row leads to that yard's focus, not to a task. */
   alert?: RunnerAlert;
   urgency: number;

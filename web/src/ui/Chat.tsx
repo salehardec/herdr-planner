@@ -496,7 +496,9 @@ export function Chat(): JSX.Element {
       {options.length > 0 && (
         <div class="variants" id="cvariants">
           {options.map((o, i) => (
-            <button class="btn sm" type="button" key={i} data-variant={i} onClick={() => variantSend(o.value)}>{o.label} {o.value}</button>
+            <button class="btn sm" type="button" key={i} data-variant={i} title={o.short === o.value ? undefined : o.value} onClick={() => variantSend(o.value)}>
+              <span class="vk">{o.label}</span><span class="vt">{o.short}</span>
+            </button>
           ))}
         </div>
       )}
