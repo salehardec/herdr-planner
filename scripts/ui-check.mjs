@@ -1214,6 +1214,97 @@ section('chat echo', async () => {
   }
 });
 
+section('chat variants', async () => {
+  // PLN-100: the Coordinator's answer buttons (2–4 long options; one line is no choice for parseOptions) never leave the
+  // chat: the caption is the first phrase, the whole line is the title and what a press sends; a crowd of them scrolls in a box.
+  await resetUi();
+  await waitLog(() => calls('coordinator.jsonl').some((c) => String(c.text || '').startsWith('Верфь')), 30000);
+  const coordFile = join(fixture, 'state', 'coordinator.json');
+  const coordPoke = join(fixture, 'board', 'tasks', 'alpha', '11', 'task.json');
+  const before = readFileSync(coordFile, 'utf8');
+  const LONG = [
+    'Ставим LineageOS вместо Linux. Заведу задачу на сборку образа, проверку драйверов камеры, модема и сенсоров, затем вернусь с отчётом по каждому пункту и предложу порядок работ на неделю',
+    '**Остаёмся на Linux** — ничего не меняем в железе, доделываем текущую ветку, а вопрос про LineageOS возвращаем после релиза и первых отзывов на сборку',
+    'ОченьДлинноеСловоБезПробеловОченьДлинноеСловоБезПробеловОченьДлинноеСловоБезПробеловОченьДлинноеСловоБезПробелов и ещё хвост',
+    'Отложить решение до пятницы, когда будут результаты замеров батареи и тепловыделения на обеих сборках одновременно',
+  ];
+  const setReply = async (n) => {
+    const state = JSON.parse(before);
+    state.reply = `Что выбираем?\n${LONG.slice(0, n).map((o, i) => `${i + 1}) ${o}`).join('\n')}`;
+    writeFileSync(coordFile, JSON.stringify(state));
+    writeFileSync(coordPoke, readFileSync(coordPoke, 'utf8'));
+    return waitFor(`document.querySelectorAll('#cvariants button').length === ${n}`, 12000);
+  };
+  // Every button inside the box it sits in and the box inside the chat and the window.
+  const fit = (box) => evalJs(`(() => {
+    const v = document.querySelector('#cvariants'); const b = [...v.querySelectorAll('button')];
+    const host = document.querySelector(${JSON.stringify(box)}).getBoundingClientRect(); const chat = host; const vr = v.getBoundingClientRect();
+    const inside = b.every((e) => { const r = e.getBoundingClientRect(); return r.left >= vr.left - 1 && r.right <= vr.right + 1; });
+    return { n: b.length, inside, boxInHost: vr.left >= host.left - 1 && vr.right <= host.right + 1, noX: v.scrollWidth <= v.clientWidth + 1,
+      inWindow: vr.right <= innerWidth + 1, doc: document.documentElement.scrollWidth <= innerWidth + 1,
+      maxH: Math.max(...b.map((e) => e.getBoundingClientRect().height)), boxH: vr.height, seen: vr.top >= chat.top - 1 && vr.bottom <= chat.bottom + 1 && vr.height >= Math.min(...b.map((e) => e.getBoundingClientRect().height)) - 1,
+      title: b.map((e) => e.title), caps: b.map((e) => e.querySelector('.vt')?.innerText || '') };
+  })()`);
+  try {
+    for (const w of [480, 720, 1100]) {
+      await send('Emulation.setDeviceMetricsOverride', { width: w, height: 900, screenWidth: w, screenHeight: 900, deviceScaleFactor: 1, mobile: false });
+      await waitFor(`innerWidth === ${w}`, 5000);
+      await evalJs('try { localStorage.removeItem("herdr-planner.chatWide"); localStorage.removeItem("herdr-planner.chatWideTodo"); } catch {} true');
+      await evalJs('planner.goOverview(); true');
+      await waitFor('world.debug().flight === "idle" && plannerDebug().selected === null', 15000);
+      await resized();
+      // the navigator and the focus card off: in a narrow window they cover the chat, and its box would be measured under them
+      for (const [sel, key] of [['#nav', ['KeyN', 'n']], ['#focus', ['KeyF', 'f']]]) {
+        if (await evalJs(`!!document.querySelector(${JSON.stringify(sel)}) && !document.querySelector(${JSON.stringify(sel)}).classList.contains('off')`)) {
+          await evalJs('document.activeElement?.blur(); true');
+          await press(key[0], key[1]);
+          await waitFor(`document.querySelector(${JSON.stringify(sel)}).classList.contains('off')`, 4000);
+        }
+      }
+      if (await evalJs('document.querySelector("#chat").classList.contains("off")')) await press('Slash', '/');
+      await waitFor('!document.querySelector("#chat").classList.contains("off")', 3000);
+      for (const wide of [false, true]) {
+        const on = await evalJs('document.querySelector("#cwide")?.getAttribute("aria-pressed") === "true"');
+        if (wide !== on && await exists('#cwide')) { await click('#cwide'); await beat(); }
+        for (const n of [2, 3, 4]) {
+          const ok = await setReply(n);
+          const r = await fit('#chat');
+          const tag = `${w}px${wide ? ' wide' : ''}, ${n} options`;
+          check(`variants (${tag}): the buttons fit the chat, no sideways scroll`, ok && r.n === n && r.inside && r.boxInHost && r.seen && r.noX && r.inWindow && r.doc, JSON.stringify(r));
+          check(`variants (${tag}): a button is at most two lines tall and the caption is short`, r.maxH <= 60 && r.caps.every((c) => c.length > 0 && c.length <= 60), JSON.stringify(r.caps) + r.maxH);
+          check(`variants (${tag}): the whole option is the hover text`, r.title.every((x) => x.length > 60), JSON.stringify(r.title));
+          if (n === 4) check(`variants (${tag}): four of them keep the box small`, r.boxH <= 110 && r.boxH >= r.maxH, JSON.stringify(r));
+          if (n === 4 && w === 480 && !wide) await shot('chat-variants-480.png');
+          if (n === 4 && w === 1100 && wide) await shot('chat-variants-1100-wide.png');
+        }
+      }
+    }
+    // a press sends the whole line, not the caption
+    await setReply(2);
+    await click('#cvariants button:nth-child(1)');
+    check('a press sends the full text of the option', await waitLog(() => calls('coordinator.jsonl').some((c) => c.text === LONG[0].replace(/\*\*/g, '')), 8000), JSON.stringify(lastCall('coordinator.jsonl')));
+    // the phone
+    await setReply(4);
+    await send('Emulation.setDeviceMetricsOverride', { width: 400, height: 800, screenWidth: 400, screenHeight: 800, deviceScaleFactor: 1, mobile: false });
+    await navigate(base + '/m');
+    await click('.nav [data-tab="chat"]');
+    check('/m: four long options', await waitFor('document.querySelectorAll("#cvariants button").length === 4', 12000));
+    const m = await evalJs(`(() => {
+      const v = document.querySelector('#cvariants'); const vr = v.getBoundingClientRect();
+      return { x: v.scrollWidth <= v.clientWidth + 1, win: vr.right <= innerWidth + 1, doc: document.documentElement.scrollWidth <= innerWidth + 1,
+        inside: [...v.querySelectorAll('button')].every((b) => { const r = b.getBoundingClientRect(); return r.left >= vr.left - 1 && r.right <= vr.right + 1; }),
+        h: vr.height, title: [...v.querySelectorAll('button')].map((b) => b.title.length > 60) };
+    })()`);
+    check('/m: the options wrap inside the screen and scroll in a box of their own', m.x && m.win && m.doc && m.inside && m.h >= 40 && m.h <= 160 && m.title.every(Boolean), JSON.stringify(m));
+    await shot('chat-variants-m.png');
+  } finally {
+    writeFileSync(coordFile, before);
+    writeFileSync(coordPoke, readFileSync(coordPoke, 'utf8'));
+    await send('Emulation.setDeviceMetricsOverride', { width: 1500, height: 950, deviceScaleFactor: 1, mobile: false });
+    await navigate(base + '/?noauto&nocoach&bloom=0');
+  }
+});
+
 // ── the hints of `/` and `@`: the program's commands, and what to name in a message ──
 
 section('hints', async () => {

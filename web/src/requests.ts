@@ -15,14 +15,28 @@ const gb = (b?: number): string => String(((b ?? 0) / GB).toFixed(1));
 export const PERMISSION_ALLOW = (): string => t('perm.allow.text');
 export const PERMISSION_DENY = (): string => t('perm.deny.text');
 
+/** The caption a button wears for a long option: the bold start of the line, else its first phrase (up to a full stop,
+ *  a colon or a dash), else the line cut at a word. The button still sends the whole line. */
+export function optionShort(raw: string, max = 48): string {
+  const text = String(raw ?? '').replace(/\s+/g, ' ').trim();
+  const bold = text.match(/^\*\*(.+?)\*\*/);
+  const plain = text.replace(/\*\*/g, '').replace(/`/g, '').trim();
+  const head = (bold ? bold[1].replace(/`/g, '') : plain.split(/[.!?…:;](?=\s|$)|\s[—–-]\s/)[0]).replace(/[\s.,:;—–-]+$/, '').trim();
+  const out = head || plain;
+  if (out.length <= max) return out;
+  const cut = out.slice(0, max - 1);
+  const sp = cut.lastIndexOf(' ');
+  return (sp > max / 2 ? cut.slice(0, sp) : cut).replace(/[\s.,:;—–-]+$/, '') + '…';
+}
+
 /** Answer options in the Coordinator's words: a numbered/lettered list AFTER a question.
- *  Plain bullets and explanations are not options. */
-export function parseOptions(reply: string): { label: string; value: string }[] {
+ *  Plain bullets and explanations are not options. `short` is the caption for a button, `value` what it sends. */
+export function parseOptions(reply: string): { label: string; value: string; short: string }[] {
   const lines = String(reply ?? '').split('\n');
   let at = -1;
   for (let i = 0; i < lines.length; i++) if (lines[i].includes('?')) at = i;
   if (at < 0) return [];
-  const out: { label: string; value: string }[] = [];
+  const out: { label: string; value: string; short: string }[] = [];
   const re = /^\s*(?:(\d+)[).:]|([a-zA-Z])[).:])\s+(.+?)\s*$/;
   for (let i = at + 1; i < lines.length; i++) {
     const line = lines[i];
@@ -37,7 +51,7 @@ export function parseOptions(reply: string): { label: string; value: string }[] 
     }
     const label = m[1] ? `${m[1]})` : `${m[2].toUpperCase()})`;
     const value = m[3].replace(/\*\*/g, '').replace(/`/g, '').trim();
-    if (value.length > 1 && value.length <= 300 && !out.some((o) => o.value === value)) out.push({ label, value });
+    if (value.length > 1 && value.length <= 300 && !out.some((o) => o.value === value)) out.push({ label, value, short: optionShort(m[3]) });
   }
   return out.length >= 2 ? out.slice(0, 9) : [];
 }
