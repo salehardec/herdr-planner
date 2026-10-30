@@ -14,6 +14,7 @@ use std::path::{Path, PathBuf};
 /// empty (`""`, `0`, `[]`) rather than errors.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct TaskMeta {
+    pub merge_request: String,
     /// `created`, milliseconds since the epoch.
     pub created_ms: u64,
     pub description: String,
@@ -99,7 +100,20 @@ pub fn read_task(data_dir: &Path, repo: &str, n: u64) -> Option<TaskMeta> {
     if !v.is_object() {
         return None;
     }
-    Some(parse_task(&v))
+    let mut meta = parse_task(&v);
+    if meta.merge_request.is_empty() && v.get("stage").and_then(Value::as_str) == Some("approval") {
+        if let Some(closing) = read_closing(data_dir, repo, n, CLOSING_MAX_BYTES) {
+            meta.merge_request = crate::board::merge_request_ref(&closing.text);
+        }
+    }
+    Some(meta)
+}
+
+/// The repo's explicit merge switch, falling back to the board-wide value. Missing settings are not `false`.
+pub fn merge_pr(settings: &Value, repo: &str) -> Option<bool> {
+    settings.get("repos").and_then(|r| r.get(repo))
+        .and_then(|r| r.pointer("/merge/pr")).or_else(|| settings.pointer("/merge/pr"))
+        .and_then(Value::as_bool)
 }
 
 /// The hand-overs the board kept on task `repo/n` (`handovers`, oldest first: `{at, role, from, to, why}`): the lasting
@@ -151,6 +165,11 @@ fn parse_task(v: &Value) -> TaskMeta {
         })
         .unwrap_or_default();
     TaskMeta {
+        // The agent's own words first; the human's description only last, and only for a full address (it cites older MRs).
+        merge_request: ["pr", "msg", "summary", "ownNote", "notes", "said", "events"]
+            .iter().filter_map(|key| v.get(key)).map(mr_in_value).find(|url| !url.is_empty())
+            .or_else(|| v.get("description").map(mr_in_value).filter(|url| !url.starts_with('!')))
+            .unwrap_or_default(),
         created_ms: millis("created"),
         description: text("description"),
         app,
@@ -177,6 +196,15 @@ fn parse_task(v: &Value) -> TaskMeta {
         gone: v.pointer("/last/gone").and_then(Value::as_bool).unwrap_or(false),
         working: v.pointer("/last/status").and_then(Value::as_str) == Some("working"),
         after,
+    }
+}
+
+fn mr_in_value(v: &Value) -> String {
+    match v {
+        Value::String(s) => crate::board::merge_request_ref(s),
+        Value::Array(a) => a.iter().rev().map(mr_in_value).find(|u| !u.is_empty()).unwrap_or_default(),
+        Value::Object(o) => o.values().map(mr_in_value).find(|u| !u.is_empty()).unwrap_or_default(),
+        _ => String::new(),
     }
 }
 
@@ -344,6 +372,42 @@ mod tests {
         assert_eq!(t.after, vec!["a/1"]);
         assert_eq!(t.created_ms, 0);
         assert_eq!((t.on.as_str(), t.reviewer_on.as_str()), ("", ""), "no hand-over");
+    }
+
+    #[test]
+    fn merge_switch_uses_the_repository_then_the_board_and_never_guesses() {
+        let v = serde_json::json!({"merge":{"pr":false},"repos":{"github":{"merge":{"pr":true}},"gitlab":{"merge":{"pr":false}}}});
+        assert_eq!(merge_pr(&v, "github"), Some(true));
+        assert_eq!(merge_pr(&v, "gitlab"), Some(false));
+        assert_eq!(merge_pr(&v, "inherited"), Some(false));
+        assert_eq!(merge_pr(&serde_json::json!({}), "gitlab"), None);
+        assert_eq!(merge_pr(&serde_json::json!({"repos":{"gitlab":{"merge":{"pr":"false"}}}}), "gitlab"), None);
+    }
+
+    #[test]
+    fn mr_links_come_from_task_notes_events_or_the_agents_closing_note() {
+        let url = "https://git.example.org/team/project/-/merge_requests/7";
+        for field in ["description", "msg", "summary", "ownNote", "notes"] {
+            let v = serde_json::json!({(field): format!("Заметка\nMR: [смотреть]({url})\nГотово")});
+            assert_eq!(parse_task(&v).merge_request, url, "{field}");
+        }
+        let v = serde_json::json!({"events":[{"msg":format!("MR: {url}")}],"tokens":"not a note"});
+        assert_eq!(parse_task(&v).merge_request, url);
+        let dir = data_with(&[("tasks/p/1/task.json", r#"{"stage":"approval"}"#), ("tasks/p/1/closing.md", url)]);
+        assert_eq!(read_task(dir.path(), "p", 1).unwrap().merge_request, url);
+    }
+
+    #[test]
+    fn the_agents_own_mr_beats_the_one_the_description_cites_as_context() {
+        let url = "https://git.example.org/team/project/-/merge_requests/9";
+        let v = serde_json::json!({"description":"Что на проде после MR !250","summary":"Готово.\nMR !254 создан"});
+        assert_eq!(parse_task(&v).merge_request, "!254");
+        let v = serde_json::json!({"description":format!("см. {url}"),"summary":"Готово.\nMR !254 создан"});
+        assert_eq!(parse_task(&v).merge_request, "!254");
+        let v = serde_json::json!({"description":"Что на проде после MR !250"});
+        assert_eq!(parse_task(&v).merge_request, "", "a number in the description is only context");
+        let v = serde_json::json!({"description":format!("см. {url}")});
+        assert_eq!(parse_task(&v).merge_request, url);
     }
 
     #[test]

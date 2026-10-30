@@ -6,6 +6,7 @@ import { t } from '../i18n';
 import { AutoTextarea } from './AutoText';
 import { Completion, useComplete } from './Complete';
 import type { Task } from '../types';
+import { MergeHandoff } from './Request';
 
 /** The buttons of the board's actions for a task, exactly as the Focus shows them. */
 export function TaskActionButtons(props: { task: Task }): JSX.Element {
@@ -14,6 +15,7 @@ export function TaskActionButtons(props: { task: Task }): JSX.Element {
   const actions = (task.actions || []).filter((a) => !['tell', 'answer'].includes(a));
   return (
     <>
+      {task.merge_via_mr && <MergeHandoff task={task} />}
       {actions.map((a) => {
         const on = armed.value?.key === `${task.id}:${a}`;
         const label = a === 'approve' && task.status === 'plan' ? t('req.approvePlan') : t(ACTION_LABEL[a] ?? a);

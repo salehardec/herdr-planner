@@ -10,6 +10,7 @@ use crate::theme::{self, Theme};
 use crate::usage::{self, Usage};
 use crate::{gitlag, history, roles, subagents, taskmeta};
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::process::Stdio;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -559,6 +560,7 @@ async fn crews_for(app: &Shared, repos: Vec<String>, now: u64) -> HashMap<String
 fn apply_meta(t: &mut Task, meta: Option<&taskmeta::TaskMeta>, key: &str) {
     t.key = key.to_string();
     if let Some(m) = meta {
+        t.merge_request = m.merge_request.clone();
         t.created = m.created_ms;
         t.description = m.description.clone();
         t.worker_agent = m.worker_agent.clone();
@@ -906,6 +908,9 @@ async fn refresh_inner(app: &Shared) {
             let data_dir = cfg.data_dir.clone();
             let roots2 = roots.clone();
             let keys2 = keys.clone();
+            let settings_file = cfg.settings_file();
+            let origins: HashMap<String, String> = app.lag.lock().await.iter().map(|(k, l)| (k.clone(), l.origin.clone())).collect();
+            let journal = app.journal.lock().await.entries.iter().cloned().collect::<Vec<_>>();
             // Who is on each task now needs what the repository gives its tasks: asked for the busy repositories only.
             let busy_repos: Vec<String> = {
                 let mut v: Vec<String> = tasks
@@ -921,11 +926,26 @@ async fn refresh_inner(app: &Shared) {
             let marks = roles::marks_of(&roles::read_store(cfg));
             let tasks = tokio::task::spawn_blocking(move || {
                 let mut tasks = tasks;
+                let settings = std::fs::read_to_string(settings_file).ok()
+                    .and_then(|s| serde_json::from_str::<Value>(&s).ok()).unwrap_or(Value::Null);
                 let mut metas_local: HashMap<String, taskmeta::TaskMeta> = HashMap::new();
                 for t in tasks.iter_mut() {
                     let meta = taskmeta::read_task(&data_dir, &t.repo, t.n);
                     let key = keys2.get(&t.repo).cloned().unwrap_or_default();
                     apply_meta(t, meta.as_ref(), &key);
+                    let pr = taskmeta::merge_pr(&settings, &t.repo);
+                    board::apply_merge_route(t, pr);
+                    // What the task's record found, then the board's PR field, its message and the journal, newest first:
+                    // the first MR that gets an address (an `!N` needs the clone's GitLab origin).
+                    let origin = origins.get(&t.repo).map(String::as_str).unwrap_or_default();
+                    let found = std::mem::take(&mut t.merge_request);
+                    t.merge_request = if t.merge_via_mr {
+                        let notes: Vec<&str> = [t.pr.as_str(), t.msg.as_str()].into_iter()
+                            .chain(journal.iter().filter(|e| e.id == t.id).map(|e| e.text.as_str())).collect();
+                        board::pick_merge_request(&found, &notes, origin)
+                    } else {
+                        String::new()
+                    };
                     t.crew_roles = marks.get(&t.id).cloned().unwrap_or_default();
                     if let Some(m) = &meta {
                         t.seat = crate::seat::of(t, m, &crews.get(&t.repo).cloned().unwrap_or_default());

@@ -10,6 +10,15 @@ import { addDialogs } from '../dialogs';
 import { toast } from '../toast';
 import { Gl } from './Gl';
 import { Translatable } from './Translatable';
+import { safeUrl } from '../mobile/cards';
+
+export function MergeHandoff(props: { task: Task }): JSX.Element {
+  const url = safeUrl(props.task.merge_request ?? '');
+  return <div class="merge-handoff" role="status">
+    <p>{t('req.mergeViaMr')}</p>
+    {url && <a class="btn" href={url} target="_blank" rel="noopener noreferrer" data-act="mr">{t('m.openMr')}<Gl n="ext" /></a>}
+  </div>;
+}
 
 /** One attempt of a pick request, as the task's details carry it. */
 interface Attempt {
@@ -91,6 +100,19 @@ export function RequestActions(props: { task: Task; input?: string }): JSX.Eleme
   const type = requestType(task);
   const attention = ['waiting', 'failed', 'ready', 'plan'].includes(task.status);
   if (!attention) return null;
+  if (task.merge_via_mr) {
+    // The merge itself is the Coordinator's; sending the review back to the agent stays the human's.
+    return (
+      <>
+        <MergeHandoff task={task} />
+        {task.actions.includes('review') && (
+          <div class="row">
+            <ArmBtn id={task.id} cmd="review" label={t('req.returnReview')} armLabel={t('req.confirmReturn')} cls="" task={task} />
+          </div>
+        )}
+      </>
+    );
+  }
   const d = details.value[task.id];
   const dis = !boardOk();
   const input = props.input ?? 'tell';

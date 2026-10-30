@@ -66,6 +66,11 @@ export function planOf(r: Request): CardPlan {
       if (!plan.approve) plan.note = 'm.note.plan';
       break;
     case 'approval':
+      if (task?.merge_via_mr) {
+        plan.pr = safeUrl(task.merge_request ?? '');
+        plan.note = 'req.mergeViaMr';
+        break;
+      }
       plan.approve = can(task, 'approve');
       plan.pr = safeUrl(task?.pr ?? '');
       // A checkout refusal is retried with `approve` after it is fixed: keep the button and explain beside it.

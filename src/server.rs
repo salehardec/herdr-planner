@@ -1340,6 +1340,9 @@ pub(crate) async fn perform_action(app: &Shared, body: ActionBody, local: bool) 
                     "approval needs an explicit confirmation",
                 );
             }
+            if app.snapshot.read().await.tasks.iter().any(|t| t.id == id && t.merge_via_mr) {
+                return error(StatusCode::CONFLICT, "Сливается через MR в GitLab — напишите Координатору «сливай»");
+            }
             let was_plan = stage_of(&app, id).await == "plan";
             let mut args = vec!["approve", id];
             if body.action == "anyway" {
@@ -2300,6 +2303,23 @@ mod tests {
         let res = perform_action(&app, act(json!({"action": "anyway", "id": "alpha/1", "confirm": true})), true).await;
         assert_eq!(res.status(), StatusCode::OK);
         assert_eq!(said(&log), ["approve alpha/1", "approve alpha/1 --anyway"]);
+    }
+
+    #[tokio::test]
+    async fn repeated_local_merges_for_mr_handoff_never_reach_the_board() {
+        let dir = tempfile::tempdir().unwrap();
+        let (app, log) = fake_board(dir.path());
+        app.snapshot.write().await.tasks.push(crate::board::Task {
+            id: "alpha/1".into(), merge_via_mr: true, ..Default::default()
+        });
+        for _ in 0..2 {
+            for action in ["approve", "anyway"] {
+                let (status, body) = status_of(perform_action(&app, act(json!({"action":action,"id":"alpha/1","confirm":true})), true).await).await;
+                assert_eq!(status, StatusCode::CONFLICT);
+                assert!(body["error"].as_str().unwrap().contains("Координатору"));
+            }
+        }
+        assert!(said(&log).is_empty());
     }
 
     #[tokio::test]

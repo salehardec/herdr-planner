@@ -112,6 +112,10 @@ pub struct Task {
     pub review_failed: bool,
     /// Finished work the board will not merge by a plain yes.
     pub merge_blocked: bool,
+    /// Local merge refused for a checkout in a repository with `merge.pr false`: hand off to the Coordinator.
+    pub merge_via_mr: bool,
+    /// A GitLab MR address found in the task's notes or journal.
+    pub merge_request: String,
     pub archived: bool,
     /// The board commands the page may offer.
     pub actions: Vec<&'static str>,
@@ -278,6 +282,82 @@ pub fn says_merge_blocked(msg: &str) -> bool {
     .any(|w| m.contains(w))
 }
 
+pub fn says_checkout_refused(msg: &str) -> bool {
+    let m = msg.to_lowercase();
+    ["merge needs a clean checkout", "your checkout is on another branch", "task is on the wrong branch"]
+        .iter().any(|s| m.contains(s))
+}
+
+/// Apply the repository's merge route after its settings have been read. Unknown settings keep the usual retry.
+pub fn apply_merge_route(t: &mut Task, pr: Option<bool>) {
+    t.merge_via_mr = pr == Some(false) && t.state == "blocked" && t.stage == "approval" && says_checkout_refused(&t.msg);
+    t.actions = actions_for(t);
+}
+
+/// The last MR a text names: a GitLab MR address (also on self-hosted GitLab) or, as the board's notes write it, a line
+/// that opens with `MR !251` (kept as `!251` until the repository's address is known). A number inside a sentence, or
+/// on a line that names a task (`AGSVN-3 (MR !251) откачен`), belongs to another piece of work or to the past, and a
+/// wrong link is worse than none; so is a project link or an unsafe one.
+pub fn merge_request_ref(text: &str) -> String {
+    let mut found = String::new();
+    for line in text.lines() {
+        for word in line.split(|c: char| c.is_whitespace() || matches!(c, '"' | '\'' | '<' | '>' | '`')) {
+            if let Some(url) = mr_url_in(word) {
+                found = url;
+            }
+        }
+        if let Some(n) = mr_number_opening(line) {
+            found = format!("!{n}");
+        }
+    }
+    found
+}
+
+/// `!N` of a line that begins with `MR` (after list marks and emphasis) and names no task.
+fn mr_number_opening(line: &str) -> Option<String> {
+    let head = line.trim_start_matches(|c: char| !c.is_alphanumeric()).to_lowercase();
+    if !(head.starts_with("mr") || head.starts_with("merge request") || head.starts_with("мр")) {
+        return None;
+    }
+    let names_a_task = line.split(|c: char| !c.is_alphanumeric() && c != '-').any(|w| {
+        w.split_once('-').is_some_and(|(k, n)| (2..=10).contains(&k.chars().count()) && k.chars().all(|c| c.is_alphabetic()) && !n.is_empty() && n.chars().all(|c| c.is_ascii_digit()))
+    });
+    if names_a_task {
+        return None;
+    }
+    let rest = &line[line.find('!')? + 1..];
+    let num: String = rest.chars().take_while(char::is_ascii_digit).collect();
+    (!num.is_empty()).then_some(num)
+}
+
+fn mr_url_in(word: &str) -> Option<String> {
+    let start = word.find("https://").or_else(|| word.find("http://"))?;
+    let url = word[start..].trim_end_matches([')', ']', '}', ',', '.', ';']);
+    let (_, n) = url.split_once("/-/merge_requests/")?;
+    let n = n.split(['/', '?', '#']).next()?;
+    (!n.is_empty() && n.chars().all(|c| c.is_ascii_digit())).then(|| url.to_string())
+}
+
+/// An MR address as the page may link it: a full address stays, `!N` is joined to the repository's GitLab address
+/// (`host/group/project`, as the clone's origin gives it); with no GitLab origin to join to there is no link.
+pub fn merge_request_link(found: &str, origin: &str) -> String {
+    let Some(n) = found.strip_prefix('!') else { return found.to_string() };
+    let host = origin.split('/').next().unwrap_or_default();
+    if origin.is_empty() || host.is_empty() || host == "github.com" || n.is_empty() {
+        return String::new();
+    }
+    format!("https://{origin}/-/merge_requests/{n}")
+}
+
+/// The MR link for a task handed off to the Coordinator: what its record found, then the texts in order (the board's PR
+/// field, its message, the journal newest first); the first MR that gets an address wins.
+pub fn pick_merge_request(found: &str, texts: &[&str], origin: &str) -> String {
+    std::iter::once(merge_request_link(found, origin))
+        .chain(texts.iter().map(|text| merge_request_link(&merge_request_ref(text), origin)))
+        .find(|url| !url.is_empty())
+        .unwrap_or_default()
+}
+
 /// The board's own, more specific words for a task.
 pub fn board_label(t: &Task) -> String {
     let state = t.state.as_str();
@@ -395,6 +475,9 @@ pub fn classify(t: &Task) -> Status {
 }
 
 fn actions_for(t: &Task) -> Vec<&'static str> {
+    if t.merge_via_mr {
+        return vec!["review", "tell"];
+    }
     match t.status {
         Status::Waiting if t.stage == "pick" => vec![],
         Status::Waiting if t.stage == "stopped" => vec!["retry", "tell"],
@@ -952,6 +1035,79 @@ mod tests {
         );
         assert_eq!(plain.status, Status::Ready);
         assert!(!plain.merge_blocked);
+    }
+
+    #[test]
+    fn checkout_refusal_hands_off_only_when_the_repository_disables_prs() {
+        for msg in ["Merge needs a clean checkout", "Your checkout is on another branch", "Task is on the wrong branch"] {
+            for pr in [Some(false), Some(true), None] {
+                let mut t = task(json!({"id":"p/1","state":"blocked","kind":"permission","stage":"approval","msg":msg}));
+                apply_merge_route(&mut t, pr);
+                assert_eq!(t.merge_via_mr, pr == Some(false));
+                assert_eq!(t.actions.contains(&"approve"), pr != Some(false));
+                assert_eq!(t.actions.contains(&"anyway"), pr != Some(false));
+            }
+        }
+        for (state, stage, msg) in [("blocked", "approval", "Review: Pass"), ("blocked", "plan", "Merge needs a clean checkout"), ("done", "done", "Merge needs a clean checkout")] {
+            let mut t = task(json!({"id":"p/1","state":state,"kind":"permission","stage":stage,"msg":msg}));
+            apply_merge_route(&mut t, Some(false));
+            assert!(!t.merge_via_mr, "{state} {stage} {msg}");
+            if state == "blocked" { assert!(t.actions.contains(&"approve")); }
+        }
+    }
+
+    #[test]
+    fn mr_addresses_are_http_links_to_a_numbered_mr() {
+        assert_eq!(merge_request_ref("MR: [view](https://git.example.org/a/b/-/merge_requests/42)."), "https://git.example.org/a/b/-/merge_requests/42");
+        for text in ["javascript:alert(1)", "https://git.example.org/a/b", "https://git.example.org/a/b/-/merge_requests/nope", "MR !", "MR !x"] {
+            assert!(merge_request_ref(text).is_empty(), "{text}");
+        }
+    }
+
+    #[test]
+    fn only_a_line_that_opens_with_mr_names_the_tasks_own_mr_and_the_last_one_wins() {
+        for (text, want) in [
+            ("Готово.\nMR !12 создан", "!12"),
+            ("MR!12 готов", "!12"),
+            ("- MR: !9", "!9"),
+            ("**MR** !5", "!5"),
+            ("Merge request !33", "!33"),
+            ("MR !250\nMR !254", "!254"),
+            ("MR !250\nhttps://git.example.org/a/b/-/merge_requests/7", "https://git.example.org/a/b/-/merge_requests/7"),
+        ] {
+            assert_eq!(merge_request_ref(text), want, "{text}");
+        }
+        // AGSVN-4's real closing note: MRs of other tasks and of the past, none of them this task's.
+        for text in [
+            "после MR !250, проверено",
+            "AGSVN-3 (MR !251) откачен на проде (MR !254)",
+            "MR !251 откачен для AGSVN-3",
+            "Готово, MR !254",
+            "see !7",
+            "AGSVN-3 (MR !251) откачен на проде (!254): его фоновый опрос перегружал БД.\n- старая история сохранена локально как `backup/work-4` (в MR не идёт, не пушить и не вливать);",
+        ] {
+            assert!(merge_request_ref(text).is_empty(), "{text}");
+        }
+    }
+
+    #[test]
+    fn the_first_mr_that_gets_an_address_wins_and_the_journal_goes_newest_first() {
+        let origin = "gitlab.example.org/team/p";
+        let pick = |found: &str, texts: &[&str]| pick_merge_request(found, texts, origin);
+        assert_eq!(pick("!5", &["MR !9"]), "https://gitlab.example.org/team/p/-/merge_requests/5");
+        assert_eq!(pick("", &["", "Review: Pass", "MR !254 слит", "после MR !250"]), "https://gitlab.example.org/team/p/-/merge_requests/254");
+        assert_eq!(pick("", &["MR !7"]), "https://gitlab.example.org/team/p/-/merge_requests/7");
+        assert_eq!(pick_merge_request("", &["MR !7"], ""), "", "no GitLab origin, no guessed address");
+        assert_eq!(pick_merge_request("", &["MR !7", "https://g.example.org/a/-/merge_requests/3"], ""), "https://g.example.org/a/-/merge_requests/3");
+    }
+
+    #[test]
+    fn an_mr_number_gets_the_repositorys_gitlab_address_and_never_a_github_one() {
+        assert_eq!(merge_request_link("!251", "gitlab.yanao.ru/abaydulin/all-gis-services-next"), "https://gitlab.yanao.ru/abaydulin/all-gis-services-next/-/merge_requests/251");
+        assert_eq!(merge_request_link("https://g.example.org/a/-/merge_requests/1", ""), "https://g.example.org/a/-/merge_requests/1");
+        for origin in ["", "github.com/o/r"] {
+            assert!(merge_request_link("!251", origin).is_empty(), "{origin}");
+        }
     }
 
     #[test]

@@ -2364,6 +2364,13 @@ section('agent screen', async () => {
 
 section('requests', async () => {
   await resetUi();
+  await go('delta/1');
+  check('the GitLab Focus explains the MR handoff with no local merge buttons', await hasText('#focus .merge-handoff', 'Координатору', 8000) && !(await exists('#focus [data-act="approve"], #focus [data-act="anyway"]')) && (await evalJs(`document.querySelector('#focus [data-act="mr"]')?.href`)) === 'https://gitlab.example.org/team/delta/-/merge_requests/4', await text('#focus'));
+  check('and the review can still be sent back to the agent from it', await exists('#focus [data-act="review"]'));
+  await shot('mr-handoff-focus.png');
+  const mrAgain = await post('/api/action', { action: 'approve', id: 'delta/1', confirm: true });
+  check('a stale desktop approve explains the handoff without calling the board', mrAgain[0] === 409 && JSON.stringify(mrAgain[1]).includes('Координатору') && !calls().some((c) => c.argv[0] === 'approve' && c.argv[1] === 'delta/1'), JSON.stringify(mrAgain));
+  await resetUi();
   // PLN-61: the queue names why each task waits, before any of them is answered.
   await press('KeyB', 'b');
   check('B opens «Ждёт тебя»', await waitFor('document.querySelector("#drawer-wait").classList.contains("open")', 5000));
@@ -2374,6 +2381,9 @@ section('requests', async () => {
       && !Object.values(whys).includes('ждёт'),
     JSON.stringify(whys));
   check('a ready plan says exactly what it waits for in the queue', await evalJs(`[...document.querySelectorAll('#drawer-wait .q')].some((e) => e.dataset.sel === 'alpha/3' && e.innerText.includes('План готов — ждёт твоего одобрения'))`), await evalJs(`[...document.querySelectorAll('#drawer-wait .q')].find((e) => e.dataset.sel === 'alpha/3')?.innerText || ''`));
+  check('the queue row keeps the board\'s own reason and the status stands once, under it', await evalJs(`(() => { const row = [...document.querySelectorAll('#drawer-wait .q')].find((e) => e.dataset.sel === 'delta/1'); return !!row && row.innerText.includes('clean checkout') && !row.innerText.includes('Сливается через MR') && document.querySelectorAll('#drawer-wait .merge-handoff').length === 1; })()`), await evalJs(`[...document.querySelectorAll('#drawer-wait .q')].find((e) => e.dataset.sel === 'delta/1')?.innerText || ''`));
+  check('the waiting queue shows the Coordinator status and an MR link', await hasText('#drawer-wait .merge-handoff', 'Координатору', 5000) && await exists('#drawer-wait [data-act="mr"]'));
+  await shot('mr-handoff-queue.png');
   await evalJs('document.querySelector("#drawer-wait .wlist").focus()');
   for (let k = 0; k < 20; k++) {
     const at = await evalJs('document.querySelector("#drawer-wait .q.cur")?.dataset.sel || ""');
@@ -5598,6 +5608,10 @@ section('memory suggestions', async () => {
   check('it is not asked again for the same task', asked('ALP-4') === 1);
 
   // dismiss, from the task's own panel
+  // delta is a GitLab repo: its refused merge is the Coordinator's, so the board's regular PR route comes back first.
+  execFileSync(join(fixture, 'bin', 'herdr-projects'), ['set', 'merge.pr', 'true', '--repo', 'delta']);
+  await post('/api/refresh', {});
+  await waitFor('fetch("/api/state").then((r) => r.json()).then((s) => s.tasks.some((t) => t.id === "delta/1" && !t.merge_via_mr))', 15000);
   await post('/api/action', { action: 'approve', id: 'delta/1', confirm: true });
   check('another done task is proposed too', await waitFor('fetch("/api/state").then((r) => r.json()).then((s) => s.memory_suggestions.some((m) => m.task === "delta/1"))', 15000));
   // an accept that cannot work changes nothing: no lines at all, or one line too long among good ones
@@ -7452,7 +7466,7 @@ section('light page', async () => {
     check(`${at}: a failed task offers «Повторить» and a word to the agent`, await evalJs(`(() => { const c = document.querySelector('${phoneCard('failed:alpha/8')}'); return !!c.querySelector('[data-act="retry"]') && !!c.querySelector('[data-act="tell"]'); })()`));
     check(`${at}: nothing the phone may not do is offered: no «всё равно», stop, finish, fix`, !(await exists('[data-act="anyway"], [data-act="stop"], [data-act="finish"], [data-act="fix"], [data-act="keys"]')));
     check(`${at}: a merge past a failed review is the computer's: no approve on it, and it says so`, await evalJs(`(() => { const c = document.querySelector('${phoneCard('permission:alpha/5')}'); return !!c && !c.querySelector('[data-act="approve"]') && c.querySelector('.hintline')?.innerText.includes('на компьютере'); })()`));
-    check(`${at}: a merge refused for the checkout explains the fix and keeps approve for the retry`, await evalJs(`(() => { const c = document.querySelector('${phoneCard('approval:delta/1')}'); const note = c?.querySelector('.hintline')?.innerText || ''; return !!c && !!c.querySelector('[data-act="approve"]') && note.includes('Доска не смогла слить') && note.includes('чекауте') && note.includes('ещё раз') && note.includes('Координатора'); })()`), await text(phoneCard('approval:delta/1')));
+    check(`${at}: a GitLab checkout refusal offers the Coordinator and the MR instead of approve`, await evalJs(`(() => { const c = document.querySelector('${phoneCard('approval:delta/1')}'); const note = c?.querySelector('.hintline')?.innerText || ''; return !!c && !c.querySelector('[data-act="approve"]') && note.includes('Сливается через MR в GitLab') && note.includes('Координатору') && c.querySelector('[data-act="pr"]')?.href === 'https://gitlab.example.org/team/delta/-/merge_requests/4'; })()`), await text(phoneCard('approval:delta/1')));
     check(`${at}: a finger can hit every button (44 px)`, (await smallTargets()).length === 0, JSON.stringify(await smallTargets()));
     check(`${at}: the cards do not stick out of the screen`, await evalJs(`[...document.querySelectorAll('.card')].every((c) => { const r = c.getBoundingClientRect(); return r.left >= 0 && r.right <= innerWidth + 1; })`));
     await shot(`m-wait-${mode}.png`);
@@ -7670,8 +7684,13 @@ section('light page actions', async () => {
   check('a task opened from the phone board stays in its sheet after answering', await hasText('#toasts', 'ALP-2') && await sheetOpen() && (await evalJs('mobile.sheet.value.id')) === 'alpha/2');
   await click('#sheet [data-s="close"]'); await sheetClosed();
   await click('.nav [data-tab="wait"]');
-  // The board's remedy for a checkout refusal is to fix it and approve again: the phone keeps that way too.
   const checkoutCard = phoneCard('approval:delta/1');
+  check('a GitLab checkout refusal removes approve from the projection and the phone', await evalJs(`!plannerSnap().tasks.find((t) => t.id === 'delta/1')?.actions.includes('approve') && !document.querySelector('${checkoutCard} [data-act="approve"]')`));
+  const mrRefusal = await post('/m/api/action', { action: 'approve', id: 'delta/1', confirm: true });
+  check('a stale phone approval explains the MR handoff without repeating the board command', mrRefusal[0] === 409 && JSON.stringify(mrRefusal[1]).includes('Координатору') && !calls().some((c) => c.argv[0] === 'approve' && c.argv[1] === 'delta/1'), JSON.stringify(mrRefusal));
+  // Switching back to the board's regular PR route restores PLN-95's retry, including on an already open phone.
+  execFileSync(join(fixture, 'bin', 'herdr-projects'), ['set', 'merge.pr', 'true', '--repo', 'delta']);
+  await waitFor(`!!document.querySelector('${checkoutCard} [data-act="approve"]')`, 12000);
   check('a checkout refusal keeps approve in the projection and beside the explanation', await evalJs(`plannerSnap().tasks.find((t) => t.id === 'delta/1')?.actions.includes('approve') && !!document.querySelector('${checkoutCard} [data-act="approve"]') && document.querySelector('${checkoutCard} .hintline')?.innerText.includes('ещё раз')`));
   await twoPresses(`${checkoutCard} [data-act="approve"]`);
   check('the repeated merge approval after a checkout fix reaches the board', await waitLog(() => calls().some((c) => c.argv[0] === 'approve' && c.argv[1] === 'delta/1'), 15000), JSON.stringify(lastCall()));
