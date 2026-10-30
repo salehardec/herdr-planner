@@ -400,9 +400,9 @@ mod tests {
     #[test]
     fn the_agents_own_mr_beats_the_one_the_description_cites_as_context() {
         let url = "https://git.example.org/team/project/-/merge_requests/9";
-        let v = serde_json::json!({"description":"Что на проде после MR !250","summary":"Готово, MR !254"});
+        let v = serde_json::json!({"description":"Что на проде после MR !250","summary":"Готово.\nMR !254 создан"});
         assert_eq!(parse_task(&v).merge_request, "!254");
-        let v = serde_json::json!({"description":format!("см. {url}"),"summary":"Готово, MR !254"});
+        let v = serde_json::json!({"description":format!("см. {url}"),"summary":"Готово.\nMR !254 создан"});
         assert_eq!(parse_task(&v).merge_request, "!254");
         let v = serde_json::json!({"description":"Что на проде после MR !250"});
         assert_eq!(parse_task(&v).merge_request, "", "a number in the description is only context");

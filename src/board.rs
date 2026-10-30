@@ -294,30 +294,40 @@ pub fn apply_merge_route(t: &mut Task, pr: Option<bool>) {
     t.actions = actions_for(t);
 }
 
-/// The last MR a text names: a GitLab MR address (also on self-hosted GitLab) or, as the board's notes write it,
-/// `MR !251` (kept as `!251` until the repository's address is known). A project link or an unsafe one is not an MR.
+/// The last MR a text names: a GitLab MR address (also on self-hosted GitLab) or, as the board's notes write it, a line
+/// that opens with `MR !251` (kept as `!251` until the repository's address is known). A number inside a sentence, or
+/// on a line that names a task (`AGSVN-3 (MR !251) откачен`), belongs to another piece of work or to the past, and a
+/// wrong link is worse than none; so is a project link or an unsafe one.
 pub fn merge_request_ref(text: &str) -> String {
-    let words: Vec<&str> = text
-        .split(|c: char| c.is_whitespace() || matches!(c, '"' | '\'' | '<' | '>' | '`'))
-        .collect();
     let mut found = String::new();
-    for (i, word) in words.iter().enumerate() {
-        if let Some(url) = mr_url_in(word) {
-            found = url;
-            continue;
+    for line in text.lines() {
+        for word in line.split(|c: char| c.is_whitespace() || matches!(c, '"' | '\'' | '<' | '>' | '`')) {
+            if let Some(url) = mr_url_in(word) {
+                found = url;
+            }
         }
-        let w = word.trim_matches(|c: char| !c.is_alphanumeric() && c != '!');
-        let (named, num) = match w.split_once('!') {
-            Some((head, num)) if head.is_empty() => (i.checked_sub(1).map(|p| words[p].trim_matches(|c: char| !c.is_alphanumeric()).to_lowercase()), num),
-            Some((head, num)) => (Some(head.to_lowercase()), num),
-            None => continue,
-        };
-        let num: String = num.chars().take_while(char::is_ascii_digit).collect();
-        if !num.is_empty() && matches!(named.as_deref(), Some("mr" | "мр" | "request")) {
-            found = format!("!{num}");
+        if let Some(n) = mr_number_opening(line) {
+            found = format!("!{n}");
         }
     }
     found
+}
+
+/// `!N` of a line that begins with `MR` (after list marks and emphasis) and names no task.
+fn mr_number_opening(line: &str) -> Option<String> {
+    let head = line.trim_start_matches(|c: char| !c.is_alphanumeric()).to_lowercase();
+    if !(head.starts_with("mr") || head.starts_with("merge request") || head.starts_with("мр")) {
+        return None;
+    }
+    let names_a_task = line.split(|c: char| !c.is_alphanumeric() && c != '-').any(|w| {
+        w.split_once('-').is_some_and(|(k, n)| (2..=10).contains(&k.chars().count()) && k.chars().all(|c| c.is_alphabetic()) && !n.is_empty() && n.chars().all(|c| c.is_ascii_digit()))
+    });
+    if names_a_task {
+        return None;
+    }
+    let rest = &line[line.find('!')? + 1..];
+    let num: String = rest.chars().take_while(char::is_ascii_digit).collect();
+    (!num.is_empty()).then_some(num)
 }
 
 fn mr_url_in(word: &str) -> Option<String> {
@@ -1049,22 +1059,34 @@ mod tests {
     #[test]
     fn mr_addresses_are_http_links_to_a_numbered_mr() {
         assert_eq!(merge_request_ref("MR: [view](https://git.example.org/a/b/-/merge_requests/42)."), "https://git.example.org/a/b/-/merge_requests/42");
-        for text in ["javascript:alert(1)", "https://git.example.org/a/b", "https://git.example.org/a/b/-/merge_requests/nope", "MR !", "see !7", "MR !x"] {
+        for text in ["javascript:alert(1)", "https://git.example.org/a/b", "https://git.example.org/a/b/-/merge_requests/nope", "MR !", "MR !x"] {
             assert!(merge_request_ref(text).is_empty(), "{text}");
         }
     }
 
     #[test]
-    fn mrs_named_the_way_the_notes_write_them_are_found_and_the_last_one_wins() {
+    fn only_a_line_that_opens_with_mr_names_the_tasks_own_mr_and_the_last_one_wins() {
         for (text, want) in [
-            ("после MR !250, проверено", "!250"),
-            ("AGSVN-3 (MR !251) откачен на проде (MR !254)", "!254"),
+            ("Готово.\nMR !12 создан", "!12"),
             ("MR!12 готов", "!12"),
-            ("(mr !9).", "!9"),
-            ("merge request !33", "!33"),
-            ("MR !250 и https://git.example.org/a/b/-/merge_requests/7", "https://git.example.org/a/b/-/merge_requests/7"),
+            ("- MR: !9", "!9"),
+            ("**MR** !5", "!5"),
+            ("Merge request !33", "!33"),
+            ("MR !250\nMR !254", "!254"),
+            ("MR !250\nhttps://git.example.org/a/b/-/merge_requests/7", "https://git.example.org/a/b/-/merge_requests/7"),
         ] {
             assert_eq!(merge_request_ref(text), want, "{text}");
+        }
+        // AGSVN-4's real closing note: MRs of other tasks and of the past, none of them this task's.
+        for text in [
+            "после MR !250, проверено",
+            "AGSVN-3 (MR !251) откачен на проде (MR !254)",
+            "MR !251 откачен для AGSVN-3",
+            "Готово, MR !254",
+            "see !7",
+            "AGSVN-3 (MR !251) откачен на проде (!254): его фоновый опрос перегружал БД.\n- старая история сохранена локально как `backup/work-4` (в MR не идёт, не пушить и не вливать);",
+        ] {
+            assert!(merge_request_ref(text).is_empty(), "{text}");
         }
     }
 
@@ -1073,7 +1095,7 @@ mod tests {
         let origin = "gitlab.example.org/team/p";
         let pick = |found: &str, texts: &[&str]| pick_merge_request(found, texts, origin);
         assert_eq!(pick("!5", &["MR !9"]), "https://gitlab.example.org/team/p/-/merge_requests/5");
-        assert_eq!(pick("", &["", "Review: Pass", "MR !254 слит", "MR !250"]), "https://gitlab.example.org/team/p/-/merge_requests/254");
+        assert_eq!(pick("", &["", "Review: Pass", "MR !254 слит", "после MR !250"]), "https://gitlab.example.org/team/p/-/merge_requests/254");
         assert_eq!(pick("", &["MR !7"]), "https://gitlab.example.org/team/p/-/merge_requests/7");
         assert_eq!(pick_merge_request("", &["MR !7"], ""), "", "no GitLab origin, no guessed address");
         assert_eq!(pick_merge_request("", &["MR !7", "https://g.example.org/a/-/merge_requests/3"], ""), "https://g.example.org/a/-/merge_requests/3");
