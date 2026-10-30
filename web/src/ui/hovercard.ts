@@ -1,4 +1,4 @@
-/* One details card under an element of the top bar (the bars, the subscription chip): it opens on hover (with a short delay), on keyboard
+/* One details card shared by the top bar and chat header: it opens on hover (with a short delay), on keyboard
    focus and on a tap or a click that is not a mouse's, and closes on Esc, on a click or focus elsewhere, and a moment after the pointer
    leaves both the element and the card (the pause lets the pointer cross the gap between them without the card flickering). */
 import { signal } from '@preact/signals';
@@ -7,7 +7,7 @@ import type { JSX } from 'preact';
 export type CardId = 'load' | 'limits';
 
 /** The card that is open; `pinned` is a card opened by a tap or by the keyboard: it stays until it is closed on purpose. */
-export const card = signal<{ id: CardId; pinned: boolean } | null>(null);
+export const card = signal<{ id: CardId; anchor: string; pinned: boolean } | null>(null);
 
 const OPEN_MS = 90;
 const CLOSE_MS = 240;
@@ -25,19 +25,20 @@ export function closeCard(back = false): void {
   const c = card.value;
   if (!c) return;
   const inCard = !!document.getElementById('top-card')?.contains(document.activeElement);
+  const anchor = anchorOf(c.id);
   card.value = null;
   if (back && inCard) {
     muted = true;
-    anchorOf(c.id)?.focus();
+    anchor?.focus();
     muted = false;
   }
 }
 
-function show(id: CardId, delay: number): void {
+function show(id: CardId, anchor: string, delay: number): void {
   window.clearTimeout(closeTimer);
-  if (card.value?.id === id) return;
+  if (card.value?.id === id && card.value.anchor === anchor) return;
   window.clearTimeout(openTimer);
-  const go = (): void => { card.value = { id, pinned: false }; };
+  const go = (): void => { card.value = { id, anchor, pinned: false }; };
   if (delay > 0) openTimer = window.setTimeout(go, delay); else go();
 }
 
@@ -52,24 +53,24 @@ function later(): void {
 }
 
 /** A tap or the keyboard's Enter opens the card and keeps it; the next one closes it. A mouse click only keeps what hover has opened. */
-function pick(id: CardId, e: MouseEvent): void {
+function pick(id: CardId, anchor: string, e: MouseEvent): void {
   clear();
-  if ((e as PointerEvent).pointerType === 'mouse') { if (card.value?.id !== id) card.value = { id, pinned: false }; return; }
-  card.value = card.value?.id === id && card.value.pinned ? null : { id, pinned: true };
+  if ((e as PointerEvent).pointerType === 'mouse') { if (card.value?.id !== id || card.value.anchor !== anchor) card.value = { id, anchor, pinned: false }; return; }
+  card.value = card.value?.id === id && card.value.anchor === anchor && card.value.pinned ? null : { id, anchor, pinned: true };
 }
 
-/** What an element of the top bar needs to own a card. */
-export const cardAnchor = (id: CardId): Pick<JSX.HTMLAttributes<HTMLButtonElement>, 'aria-haspopup' | 'aria-expanded' | 'aria-controls' | 'onMouseEnter' | 'onMouseLeave' | 'onFocus' | 'onClick' | 'onKeyDown'> => ({
+/** What a button needs to own a card at its own anchor. */
+export const cardAnchor = (id: CardId, anchor = ANCHORS[id]): Pick<JSX.HTMLAttributes<HTMLButtonElement>, 'aria-haspopup' | 'aria-expanded' | 'aria-controls' | 'onMouseEnter' | 'onMouseLeave' | 'onFocus' | 'onClick' | 'onKeyDown'> => ({
   'aria-haspopup': 'dialog',
-  'aria-expanded': card.value?.id === id,
+  'aria-expanded': card.value?.id === id && card.value.anchor === anchor,
   'aria-controls': 'top-card',
-  onMouseEnter: () => show(id, OPEN_MS),
+  onMouseEnter: () => show(id, anchor, OPEN_MS),
   onMouseLeave: later,
-  onFocus: () => { if (!muted) show(id, 0); },
-  onClick: (e: MouseEvent) => pick(id, e),
+  onFocus: () => { if (!muted) show(id, anchor, 0); },
+  onClick: (e: MouseEvent) => pick(id, anchor, e),
   onKeyDown: (e: KeyboardEvent) => {
     // Tab from the element goes into its open card (its link), which the DOM order would skip
-    if (e.key !== 'Tab' || e.shiftKey || card.value?.id !== id) return;
+    if (e.key !== 'Tab' || e.shiftKey || (card.value?.id !== id || card.value.anchor !== anchor)) return;
     const link = document.querySelector<HTMLElement>('#top-card button, #top-card a');
     if (!link) return;
     e.preventDefault();
@@ -98,7 +99,7 @@ export const cardSelf = {
 };
 
 const ANCHORS: Record<CardId, string> = { load: 'load-chip', limits: 'hud-limits' };
-export const anchorOf = (id: CardId): HTMLElement | null => document.getElementById(ANCHORS[id]);
+export const anchorOf = (id: CardId): HTMLElement | null => document.getElementById(card.value?.id === id ? card.value.anchor : ANCHORS[id]);
 
 /** A press outside and focus moving elsewhere (the search, a panel) close the card (Esc does, in keys.ts, before it closes anything else). */
 export function installCard(): void {
@@ -113,6 +114,6 @@ export function installCard(): void {
     const c = card.value;
     if (!c || inside(e.target)) return;
     // another element of the bar takes over by its own focus handler
-    if (!(e.target as HTMLElement | null)?.closest?.('#load-chip,#hud-limits')) closeCard();
+    if (!(e.target as HTMLElement | null)?.closest?.('#load-chip,#hud-limits,#chat-limits')) closeCard();
   });
 }

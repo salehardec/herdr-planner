@@ -31,12 +31,8 @@
 .limchip.lim-warn{color:var(--c-yellow);border-color:color-mix(in srgb,var(--c-yellow) 45%,var(--pl-line))}
 .limchip.lim-crit{color:var(--pl-danger);border-color:color-mix(in srgb,var(--c-red) 50%,var(--pl-line))}
 .limchip{flex:none;white-space:nowrap}
-.limchip .lim-ag{color:var(--pl-faint);font-size:0.6562rem;max-width:18rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.limchip .lim-pc.nd{display:none}
-/* the chip shrinks to its percentage (the words stay in the tooltip) or steps aside (LoadBar.tsx measures it, data-form) */
-.limchip[data-form="pct"] .lim-ag,.limchip[data-form="worst"] .lim-ag{display:none}
-.limchip[data-form="pct"] .lim-pc.nd,.limchip[data-form="worst"] .lim-pc.nd{display:inline}
-.limchip[data-form="none"]{display:none}
+.lim-summary{gap:0.3125rem;padding-inline:0.5rem;font-variant-numeric:tabular-nums;font-size:0.75rem}
+.lim-alert{font-size:0.75rem;color:var(--c-yellow)}
 
   :root.bp900 .top{grid-template-columns:auto minmax(0,1fr) auto;grid-template-areas:"menu crumbs right" "search search mon";height:5.75rem;row-gap:0.375rem;padding-top:0.375rem}
   :root.bp900 .topl{display:contents}

@@ -191,6 +191,7 @@ export const ru: Record<string, string | string[]> = {
   'memory.new': 'Новый', 'memory.confirm': 'Точно? ещё раз', 'memory.compactTip': 'Сжать историю: Координатор кратко перескажет разговор и освободит контекст; работа не прерывается',
   'memory.compactOff': 'Сжать нельзя: Координатор отвечает или это не Claude', 'memory.newTip': 'Новый Координатор: чистый контекст, текущий разговор закрывается',
   // лимиты
+  'limits.unavailable': 'Данные подписки недоступны или устарели',
   'limits.title': 'Лимиты подписок', 'limits.sub': 'остаток по окнам', 'limits.chip': 'Лимиты', 'limits.noData': 'нет данных', 'limits.noneTip': 'Лимиты подписок: нет данных',
   'limits.left': 'Осталось {n} %', 'limits.used': 'использовано {n} %', 'limits.stale': 'данные устарели', 'limits.staleShort': 'устарело', 'limits.staleTip': 'Данные старше {n} мин',
   'limits.reset': 'Сброс {at} · {left}', 'limits.noReset': 'Время сброса не сообщено', 'limits.resetPassed': 'Сброс прошёл', 'limits.inMin': 'через {n} мин',

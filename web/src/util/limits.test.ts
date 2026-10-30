@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { AgentUsage, LimitWindow } from '../types';
-import { ago, barAgents, countdown, expectedLeft, leftPct, paceLine, tabAgents, tightest, usedPct } from './limits';
+import { ago, barAgents, countdown, expectedLeft, leftPct, limitSummary, paceLine, tabAgents, tightest, usedPct } from './limits';
 
 const win = (percent: number, extra: Partial<LimitWindow> = {}): LimitWindow => ({ label: 'w', percent, severity: 'ok', resets_at_ms: 1, ...extra });
 const agent = (id: string, limits: LimitWindow[], extra: Partial<AgentUsage> = {}): AgentUsage => ({ id, name: id, limits, ...extra });
@@ -90,5 +90,22 @@ describe('how long ago', () => {
     expect(ago(5 * 60000)).toEqual({ n: 5, unit: 'min' });
     expect(ago(3 * 3600000)).toEqual({ n: 3, unit: 'h' });
     expect(ago(50 * 3600000)).toEqual({ n: 2, unit: 'd' });
+  });
+});
+
+describe('compact subscription summary', () => {
+  it('uses the worst live window across providers and ignores expired windows and stats', () => {
+    const list = [agent('claude', [win(1), win(.81, { resets_at_ms: 200 })]), agent('codex', [win(.96, { resets_at_ms: 200 })]), agent('pi', [win(1, { resets_at_ms: 200 })])];
+    expect(limitSummary(list, 100)).toEqual({ percent: 96, level: 'crit', unavailable: false });
+  });
+  it('warns about a signed-in provider without readings alongside a healthy one', () => {
+    expect(limitSummary([agent('claude', [win(.1, { resets_at_ms: 200 })]), agent('codex', [], { why: 'unauthorized' })], 100)).toEqual({ percent: 10, level: 'warn', unavailable: true });
+  });
+  it('warns on stale readings, but does not flag stats or unconnected providers', () => {
+    expect(limitSummary([agent('claude', [win(.1, { resets_at_ms: 200 })], { stale: true }), agent('omp', [], { source: 'omarchy' })], 100).unavailable).toBe(true);
+    expect(limitSummary([agent('claude', []), agent('omp', [], { source: 'omarchy' })], 100)).toEqual({ percent: null, level: 'ok', unavailable: false });
+  });
+  it('shows no invented percentage for balances and flags an exhausted balance', () => {
+    expect(limitSummary([agent('deepseek', [], { balance: { remaining: 0, currency: 'USD' } })], 100)).toEqual({ percent: null, level: 'crit', unavailable: false });
   });
 });

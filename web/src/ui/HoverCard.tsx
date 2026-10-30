@@ -4,10 +4,10 @@ import { card, cardSelf, cardKeys, anchorOf, closeCard } from './hovercard';
 import { LoadCard } from './LoadBar';
 import { LimitsCard } from './Limits';
 import { lang, t } from '../i18n';
-import { loadInfo, snap } from '../store';
+import { loadInfo, snap, panels } from '../store';
 import './hovercard.css';
 
-/** Keeps the card under its element, aligned to its left edge (to its right edge when it would not fit), inside the window. */
+/** Aligns the card to its button, inside the viewport; docked chat can open it above when there is more room. */
 function place(el: HTMLElement, anchor: HTMLElement): void {
   const gap = 6;
   const pad = 8;
@@ -18,26 +18,47 @@ function place(el: HTMLElement, anchor: HTMLElement): void {
   let left = a.left;
   if (left + w > vw - pad) left = a.right - w;
   left = Math.max(pad, Math.min(left, vw - w - pad));
-  const top = a.bottom + gap;
+  const below = vh - a.bottom - gap - pad;
+  const above = a.top - gap - pad;
+  const height = Math.min(el.scrollHeight, 320);
+  const over = below < height && above > below;
+  const available = over ? above : below;
+  el.style.maxHeight = `${Math.max(0, Math.floor(available))}px`;
+  const top = over ? a.top - gap - el.offsetHeight : a.bottom + gap;
   el.style.left = `${Math.round(left)}px`;
   el.style.top = `${Math.round(top)}px`;
-  el.style.maxHeight = `${Math.max(120, Math.floor(vh - top - pad))}px`;
 }
 
 export function HoverCard(): JSX.Element | null {
   const c = card.value;
   const ref = useRef<HTMLDivElement>(null);
   // what the card shows changes with the readings, the language and the window: it is placed again after each
-  void lang.value; void loadInfo.value; void snap.value;
+  void lang.value; void loadInfo.value; void snap.value; void panels.chat.value;
   useLayoutEffect(() => {
     const el = ref.current;
     const anchor = c ? anchorOf(c.id) : null;
     if (!el || !anchor) return;
-    if (anchor.offsetWidth === 0) { closeCard(); return; }
-    const again = (): void => place(el, anchor);
+    if (anchor.offsetWidth === 0 || anchor.closest('[aria-hidden="true"]')) { closeCard(); return; }
+    const chat = anchor.closest<HTMLElement>('.chat');
+    let frame = 0;
+    const again = (): void => {
+      cancelAnimationFrame(frame);
+      place(el, anchor);
+      // The docked chat slides into view. A card opened during that slide follows its button.
+      if (chat?.getAnimations().some((a) => a.playState === 'running')) frame = requestAnimationFrame(again);
+    };
     again();
+    const ro = new ResizeObserver(again);
+    ro.observe(anchor);
+    if (chat) ro.observe(chat);
     window.addEventListener('resize', again);
-    return () => window.removeEventListener('resize', again);
+    chat?.addEventListener('transitionrun', again);
+    return () => {
+      cancelAnimationFrame(frame);
+      ro.disconnect();
+      window.removeEventListener('resize', again);
+      chat?.removeEventListener('transitionrun', again);
+    };
   });
   if (!c) return null;
   return (

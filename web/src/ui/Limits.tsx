@@ -5,7 +5,7 @@ import { t, locale } from '../i18n';
 import { post, refreshNow } from '../api';
 import { dayTimeOf } from '../util/dates';
 import { money } from '../util/format';
-import { ago, barAgents, countdown, expectedLeft, hasNumbers, leftPct, level, paceLine, PROVIDER_NAMES, PROVIDER_ORDER, tabAgents, tightest, usedPct } from '../util/limits';
+import { ago, barAgents, countdown, expectedLeft, hasNumbers, leftPct, level, limitSummary, paceLine, PROVIDER_NAMES, PROVIDER_ORDER, tabAgents, tightest, usedPct } from '../util/limits';
 import type { AgentUsage, LimitWindow, UsageSection } from '../types';
 import { Gl } from './Gl';
 import { cardAnchor, closeCard } from './hovercard';
@@ -91,49 +91,45 @@ export function ProviderIcon(props: { id: string }): JSX.Element {
   return <Gl n={PROVIDER_ORDER.includes(props.id) ? `p-${props.id}` : 'limit'} cls="lp-ico" />;
 }
 
-/** What a provider says in the bar, in two lengths: the two tightest windows, then the tightest alone (the third form is its percentage). */
-function Segment(props: { a: AgentUsage; urgent: boolean }): JSX.Element {
+/** A provider in the chat header: two windows, or its balance. */
+function Segment(props: { a: AgentUsage }): JSX.Element {
   const a = props.a;
   const ws = tightest(a.limits ?? []);
   const one = tightest(a.limits ?? [], 1)[0];
   const lv = level(a.limits ?? []);
   const words = ws.length ? ws.map(usedText).join(' · ') : a.balance ? cur(a.balance.remaining, a.balance.currency || 'USD') : '';
   return (
-    <span class={`lp lp-${lv}${a.stale ? ' stale' : ''}`} data-p={a.id} data-urgent={props.urgent ? '1' : undefined}>
+    <span class={`lp lp-${lv}${a.stale ? ' stale' : ''}`} data-p={a.id}>
       <ProviderIcon id={a.id} />
       {one && <span class="lp-bar"><i style={`--w:${usedPct(one)}%`} /></span>}
       {ws.length ? (
-        <>
-          <span class="lp-words"><span class="lp-t lp-fullw">{ws.map(usedText).join(' · ')}</span><span class="lp-t lp-onew">{usedText(one)}</span></span>
-          <span class="lp-s">{usedPct(one)}%</span>
-        </>
+        <span class="lp-words lp-t">{words}</span>
       ) : (
-        <span class="lp-t lp-s lp-bal">{words}</span>
+        <span class="lp-t lp-bal">{words}</span>
       )}
     </span>
   );
 }
 
-/** The bar: each provider with its icon, a small gauge and what is used and when it resets, as in herdr-gpui's status bar
- *  (data-form: `full` the two tightest windows, `one` the tightest, `pct` only its share; LoadBar.tsx measures them). */
-export function LimitsChip(): JSX.Element {
-  const shown = barAgents(agents(), picked.value);
-  if (!shown.length) {
-    return (
-      <button class="btn limchip" id="hud-limits" type="button" aria-label={t('limits.noneTip')} {...cardAnchor('limits')}>
-        <Gl n="limit" /><span class="lim-ag">{t('limits.chip')} <span class="faint">{t('limits.noData')}</span></span><b class="lim-pc nd">—</b>
-      </button>
-    );
-  }
-  // the one the narrowest form keeps is the provider closest to its limit, whichever tab is open in the card
-  const urgent = barAgents(agents(), '')[0]?.id;
-  const lv = level(shown.flatMap((a) => a.limits ?? []));
-  const tip = shown
-    .map((a) => `${a.name}: ${tightest(a.limits ?? []).map(usedText).join(' · ') || (a.balance ? cur(a.balance.remaining, a.balance.currency || 'USD') : '')}${a.stale ? ` (${t('limits.stale')})` : ''}`)
-    .join('; ');
+/** Full provider details belong to the Coordinator's header; the top bar always keeps a single summary. */
+export function LimitsChip(props: { chat?: boolean }): JSX.Element {
+  const list = agents();
+  const shown = barAgents(list, picked.value);
+  const summary = limitSummary(list);
+  const details = tabAgents(list).map((a) => {
+    const words = tightest(a.limits ?? []).map(usedText).join(' · ') || (a.balance ? cur(a.balance.remaining, a.balance.currency || 'USD') : t('limits.noData'));
+    return `${a.name}: ${words}${a.stale ? ` (${t('limits.stale')})` : ''}${a.why ? ` (${whyText(a.why)})` : ''}`;
+  }).join('; ');
+  const tip = details ? `${t('limits.title')}: ${details}` : t('limits.noneTip');
+  const id = props.chat ? 'chat-limits' : 'hud-limits';
+  const lv = summary.level;
   return (
-    <button class={`btn limchip lim-row${lv === 'crit' ? ' lim-crit' : lv === 'warn' ? ' lim-warn' : ''}`} id="hud-limits" type="button" aria-label={tip} {...cardAnchor('limits')}>
-      {shown.map((a) => <Segment key={a.id} a={a} urgent={a.id === urgent} />)}
+    <button class={`btn limchip ${props.chat ? 'lim-row chat-limits' : 'lim-summary'}${lv === 'crit' ? ' lim-crit' : lv === 'warn' ? ' lim-warn' : ''}`}
+      id={id} type="button" aria-label={tip} title={tip} {...cardAnchor('limits', id)}>
+      {props.chat && shown.length ? shown.map((a) => <Segment key={a.id} a={a} />) : <>
+        <Gl n="limit" /><b class="lim-pc">{summary.percent === null ? '—' : `${summary.percent}%`}</b>
+      </>}
+      {summary.unavailable && <b class="lim-alert" aria-label={t('limits.unavailable')}>!</b>}
     </button>
   );
 }
