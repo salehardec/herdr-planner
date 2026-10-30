@@ -3477,6 +3477,8 @@ section('universe framing', async () => {
     await waitFor(`world.debug().flight === "idle" && world.level === "nebula" && world.universe === ${JSON.stringify(name)}`, 20000);
     await calmCamera();
     await frames(3);
+    // the labels are placed by the frames drawn: on a loaded machine they come a little later
+    await waitFor(`[...document.querySelectorAll('#labels > div.planet')].some((e) => e.style.display !== 'none')`, 10000);
   };
   // Where the planets, their labels and the ship are on the screen, against the free area.
   const look = (name) => evalJs(`(() => {
