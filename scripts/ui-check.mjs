@@ -6702,26 +6702,6 @@ section('runners disk', async () => {
   await shot('shipyard-disk.png');
 }, { retry: false });
 
-// A disk alarm opened from «Ждёт тебя»: the cleaning that clears it takes the Focus to the next waiting request.
-section('runners disk queue', async () => {
-  const gone = { ids: ['b'.repeat(64)] };
-  yardReset({}, { ...gone, disk: { size: 100_000_000_000, avail: 8_000_000_000 } });
-  await post('/api/runner/ask', { id: 'vm-r' });
-  check('a little disk is an alarm of the yard', await waitFor('plannerSnap().runners.find((r) => r.id === "vm-r")?.alerts.map((a) => a.kind).join() === "disk"', 8000));
-  await click('#wait-btn');
-  await waitFor('!!document.querySelector("#drawer-wait [data-alert=disk]")', 5000);
-  await click('#drawer-wait [data-alert=disk]');
-  await waitFor('plannerDebug().selected?.kind === "runner" && !!document.querySelector("#rf-disk-open")', 15000);
-  await click('#rf-disk-open');
-  await waitFor('!!document.querySelector("#rf-disk [data-part=volumes]")', 30000);
-  // The yard has room once the cleaning is done.
-  await click('#dk-go');
-  yardReset({}, { ...gone, disk: { size: 100_000_000_000, avail: 60_000_000_000 } });
-  await secondPress('#dk-go');
-  check('the alarm is gone after the cleaning', await waitFor('(plannerSnap().runners.find((r) => r.id === "vm-r")?.alerts ?? []).length === 0', 30000));
-  check('the Focus moves to the next waiting request, not the yard', await waitFor('plannerDebug().selected?.kind !== "runner" && !!plannerDebug().selected', 15000), JSON.stringify(await pd()));
-}, { retry: false });
-
 section('runners auto', async () => {
   const id = (c) => c.repeat(64);
   const utc9d = new Date(Date.now() - 9 * 24 * 3600 * 1000).toISOString().replace('T', ' ').slice(0, 19) + ' +0000 UTC';
@@ -6885,6 +6865,26 @@ section('runners alerts', async () => {
 }, { retry: false });
 
 // One container of a task: the logs window and stop / restart / delete with «было → стало».
+// A disk alarm opened from «Ждёт тебя»: the cleaning that clears it takes the Focus to the next waiting request.
+section('runners disk queue', async () => {
+  const gone = { ids: ['b'.repeat(64)] };
+  yardReset({}, { ...gone, disk: { size: 100_000_000_000, avail: 8_000_000_000 } });
+  await post('/api/runner/ask', { id: 'vm-r' });
+  check('a little disk is an alarm of the yard', await waitFor('plannerSnap().runners.find((r) => r.id === "vm-r")?.alerts.map((a) => a.kind).join() === "disk"', 8000));
+  await click('#wait-btn');
+  await waitFor('!!document.querySelector("#drawer-wait [data-alert=disk]")', 5000);
+  await click('#drawer-wait [data-alert=disk]');
+  await waitFor('plannerDebug().selected?.kind === "runner" && !!document.querySelector("#rf-disk-open")', 15000);
+  await click('#rf-disk-open');
+  await waitFor('!!document.querySelector("#rf-disk [data-part=volumes]")', 30000);
+  // The yard has room once the cleaning is done.
+  await click('#dk-go');
+  yardReset({}, { ...gone, disk: { size: 100_000_000_000, avail: 60_000_000_000 } });
+  await secondPress('#dk-go');
+  check('the alarm is gone after the cleaning', await waitFor('(plannerSnap().runners.find((r) => r.id === "vm-r")?.alerts ?? []).length === 0', 30000));
+  check('the Focus moves to the next waiting request, not the yard', await waitFor('plannerDebug().selected?.kind !== "runner" && !!plannerDebug().selected', 15000), JSON.stringify(await pd()));
+}, { retry: false });
+
 section('runners ctl', async () => {
   const id = (c) => c.repeat(64);
   const btn = (name, kind) => `([...document.querySelectorAll("[data-focus=runner] tbody tr")].find((r) => r.querySelector("code")?.innerText === ${JSON.stringify(name)})?.querySelector('[data-ctl="${kind}"]'))`;
