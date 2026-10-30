@@ -2440,6 +2440,34 @@ section('requests', async () => {
   check('without a permission dialog on the screen the answer is words in the field', await waitFor('!!document.querySelector(\'#focus [data-act="perm-allow"]\')', 10000));
   await click('#focus [data-act="perm-allow"]');
   check('a permission button prepares an editable answer', await waitFor('document.querySelector("#tell")?.value === "Да, разрешаю."', 4000));
+  // ── PLN-101: the folder question of a new working copy is answered from the Focus, and a dialog nothing here can press says
+  // so instead of offering words that would only queue behind it. The screen is read again by itself: the dialog may be drawn
+  // after the board has said «waiting».
+  writeFileSync(join(fixture, 'state', 'dialog.txt'), ' Выберите режим\n\n  ❯ Доверять\n    Выйти\n\n Enter to confirm · Esc to cancel');
+  check('a dialog that cannot be pressed from here says so and offers the agent screen, not words',
+    await waitFor(`!!document.querySelector('#focus [data-reach="screen"]')`, 15000)
+      && await hasText('#focus [data-reach="screen"]', 'ответьте на экране агента')
+      && await exists('#focus [data-reach="screen"] [data-act="screen"][data-target="alpha/16"]')
+      && !(await exists('#focus [data-act="perm-allow"]')) && !(await exists('#focus [data-act="dlg-allow"]')),
+    (await text('#focus')).slice(0, 240));
+  writeFileSync(join(fixture, 'state', 'dialog.txt'), readFileSync(new URL('../src/menu_samples/claude-trust-folder.txt', import.meta.url), 'utf8'));
+  const trustCard = '#focus [data-type="permission"]';
+  check('the folder question is a permission card with working buttons, read from the screen without a new click',
+    await waitFor(`!!document.querySelector(${JSON.stringify(trustCard + ' [data-act="dlg-allow"]')})`, 15000)
+      && await hasText(trustCard, 'Quick safety check') && await exists(trustCard + ' [data-act="dlg-deny"]')
+      && !(await exists('#focus [data-act="perm-allow"]')),
+    (await text('#focus')).slice(0, 240));
+  const kTrust = calls('keys.jsonl').length;
+  await click(trustCard + ' [data-act="dlg-allow"]');
+  check('«Разрешить» on the folder question presses the yes row',
+    await waitLog(() => calls('keys.jsonl').slice(kTrust).some((c) => c.target === 'sw-alpha-16' && c.keys.join() === 'enter'), 10000),
+    JSON.stringify(calls('keys.jsonl').slice(kTrust)));
+  check('the plate is lifted at once: no buttons, the badge says the answer was sent',
+    await waitFor(`!document.querySelector('#focus [data-act="dlg-allow"]') && !!document.querySelector('#focus [data-type="answered"]') && (document.querySelector('#focus .badge')?.innerText || '').includes('Ответ отправлен')`, 4000),
+    (await text('#focus')).slice(0, 240));
+  // the screen (static in this fixture) still shows the dialog: the answer did not land, and the buttons come back
+  check('a dialog that is still on the screen after the answer asks again',
+    await waitFor(`!!document.querySelector(${JSON.stringify(trustCard + ' [data-act="dlg-allow"]')})`, 20000));
   const dash = await post('/api/action', { action: 'tell', id: 'alpha/2', text: '-- hi' });
   check('a message starting with -- is passed as text, not an option', dash[0] === 200 && calls().some((c) => c.argv[0] === 'tell' && c.argv[3] === '-- hi'), JSON.stringify(lastCall()));
   const tellTooLong = await post('/api/action', { action: 'tell', id: 'alpha/2', text: 'z'.repeat(100001) });
@@ -2493,13 +2521,13 @@ section('requests', async () => {
   check('«Разрешить» presses the yes row in the agent\'s panel',
     await waitLog(() => calls('keys.jsonl').slice(kAllow).some((c) => c.target === 'sw-alpha-16' && c.keys.join() === 'enter'), 10000),
     JSON.stringify(calls('keys.jsonl').slice(kAllow)));
-  check('the card is ready again after the answer', await waitFor(`document.querySelector(${JSON.stringify(permCard + ' [data-act="dlg-always"]')})?.getAttribute('aria-disabled') !== 'true'`, 8000));
+  check('the card is ready again after the answer', await waitFor(`(document.querySelector(${JSON.stringify(permCard + ' [data-act="dlg-always"]')})?.getAttribute('aria-disabled') ?? 'x') !== 'true' && !!document.querySelector(${JSON.stringify(permCard + ' [data-act="dlg-always"]')})`, 20000));
   const kAlways = calls('keys.jsonl').length;
   await click(permCard + ' [data-act="dlg-always"]');
   check('«Разрешить и не спрашивать» presses the row after yes',
     await waitLog(() => calls('keys.jsonl').slice(kAlways).filter((c) => c.target === 'sw-alpha-16').flatMap((c) => c.keys).join() === 'down,enter', 10000),
     JSON.stringify(calls('keys.jsonl').slice(kAlways)));
-  check('the card is ready again', await waitFor(`document.querySelector(${JSON.stringify(permCard + ' [data-act="dlg-deny"]')})?.getAttribute('aria-disabled') !== 'true'`, 8000));
+  check('the card is ready again', await waitFor(`(document.querySelector(${JSON.stringify(permCard + ' [data-act="dlg-deny"]')})?.getAttribute('aria-disabled') ?? 'x') !== 'true' && !!document.querySelector(${JSON.stringify(permCard + ' [data-act="dlg-deny"]')})`, 20000));
   const kDeny = calls('keys.jsonl').length;
   await click(permCard + ' [data-act="dlg-deny"]');
   check('«Запретить» presses the no row',
@@ -2544,7 +2572,9 @@ section('requests', async () => {
     await waitLog(() => calls('coordinator.jsonl').some((c) => c.text === '[Действие в планировщике] ALP-21: разрешено действие агента, больше не спрашивать'), 12000),
     JSON.stringify(calls('coordinator.jsonl').slice(-1)));
   // The same dialog answered on the agent's own screen (its menu card) is the human's action too.
-  await click(dialogCard + ' [data-act="screen"][data-target="alpha/21"]');
+  // the plate that says «answer sent» comes and goes with the (static) fixture screen: either way the agent screen is one click away
+  check('the card still leads to the agent screen after the answer', await exists('#focus [data-act="screen"][data-target="alpha/21"]'));
+  await click('#focus [data-act="screen"][data-target="alpha/21"]');
   check('the agent screen shows the dialog as a card', await waitFor('!!document.querySelector("#agent-screen [data-menu-card]")', 12000));
   await click('#agent-screen [data-menu-opt="0"]');
   check('a dialog answered on the agent screen also reaches the Coordinator',
@@ -7729,6 +7759,13 @@ section('light page actions', async () => {
   await click('.nav [data-tab="chat"]');
   await click('#cquick button');
   check('a quick phrase is a message too', await waitLog(() => calls('coordinator.jsonl').some((c) => c.text === 'Что горит?'), 15000), JSON.stringify(lastCall('coordinator.jsonl')));
+  // PLN-101: a dialog the phone cannot press says so (words would only queue behind it) instead of offering a field that does not work
+  writeFileSync(join(fixture, 'state', 'dialog.txt'), ' Выберите режим\n\n  ❯ Доверять\n    Выйти\n\n Enter to confirm · Esc to cancel');
+  await click('.nav [data-tab="wait"]');
+  check('a dialog the phone cannot press says to answer on the agent screen, with no field for words',
+    await waitFor(`!!document.querySelector(${JSON.stringify(phoneCard('permission:alpha/16') + ' [data-reach="screen"]')})`, 15000)
+      && !(await exists(phoneCard('permission:alpha/16') + ' [data-act="tell"]')) && !(await exists(phoneCard('permission:alpha/16') + ' [data-act="dlg-allow"]')),
+    (await text(phoneCard('permission:alpha/16'))).slice(0, 200));
   // a permission of an agent is answered with buttons, through the menu's own checks (the same screen the computer's cards read)
   writeFileSync(join(fixture, 'state', 'dialog.txt'), readFileSync(new URL('../src/menu_samples/claude-permission.txt', import.meta.url), 'utf8'));
   await click('.nav [data-tab="wait"]');

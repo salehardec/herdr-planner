@@ -100,7 +100,7 @@ export const en: Record<string, string | string[]> = {
   'reason.plan': 'plan', 'reason.ready': 'to approve', 'reason.failed': 'failed', 'reason.permission': 'permission', 'reason.question': 'question',
   'reason.auth': 'sign-in', 'reason.pick': 'choice', 'reason.limit': 'limit', 'reason.review': 'review',
   'reason.yard': 'yard', 'reason.coordinator': 'coordinator', 'reason.memory': 'memory',
-  'req.showReviewer': 'Show the reviewer’s screen', 'req.screenHint': 'The board does not give the dialog: herdr reads it.', 'req.reading': 'reading the screen…',
+  'req.showReviewer': 'Show the reviewer’s screen', 'req.screenHint': 'The board does not give the dialog: herdr reads it.', 'req.answerOnScreen': 'This dialog cannot be answered from here: answer it on the agent’s screen.', 'req.answerSent': 'Answer sent', 'req.answerSentText': 'The answer is in the agent’s terminal; waiting for the board to see it.', 'm.note.dialogScreen': 'This dialog cannot be answered from the phone: answer it on the agent’s screen, at the computer.', 'req.reading': 'reading the screen…',
   'req.refreshScreen': 'Refresh the screen',
   'seat.reviewer': 'review', 'seat.who.reviewer': 'Reviewer', 'seat.who.worker': 'Worker',
   'seat.nobody': 'not named', 'seat.tookOver': 'handed over to the fallback', 'seat.open': 'Open the terminal in herdr',
