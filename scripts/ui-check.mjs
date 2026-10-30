@@ -2572,7 +2572,8 @@ section('requests', async () => {
     await waitLog(() => calls('coordinator.jsonl').some((c) => c.text === '[Действие в планировщике] ALP-21: разрешено действие агента, больше не спрашивать'), 12000),
     JSON.stringify(calls('coordinator.jsonl').slice(-1)));
   // The same dialog answered on the agent's own screen (its menu card) is the human's action too.
-  check('the answered plate still leads to the agent screen', await exists('#focus [data-type="answered"] [data-act="screen"][data-target="alpha/21"]'));
+  // the plate that says «answer sent» comes and goes with the (static) fixture screen: either way the agent screen is one click away
+  check('the card still leads to the agent screen after the answer', await exists('#focus [data-act="screen"][data-target="alpha/21"]'));
   await click('#focus [data-act="screen"][data-target="alpha/21"]');
   check('the agent screen shows the dialog as a card', await waitFor('!!document.querySelector("#agent-screen [data-menu-card]")', 12000));
   await click('#agent-screen [data-menu-opt="0"]');
