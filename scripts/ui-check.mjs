@@ -7057,6 +7057,8 @@ section('chat unread', async () => {
   const scrollAway = async () => {
     await evalJs('(() => { const l = document.querySelector("#clog"); l.dispatchEvent(new WheelEvent("wheel", { bubbles: true, deltaY: 1 })); l.scrollTop = l.scrollHeight - l.clientHeight - 700; return true; })()');
     await waitFor(`${dist} >= 650 && !!document.querySelector("#tolast")`, CHAT_WAIT);
+    // The scroll position changes before Chromium dispatches scroll. Let the log handle it before an answer arrives.
+    await calmLog();
   };
   // Watch the browser's own scroll events. `started` lets a check add an answer or interrupt while the smooth jump is
   // actually running; `ended` is the barrier afterwards. No guess about how long the animation takes on this machine.
@@ -7610,7 +7612,7 @@ section('crew roles', async () => {
   await typeIn('#cr-rule-repo', 'gamma');
   await waitFor('!document.querySelector("#cr-rule-add").disabled', 5000);   // the page draws the typed value a moment later on a loaded machine
   await click('#cr-rule-add');
-  check('a rule «for the repository gamma» is added', await waitFor('!!document.querySelector(\'[data-rule-role="Дизайнер"]\') && (document.querySelector("#cr-rules-list")?.innerText || "").includes("gamma")', 8000), await text('#st-rules'));
+  check('a rule «for the repository gamma» is added and the form is ready for another', await waitFor('!!document.querySelector(\'[data-rule-role="Дизайнер"]\') && (document.querySelector("#cr-rules-list")?.innerText || "").includes("gamma") && document.querySelector("#cr-rule-repo").value === "" && document.querySelector("#cr-rule-title").value === ""', 8000), await text('#st-rules'));
   await typeIn('#cr-rule-role', sid);
   await typeIn('#cr-rule-title', '*безопас*');
   await waitFor('document.querySelector("#cr-rule-role").value === ' + JSON.stringify(sid) + ' && !document.querySelector("#cr-rule-add").disabled', 5000);
