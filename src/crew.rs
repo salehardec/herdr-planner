@@ -400,19 +400,19 @@ pub fn providers_of(program: &str, names: &[String], seen: &[String]) -> Vec<Pro
     }
     let mut out: Vec<Provider> = Vec::new();
     let mut add = |name: String, source: &'static str| {
-        if name == "anthropic" {
+        if models::removed_agent(&name) {
             return;
         }
         if !name.is_empty() && !out.iter().any(|p| p.name == name) {
             out.push(Provider { name, source });
         }
     };
-    for n in names {
+    for n in names.iter().filter(|name| !models::removed_agent(name)) {
         if let Some(p) = provider_of_listed(program, n) {
             add(p, "list");
         }
     }
-    for s in seen {
+    for s in seen.iter().filter(|name| !models::removed_agent(name)) {
         let provider = match s.split_once('/') {
             Some((p, _)) => p.to_string(),
             None => family_of(s).to_string(),
@@ -429,7 +429,7 @@ pub fn seen_names(program: &str, seen: &[String]) -> Vec<String> {
         return Vec::new();
     }
     let mut out: Vec<String> = Vec::new();
-    for s in seen {
+    for s in seen.iter().filter(|name| !models::removed_agent(name)) {
         let name = if s.contains('/') {
             format!("{program}/{s}")
         } else {
@@ -463,8 +463,9 @@ pub fn program_of(value: &str) -> &str {
 pub fn chain_programs(value: &str) -> Vec<String> {
     value
         .split(',')
-        .map(|i| program_of(i).to_string())
-        .filter(|p| !p.is_empty() && p != "none" && p != "claude")
+        .map(str::trim)
+        .filter(|item| !item.is_empty() && *item != "none" && !models::removed_agent(item))
+        .map(|item| program_of(item).to_string())
         .collect()
 }
 
@@ -472,20 +473,20 @@ pub fn roles_using(program: &str, settings: &[Setting], light: &str) -> Vec<Role
     let mut out = Vec::new();
     for r in ROLES {
         if r.id == "light" {
-            if !light.is_empty() && program_of(light) == program {
+            if !light.is_empty() && !models::removed_agent(light) && program_of(light) == program {
                 out.push(RoleUse { role: "light", field: "agent", value: light.to_string() });
             }
             continue;
         }
         if let Some(s) = find(settings, r.agent) {
-            if program_of(&s.value) == program {
+            if !models::removed_agent(&s.value) && program_of(&s.value) == program {
                 out.push(RoleUse { role: r.id, field: "agent", value: s.value.clone() });
             }
         }
         if !r.fallback.is_empty() {
             if let Some(s) = find(settings, r.fallback) {
                 if chain_programs(&s.value).iter().any(|p| p == program) {
-                    out.push(RoleUse { role: r.id, field: "fallback", value: s.value.clone() });
+                    out.push(RoleUse { role: r.id, field: "fallback", value: models::without_removed_chain(&s.value) });
                 }
             }
         }
@@ -755,16 +756,16 @@ pub fn capture(settings: &[Setting], light: &str) -> BTreeMap<String, RoleSet> {
             return String::new();
         }
         match find(settings, name) {
-            Some(s) if s.from != "built in" && s.place != "builtin" => s.value.clone(),
+            Some(s) if s.from != "built in" && s.place != "builtin" => models::without_removed(&s.value),
             _ => String::new(),
         }
     };
     let mut roles = BTreeMap::new();
     for r in ROLES {
         let set = if r.id == "light" {
-            RoleSet { agent: light.to_string(), ..RoleSet::default() }
+            RoleSet { agent: models::without_removed(light), ..RoleSet::default() }
         } else {
-            RoleSet { agent: pick(r.agent), effort: pick(r.effort), fallback: pick(r.fallback) }
+            RoleSet { agent: pick(r.agent), effort: pick(r.effort), fallback: models::without_removed_chain(&pick(r.fallback)) }
         };
         roles.insert(r.id.to_string(), set);
     }
@@ -808,11 +809,11 @@ pub struct Cat {
 
 fn first_with(cat: &Cat, words: &[&str]) -> Option<String> {
     for w in words {
-        if let Some(n) = cat.names.iter().find(|n| n.to_lowercase().contains(w)) {
+        if let Some(n) = cat.names.iter().find(|n| !models::removed_agent(n) && n.to_lowercase().contains(w)) {
             return Some(n.clone());
         }
     }
-    cat.names.first().cloned()
+    cat.names.iter().find(|n| !models::removed_agent(n)).cloned()
 }
 
 fn top_effort(cat: &Cat) -> String {
@@ -833,8 +834,8 @@ pub fn template(kind: &str, cats: &[Cat]) -> Result<(String, BTreeMap<String, Ro
     let usable: Vec<&Cat> = cats.iter().filter(|c| c.usable && c.program != "claude").collect();
     let strong = usable
         .iter()
-        .find(|c| c.program == "codex")
-        .or_else(|| usable.iter().find(|c| !c.names.is_empty()))
+        .find(|c| c.program == "codex" && c.names.iter().any(|n| !models::removed_agent(n)))
+        .or_else(|| usable.iter().find(|c| c.names.iter().any(|n| !models::removed_agent(n))))
         .copied()
         .ok_or("нет установленной и вошедшей программы со списком моделей")?;
     let big = first_with(strong, &["gpt-6", "pro"]).ok_or("нет моделей")?;
@@ -855,9 +856,9 @@ pub fn template(kind: &str, cats: &[Cat]) -> Result<(String, BTreeMap<String, Ro
             let cheap = usable
                 .iter()
                 .find_map(|c| {
-                    c.names.iter().find(|n| n.contains("deepseek") && n.contains("flash")).cloned()
-                        .or_else(|| c.names.iter().find(|n| n.contains("kimi") || n.contains("deepseek")).cloned())
-                        .or_else(|| (c.program == "kimi").then(|| c.names.first().cloned().unwrap_or_else(|| "kimi".into())))
+                    c.names.iter().find(|n| !models::removed_agent(n) && n.contains("deepseek") && n.contains("flash")).cloned()
+                        .or_else(|| c.names.iter().find(|n| !models::removed_agent(n) && (n.contains("kimi") || n.contains("deepseek"))).cloned())
+                        .or_else(|| (c.program == "kimi").then(|| first_with(c, &[]).unwrap_or_else(|| "kimi".into())))
                 })
                 .ok_or("нет дешёвой подписки: нужен omp с deepseek или kimi")?;
             let cheap_cat = usable.iter().find(|c| c.program == program_of(&cheap)).copied().unwrap_or(strong);
@@ -883,10 +884,18 @@ fn presets_file(cfg: &AppConfig) -> PathBuf {
 }
 
 fn read_store_at(path: &Path) -> Store {
-    std::fs::read_to_string(path)
+    let mut store = std::fs::read_to_string(path)
         .ok()
         .and_then(|t| serde_json::from_str::<Store>(&t).ok())
-        .unwrap_or_default()
+        .unwrap_or_default();
+    // Old presets remain readable, but a removed provider never reaches the page or an apply plan.
+    for preset in &mut store.presets {
+        for set in preset.roles.values_mut() {
+            set.agent = models::without_removed(&set.agent);
+            set.fallback = models::without_removed_chain(&set.fallback);
+        }
+    }
+    store
 }
 
 pub fn read_store(cfg: &AppConfig) -> Store {
@@ -1171,8 +1180,8 @@ mod tests {
 
     #[test]
     fn providers_come_from_the_list_then_from_the_models_used() {
-        let names: Vec<String> = ["pi/openai/gpt-5", "pi/openai/gpt-5-mini"].map(String::from).to_vec();
-        let seen: Vec<String> = ["deepseek-v4-flash", "k3.1-pro", "yanao/small", "openai/gpt-5"].map(String::from).to_vec();
+        let names: Vec<String> = ["pi/openai/gpt-5", "pi/openai/gpt-5-mini", "pi/anthropic/claude-sonnet-4-6"].map(String::from).to_vec();
+        let seen: Vec<String> = ["deepseek-v4-flash", "k3.1-pro", "yanao/small", "openai/gpt-5", "anthropic/claude-haiku-5-5", "claude-haiku-5-5"].map(String::from).to_vec();
         let p = providers_of("pi", &names, &seen);
         let list: Vec<(&str, &str)> = p.iter().map(|x| (x.name.as_str(), x.source)).collect();
         assert_eq!(
@@ -1186,7 +1195,7 @@ mod tests {
 
     #[test]
     fn a_program_with_no_list_is_offered_the_models_it_was_used_with() {
-        let seen: Vec<String> = ["deepseek-v4-flash", "gibberish", "yanao/small"].map(String::from).to_vec();
+        let seen: Vec<String> = ["deepseek-v4-flash", "gibberish", "yanao/small", "anthropic/claude-haiku-5-5", "claude-haiku-5-5"].map(String::from).to_vec();
         assert_eq!(seen_names("omp", &seen), vec!["omp/deepseek/deepseek-v4-flash", "omp/yanao/small"]);
         assert!(seen_names("kimi", &seen).is_empty());
     }
@@ -1379,6 +1388,28 @@ mod tests {
         assert_eq!(store.presets.len(), 1);
         assert!(store.active.is_empty(), "the active mark goes with the preset");
         assert!(delete_preset(&mut store, &id).is_err());
+    }
+
+    #[test]
+    fn old_presets_drop_removed_agents_and_fallback_items_when_read() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("crew-presets.json");
+        std::fs::write(
+            &path,
+            serde_json::to_string(&json!({"presets": [{"id": "p1", "name": "Старый", "roles": {
+                "light": {"agent": "claude/claude-haiku-5-5", "effort": "", "fallback": ""},
+                "worker": {"agent": "omp/anthropic/claude-sonnet-4-6", "effort": "high", "fallback": "codex, omp/pi/anthropic/claude-haiku-5-5"},
+                "reviewer": {"agent": "codex", "effort": "", "fallback": "anthropic/claude-haiku-5-5"}
+            }}]})).unwrap(),
+        )
+        .unwrap();
+        let store = read_store_at(&path);
+        let roles = &store.presets[0].roles;
+        assert_eq!(roles["light"].agent, "");
+        assert_eq!(roles["worker"].agent, "");
+        assert_eq!(roles["worker"].fallback, "codex");
+        assert_eq!(roles["reviewer"].agent, "codex");
+        assert_eq!(roles["reviewer"].fallback, "none", "a chain that has no items left is explicitly empty, not inherited");
     }
 
     #[test]

@@ -743,7 +743,16 @@ pub fn preset_steps(preset: &crew::Preset, roles: &[CustomRole], repo: &str) -> 
 pub fn capture(roles: &[CustomRole]) -> BTreeMap<String, crew::RoleSet> {
     roles
         .iter()
-        .map(|r| (preset_key(&r.id), crew::RoleSet { agent: r.agent.clone(), effort: r.effort.clone(), fallback: r.fallback.clone() }))
+        .map(|r| {
+            (
+                preset_key(&r.id),
+                crew::RoleSet {
+                    agent: crate::models::without_removed(&r.agent),
+                    effort: r.effort.clone(),
+                    fallback: crate::models::without_removed_chain(&r.fallback),
+                },
+            )
+        })
         .collect()
 }
 
@@ -769,7 +778,13 @@ fn roles_file(cfg: &AppConfig) -> PathBuf {
 }
 
 fn read_at(path: &Path) -> Store {
-    std::fs::read_to_string(path).ok().and_then(|t| serde_json::from_str::<Store>(&t).ok()).unwrap_or_default()
+    let mut store = std::fs::read_to_string(path).ok().and_then(|t| serde_json::from_str::<Store>(&t).ok()).unwrap_or_default();
+    // A role saved by an older version keeps its other fields, but cannot offer or apply a removed provider.
+    for role in &mut store.roles {
+        role.agent = crate::models::without_removed(&role.agent);
+        role.fallback = crate::models::without_removed_chain(&role.fallback);
+    }
+    store
 }
 
 pub fn read_store(cfg: &AppConfig) -> Store {
@@ -1099,6 +1114,25 @@ mod tests {
         s.roles.clear();
         assert!(preset_steps(&preset, &s.roles, "").is_empty());
         assert!(apply_step(&mut s, &id, "agent", None).is_err());
+    }
+
+    #[test]
+    fn old_roles_drop_removed_agents_and_fallback_items_when_read() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("crew-roles.json");
+        std::fs::write(
+            &path,
+            serde_json::to_string(&serde_json::json!({"roles": [{
+                "id": "r1", "name": "Старая", "kind": "worker",
+                "agent": "claude/claude-haiku-5-5", "effort": "high",
+                "fallback": "codex, omp/pi/anthropic/claude-sonnet-4-6"
+            }]})).unwrap(),
+        )
+        .unwrap();
+        let store = read_at(&path);
+        assert_eq!(store.roles[0].agent, "");
+        assert_eq!(store.roles[0].effort, "high");
+        assert_eq!(store.roles[0].fallback, "codex");
     }
 
     #[test]

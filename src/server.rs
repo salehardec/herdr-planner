@@ -1291,7 +1291,7 @@ pub(crate) struct ActionBody {
 /// `codex/gpt-6-luna`, `omp/deepseek/deepseek-v4-flash`: what `--worker.agent` takes.
 pub(crate) fn valid_agent(a: &str) -> bool {
     !a.is_empty()
-        && !a.starts_with("claude/")
+        && !crate::models::removed_agent(a)
         && a.len() <= 120
         && a.split('/').count() >= 2
         && a.chars().next().is_some_and(|c| c.is_ascii_lowercase())
@@ -2176,6 +2176,10 @@ mod tests {
         );
         assert!(agent_name("--all", None).is_err());
         assert!(agent_name("nothing", None).is_err());
+        for removed in ["anthropic/claude-sonnet-4-6", "omp/pi/anthropic/claude-sonnet-4-6", "omp/anthropic/claude-sonnet-4-6"] {
+            assert!(!valid_agent(removed), "{removed}");
+        }
+        assert!(valid_agent("omp/deepseek/deepseek-v4-flash"));
     }
 
     #[test]

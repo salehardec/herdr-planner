@@ -133,7 +133,7 @@ pub fn items_of(chain: &str) -> Vec<String> {
     chain
         .split(',')
         .map(|i| i.trim().to_string())
-        .filter(|i| !i.is_empty() && i != "none" && program_of(i) != "claude")
+        .filter(|i| !i.is_empty() && i != "none" && !crate::models::removed_agent(i))
         .collect()
 }
 
@@ -281,10 +281,20 @@ fn file_of(cfg: &AppConfig) -> PathBuf {
 }
 
 fn read_at(path: &std::path::Path) -> Store {
-    std::fs::read_to_string(path)
+    let mut store = std::fs::read_to_string(path)
         .ok()
         .and_then(|t| serde_json::from_str::<Store>(&t).ok())
-        .unwrap_or_default()
+        .unwrap_or_default();
+    for spare in store.roles.values_mut() {
+        spare.chain = crate::models::without_removed_chain(&spare.chain);
+    }
+    store.switched.retain(|_, switched| {
+        !crate::models::removed_agent(&switched.home) && !crate::models::removed_agent(&switched.to)
+    });
+    for switched in store.switched.values_mut() {
+        switched.human = crate::models::without_removed(&switched.human);
+    }
+    store
 }
 
 pub fn read_store(cfg: &AppConfig) -> Store {
@@ -317,7 +327,7 @@ pub fn page_json(cfg: &AppConfig, light: &str, down: &Down) -> Value {
     let mut out = serde_json::Map::new();
     for role in ROLES {
         let spare = store.spare(role);
-        let mut o = json!({"chain": spare.chain, "auto": spare.auto, "switched": Value::Null});
+        let mut o = json!({"chain": items_of(&spare.chain).join(", "), "auto": spare.auto, "switched": Value::Null});
         if let Some(sw) = store.switched.get(*role) {
             let home_program = program_of(&sw.home);
             o["switched"] = json!({
@@ -597,7 +607,15 @@ pub async fn failover_set(State(app): State<Shared>, headers: HeaderMap, Json(bo
             return Err(Fail::new(400, "нужно подтверждение: было → стало"));
         }
         check_role(&body.role)?;
-        let chain = body.chain.as_deref().map(|c| items_of(c).join(", "));
+        // Do not silently repair a new chain: removed providers are rejected by `check_chain` below. Filtering is
+        // only for files saved by older versions (`read_at`).
+        let chain = body.chain.as_deref().map(|c| {
+            if c.trim() == "none" {
+                String::new()
+            } else {
+                c.split(',').map(str::trim).collect::<Vec<_>>().join(", ")
+            }
+        });
         if let Some(c) = chain.as_deref().filter(|c| !c.is_empty()) {
             if let Err(e) = station::check_chain(&app, c).await {
                 return Err(Fail::new(422, e));
@@ -761,6 +779,10 @@ mod tests {
         assert_eq!(next_in_chain("kimi/k2", &items, &d), None);
         assert_eq!(next_in_chain("omp", &items, &down(&[])).as_deref(), Some("kimi/k2"), "never the agent it already runs");
         assert!(items_of("none").is_empty() && items_of("").is_empty());
+        assert_eq!(
+            items_of("codex, anthropic/claude-sonnet-4-6, omp/pi/anthropic/claude-sonnet-4-6, omp/anthropic/claude-haiku-5-5, omp"),
+            vec!["codex", "omp"],
+        );
     }
 
     #[test]

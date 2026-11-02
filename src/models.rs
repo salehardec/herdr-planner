@@ -50,11 +50,37 @@ fn inflight() -> &'static Mutex<HashSet<String>> {
     IN_FLIGHT.get_or_init(|| Mutex::new(HashSet::new()))
 }
 
+/// Whether an agent or model name belongs to the removed Anthropic/Claude integration. Model names are composite
+/// (`program/provider/model`), so every `/`-separated segment is checked: a supported launcher does not make a removed
+/// provider acceptable. Hyphenated model ids (`claude-sonnet-4-6`) are covered as well as exact `claude` segments.
+pub fn removed_agent(value: &str) -> bool {
+    value.split('/').any(|part| {
+        let part = part.trim().to_ascii_lowercase();
+        part == "anthropic" || part == "claude" || part.starts_with("claude-")
+    })
+}
+
+/// An old saved agent with its removed values taken out; empty means «use the default».
+pub fn without_removed(value: &str) -> String {
+    let value = value.trim();
+    if removed_agent(value) { String::new() } else { value.to_string() }
+}
+
+/// The same migration for a saved fallback chain. Valid items keep their order; removed ones disappear.
+pub fn without_removed_chain(value: &str) -> String {
+    let value = value.trim();
+    if value.is_empty() || value == "none" {
+        return value.to_string();
+    }
+    let items = value.split(',').map(str::trim).filter(|item| !item.is_empty() && !removed_agent(item)).collect::<Vec<_>>().join(", ");
+    if items.is_empty() { "none".to_string() } else { items }
+}
+
 /// A supported program name the board takes as `models <program>`: `codex`, `pi`, `omp`, `cursor-agent`, and any
 /// other lowercase word of up to 21 characters (letters, digits, `-`, starting with a letter). Removed providers are refused.
 pub fn valid_program(p: &str) -> bool {
     let b = p.as_bytes();
-    p != "claude"
+    !matches!(p, "claude" | "anthropic")
         && !b.is_empty()
         && b.len() <= 21
         && b[0].is_ascii_lowercase()
@@ -81,7 +107,7 @@ pub fn parse(program: &str, stdout: &str) -> (Vec<String>, String) {
         let is_name = line.len() > prefix.len()
             && line.starts_with(&prefix)
             && !line[prefix.len()..].contains(char::is_whitespace);
-        if is_name && !names.iter().any(|n| n == line) {
+        if is_name && !removed_agent(line) && !names.iter().any(|n| n == line) {
             names.push(line.to_string());
         }
         if names.len() >= MAX_NAMES {
@@ -254,6 +280,7 @@ Effort (worker.effort and the like): off, minimal, low, medium, high, xhigh, max
             "",
             "Codex",
             "claude",
+            "anthropic",
             "1abc",
             "codex;rm",
             "a b",
@@ -263,6 +290,26 @@ Effort (worker.effort and the like): off, minimal, low, medium, high, xhigh, max
         ] {
             assert!(!valid_program(bad), "{bad}");
         }
+    }
+
+    #[test]
+    fn rejects_removed_providers_in_every_segment_of_a_composite_name() {
+        let out = "omp/pi/anthropic/claude-sonnet-4-6\nomp/anthropic/claude-sonnet-4-6\nomp/deepseek/deepseek-v4-flash\n";
+        let (names, _) = parse("omp", out);
+        assert_eq!(names, vec!["omp/deepseek/deepseek-v4-flash"]);
+        for name in [
+            "anthropic/claude-sonnet-4-6",
+            "omp/pi/anthropic/claude-sonnet-4-6",
+            "omp/anthropic/claude-sonnet-4-6",
+            "pi/anthropic/claude-haiku-5-5",
+            "codex/claude-sonnet-4-6",
+        ] {
+            assert!(removed_agent(name), "{name}");
+        }
+        for name in ["omp/deepseek/deepseek-v4-flash", "pi/openai/gpt-5", "codex/gpt-6-luna"] {
+            assert!(!removed_agent(name), "{name}");
+        }
+        assert_eq!(without_removed_chain("codex, omp/anthropic/claude-haiku-5-5, omp/deepseek/deepseek-v4-flash"), "codex, omp/deepseek/deepseek-v4-flash");
     }
 
     fn fake_board(dir: &Path, name: &str, body: &str) -> String {

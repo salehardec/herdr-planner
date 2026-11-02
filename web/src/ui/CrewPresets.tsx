@@ -11,6 +11,7 @@ import { t, tn } from '../i18n';
 import { toast } from '../toast';
 import { AgentPick, ChainEditor, EffortPick } from './CrewPick';
 import { presetKey, presetKeys, ROLE_IDS, ROLE_SETTING, RoleId, rolesOrEmpty, sameRoles } from './crew-view';
+import { presetBrief as brief } from './crew-brief';
 import type { CrewRole } from './crew-roles-api';
 import {
   callError, CallError, PresetItem, PresetPreview, PresetRole, presetApply, presetPreview, presetsPost, StationData,
@@ -191,19 +192,6 @@ function PresetEditor(props: { preset: PresetItem; programs: StationData['progra
 }
 
 /* ───────── the list ───────── */
-
-/** One line of what a preset gives each role. */
-function brief(p: PresetItem, own: CrewRole[]): string {
-  const std = ROLE_IDS.map((role) => {
-    const r = p.roles[role];
-    return r?.agent ? `${t(`st.r.${role}`)}: ${r.agent}` : '';
-  });
-  const mine = own.map((x) => {
-    const r = p.roles[presetKey(x.id)];
-    return r?.agent ? `${x.name}: ${r.agent}` : '';
-  });
-  return [...std, ...mine].filter(Boolean).join(' · ');
-}
 
 const TEMPLATES = ['economy', 'max'] as const;
 

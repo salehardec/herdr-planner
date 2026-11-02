@@ -21,10 +21,10 @@ export interface Down { program: string; kind: 'limited' | 'signed_out'; until: 
 
 /** The agent that leads a role now (empty when nothing is set). `none` (no planner, no Coordinator) is empty too. */
 export function leadOf(data: Pick<StationData, 'settings' | 'light'>, role: RoleId): string {
-  if (role === 'light') return data.light;
+  if (role === 'light') return withoutRemoved(data.light);
   const name = ROLE_SETTING[role].agent;
   const v = data.settings.find((s) => s.name === name)?.value ?? '';
-  return v === 'none' || v === 'claude' || v.startsWith('claude/') ? '' : v;
+  return v === 'none' ? '' : withoutRemoved(v);
 }
 
 /** The installed programs that cannot be given work now: out of allowance, or signed out. */
@@ -51,7 +51,7 @@ export function summary(data: StationData): { leads: Lead[]; down: Down[] } {
 export function chainOf(value: string): string[] {
   const v = value.trim();
   if (!v || v === 'none') return [];
-  return v.split(',').map((x) => x.trim()).filter((x) => x && x !== 'claude' && !x.startsWith('claude/'));
+  return v.split(',').map((x) => x.trim()).filter((x) => x && !removedAgent(x));
 }
 
 /** The items as the board's value: `none` for an empty chain. */
@@ -81,6 +81,24 @@ export function untilLabel(a: Pick<ProgramAvail, 'until' | 'until_ms'>, now = Da
 /** The role fields of a preset that are set, in the order the screen reads them. */
 export const emptyRole = (): PresetRole => ({ agent: '', effort: '', fallback: '' });
 
+/** A removed Anthropic/Claude provider in any segment of a composite agent or model name. */
+export function removedAgent(value: string): boolean {
+  return value.split('/').some((part) => {
+    const p = part.trim().toLowerCase();
+    return p === 'anthropic' || p === 'claude' || p.startsWith('claude-');
+  });
+}
+
+const withoutRemoved = (value: string): string => removedAgent(value) ? '' : value;
+
+/** An old chain without removed providers, preserving the difference between «inherit» (`''`) and `none`. */
+export function cleanChain(value: string): string {
+  const v = value.trim();
+  if (!v || v === 'none') return v;
+  const items = chainOf(v);
+  return items.length ? items.join(', ') : 'none';
+}
+
 /** The key a preset holds an own role under (`role:<id>`). */
 export const presetKey = (id: string): string => `role:${id}`;
 
@@ -89,7 +107,12 @@ export const presetKeys = (own: string[] = []): string[] => [...ROLE_IDS, ...own
 
 export function rolesOrEmpty(roles: Record<string, PresetRole> | undefined, own: string[] = []): Record<string, PresetRole> {
   const out: Record<string, PresetRole> = {};
-  for (const r of presetKeys(own)) out[r] = { ...emptyRole(), ...(roles?.[r] ?? {}) };
+  for (const r of presetKeys(own)) {
+    const set = { ...emptyRole(), ...(roles?.[r] ?? {}) };
+    set.agent = withoutRemoved(set.agent);
+    set.fallback = cleanChain(set.fallback);
+    out[r] = set;
+  }
   return out;
 }
 
@@ -117,11 +140,13 @@ export interface ModelOption { value: string; kind: 'model' | 'default' | 'curre
  */
 export function modelOptions(program: string, m: ModelsData | null, current: string, bare = false): ModelOption[] {
   const out: ModelOption[] = [];
-  const mine = current === program || current.startsWith(`${program}/`);
+  const mine = !removedAgent(current) && (current === program || current.startsWith(`${program}/`));
   if (m) {
-    const listed = m.names.length > 0;
+    const listedNames = m.names.filter((n) => !removedAgent(n));
+    const suggested = m.suggested.filter((n) => !removedAgent(n));
+    const listed = listedNames.length > 0;
     if (bare) out.push({ value: program, kind: 'default' });
-    for (const n of listed ? m.names : m.suggested) out.push({ value: n, kind: 'model' });
+    for (const n of listed ? listedNames : suggested) out.push({ value: n, kind: 'model' });
     if (!listed && !bare) out.push({ value: program, kind: 'default' });
   }
   if (mine && current && !out.some((o) => o.value === current)) out.unshift({ value: current, kind: 'current' });

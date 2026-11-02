@@ -322,7 +322,10 @@ pub fn agent_program(value: &str) -> Result<String, String> {
         Some((p, m)) => (p, Some(m)),
         None => (value, None),
     };
-    if models::valid_program(program) && model.map_or(true, |m| !m.is_empty() && !m.starts_with('-')) {
+    if !models::removed_agent(value)
+        && models::valid_program(program)
+        && model.map_or(true, |m| !m.is_empty() && !m.starts_with('-'))
+    {
         Ok(program.to_string())
     } else {
         Err(format!(
@@ -334,6 +337,9 @@ pub fn agent_program(value: &str) -> Result<String, String> {
 /// A `*.agent` value against the models its program lists. An empty list (not read yet, or a program with no
 /// list) checks nothing: the board decides on apply.
 pub fn check_agent(value: &str, names: &[String]) -> Result<(), String> {
+    if models::removed_agent(value) {
+        return Err(format!("«{value}»: эта модель относится к удалённому провайдеру"));
+    }
     if names.is_empty() || !value.contains('/') || names.iter().any(|n| n == value) {
         return Ok(());
     }
@@ -365,11 +371,12 @@ const LIGHT_ENTRY: &str = "";
 
 /// The light-task preset in the planner's crew file.
 pub fn light_of(doc: &Map<String, Value>) -> String {
-    doc.get(LIGHT_ENTRY)
-        .and_then(|e| e.get("light"))
-        .and_then(Value::as_str)
-        .unwrap_or("")
-        .to_string()
+    models::without_removed(
+        doc.get(LIGHT_ENTRY)
+            .and_then(|e| e.get("light"))
+            .and_then(Value::as_str)
+            .unwrap_or(""),
+    )
 }
 
 /// Sets (or, for `""`, clears) the light-task preset. Entries of other names (the machines an older planner
@@ -564,11 +571,12 @@ async fn gather(app: &Shared, doctor: &str, installed: &[String]) -> Vec<Gathere
         } else {
             usage::AgentUsage::default()
         };
-        let listed = if program.installed {
+        let mut listed = if program.installed {
             models::get(&app.cfg, &program.name).await
         } else {
             models::Models::default()
         };
+        listed.names.retain(|name| !models::removed_agent(name));
         let state = crew::judge(&crew::Facts {
             program: &program.name,
             installed: program.installed,
@@ -721,17 +729,18 @@ async fn models_read(app: &Shared, q: ModelsQuery) -> Result<Value, Fail> {
         return Err(Fail::new(400, "такой программы нет"));
     }
     let listed = models_of(app, &q.program).await;
+    let names: Vec<String> = listed.names.into_iter().filter(|name| !models::removed_agent(name)).collect();
     let seen = usage::seen_models(&q.program);
     Ok(json!({
         "ok": true,
         "program": q.program,
-        "names": listed.names,
+        "names": names,
         "effort": listed.effort,
         "note": listed.note,
         "loading": listed.loading,
-        "listed": !listed.names.is_empty(),
-        "suggested": if listed.names.is_empty() { crew::seen_names(&q.program, &seen) } else { Vec::new() },
-        "providers": crew::providers_of(&q.program, &listed.names, &seen),
+        "listed": !names.is_empty(),
+        "suggested": if names.is_empty() { crew::seen_names(&q.program, &seen) } else { Vec::new() },
+        "providers": crew::providers_of(&q.program, &names, &seen),
     }))
 }
 
@@ -1343,7 +1352,15 @@ mod tests {
         assert!(agent_program("codex/").is_err());
         assert!(agent_program("codex/-x").is_err());
         assert!(agent_program("Codex/x").is_err());
-        assert!(agent_program("claude/legacy").is_err(), "removed providers are refused");
+        for removed in [
+            "claude/legacy",
+            "anthropic/claude-sonnet-4-6",
+            "omp/pi/anthropic/claude-sonnet-4-6",
+            "omp/anthropic/claude-sonnet-4-6",
+        ] {
+            assert!(agent_program(removed).is_err(), "{removed}: removed providers are refused in every segment");
+            assert!(check_agent(removed, &[]).is_err(), "{removed}: an unavailable model list is not a bypass");
+        }
         let names = vec![
             "codex/gpt-6-luna".to_string(),
             "codex/gpt-5.5".to_string(),
@@ -1375,6 +1392,10 @@ mod tests {
         assert_eq!(light_of(&doc), "omp/deepseek/deepseek-v4-flash");
         set_light_in(&mut doc, "codex/gpt-5.5");
         assert_eq!(light_of(&doc), "codex/gpt-5.5");
+        doc.insert(LIGHT_ENTRY.into(), json!({"light": "claude/claude-haiku-5-5"}));
+        assert_eq!(light_of(&doc), "", "an old saved light preset is not shown or used");
+        doc.insert(LIGHT_ENTRY.into(), json!({"light": "omp/anthropic/claude-haiku-5-5"}));
+        assert_eq!(light_of(&doc), "", "a composite old preset is removed too");
         set_light_in(&mut doc, "");
         assert_eq!(light_of(&doc), "");
         assert!(doc.is_empty());
@@ -1898,6 +1919,13 @@ esac"#,
         assert_eq!(code, StatusCode::BAD_REQUEST, "the board keeps the Reviewer's");
         let (code, err) = json_of(failover::failover_set(State(app.clone()), headers(), Json(body("coordinator", Some("codex/nope"), None))).await).await;
         assert_eq!(code, StatusCode::UNPROCESSABLE_ENTITY, "{err}");
+        let (code, err) = json_of(failover::failover_set(
+            State(app.clone()),
+            headers(),
+            Json(body("coordinator", Some("codex, omp/pi/anthropic/claude-sonnet-4-6"), None)),
+        ).await).await;
+        assert_eq!(code, StatusCode::UNPROCESSABLE_ENTITY, "a removed provider is rejected, not silently dropped: {err}");
+        assert!(failover::read_store(&app.cfg).spare("coordinator").chain.is_empty());
         let (code, ok) = json_of(failover::failover_set(State(app.clone()), headers(), Json(body("plan", Some("omp, omp/deepseek/deepseek-v3-flash"), None))).await).await;
         assert_eq!(code, StatusCode::OK, "{ok}");
         let (code, _) = json_of(failover::failover_set(State(app.clone()), headers(), Json(body("plan", None, Some(false)))).await).await;

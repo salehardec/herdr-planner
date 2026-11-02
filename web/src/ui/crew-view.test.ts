@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import { chainOf, chainValue, downPrograms, leadOf, modelOptions, momentLabel, offerable, presetKey, presetKeys, rolesOrEmpty, sameRoles, summary, untilLabel } from './crew-view';
+import { chainOf, chainValue, cleanChain, downPrograms, leadOf, modelOptions, momentLabel, offerable, presetKey, presetKeys, rolesOrEmpty, sameRoles, summary, untilLabel } from './crew-view';
+import { presetBrief, roleBrief } from './crew-brief';
+import type { CrewRole } from './crew-roles-api';
 import type { ModelsData, ProgramAvail, StationData, StationProgram, StationSetting } from './station-api';
 
 const avail = (over: Partial<ProgramAvail> = {}): ProgramAvail => ({ state: 'ok', until_ms: 0, until: '', reason: '', source: '', ...over });
@@ -47,6 +49,13 @@ describe('the summary line', () => {
   it('reads a role that nothing sets as empty', () => {
     expect(leadOf({ settings: [], light: '' }, 'worker')).toBe('');
   });
+
+  it('does not show a removed provider from an old setting, including a composite model name', () => {
+    for (const agent of ['claude/claude-haiku-5-5', 'anthropic/claude-sonnet-4-6', 'omp/pi/anthropic/claude-sonnet-4-6', 'omp/anthropic/claude-sonnet-4-6']) {
+      expect(leadOf({ settings: [setting('worker.agent', agent)], light: agent }, 'worker')).toBe('');
+      expect(leadOf({ settings: [], light: agent }, 'light')).toBe('');
+    }
+  });
 });
 
 describe('until when', () => {
@@ -72,6 +81,10 @@ describe('fallback chains', () => {
     expect(chainOf('codex, omp/deepseek/deepseek-v4-flash')).toEqual(['codex', 'omp/deepseek/deepseek-v4-flash']);
     // Removed providers are filtered from an old chain.
     expect(chainOf('codex, claude')).toEqual(['codex']);
+    expect(chainOf('codex, anthropic/claude-sonnet-4-6, omp/pi/anthropic/claude-sonnet-4-6, omp/anthropic/claude-haiku-5-5')).toEqual(['codex']);
+    expect(cleanChain('claude/claude-haiku-5-5')).toBe('none');
+    expect(cleanChain('none')).toBe('none');
+    expect(cleanChain('')).toBe('');
     expect(chainOf('none')).toEqual([]);
     expect(chainOf('')).toEqual([]);
     expect(chainValue(['codex', 'omp/deepseek/deepseek-v4-flash'])).toBe('codex, omp/deepseek/deepseek-v4-flash');
@@ -102,6 +115,34 @@ describe('presets in the editor', () => {
     // a role the editor does not know about is not compared
     expect(sameRoles(saved, { ...saved, 'role:r1f': { agent: 'x', effort: '', fallback: '' } })).toBe(true);
   });
+  it('cleans old saved agents and chains without turning an unset field into none', () => {
+    const saved = rolesOrEmpty({
+      light: { agent: 'claude/claude-haiku-5-5', effort: '', fallback: '' },
+      worker: { agent: 'omp/anthropic/claude-sonnet-4-6', effort: '', fallback: 'codex, omp/pi/anthropic/claude-haiku-5-5' },
+    });
+    expect(saved.light.agent).toBe('');
+    expect(saved.light.fallback).toBe('');
+    expect(saved.worker.agent).toBe('');
+    expect(saved.worker.fallback).toBe('codex');
+  });
+
+  it('keeps removed providers out of preset and own-role summaries', () => {
+    const preset = presetBrief({
+      id: 'p1', name: 'Старый', diff: 0,
+      roles: {
+        light: { agent: 'claude/claude-haiku-5-5', effort: '', fallback: '' },
+        worker: { agent: 'codex/gpt-6-luna', effort: '', fallback: '' },
+      },
+    }, []);
+    expect(preset).toContain('codex/gpt-6-luna');
+    expect(preset).not.toContain('claude');
+    const role = roleBrief({
+      agent: 'claude/claude-haiku-5-5', effort: '', fallback: 'omp/pi/anthropic/claude-sonnet-4-6',
+    } as CrewRole);
+    expect(role).not.toContain('claude');
+    expect(role).toContain('none');
+  });
+
   it('knows an edit from the saved one', () => {
     const saved = rolesOrEmpty({ worker: { agent: 'codex', effort: '', fallback: '' } });
     expect(sameRoles(saved, rolesOrEmpty({ worker: { agent: 'codex', effort: '', fallback: '' } }))).toBe(true);
@@ -132,6 +173,15 @@ describe('the model picker', () => {
     const o = modelOptions('codex', models({ names: ['codex/gpt-6-luna'], listed: true }), 'codex/old', true);
     expect(o.map((x) => `${x.kind}:${x.value}`)).toEqual(['current:codex/old', 'default:codex', 'model:codex/gpt-6-luna']);
     expect(modelOptions('codex', models({ names: ['codex/gpt'], listed: true }), 'omp/old').map((x) => x.value)).toEqual(['codex/gpt']);
+  });
+
+  it('filters removed providers from listed, suggested and current composite names', () => {
+    const o = modelOptions('omp', models({
+      names: ['omp/anthropic/claude-sonnet-4-6', 'omp/deepseek/deepseek-v4-flash'],
+      suggested: ['omp/pi/anthropic/claude-haiku-5-5'],
+      listed: true,
+    }), 'omp/pi/anthropic/claude-sonnet-4-6');
+    expect(o.map((x) => x.value)).toEqual(['omp/deepseek/deepseek-v4-flash']);
   });
 
   it('offers nothing while the answer is not there', () => {
