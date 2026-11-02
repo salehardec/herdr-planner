@@ -460,6 +460,9 @@ pub fn parse(screen: &str) -> Option<Menu> {
     let pick = paragraphs
         .iter()
         .position(|p| p.last().is_some_and(|l| question_end(l)))
+        // Claude Code's trust dialog asks inside a paragraph («…or one you trust? (Like your own code…). If not…»)
+        // and ends with a link line; the paragraph that asks is still the question.
+        .or_else(|| paragraphs.iter().position(|p| p.iter().any(|l| l.contains('?'))))
         .unwrap_or(0);
     let question = paragraphs.get(pick).map(|p| p.join(" ")).unwrap_or_default();
     let mut ctx: Vec<String> = Vec::new();
@@ -609,6 +612,9 @@ mod tests {
     const CODEX_APPROVAL: &str = include_str!("menu_samples/codex-approval.txt");
     const CLAUDE_PERMISSION: &str = include_str!("menu_samples/claude-permission.txt");
     const CLAUDE_CREATE_FILE: &str = include_str!("menu_samples/claude-create-file.txt");
+    const CLAUDE_TRUST: &str = include_str!("menu_samples/claude-trust-folder.txt");
+    const CLAUDE_TRUST_BOXED: &str = include_str!("menu_samples/claude-trust-folder-boxed.txt");
+    const CODEX_TRUST: &str = include_str!("menu_samples/codex-trust-folder.txt");
 
     fn labels(m: &Menu) -> Vec<&str> {
         m.options.iter().map(|o| o.label.as_str()).collect()
@@ -718,6 +724,29 @@ mod tests {
         assert_eq!(multi.options.iter().map(|o| o.checked).collect::<Vec<_>>(), [true, false, true, false]);
         let review = parse(OMP_REVIEW).expect("the review page is one row");
         assert_eq!(labels(&review), ["Submit"]);
+    }
+
+    /// PLN-101: the first start in a new working copy asks whether to trust the folder. Whatever the program draws,
+    /// the page must get a menu whose first row is «yes» and whose second is «no», and the keys that answer it.
+    #[test]
+    fn the_trust_folder_dialogs_are_menus_with_a_yes_and_a_no() {
+        for (screen, yes, no) in [
+            (CLAUDE_TRUST, "Yes, I trust this folder", "No, exit"),
+            (CLAUDE_TRUST_BOXED, "Yes, proceed", "No, exit"),
+            (CODEX_TRUST, "Yes, continue", "No, quit"),
+        ] {
+            let m = parse(screen).unwrap_or_else(|| panic!("a menu in:\n{screen}"));
+            assert_eq!(labels(&m), [yes, no], "{screen}");
+            assert!(!m.multi && m.cursor == 0);
+            assert_eq!(plan(&m, &Answer::Pick(0)).unwrap(), [Step::Keys(vec!["enter"])]);
+            assert_eq!(plan(&m, &Answer::Pick(1)).unwrap(), [Step::Keys(vec!["down"]), Step::Keys(vec!["enter"])]);
+        }
+        assert!(parse(CLAUDE_TRUST).unwrap().question.starts_with("Quick safety check: Is this a project you created"));
+        assert_eq!(parse(CLAUDE_TRUST_BOXED).unwrap().question, "Do you trust the files in this folder?");
+        assert_eq!(
+            parse(CODEX_TRUST).unwrap().question,
+            "Do you trust the contents of this directory? Working with untrusted contents comes with higher risk of prompt injection."
+        );
     }
 
     #[test]

@@ -4,12 +4,13 @@ import { armed, details, panels, screens, snap, tellDraft, currentView, taskOf }
 import { draftMessage, draftSent } from './chat';
 import { endDrag } from './todo-drag';
 import type { SavedFile } from './attach';
-import { ApiError, api, post, refreshNow } from './api';
+import { ApiError, api, isLite, post, refreshNow } from './api';
+import { dialogReach, readsScreen, taskPermission, type PermissionNote } from './permission';
 import { toast } from './toast';
 import { t } from './i18n';
-import { restoreRequest } from './request-queue';
+import { markDialogAnswered, RELOOK_MS, restoreRequest, screenReread } from './request-queue';
 import { prepareAnswer } from './nav';
-import { requestType } from './requests';
+import { PERMISSION_ALLOW, PERMISSION_DENY, requestType } from './requests';
 import type { Entity, MenuAnswer, Seat, Task } from './types';
 
 export const ACTION_LABEL: Record<string, string> = {
@@ -79,9 +80,23 @@ export function runTaskAction(cmd: string, task: Task): void {
 }
 
 export async function tellTask(task: Task, text: string): Promise<boolean> {
-  const answered = prepareAnswer(task.id);
   const body = text.trim();
   if (!body) return false;
+  // A dialog can appear after this card was drawn. Never queue words behind it.
+  if (readsScreen(task) && requestType(task) !== 'plan') {
+    const note = body === PERMISSION_ALLOW() ? 'allow' : body === PERMISSION_DENY() ? 'deny' : undefined;
+    if (note) {
+      const result = await answerPermission(task, note);
+      if (result !== 'words') return result === 'answered';
+    } else {
+      await fetchScreen(task.id, '', true);
+      if (dialogReach(task, screens.peek()[task.id]) !== 'words') {
+        toast(t('req.answerOnScreen'));
+        return false;
+      }
+    }
+  }
+  const answered = prepareAnswer(task.id);
   try {
     await sendAction('tell', { id: task.id, text: body });
     const d = { ...tellDraft.value };
@@ -125,26 +140,61 @@ export async function archiveAllDone(): Promise<void> {
 
 /* ───────── agent screens (herdr) ───────── */
 
-export async function fetchScreen(target: string, role = ''): Promise<void> {
-  const cur = screens.value[target];
-  if (cur?.busy) return;
+const screenReads = new Map<string, Promise<void>>();
+
+/** Explicit reads share an in-flight request; an answer asks for a read begun after the press. */
+export async function fetchScreen(target: string, role = '', fresh = false): Promise<void> {
+  const key = `${target}|${role}`;
+  const pending = screenReads.get(key);
+  if (pending) {
+    await pending;
+    if (!fresh) return;
+  }
+  const reading = loadScreen(target, role);
+  screenReads.set(key, reading);
+  try { await reading; } finally { if (screenReads.get(key) === reading) screenReads.delete(key); }
+}
+
+async function loadScreen(target: string, role: string): Promise<void> {
+  const cur = screens.peek()[target];
   screens.value = { ...screens.value, [target]: { ...(cur ?? {}), busy: true } };
   try {
     const r = await api('/api/coordinator/screen?target=' + encodeURIComponent(target) + (role ? '&role=' + encodeURIComponent(role) : ''));
-    if (r.menu?.sig && r.menu.sig !== cur?.menu?.sig) {
+    if (!role && r.menu?.sig && r.menu.sig !== cur?.menu?.sig) {
       const task = taskOf(target);
       if (task) restoreRequest(`${requestType(task)}:${target}`);
       else if (target === 'coordinator') restoreRequest('coordinator-dialog');
     }
+    if (!role) screenReread(target, r.menu?.sig);
     screens.value = { ...screens.value, [target]: { at: Date.now(), ...r, busy: false } };
   } catch (e) {
     screens.value = { ...screens.value, [target]: { error: (e as Error).message, busy: false } };
   }
 }
 
+/** Resolve a stale words-only permission control against the screen at the moment of the press. */
+export async function answerPermission(task: Task, note: PermissionNote): Promise<'words' | 'answered' | 'screen' | 'failed'> {
+  await fetchScreen(task.id, '', true);
+  const shown = screens.peek()[task.id];
+  const prompt = !shown?.error && taskPermission(task, shown?.menu);
+  if (prompt && shown?.menu) {
+    const at = note === 'allow' ? prompt.allow : note === 'deny' ? prompt.deny : prompt.always;
+    if (at !== undefined) {
+      const result = await answerMenu(task.id, '', shown.menu.sig, { kind: 'pick', at }, note);
+      if (result.ok) return 'answered';
+      toast(result.gone ? t('amenu.gone') : t('amenu.failed', { why: result.error }), { icon: 'failed' });
+      return 'failed';
+    }
+  }
+  if (dialogReach(task, shown) === 'words') return 'words';
+  toast(t('req.answerOnScreen'));
+  return 'screen';
+}
+
 export async function sendKey(target: string, key: string, role = ''): Promise<void> {
   try {
-    await sendAction('keys', { target, keys: [key], role });
+    // The phone has its own narrow action: one fixed key for one active task, never a role or arbitrary input.
+    await sendAction(isLite() ? 'screen-key' : 'keys', isLite() ? { id: target, key } : { target, keys: [key], role });
     // The chat draws the Coordinator's dialog from `screens`; a window over the page reads its own screen.
     if (screens.value[target]) setTimeout(() => { void fetchScreen(target, role); }, 500);
     toast(t('toast.key', { key }));
@@ -160,6 +210,15 @@ export async function answerMenu(target: string, role: string, sig: string, answ
   const answered = prepareAnswer(target);
   try {
     await post('/api/menu/answer', { target, role: role || undefined, sig, answer, note });
+    // The keys are in the agent's terminal; the board hears of it from the agent's hook a moment later. Until then the task
+    // must not look as if it still waits (the reviewer's pane is not the task's own dialog).
+    const task = role ? undefined : taskOf(target);
+    if (task) {
+      markDialogAnswered(task, sig);
+      setTimeout(() => { void refreshNow(); }, 800);
+      // One verification, not polling: if the same dialog stayed on the screen, the request returns to «Ждёт тебя».
+      setTimeout(() => { void fetchScreen(target); }, RELOOK_MS + 100);
+    }
     await answered();
     return { ok: true };
   } catch (e) {

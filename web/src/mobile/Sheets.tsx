@@ -1,8 +1,8 @@
 /* The sheets that slide up over the page: a task, a plan, the limits, the settings. */
 import type { JSX } from 'preact';
 import { useEffect, useRef, useState } from 'preact/hooks';
-import { armed, details, requests, snap, taskOf } from '../store';
-import { confirmStep } from '../actions';
+import { armed, details, requests, screens, snap, taskOf } from '../store';
+import { confirmStep, fetchScreen } from '../actions';
 import { fetchDetails } from '../nav';
 import { post } from '../api';
 import { lang, setLang, t, type Lang } from '../i18n';
@@ -10,6 +10,9 @@ import { dayTimeOf } from '../util/dates';
 import { Gl } from '../ui/Gl';
 import { Markdown } from '../ui/Markdown';
 import { LimitAgent } from '../ui/Limits';
+import { KeyButtons } from '../ui/Keys';
+import { MenuSlot } from '../ui/MenuCard';
+import { ReadScreenButton } from '../ui/ReadScreenButton';
 import { toast } from '../toast';
 import { safeUrl } from './cards';
 import { Card } from './Wait';
@@ -69,6 +72,24 @@ function PlanSheet(props: { id: string }): JSX.Element {
     <>
       {text ? <div class="plan"><Markdown text={text} chips /></div> : <div class="hintline">{d?.error ? d.error : t('focus.planLoading')}</div>}
       {req && task ? <Card r={req} inSheet /> : null}
+    </>
+  );
+}
+
+/** The agent's actual terminal on the phone: read on opening and by hand, never on a timer. */
+function ScreenSheet(props: { id: string }): JSX.Element {
+  const shown = screens.value[props.id];
+  const menu = shown && !shown.error ? shown.menu : null;
+  useEffect(() => { void fetchScreen(props.id); }, [props.id]);
+  return (
+    <>
+      <div class="acts">
+        <ReadScreenButton target={props.id} />
+        {shown?.at && <span class="hintline">{t('screen.updated', { at: dayTimeOf(shown.at) })}</span>}
+      </div>
+      {menu && <MenuSlot target={props.id} menu={menu} place="chat" onAnswered={() => { setTimeout(() => { void fetchScreen(props.id); }, 700); }} />}
+      <pre class="perm m-screen-term" id="m-screen-term">{shown?.error || shown?.text || t('req.reading')}</pre>
+      <div class="m-screen-keys"><KeyButtons target={props.id} /></div>
     </>
   );
 }
@@ -170,9 +191,10 @@ export function Sheets(): JSX.Element {
     ref.current?.focus();
     return () => window.removeEventListener('keydown', onKey);
   }, [sh?.kind]);
-  const task = sh && (sh.kind === 'task' || sh.kind === 'plan') ? taskOf(sh.id) : undefined;
+  const task = sh && (sh.kind === 'task' || sh.kind === 'plan' || sh.kind === 'screen') ? taskOf(sh.id) : undefined;
   const title = !sh ? '' : sh.kind === 'limits' ? t('limits.title') : sh.kind === 'settings' ? t('m.settings')
-    : sh.kind === 'plan' ? `${task?.tag ?? sh.id} · ${t('focus.plan')}` : `${task?.tag ?? sh.id} · ${task?.title ?? ''}`;
+    : sh.kind === 'plan' ? `${task?.tag ?? sh.id} · ${t('focus.plan')}`
+    : sh.kind === 'screen' ? `${task?.tag ?? sh.id} · ${t('screen.title')}` : `${task?.tag ?? sh.id} · ${task?.title ?? ''}`;
   return (
     <>
       <div class={`scrim ${sh ? 'on' : ''}`} onClick={close} aria-hidden="true" />
@@ -184,6 +206,7 @@ export function Sheets(): JSX.Element {
             <div class="sb">
               {sh.kind === 'task' && <TaskSheet id={sh.id} />}
               {sh.kind === 'plan' && <PlanSheet id={sh.id} />}
+              {sh.kind === 'screen' && <ScreenSheet id={sh.id} />}
               {sh.kind === 'limits' && <Limits />}
               {sh.kind === 'settings' && <Settings />}
             </div>

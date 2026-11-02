@@ -3,13 +3,17 @@ import { useEffect, useState } from 'preact/hooks';
 import { armed, details, screens, tellDraft } from '../store';
 import { pickAttempt, runTaskAction, boardOk, tellTask, fetchScreen, answerMenu } from '../actions';
 import { requestType, requestTitle, PERMISSION_ALLOW, PERMISSION_DENY } from '../requests';
-import { taskPermission, questionText, boardPlaceholder, type PermissionNote, type PermissionPrompt } from '../permission';
+import { taskPermission, questionText, boardPlaceholder, dialogReach, readsScreen, type DialogReach, type PermissionNote, type PermissionPrompt } from '../permission';
+import { dialogAnswered } from '../request-queue';
 import type { MenuData, Task } from '../types';
 import { t } from '../i18n';
 import { addDialogs } from '../dialogs';
 import { toast } from '../toast';
 import { Gl } from './Gl';
 import { Translatable } from './Translatable';
+import { MenuSlot } from './MenuCard';
+import { ReadScreenButton } from './ReadScreenButton';
+import { PermissionWords } from './PermissionWords';
 import { safeUrl } from '../mobile/cards';
 
 export function MergeHandoff(props: { task: Task }): JSX.Element {
@@ -43,10 +47,13 @@ function ArmBtn(props: { id: string; cmd: string; label: string; armLabel: strin
 
 function ScreenBtn(props: { task: Task }): JSX.Element {
   return (
-    <button
-      class="btn" type="button" data-act="screen" data-target={props.task.id}
-      onClick={() => { addDialogs.screen.value = { task: props.task.id }; }}
-    ><Gl n="screen" />{t('focus.agentScreen')}</button>
+    <>
+      <button
+        class="btn" type="button" data-act="screen" data-target={props.task.id}
+        onClick={() => { addDialogs.screen.value = { task: props.task.id }; }}
+      ><Gl n="screen" />{t('focus.agentScreen')}</button>
+      {readsScreen(props.task) && <ReadScreenButton target={props.task.id} />}
+    </>
   );
 }
 
@@ -94,10 +101,55 @@ function DialogButtons(props: { task: Task; prompt: PermissionPrompt; menu: Menu
   );
 }
 
+/** Read on opening the request and when the board's words change. Late dialogs are reread explicitly, without a timer. */
+function useAgentScreen(task: Task, on: boolean): void {
+  const wants = on && readsScreen(task);
+  useEffect(() => {
+    if (!wants) return;
+    void fetchScreen(task.id);
+  }, [task.id, task.status, task.msg, task.stage, task.kind, wants]);
+}
+
+/** The answers to a permission the board reports, by what the agent's screen allows: keys for a dialog, words for an agent
+    that asked in words, and nothing that cannot work — a dialog only the agent's own screen can answer says so. */
+function PermissionAnswers(props: { task: Task; draft: (text: string) => void; dis: boolean; reach: DialogReach }): JSX.Element {
+  const { task, reach } = props;
+  const shown = screens.value[task.id];
+  const menu: MenuData | null = shown && !shown.error && shown.menu ? shown.menu : null;
+  const prompt = taskPermission(task, menu);
+  if (reach === 'buttons' && prompt) return <DialogButtons task={task} prompt={prompt} menu={menu} />;
+  if (reach === 'menu' && menu) {
+    return (
+      <>
+        <DialogWhat prompt={{ allow: 0, deny: 0, question: menu.question, context: menu.context }} />
+        <MenuSlot target={task.id} menu={menu} place="window" onAnswered={() => { setTimeout(() => { void fetchScreen(task.id); }, 600); }} />
+        <div class="row"><ScreenBtn task={task} /></div>
+      </>
+    );
+  }
+  if (reach === 'screen' || reach === 'reading') {
+    return (
+      <div class="row" data-reach={reach}>
+        <ScreenBtn task={task} />
+        <span class="hint" role="status">{reach === 'reading' ? t('req.reading') : t('req.answerOnScreen')}</span>
+      </div>
+    );
+  }
+  return (
+    <div class="row">
+      <PermissionWords task={task} draft={props.draft} />
+      <ScreenBtn task={task} />
+      <span class="hint">{t('req.textBelow')}</span>
+    </div>
+  );
+}
+
 /** The answers that fit what the task asks of the human, wherever the request is drawn (the Focus, the whole-page result). */
-export function RequestActions(props: { task: Task; input?: string }): JSX.Element | null {
+export function RequestActions(props: { task: Task; input?: string; /** The caller reads the agent's screen already. */ screenRead?: boolean }): JSX.Element | null {
   const task = props.task;
   const type = requestType(task);
+  // The answer to a permission depends on what the agent's screen shows (a dialog is answered by keys, not by words).
+  useAgentScreen(task, type === 'permission' && !props.screenRead);
   const attention = ['waiting', 'failed', 'ready', 'plan'].includes(task.status);
   if (!attention) return null;
   if (task.merge_via_mr) {
@@ -116,6 +168,7 @@ export function RequestActions(props: { task: Task; input?: string }): JSX.Eleme
   const d = details.value[task.id];
   const dis = !boardOk();
   const input = props.input ?? 'tell';
+  const shown = screens.value[task.id];
   const run = (cmd: string): void => runTaskAction(cmd, task);
   const draft = (text: string): void => {
     tellDraft.value = { ...tellDraft.value, [task.id]: text };
@@ -133,12 +186,7 @@ export function RequestActions(props: { task: Task; input?: string }): JSX.Eleme
     <>
       {type === 'permission' && (
         <>
-          <div class="row">
-            <button class="btn go" type="button" data-act="perm-allow" data-id={task.id} aria-disabled={dis} onClick={() => draft(PERMISSION_ALLOW())}>{t('req.allow')}</button>
-            <button class="btn danger" type="button" data-act="perm-deny" data-id={task.id} aria-disabled={dis} onClick={() => draft(PERMISSION_DENY())}>{t('req.deny')}</button>
-            <ScreenBtn task={task} />
-            <span class="hint">{t('req.textBelow')}</span>
-          </div>
+          <PermissionAnswers task={task} draft={draft} dis={dis} reach={dialogReach(task, shown)} />
           {task.stage === 'approval' && (
             <div class="row">
               <ArmBtn id={task.id} cmd="anyway" label={t('act.anyway')} armLabel={t('req.confirmAnyway')} cls="danger" task={task} />
@@ -176,6 +224,7 @@ export function RequestActions(props: { task: Task; input?: string }): JSX.Eleme
       )}
       {type === 'plan' && (
         <div class="row">
+          {readsScreen(task) && <ReadScreenButton target={task.id} />}
           <ArmBtn id={task.id} cmd="approve" label={t('req.approvePlan')} armLabel={t('req.confirmApprovePlan')} cls="go" task={task} />
           <button class="btn" type="button" data-act="plan-return" data-id={task.id} aria-disabled={dis} onClick={() => void returnNotes()}>{t('req.returnWithNotes')}</button>
         </div>
@@ -256,16 +305,21 @@ export function RequestBlock(props: { task: Task; input?: string }): JSX.Element
   const attention = ['waiting', 'failed', 'ready', 'plan'].includes(task.status);
   const shown = screens.value[task.id];
   const menu: MenuData | null = shown && !shown.error && shown.menu ? shown.menu : null;
-  // The screen is read once for the cards that ask a permission or a question: what the agent says is not in the board.
-  useEffect(() => {
-    // A dialog may come as `kind: question` or with no kind at all (the board says «Needs you»): the screen decides.
-    const wants = task.status === 'plan' || task.kind === 'permission' || task.kind === 'question' || task.kind === 'auth'
-      || (task.status === 'waiting' && !task.kind);
-    if (attention && wants && task.exited_at === 0 && task.status !== 'queued' && task.status !== 'done') void fetchScreen(task.id);
-  }, [task.id, task.status, task.msg, task.stage, task.kind, attention]);
+  useAgentScreen(task, true);
   if (!attention) return null;
+  // The keys of an answer are in the agent's terminal and the board has not heard of it yet: nothing is asked of the human now.
+  const sent = dialogAnswered(task);
   // A permission the screen makes plain: the board says so, or the prompt names a tool or a command.
-  const prompt = taskPermission(task, menu);
+  const prompt = sent ? null : taskPermission(task, menu);
+  if (sent && (type === 'permission' || type === 'question')) {
+    return (
+      <div class="req s-working" data-type="answered" role="status">
+        <div class="rh"><Gl n="working" />{t('req.answerSent')}</div>
+        <p class="full">{t('req.answerSentText')}</p>
+        <div class="row"><ScreenBtn task={task} /></div>
+      </div>
+    );
+  }
   // The board calls a dialog a question (or gives it no kind): when the screen draws a permission prompt, that is the card.
   if (prompt && (type === 'permission' || type === 'question')) {
     return (
@@ -290,7 +344,7 @@ export function RequestBlock(props: { task: Task; input?: string }): JSX.Element
             ><Gl n="expand" />{t('req.planOpen')}</button>
             <span class="hint">{t('req.planNotesHint')}</span>
           </div>
-          <RequestActions task={task} input={props.input} />
+          <RequestActions task={task} input={props.input} screenRead />
         </div>
         {prompt && <DialogBlock task={task} prompt={prompt} menu={menu} />}
       </>
@@ -300,7 +354,7 @@ export function RequestBlock(props: { task: Task; input?: string }): JSX.Element
     <>
       <div class={`req s-${task.status}`} data-type={type}>
         <RequestHead task={task} menu={menu} />
-        <RequestActions task={task} input={props.input} />
+        <RequestActions task={task} input={props.input} screenRead />
       </div>
     </>
   );

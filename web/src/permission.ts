@@ -25,7 +25,7 @@ const ALLOW = /^(yes\b|allow\b|approve\b|proceed\b|разреш|да\b)/i;
 /** What a program asks when it wants to do something: the question itself names the deed. */
 const PERMISSION_QUESTION = /^(do you want\b|would you like\b|may i\b|shall i\b|allow\b|approve\b|proceed\b|разрешить\b|хотите\b)/i;
 /** A prompt that names a tool or a command is a permission even when the choices are a bare yes and no. */
-const COMMAND = /bash command|run the following command|allow access|create file|write file|edit file|\$\s|команд|файл/i;
+const COMMAND = /bash command|run the following command|allow access|create file|write file|edit file|trust (this|the|these)|safety check|accessing workspace|\$\s|команд|файл/i;
 
 /** The permission prompt a menu draws, or null when the menu is a question. */
 export function permissionPrompt(menu: MenuData | null | undefined): PermissionPrompt | null {
@@ -68,4 +68,46 @@ export function questionText(task: Task, menu: MenuData | null | undefined): str
   const own = task.msg.trim();
   if (own && !boardPlaceholder(own)) return own;
   return menu?.question?.trim() ?? '';
+}
+
+/** The cards that ask the human about a dialog read the agent's screen once: what the agent says is not in the board. */
+export function readsScreen(task: Task): boolean {
+  const attention = ['waiting', 'failed', 'ready', 'plan'].includes(task.status);
+  // A dialog may come as `kind: question` or with no kind at all (the board says «Needs you»): the screen decides.
+  const wants = task.status === 'plan' || task.kind === 'permission' || task.kind === 'question' || task.kind === 'auth'
+    || (task.status === 'waiting' && !task.kind);
+  return attention && wants && task.exited_at === 0;
+}
+
+/** A screen that asks for a key: the hint line of a menu, or a numbered list under a cursor. Used when the parser read no menu from
+    it — the dialog is there, but nothing here can press its rows. */
+const DIALOG_HINT = /enter to (confirm|select|continue|submit)|press enter|esc to (cancel|exit|go back)|↑\/↓ to|use arrow keys/i;
+const DIALOG_ROW = /^\s*[│┃║]?\s*[❯›>▶▸]\s*\d{1,2}[.)]\s+\S/m;
+
+export function looksLikeDialog(text: unknown): boolean {
+  const tail = String(text ?? '').split('\n').slice(-30).join('\n');
+  return DIALOG_HINT.test(tail) || DIALOG_ROW.test(tail);
+}
+
+/** What can be done about a dialog the board calls a permission, from what the agent's screen shows:
+ *  `buttons` — a yes/no prompt, answered by keys; `menu` — a menu with other rows, answered by its own card;
+ *  `screen` — a dialog (or an unreadable screen) that only the agent's screen can answer; `reading` — the screen is on its way;
+ *  `words` — no dialog on the screen: the agent waits for words. */
+export type DialogReach = 'buttons' | 'menu' | 'screen' | 'reading' | 'words';
+
+export interface ShownScreen {
+  at?: number;
+  busy?: boolean;
+  error?: string;
+  text?: string;
+  menu?: MenuData | null;
+}
+
+export function dialogReach(task: Task, shown: ShownScreen | undefined): DialogReach {
+  if (!readsScreen(task)) return 'words';
+  if (!shown || (shown.busy && !shown.at && !shown.error)) return 'reading';
+  if (shown.error) return 'screen';
+  if (taskPermission(task, shown.menu)) return 'buttons';
+  if (shown.menu) return 'menu';
+  return looksLikeDialog(shown.text) ? 'screen' : 'words';
 }

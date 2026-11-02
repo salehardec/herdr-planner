@@ -113,6 +113,9 @@ textarea.in:focus,input.in:focus{border-color:var(--pl-focus)}
 .optx .st.pass{color:var(--c-green)}
 .optx .st.fail{color:var(--pl-danger)}
 .tellbox{display:grid;gap:.375rem;margin-top:.5rem}
+.m-screen-term{font:0.75rem/1.4 var(--font-mono,monospace);min-height:8rem;max-height:38vh;white-space:pre;overflow:auto}
+.m-screen-keys .keys{display:flex;flex-wrap:wrap;gap:.375rem}
+.m-screen-keys .btn{flex:1 1 auto}
 
 /* an agent's menu card (the page's own menucard.css) at finger size */
 .mob .menu-card{font-size:.875rem;padding:.625rem;margin-top:.5rem;max-height:none;overflow:visible}
