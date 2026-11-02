@@ -19,7 +19,7 @@ describe('planner echo and native transcript', () => {
     expect(waiting(reconcileEchoes([e], transcript))).toEqual([]);
     expect(transcript.map((t) => t.q)).toEqual(['первый вопрос', 'продолжай']);
   });
-  it('matches image markers and the header removed by Claude, requiring every image', () => {
+  it('matches image markers and the header removed by the transcript, requiring every image', () => {
     const e = { ...echo('По лимитам\n\nещё мысль'), attachments: [file, { ...file, id: 'b'.repeat(32) + '.png' }] };
     const q = '[Image #26] [Image #27]По лимитам\nещё мысль\nВложения (файлы на машине с доской):';
     expect(matchesEcho(e, turn(1, q, { images: ['image/png'] }))).toBe(false);
@@ -57,8 +57,8 @@ describe('planner echo and native transcript', () => {
     expect(waiting(reconcileEchoes([echo()], [turn(1, 'ещё работаю')]))).toHaveLength(1);
     const command = { ...echo('/compact'), at: Date.now() - ECHO_WAIT_MS - 1 };
     expect(reconcileEchoes([command], [turn(1, 'поздний ответ')])).toEqual([]);
-    const nonClaude = { ...echo('обычное сообщение'), at: Date.now() - 86_400_000 };
-    expect(reconcileEchoes([nonClaude], [])).toEqual([]);
+    const withoutTranscript = { ...echo('обычное сообщение'), at: Date.now() - 86_400_000 };
+    expect(reconcileEchoes([withoutTranscript], [])).toEqual([]);
     // An old delivered occurrence still cannot be consumed by a later identical send.
     expect(reconcileEchoes([{ ...command, delivered: 1 }], [])).toEqual([{ ...command, delivered: 1 }]);
   });

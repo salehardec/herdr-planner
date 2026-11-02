@@ -17,7 +17,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 fn fake_board(dir: &Path) -> (AppConfig, PathBuf) {
     let log = dir.join("board.log");
     let script = dir.join("herdr-projects");
-    let details = r#"{"task":{"id":"alpha/1","title":"Сделать","stage":"working","msg":"идёт","description":"текст","session":"SECRET-SESSION","worktree":"/home/SECRET-TREE"},"failure":{"title":"упало","detail":"log","worktree":"/home/SECRET-TREE"},"review":{"pass":true,"findings":[{"severity":"minor","file":"src/a.rs","text":"x"}]},"reviews":[{"worktree":"/home/SECRET-TREE","round":1}],"agent":"claude","worktree":"/home/SECRET-TREE","branch":"work/1","after":{"waitsFor":[]},"limits":{},"plan":{"text":"1. a\n2. b","by":"claude/opus"},"report":{"url":"http://127.0.0.1:34925/alpha/1/review.html"},"pr":"https://example.org/pr/1","attempts":[{"letter":"A","state":"done","worktree":"/home/SECRET-TREE/a"}],"comparison":null,"picked":null}"#;
+    let details = r#"{"task":{"id":"alpha/1","title":"Сделать","stage":"working","msg":"идёт","description":"текст","session":"SECRET-SESSION","worktree":"/home/SECRET-TREE"},"failure":{"title":"упало","detail":"log","worktree":"/home/SECRET-TREE"},"review":{"pass":true,"findings":[{"severity":"minor","file":"src/a.rs","text":"x"}]},"reviews":[{"worktree":"/home/SECRET-TREE","round":1}],"agent":"omp","worktree":"/home/SECRET-TREE","branch":"work/1","after":{"waitsFor":[]},"limits":{},"plan":{"text":"1. a\n2. b","by":"omp/deepseek-v4-pro"},"report":{"url":"http://127.0.0.1:34925/alpha/1/review.html"},"pr":"https://example.org/pr/1","attempts":[{"letter":"A","state":"done","worktree":"/home/SECRET-TREE/a"}],"comparison":null,"picked":null}"#;
     write_exec(
         &script,
         format!(

@@ -16,7 +16,7 @@ use std::time::{Duration, Instant};
 const FRESH: Duration = Duration::from_secs(600);
 /// After a failed read, the next try waits this long (the last good answer stays).
 const RETRY: Duration = Duration::from_secs(60);
-/// The board's own limit: `models claude` takes about 42 s here, with two 30 s timeouts inside.
+/// Enough for the board's own model lookup, including its per-program timeouts.
 const WAIT: Duration = Duration::from_secs(90);
 /// How long a stale answer may still be served before it is dropped.
 const KEEP: Duration = Duration::from_secs(3600);
@@ -50,11 +50,38 @@ fn inflight() -> &'static Mutex<HashSet<String>> {
     IN_FLIGHT.get_or_init(|| Mutex::new(HashSet::new()))
 }
 
-/// A program name the board takes as `models <program>`: `claude`, `codex`, `pi`, `omp`, `cursor-agent`, and any
-/// other lowercase word of up to 21 characters (letters, digits, `-`, starting with a letter).
+/// Whether an agent or model name belongs to the removed Anthropic/Claude integration. Model names are composite
+/// (`program/provider/model`), so every `/`-separated segment is checked: a supported launcher does not make a removed
+/// provider acceptable. Hyphenated model ids (`claude-sonnet-4-6`) are covered as well as exact `claude` segments.
+pub fn removed_agent(value: &str) -> bool {
+    value.split('/').any(|part| {
+        let part = part.trim().to_ascii_lowercase();
+        part == "anthropic" || part == "claude" || part.starts_with("claude-")
+    })
+}
+
+/// An old saved agent with its removed values taken out; empty means «use the default».
+pub fn without_removed(value: &str) -> String {
+    let value = value.trim();
+    if removed_agent(value) { String::new() } else { value.to_string() }
+}
+
+/// The same migration for a saved fallback chain. Valid items keep their order; removed ones disappear.
+pub fn without_removed_chain(value: &str) -> String {
+    let value = value.trim();
+    if value.is_empty() || value == "none" {
+        return value.to_string();
+    }
+    let items = value.split(',').map(str::trim).filter(|item| !item.is_empty() && !removed_agent(item)).collect::<Vec<_>>().join(", ");
+    if items.is_empty() { "none".to_string() } else { items }
+}
+
+/// A supported program name the board takes as `models <program>`: `codex`, `pi`, `omp`, `cursor-agent`, and any
+/// other lowercase word of up to 21 characters (letters, digits, `-`, starting with a letter). Removed providers are refused.
 pub fn valid_program(p: &str) -> bool {
     let b = p.as_bytes();
-    !b.is_empty()
+    !matches!(p, "claude" | "anthropic")
+        && !b.is_empty()
         && b.len() <= 21
         && b[0].is_ascii_lowercase()
         && b.iter()
@@ -80,7 +107,7 @@ pub fn parse(program: &str, stdout: &str) -> (Vec<String>, String) {
         let is_name = line.len() > prefix.len()
             && line.starts_with(&prefix)
             && !line[prefix.len()..].contains(char::is_whitespace);
-        if is_name && !names.iter().any(|n| n == line) {
+        if is_name && !removed_agent(line) && !names.iter().any(|n| n == line) {
             names.push(line.to_string());
         }
         if names.len() >= MAX_NAMES {
@@ -194,19 +221,14 @@ mod tests {
     use super::*;
     use std::path::Path;
 
-    /// `herdr-projects models claude` as the board printed it on this machine (trimmed to its first lines).
-    const CLAUDE: &str = "claude takes a short name (default, fable, opus, sonnet, haiku, opusplan), each the newest of its kind, or a full name such as claude-fable-5-1. Write one after the program, as in worker.agent claude/default:
+    /// A representative `herdr-projects models codex` answer.
+    const CODEX: &str = "codex takes a full model name. Write one after the program, as in worker.agent codex/gpt-6-luna:
 
-claude/default
-claude/fable
-claude/opus
-claude/sonnet
-claude/haiku
-claude/opusplan
-claude/claude-fable-5-1
-claude/claude-haiku-5-5
+codex/default
+codex/gpt-6-luna
+codex/gpt-5.5
 
-Effort (worker.effort and the like): low, medium, high, xhigh, max (from `claude --help`).
+Effort (worker.effort and the like): low, medium, high, xhigh, max (from `codex --help`).
 ";
 
     /// `herdr-projects models omp` as printed on this machine: no list of names, only the note.
@@ -217,11 +239,11 @@ Effort (worker.effort and the like): off, minimal, low, medium, high, xhigh, max
 
     #[test]
     fn the_board_answer_becomes_names_and_a_note() {
-        let (names, note) = parse("claude", CLAUDE);
-        assert_eq!(names.len(), 8, "{names:?}");
-        assert_eq!(names[0], "claude/default");
-        assert_eq!(names[7], "claude/claude-haiku-5-5");
-        assert!(note.starts_with("claude takes a short name"), "{note}");
+        let (names, note) = parse("codex", CODEX);
+        assert_eq!(names.len(), 3, "{names:?}");
+        assert_eq!(names[0], "codex/default");
+        assert_eq!(names[2], "codex/gpt-5.5");
+        assert!(note.starts_with("codex takes a full model name"), "{note}");
         assert!(
             !note.contains("Effort"),
             "only the first paragraph is the note: {note}"
@@ -241,7 +263,7 @@ Effort (worker.effort and the like): off, minimal, low, medium, high, xhigh, max
     #[test]
     fn other_programs_lines_and_spaces_are_not_names() {
         let out =
-            "note\n\ncodex/gpt-5\ncodex/gpt 5\nclaude/haiku\ncodex/gpt-5\ncodex/\n  codex/o3  \n";
+            "note\n\ncodex/gpt-5\ncodex/gpt 5\nomp/deepseek\ncodex/gpt-5\ncodex/\n  codex/o3  \n";
         let (names, _) = parse("codex", out);
         assert_eq!(
             names,
@@ -251,14 +273,16 @@ Effort (worker.effort and the like): off, minimal, low, medium, high, xhigh, max
 
     #[test]
     fn program_names_are_checked() {
-        for ok in ["claude", "codex", "pi", "omp", "cursor-agent", "a1-b2"] {
+        for ok in ["codex", "pi", "omp", "cursor-agent", "a1-b2"] {
             assert!(valid_program(ok), "{ok}");
         }
         for bad in [
             "",
-            "Claude",
+            "Codex",
+            "claude",
+            "anthropic",
             "1abc",
-            "claude;rm",
+            "codex;rm",
             "a b",
             "-x",
             "x/y",
@@ -266,6 +290,26 @@ Effort (worker.effort and the like): off, minimal, low, medium, high, xhigh, max
         ] {
             assert!(!valid_program(bad), "{bad}");
         }
+    }
+
+    #[test]
+    fn rejects_removed_providers_in_every_segment_of_a_composite_name() {
+        let out = "omp/pi/anthropic/claude-sonnet-4-6\nomp/anthropic/claude-sonnet-4-6\nomp/deepseek/deepseek-v4-flash\n";
+        let (names, _) = parse("omp", out);
+        assert_eq!(names, vec!["omp/deepseek/deepseek-v4-flash"]);
+        for name in [
+            "anthropic/claude-sonnet-4-6",
+            "omp/pi/anthropic/claude-sonnet-4-6",
+            "omp/anthropic/claude-sonnet-4-6",
+            "pi/anthropic/claude-haiku-5-5",
+            "codex/claude-sonnet-4-6",
+        ] {
+            assert!(removed_agent(name), "{name}");
+        }
+        for name in ["omp/deepseek/deepseek-v4-flash", "pi/openai/gpt-5", "codex/gpt-6-luna"] {
+            assert!(!removed_agent(name), "{name}");
+        }
+        assert_eq!(without_removed_chain("codex, omp/anthropic/claude-haiku-5-5, omp/deepseek/deepseek-v4-flash"), "codex, omp/deepseek/deepseek-v4-flash");
     }
 
     fn fake_board(dir: &Path, name: &str, body: &str) -> String {
@@ -288,13 +332,13 @@ Effort (worker.effort and the like): off, minimal, low, medium, high, xhigh, max
     #[test]
     fn effort_is_the_first_list_of_the_effort_line() {
         assert_eq!(
-            parse_effort(CLAUDE),
+            parse_effort(CODEX),
             vec!["low", "medium", "high", "xhigh", "max"]
         );
         assert_eq!(parse_effort(OMP).len(), 8);
         let codex = "codex takes ...\n\ncodex/gpt-5.5\n\nEffort (worker.effort and the like): low, medium, high, xhigh, max, ultra (from `codex debug models`); gpt-5.5 only low, medium, high, xhigh.\n";
         assert_eq!(parse_effort(codex).last().map(String::as_str), Some("ultra"));
-        assert!(parse_effort("claude/opus\n").is_empty());
+        assert!(parse_effort("codex/gpt-6-luna\n").is_empty());
     }
 
     #[tokio::test]

@@ -11,7 +11,7 @@ use serde::Serialize;
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize)]
 pub struct CoordinatorView {
-    /// `idle · claude · claude-opus-5-5 · medium · default: …`
+    /// `idle · codex · gpt-6-luna · medium · default: …`
     pub status_line: String,
     /// The first word of the standing line: `idle`, `working`, `stopped`, ….
     pub status: String,
@@ -76,12 +76,12 @@ mod tests {
 
     #[test]
     fn status_and_the_last_lines() {
-        let out = "Coordinator: idle · claude · claude-opus-5-5 · medium · default: claude · claude-opus-5-5 · medium\n\nPLN-2 слита.\n\nДописал требования.\n\nUpdated PLN-3. Approved PLN-2\n";
+        let out = "Coordinator: idle · codex · gpt-6-luna · medium · default: codex · gpt-6-luna · medium\n\nPLN-2 слита.\n\nДописал требования.\n\nUpdated PLN-3. Approved PLN-2\n";
         let c = parse(out);
         assert_eq!(c.status, "idle");
         assert_eq!(
             c.status_line,
-            "idle · claude · claude-opus-5-5 · medium · default: claude · claude-opus-5-5 · medium"
+            "idle · codex · gpt-6-luna · medium · default: codex · gpt-6-luna · medium"
         );
         assert_eq!(
             c.reply,
@@ -123,12 +123,12 @@ mod tests {
 
     #[test]
     fn blocked_means_a_dialog_on_its_screen() {
-        let c = parse("Coordinator: blocked · claude · claude-opus-5-5 · medium\n\nMay I remove the old branches?");
+        let c = parse("Coordinator: blocked · codex · gpt-6-luna · medium\n\nMay I remove the old branches?");
         assert_eq!(c.status, "blocked");
         assert!(c.dialog);
         assert!(!c.busy);
         assert_eq!(c.reply, "May I remove the old branches?");
-        assert!(!parse("Coordinator: idle · claude\n").dialog);
+        assert!(!parse("Coordinator: idle · codex\n").dialog);
         assert!(!parse("").dialog);
     }
 }

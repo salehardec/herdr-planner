@@ -236,16 +236,6 @@ function CardWindow(props: { w: LimitWindow }): JSX.Element {
 
 function CardSection(props: { s: UsageSection }): JSX.Element {
   const s = props.s;
-  if (s.kind === 'shares') {
-    return (
-      <div class="lc-sec">
-        <b>{said(s.title)}</b>
-        {s.shares.map(([name, pct]) => (
-          <div class="lc-share" key={name}><span>{name}</span><span class="lc-sbar"><i style={`--w:${Math.max(0, Math.min(100, Math.round(pct)))}%`} /></span><span class="lc-sv">{Math.round(pct)}%</span></div>
-        ))}
-      </div>
-    );
-  }
   return (
     <div class="lc-sec">
       <b>{said(s.title)}</b>

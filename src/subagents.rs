@@ -1,8 +1,6 @@
 //! Sub-agents of an agent session: the moons of its planet (PLN-9 plan §4.6).
 //!
 //! Read-only. Each program keeps its sub-agents differently:
-//! - claude: `<claude>/projects/<dashed cwd>/<session>/subagents/agent-<id>.jsonl`
-//!   with `agent-<id>.meta.json` beside it;
 //! - omp: children `<parent without .jsonl>/<TaskName>.jsonl` (+ `<TaskName>.md`
 //!   with the final result) next to the parent session file;
 //! - codex: `<codex>/sessions/yyyy/mm/dd/rollout-*.jsonl`; a child names its
@@ -50,7 +48,7 @@ const PI_NOTE: &str = "нет данных: у pi нет субагентов";
 pub struct Subagent {
     /// Stable within the parent: the file stem or thread id.
     pub id: String,
-    /// `claude`, `omp` or `codex`.
+    /// `omp` or `codex`.
     pub kind: String,
     /// The role or agent type: `Explore`, `general-purpose`, a task name.
     pub role: String,
@@ -70,13 +68,11 @@ pub struct Subagent {
 
 /// The session whose sub-agents are wanted.
 pub struct Query<'a> {
-    /// `claude`, `omp`, `pi` or `codex`.
+    /// `omp`, `pi` or `codex`.
     pub app: &'a str,
-    /// Claude: the session id. omp and codex: the parent session file path
+    /// omp and codex: the parent session file path
     /// (task.json `session`), or a thread id.
     pub session: &'a str,
-    /// The task's worktree (or root): Claude names its project folder after it.
-    pub cwd: &'a str,
     /// `sw-<repo>-<n>`, the pane name, used to find an omp session when `session` is not a path.
     pub agent_name: &'a str,
     /// The task is working, in review or in plan, and its agent has not exited.
@@ -97,8 +93,6 @@ pub struct Found {
 /// point every field at a temporary folder.
 #[derive(Debug, Clone)]
 struct Roots {
-    /// Claude's config home (`CLAUDE_CONFIG_DIR` or `~/.claude`).
-    claude: PathBuf,
     /// `~/.codex/sessions`.
     codex: PathBuf,
     /// The herdr program (`HERDR_BIN` or `herdr`).
@@ -113,7 +107,6 @@ impl Roots {
             .map(PathBuf::from)
             .unwrap_or_else(|| home().join(".codex"));
         Roots {
-            claude: claude_home(),
             codex: codex_home.join("sessions"),
             herdr: std::env::var("HERDR_BIN")
                 .ok()
@@ -132,7 +125,8 @@ pub fn for_task(q: &Query, now_ms: u64) -> Found {
 /// The Coordinator's sub-agents: the moons of Quasar. `busy` is whether the
 /// Coordinator is working now (when it is not, its sub-agents are done).
 pub fn for_coordinator(cfg: &AppConfig, busy: bool, now_ms: u64) -> Found {
-    coordinator_in(&Roots::live(), &cfg.data_dir, busy, now_ms)
+    let _ = (cfg, busy, now_ms);
+    Found { list: Vec::new(), note: "нет данных: субагенты Координатора не читаются".into() }
 }
 
 /// One sub-agent with its full result (up to 16000 chars). `None` when it is not
@@ -161,54 +155,8 @@ fn found(r: &Roots, q: &Query, now: u64) -> Found {
     }
 }
 
-fn coordinator_in(r: &Roots, data_dir: &Path, busy: bool, now: u64) -> Found {
-    let coordinator = data_dir.join("coordinator").join("default");
-    let kind = std::fs::read_to_string(coordinator.join("state.json"))
-        .ok()
-        .and_then(|s| serde_json::from_str::<Value>(&s).ok())
-        .and_then(|v| {
-            v.pointer("/run/kind")
-                .and_then(Value::as_str)
-                .map(String::from)
-        });
-    if let Some(kind) = kind.filter(|k| k != "claude") {
-        return Found {
-            list: Vec::new(),
-            note: format!("нет данных: Координатор работает на {kind}, его субагенты не читаются"),
-        };
-    }
-    let chat = coordinator.join("chat");
-    let chat_str = chat.to_string_lossy().into_owned();
-    let folder = claude_projects(r).join(project_folder(&canonical(&chat_str)));
-    let newest = std::fs::read_dir(&folder)
-        .into_iter()
-        .flatten()
-        .flatten()
-        .filter(|e| e.path().extension().is_some_and(|x| x == "jsonl"))
-        .filter_map(|e| Some((e.metadata().ok()?.modified().ok()?, e.path())))
-        .max_by_key(|(m, _)| *m)
-        .map(|(_, p)| p);
-    let Some(stem) = newest.and_then(|p| p.file_stem().map(|s| s.to_string_lossy().into_owned()))
-    else {
-        return Found {
-            list: Vec::new(),
-            note: "нет данных: нет стенограммы Координатора".to_string(),
-        };
-    };
-    let q = Query {
-        app: "claude",
-        session: &stem,
-        cwd: &chat_str,
-        agent_name: "sw-coordinator",
-        parent_active: busy,
-        parent_exited_at_ms: 0,
-    };
-    found(r, &q, now)
-}
-
 fn collect(r: &Roots, q: &Query, now: u64, full: bool) -> Result<Vec<Subagent>, String> {
     let mut list = match q.app {
-        "claude" => claude_list(r, q, now, full)?,
         "omp" => omp_list(r, q, now, full)?,
         "codex" => codex_list(r, q, now, full)?,
         "pi" => return Err(PI_NOTE.to_string()),
@@ -224,187 +172,6 @@ fn collect(r: &Roots, q: &Query, now: u64, full: bool) -> Result<Vec<Subagent>, 
         list.truncate(MAX_LIST);
     }
     Ok(list)
-}
-
-// ---------------------------------------------------------------- claude
-
-fn claude_list(r: &Roots, q: &Query, now: u64, full: bool) -> Result<Vec<Subagent>, String> {
-    if !safe_segment(q.session) {
-        return Err("нет данных: нет сессии".to_string());
-    }
-    let session_dir = claude_projects(r)
-        .join(project_folder(&canonical(q.cwd)))
-        .join(q.session);
-    if !session_dir.is_dir() {
-        return Err("нет данных: нет папки сессии Claude".to_string());
-    }
-    let dir = session_dir.join("subagents");
-    let Ok(entries) = std::fs::read_dir(&dir) else {
-        // A session without sub-agents has no folder for them.
-        return Ok(Vec::new());
-    };
-    let mut out = Vec::new();
-    for entry in entries.flatten() {
-        let name = entry.file_name().to_string_lossy().into_owned();
-        let Some(stem) = name
-            .strip_prefix("agent-")
-            .and_then(|s| s.strip_suffix(".jsonl"))
-        else {
-            continue;
-        };
-        let path = entry.path();
-        let meta = dir.join(format!("agent-{stem}.meta.json"));
-        let Some(st) = stamp(&path) else { continue };
-        let facts = cached(&path, "claude", st, || claude_facts(&path, &meta));
-        let last = st.0;
-        let parent_ended = ended_by_parent(q, last);
-        let Some(state) = judge(facts.ended || parent_ended, last, now) else {
-            continue;
-        };
-        let role = facts.role.clone();
-        let title = facts.title.clone();
-        out.push(build(
-            "claude",
-            format!("agent-{stem}"),
-            &facts,
-            role,
-            title,
-            last,
-            state,
-            full,
-        ));
-    }
-    Ok(out)
-}
-
-/// The Claude project folder name: every character that is not an ASCII
-/// letter or digit becomes `-` (the rule of history.rs).
-fn project_folder(cwd: &Path) -> String {
-    cwd.to_string_lossy()
-        .chars()
-        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
-        .collect()
-}
-
-fn claude_home() -> PathBuf {
-    std::env::var_os("CLAUDE_CONFIG_DIR")
-        .filter(|v| !v.is_empty())
-        .map(PathBuf::from)
-        .unwrap_or_else(|| home().join(".claude"))
-}
-
-fn claude_projects(r: &Roots) -> PathBuf {
-    r.claude.join("projects")
-}
-
-fn claude_facts(path: &Path, meta_path: &Path) -> Facts {
-    let mut f = Facts::default();
-    let head = read_prefix(path, HEAD);
-    f.started_ms = first_timestamp(&head);
-    f.title = head_lines(&head)
-        .filter(|l| l.contains("\"type\":\"user\"") && !l.contains("\"isMeta\":true"))
-        .filter_map(|l| serde_json::from_str::<Value>(l).ok())
-        .find_map(|v| user_text(v.pointer("/message/content")))
-        .unwrap_or_default();
-    if let Some(meta) = std::fs::read_to_string(meta_path)
-        .ok()
-        .and_then(|t| serde_json::from_str::<Value>(&t).ok())
-    {
-        f.role = text_of(&meta, "agentType");
-        let description = text_of(&meta, "description");
-        if !description.is_empty() {
-            f.title = description;
-        }
-        f.ended = meta.get("finished").and_then(Value::as_bool) == Some(true);
-    }
-    let values = tail_values(
-        path,
-        |l| l.contains("\"type\":\"assistant\"") || l.contains("\"type\":\"user\""),
-        |vs| {
-            vs.iter()
-                .any(|v| v.get("type").and_then(Value::as_str) == Some("assistant"))
-        },
-    );
-    let (ended, doing, result) = claude_end_doing_result(&values);
-    f.ended |= ended;
-    f.doing = doing;
-    f.result = result;
-    f
-}
-
-/// The end, what it does now, and its result, from the assistant and user records.
-fn claude_end_doing_result(values: &[Value]) -> (bool, String, String) {
-    let is = |v: &Value, t: &str| v.get("type").and_then(Value::as_str) == Some(t);
-    let last_asst = values.iter().rposition(|v| is(v, "assistant"));
-    // Ended: its last answer ended the turn and nothing but harness notes followed,
-    // or the handback tool ended the run (a user record with `toolEndsTurn`).
-    let ended = match last_asst {
-        Some(i) => {
-            let stop_end = values[i]
-                .pointer("/message/stop_reason")
-                .and_then(Value::as_str)
-                == Some("end_turn");
-            let after = &values[i + 1..];
-            let user_after = after
-                .iter()
-                .any(|v| is(v, "user") && v.get("isMeta").and_then(Value::as_bool) != Some(true));
-            let handed_back = after.iter().any(|v| {
-                is(v, "user") && v.get("toolEndsTurn").and_then(Value::as_bool) == Some(true)
-            });
-            (stop_end && !user_after) || handed_back
-        }
-        None => false,
-    };
-    let mut doing = String::new();
-    let mut result = String::new();
-    let mut found_doing = false;
-    let mut found_result = false;
-    for v in values.iter().rev().filter(|v| is(v, "assistant")) {
-        let blocks = v.pointer("/message/content").and_then(Value::as_array);
-        let Some(blocks) = blocks else { continue };
-        if !found_doing {
-            if let Some(tool) = blocks.iter().rev().find(|b| block_is(b, "tool_use")) {
-                doing = tool_summary(
-                    &text_of(tool, "name"),
-                    tool.get("input").unwrap_or(&Value::Null),
-                );
-                found_doing = true;
-            } else if let Some(text) = last_text(blocks) {
-                doing = clip(&one_line(&text), TITLE_MAX);
-                found_doing = true;
-            }
-        }
-        if !found_result {
-            // The sub-agent's report: the text of its last answer, or the message it
-            // handed back with the SubagentHandback tool.
-            let handback = blocks
-                .iter()
-                .rev()
-                .find(|b| block_is(b, "tool_use") && text_of(b, "name").contains("Handback"));
-            let text = blocks
-                .iter()
-                .filter(|b| block_is(b, "text"))
-                .filter_map(|b| b.get("text").and_then(Value::as_str))
-                .map(str::trim)
-                .filter(|t| !t.is_empty())
-                .collect::<Vec<_>>()
-                .join("\n\n");
-            if !text.is_empty() {
-                result = clip(&text, RESULT_CARD);
-                found_result = true;
-            } else if let Some(msg) = handback
-                .and_then(|b| b.pointer("/input/message"))
-                .and_then(Value::as_str)
-            {
-                result = clip(msg.trim(), RESULT_CARD);
-                found_result = true;
-            }
-        }
-        if found_doing && found_result {
-            break;
-        }
-    }
-    (ended, doing, result)
 }
 
 // ---------------------------------------------------------------- omp
@@ -896,7 +663,7 @@ fn started_ids(path: &Path) -> Vec<String> {
 /// What is known about one sub-agent file, cached by (path, mtime, len).
 #[derive(Debug, Clone, Default)]
 struct Facts {
-    /// Codex: the thread id; Claude and omp: unused.
+    /// Codex: the thread id; omp: unused.
     id: String,
     /// Codex child: the parent thread id.
     parent: String,
@@ -1011,20 +778,6 @@ fn build(
         },
         note: String::new(),
     }
-}
-
-/// A path segment from an id: no separators, no `..`, not empty.
-fn safe_segment(s: &str) -> bool {
-    !s.is_empty()
-        && s != "."
-        && s != ".."
-        && !s.contains('/')
-        && !s.contains('\\')
-        && !s.contains('\0')
-}
-
-fn canonical(cwd: &str) -> PathBuf {
-    std::fs::canonicalize(cwd).unwrap_or_else(|_| PathBuf::from(cwd))
 }
 
 /// The first `max` bytes of a file (empty when unreadable).
@@ -1291,7 +1044,6 @@ mod tests {
         }
         fn roots(&self) -> Roots {
             Roots {
-                claude: self.dir.path().join("claude"),
                 codex: self.dir.path().join("codex"),
                 herdr: "/definitely/not/herdr".to_string(),
                 herdr_wait: Duration::from_millis(300),
@@ -1310,328 +1062,18 @@ mod tests {
         }
     }
 
-    fn query<'a>(app: &'a str, session: &'a str, cwd: &'a str) -> Query<'a> {
+    fn query<'a>(app: &'a str, session: &'a str, _cwd: &'a str) -> Query<'a> {
         Query {
             app,
             session,
-            cwd,
             agent_name: "sw-test-1",
             parent_active: true,
             parent_exited_at_ms: 0,
         }
     }
 
+    const SESSION: &str = "session-1";
     const CWD: &str = "/work/proj-1";
-    /// The Claude project folder of [`CWD`] (it does not exist on disk, so it is not canonicalised).
-    const FOLDER: &str = "-work-proj-1";
-    const SESSION: &str = "11111111-2222-3333-4444-555555555555";
-
-    fn claude_dir(fx: &Fixture) -> PathBuf {
-        let dir = fx
-            .dir
-            .path()
-            .join("claude/projects")
-            .join(FOLDER)
-            .join(SESSION)
-            .join("subagents");
-        std::fs::create_dir_all(&dir).unwrap();
-        dir
-    }
-
-    /// A claude sub-agent file: a start, a tool call and an answer.
-    fn claude_jsonl(stop: Option<&str>) -> String {
-        let end = match stop {
-            Some(s) => format!(r#","stop_reason":"{s}""#),
-            None => String::new(),
-        };
-        [
-            r#"{"parentUuid":null,"isSidechain":true,"type":"user","timestamp":"2026-10-20T10:00:00.000Z","message":{"role":"user","content":"Изучи модуль подписок"}}"#.to_string(),
-            r#"{"type":"assistant","timestamp":"2026-10-20T10:00:05.000Z","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"cargo test -p subs"}}]}}"#.to_string(),
-            r#"{"type":"user","timestamp":"2026-10-20T10:00:09.000Z","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t","content":"ok"}]}}"#.to_string(),
-            format!(r#"{{"type":"assistant","timestamp":"2026-10-20T10:00:20.000Z","message":{{"content":[{{"type":"text","text":"Готово: 3 файла проверены."}}]{end}}}}}"#),
-        ]
-        .join("\n")
-            + "\n"
-    }
-
-    #[test]
-    fn claude_finished_by_meta_flag() {
-        let fx = Fixture::new();
-        let dir = claude_dir(&fx);
-        let f = dir.join("agent-aaa1.jsonl");
-        std::fs::write(&f, claude_jsonl(None)).unwrap();
-        std::fs::write(
-            dir.join("agent-aaa1.meta.json"),
-            r#"{"agentType":"Explore","description":"Разобрать подписки","finished":true}"#,
-        )
-        .unwrap();
-        fx.at(&f, NOW - 60_000);
-        let found = found(&fx.roots(), &query("claude", SESSION, CWD), NOW);
-        assert_eq!(found.note, "");
-        let s = &found.list[0];
-        assert_eq!(s.id, "agent-aaa1");
-        assert_eq!(
-            (s.kind.as_str(), s.role.as_str(), s.state.as_str()),
-            ("claude", "Explore", "done")
-        );
-        assert_eq!(s.title, "Разобрать подписки");
-        assert_eq!(s.result, "Готово: 3 файла проверены.");
-        assert_eq!(
-            s.started_at_ms,
-            DAY_1020 + 10 * HOUR,
-            "2026-10-20T10:00:00Z"
-        );
-    }
-
-    #[test]
-    fn claude_finished_by_end_turn_without_flag() {
-        let fx = Fixture::new();
-        let dir = claude_dir(&fx);
-        let f = dir.join("agent-bbb2.jsonl");
-        std::fs::write(&f, claude_jsonl(Some("end_turn"))).unwrap();
-        fx.at(&f, NOW - 30 * 60_000);
-        let s = &found(&fx.roots(), &query("claude", SESSION, CWD), NOW).list[0];
-        assert_eq!(s.state, "done", "end_turn with no user record after it");
-        assert_eq!(
-            s.title, "Изучи модуль подписок",
-            "no meta: the first user words are the title"
-        );
-        assert_eq!(s.doing, "Готово: 3 файла проверены.");
-    }
-
-    #[test]
-    fn claude_handback_tool_ends_the_run() {
-        let fx = Fixture::new();
-        let dir = claude_dir(&fx);
-        let lines = [
-            r#"{"type":"user","timestamp":"2026-10-20T10:00:00.000Z","message":{"role":"user","content":"задача"}}"#,
-            r#"{"type":"assistant","timestamp":"2026-10-20T10:00:10.000Z","message":{"stop_reason":"end_turn","content":[{"type":"text","text":"Посмотрел."}]}}"#,
-            r#"{"type":"user","isMeta":true,"timestamp":"2026-10-20T10:00:11.000Z","message":{"role":"user","content":"[handback-send-enforce] call SubagentHandback"}}"#,
-            r#"{"type":"assistant","timestamp":"2026-10-20T10:00:20.000Z","message":{"content":[{"type":"tool_use","name":"SubagentHandback","input":{"message":"Отчёт: всё на месте."}}]}}"#,
-            r#"{"type":"user","toolEndsTurn":true,"timestamp":"2026-10-20T10:00:21.000Z","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t","content":"ok"}]}}"#,
-        ]
-        .join("\n");
-        let f = dir.join("agent-hhh.jsonl");
-        std::fs::write(&f, lines).unwrap();
-        fx.at(&f, NOW - 1_000);
-        let s = &found(&fx.roots(), &query("claude", SESSION, CWD), NOW).list[0];
-        assert_eq!(s.state, "done");
-        assert_eq!(
-            s.result, "Отчёт: всё на месте.",
-            "the handed-back report is the result"
-        );
-    }
-
-    #[test]
-    fn claude_running_quiet_and_dropped_by_age() {
-        let fx = Fixture::new();
-        let dir = claude_dir(&fx);
-        let fresh = dir.join("agent-run.jsonl");
-        std::fs::write(&fresh, claude_jsonl(None)).unwrap();
-        fx.at(&fresh, NOW - 2 * 60_000);
-        let quiet = dir.join("agent-qui.jsonl");
-        std::fs::write(&quiet, claude_jsonl(None)).unwrap();
-        fx.at(&quiet, NOW - 20 * 60_000);
-        let old = dir.join("agent-old.jsonl");
-        std::fs::write(&old, claude_jsonl(None)).unwrap();
-        fx.at(&old, NOW - 61 * 60_000);
-        let found = found(&fx.roots(), &query("claude", SESSION, CWD), NOW);
-        let by_id = |id: &str| found.list.iter().find(|s| s.id == id).cloned();
-        let run = by_id("agent-run").unwrap();
-        assert_eq!(run.state, "running");
-        assert_eq!(run.result, "", "a running sub-agent has no result yet");
-        assert_eq!(run.doing, "Готово: 3 файла проверены.", "its last words");
-        assert_eq!(by_id("agent-qui").unwrap().state, "quiet");
-        assert!(
-            by_id("agent-old").is_none(),
-            "quiet for more than an hour is dropped"
-        );
-        assert_eq!(found.list[0].id, "agent-run", "newest first");
-        assert!(card_in(
-            &fx.roots(),
-            &query("claude", SESSION, CWD),
-            "agent-old",
-            NOW
-        )
-        .is_none());
-        assert!(card_in(
-            &fx.roots(),
-            &query("claude", SESSION, CWD),
-            "agent-qui",
-            NOW
-        )
-        .is_some());
-    }
-
-    #[test]
-    fn parent_exit_makes_every_sub_agent_done() {
-        let fx = Fixture::new();
-        let dir = claude_dir(&fx);
-        let f = dir.join("agent-pex.jsonl");
-        std::fs::write(&f, claude_jsonl(None)).unwrap();
-        fx.at(&f, NOW - 1_000);
-        let mut q = query("claude", SESSION, CWD);
-        q.parent_active = false;
-        assert_eq!(
-            found(&fx.roots(), &q, NOW).list[0].state,
-            "done",
-            "parent not active"
-        );
-        let mut q = query("claude", SESSION, CWD);
-        q.parent_exited_at_ms = NOW - 2_000;
-        assert_eq!(
-            found(&fx.roots(), &q, NOW).list[0].state,
-            "running",
-            "exited before the last write (NOW-1000)"
-        );
-        q.parent_exited_at_ms = NOW - 500;
-        assert_eq!(
-            found(&fx.roots(), &q, NOW).list[0].state,
-            "done",
-            "exited after the last write"
-        );
-    }
-
-    #[test]
-    fn claude_missing_folders_give_a_note_and_no_panic() {
-        let fx = Fixture::new();
-        let f = found(&fx.roots(), &query("claude", SESSION, CWD), NOW);
-        assert!(f.list.is_empty());
-        assert_eq!(f.note, "нет данных: нет папки сессии Claude");
-        let f = found(&fx.roots(), &query("claude", "../etc", CWD), NOW);
-        assert_eq!(f.note, "нет данных: нет сессии");
-        // The session folder exists, the sub-agents folder does not: no sub-agents, no note.
-        std::fs::create_dir_all(
-            fx.dir
-                .path()
-                .join("claude/projects")
-                .join(FOLDER)
-                .join(SESSION),
-        )
-        .unwrap();
-        let f = found(&fx.roots(), &query("claude", SESSION, CWD), NOW);
-        assert!(f.list.is_empty());
-        assert_eq!(f.note, "");
-    }
-
-    #[test]
-    fn garbage_lines_are_skipped() {
-        let fx = Fixture::new();
-        let dir = claude_dir(&fx);
-        let f = dir.join("agent-gar.jsonl");
-        let text = format!(
-            "not json at all\n{{\"type\":\"assistant\",\"timestamp\":\"2026-1\n{}\n\u{0}\u{1}{{{{\n[1,2\n",
-            claude_jsonl(Some("end_turn")).trim_end()
-        );
-        std::fs::write(&f, text).unwrap();
-        fx.at(&f, NOW - 1_000);
-        let found = found(&fx.roots(), &query("claude", SESSION, CWD), NOW);
-        assert_eq!(found.list.len(), 1);
-        assert_eq!(found.list[0].state, "done");
-        assert_eq!(found.list[0].result, "Готово: 3 файла проверены.");
-    }
-
-    #[test]
-    fn list_is_capped_and_newest_first() {
-        let fx = Fixture::new();
-        let dir = claude_dir(&fx);
-        for i in 0..15 {
-            let f = dir.join(format!("agent-n{i:02}.jsonl"));
-            std::fs::write(&f, claude_jsonl(Some("end_turn"))).unwrap();
-            fx.at(&f, NOW - (i as u64 + 1) * 1_000);
-        }
-        let found = found(&fx.roots(), &query("claude", SESSION, CWD), NOW);
-        assert_eq!(found.list.len(), MAX_LIST);
-        assert_eq!(found.list[0].id, "agent-n00");
-        let card = card_in(
-            &fx.roots(),
-            &query("claude", SESSION, CWD),
-            "agent-n14",
-            NOW,
-        );
-        assert!(card.is_some(), "the card looks beyond the list cap");
-    }
-
-    #[test]
-    fn card_has_the_long_result() {
-        let fx = Fixture::new();
-        let dir = claude_dir(&fx);
-        let long = "я".repeat(20_000);
-        let text = format!(
-            "{}\n{}\n",
-            r#"{"type":"user","timestamp":"2026-10-20T10:00:00.000Z","message":{"role":"user","content":"x"}}"#,
-            format!(
-                r#"{{"type":"assistant","message":{{"stop_reason":"end_turn","content":[{{"type":"text","text":"{long}"}}]}}}}"#
-            )
-        );
-        let f = dir.join("agent-long.jsonl");
-        std::fs::write(&f, text).unwrap();
-        fx.at(&f, NOW - 1_000);
-        let facts = claude_facts(&f, &dir.join("agent-long.meta.json"));
-        assert_eq!(
-            facts.result.chars().count(),
-            RESULT_CARD + 1,
-            "16000 characters and the cut mark"
-        );
-        let q = query("claude", SESSION, CWD);
-        let listed = found(&fx.roots(), &q, NOW)
-            .list
-            .into_iter()
-            .find(|s| s.id == "agent-long")
-            .unwrap();
-        assert_eq!(
-            listed.result.chars().count(),
-            RESULT_LIST + 1,
-            "the list gets 4000 characters"
-        );
-        let card = card_in(&fx.roots(), &q, "agent-long", NOW).unwrap();
-        assert_eq!(
-            card.result.chars().count(),
-            RESULT_CARD + 1,
-            "the card gets 16000"
-        );
-    }
-
-    #[test]
-    fn big_file_is_read_from_its_tail() {
-        let fx = Fixture::new();
-        let dir = claude_dir(&fx);
-        let mut text = String::from(
-            "{\"type\":\"user\",\"timestamp\":\"2026-10-20T09:00:00.000Z\",\"message\":{\"role\":\"user\",\"content\":\"начало\"}}\n",
-        );
-        let filler = r#"{"type":"attachment","attachment":{"type":"x","pad":"#.to_string()
-            + &"z".repeat(900)
-            + "}}\n";
-        while text.len() < 2 * 1024 * 1024 {
-            text.push_str(&filler);
-        }
-        text.push_str(&claude_jsonl(Some("end_turn")));
-        let f = dir.join("agent-big.jsonl");
-        std::fs::write(&f, text).unwrap();
-        fx.at(&f, NOW - 1_000);
-        let s = &found(&fx.roots(), &query("claude", SESSION, CWD), NOW).list[0];
-        assert_eq!(s.state, "done");
-        assert_eq!(
-            s.started_at_ms,
-            DAY_1020 + 9 * HOUR,
-            "the start is the first record"
-        );
-    }
-
-    #[test]
-    fn cache_is_refreshed_when_the_file_changes() {
-        let fx = Fixture::new();
-        let dir = claude_dir(&fx);
-        let f = dir.join("agent-cch.jsonl");
-        std::fs::write(&f, claude_jsonl(None)).unwrap();
-        fx.at(&f, NOW - 1_000);
-        let q = query("claude", SESSION, CWD);
-        assert_eq!(found(&fx.roots(), &q, NOW).list[0].state, "running");
-        std::fs::write(&f, claude_jsonl(Some("end_turn"))).unwrap();
-        fx.at(&f, NOW - 500);
-        assert_eq!(found(&fx.roots(), &q, NOW).list[0].state, "done");
-    }
-
     #[test]
     fn pi_has_no_sub_agents() {
         let fx = Fixture::new();
@@ -1743,7 +1185,6 @@ mod tests {
         let q = Query {
             app: "omp",
             session: "",
-            cwd: CWD,
             agent_name: &name,
             parent_active: true,
             parent_exited_at_ms: 0,
@@ -1849,67 +1290,6 @@ mod tests {
     }
 
     #[test]
-    fn coordinator_reads_the_newest_chat_transcript() {
-        let fx = Fixture::new();
-        let data = fx.dir.path().join("data");
-        let chat = data.join("coordinator/default/chat");
-        std::fs::create_dir_all(&chat).unwrap();
-        std::fs::write(
-            data.join("coordinator/default/state.json"),
-            r#"{"run":{"kind":"claude"}}"#,
-        )
-        .unwrap();
-        // The chat folder does not exist on disk, so the dashed name is that of the path as given.
-        let folder = fx
-            .dir
-            .path()
-            .join("claude/projects")
-            .join(project_folder(&canonical(&chat.to_string_lossy())));
-        let session = "22222222-3333-4444-5555-666666666666";
-        std::fs::create_dir_all(folder.join(session).join("subagents")).unwrap();
-        std::fs::write(folder.join(format!("{session}.jsonl")), "{}\n").unwrap();
-        let sub = folder.join(session).join("subagents");
-        std::fs::write(sub.join("agent-c1.jsonl"), claude_jsonl(None)).unwrap();
-        std::fs::write(
-            sub.join("agent-c1.meta.json"),
-            r#"{"agentType":"general-purpose","description":"Сверить доску"}"#,
-        )
-        .unwrap();
-        fx.at(&sub.join("agent-c1.jsonl"), NOW - 1_000);
-        let f = coordinator_in(&fx.roots(), &data, true, NOW);
-        assert_eq!(f.note, "");
-        assert_eq!(f.list[0].title, "Сверить доску");
-        assert_eq!(f.list[0].state, "running");
-        // Not busy: the Coordinator's sub-agents are done.
-        let f = coordinator_in(&fx.roots(), &data, false, NOW);
-        assert_eq!(f.list[0].state, "done");
-    }
-
-    #[test]
-    fn coordinator_without_claude_or_transcript_gives_a_note() {
-        let fx = Fixture::new();
-        let data = fx.dir.path().join("data");
-        std::fs::create_dir_all(data.join("coordinator/default/chat")).unwrap();
-        std::fs::write(
-            data.join("coordinator/default/state.json"),
-            r#"{"run":{"kind":"omp"}}"#,
-        )
-        .unwrap();
-        assert!(coordinator_in(&fx.roots(), &data, true, NOW)
-            .note
-            .contains("omp"));
-        std::fs::write(
-            data.join("coordinator/default/state.json"),
-            r#"{"run":{"kind":"claude"}}"#,
-        )
-        .unwrap();
-        assert_eq!(
-            coordinator_in(&fx.roots(), &data, true, NOW).note,
-            "нет данных: нет стенограммы Координатора"
-        );
-    }
-
-    #[test]
     fn helpers_clip_and_read_safely() {
         assert_eq!(clip("абвгд", 3), "абв…");
         assert_eq!(clip("ab", 3), "ab");
@@ -1917,98 +1297,6 @@ mod tests {
         assert_eq!(parse_time("1970-01-01T00:00:01.500Z"), 1500);
         assert_eq!(parse_time("junk"), 0);
         assert_eq!(first_timestamp(b"{\"a\":1}"), 0);
-        assert!(!safe_segment("a/b") && !safe_segment("..") && safe_segment("11-22"));
         assert_eq!(tool_summary("", &Value::Null), "tool");
-    }
-
-    #[test]
-    #[ignore = "reads the real ~/.claude; run by hand"]
-    fn real_machine_sub_agents_parse_without_panic() {
-        // Run by hand: `cargo test real_machine -- --ignored --nocapture`.
-        let r = Roots::live();
-        let mut total = 0;
-        let mut states = HashMap::new();
-        let folders = std::fs::read_dir(claude_projects(&r))
-            .into_iter()
-            .flatten()
-            .flatten();
-        for folder in folders {
-            for session in std::fs::read_dir(folder.path())
-                .into_iter()
-                .flatten()
-                .flatten()
-            {
-                let dir = session.path().join("subagents");
-                for entry in std::fs::read_dir(&dir).into_iter().flatten().flatten() {
-                    let path = entry.path();
-                    if path.extension().is_some_and(|x| x == "jsonl") {
-                        let stem = path.file_stem().unwrap().to_string_lossy().into_owned();
-                        let meta = dir.join(format!("{stem}.meta.json"));
-                        let st = stamp(&path).unwrap();
-                        let facts = claude_facts(&path, &meta);
-                        let now = ms_of(SystemTime::now());
-                        let state = judge(facts.ended, st.0, now).unwrap_or("dropped");
-                        *states.entry(state).or_insert(0) += 1;
-                        let age_min = now.saturating_sub(st.0) / 60_000;
-                        *states
-                            .entry(if age_min < 60 { "age<60m" } else { "age>=60m" })
-                            .or_insert(0) += 1;
-                        *states
-                            .entry(if facts.ended {
-                                "flag:ended"
-                            } else {
-                                "flag:open"
-                            })
-                            .or_insert(0) += 1;
-                        total += 1;
-                    }
-                }
-            }
-        }
-        println!("claude sub-agent files {total}, by state {states:?}");
-    }
-
-    #[test]
-    #[ignore = "reads the real ~/.claude; run by hand"]
-    fn real_machine_for_task_summary() {
-        // Two real sessions: this worktree's and a finished APICache one.
-        let cases = [
-            (
-                "9b7d7b22-c360-4e7e-b599-d4561bc34921",
-                "/home/me/.herdr/worktrees/herdr-planner/work-9-herdr-projects",
-            ),
-            (
-                "070a2f94-a6c6-45aa-b663-cc3e3ba065fe",
-                "/home/me/.herdr/worktrees/APICache/hp-apicache-t-0161-dokploy",
-            ),
-        ];
-        for (session, cwd) in cases {
-            let q = Query {
-                app: "claude",
-                session,
-                cwd,
-                agent_name: "",
-                parent_active: true,
-                parent_exited_at_ms: 0,
-            };
-            let found = for_task(&q, ms_of(SystemTime::now()));
-            println!(
-                "session {session}: {} listed, note {:?}",
-                found.list.len(),
-                found.note
-            );
-            for s in &found.list {
-                println!(
-                    "  {} {} {} role={} title={} doing={} result={}",
-                    s.id,
-                    s.kind,
-                    s.state,
-                    s.role,
-                    s.title.chars().count(),
-                    s.doing.chars().count(),
-                    s.result.chars().count()
-                );
-            }
-        }
     }
 }

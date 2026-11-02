@@ -18,7 +18,7 @@ import type { SavedFile } from '../attach';
 import { Coach, FirstRun } from './FirstRun';
 import './dialogs.css';
 
-const popProgram = signal('claude');
+const popProgram = signal('codex');
 const popModel = signal('');
 /** The crew's own role for the new task: `auto` (the rules decide), `none`, or a role's id; and the way a reviewer role goes on. */
 const popRole = signal('auto');
@@ -122,7 +122,7 @@ function TodoPopover(): JSX.Element | null {
           <PopRole repo={p.repo} text={editText.value} />
           <label>{t('todo.popProgram')}</label>
           <div class="prog">
-            {['claude', 'codex', 'pi', 'omp'].map((x) => (
+            {['codex', 'pi', 'omp'].map((x) => (
               <button type="button" class={`btn sm ${popProgram.value === x ? 'on' : ''}`} key={x} data-prog={x} onClick={() => { popProgram.value = x; popModel.value = ''; }}>{x}</button>
             ))}
           </div>

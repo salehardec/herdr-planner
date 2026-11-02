@@ -36,10 +36,10 @@ it('reload covers an echo older than the latest page before leaving it in the wa
   expect(chat.value.turns.map((t) => t.n)).toEqual([0, 1, 2, 3, 4, 5, 6, 7]);
 });
 
-it('forgets expired slash commands and non-Claude sends without pulling older history on every reload', async () => {
+it('forgets expired slash commands and sends without a transcript without pulling older history on every reload', async () => {
   saved.set('planner.chat.echoes', JSON.stringify([
     { id: 'command', text: '/compact', base: 0, at: Date.now() - 600_001, attachments: [] },
-    { id: 'non-claude', text: 'обычное сообщение', base: 0, at: Date.now() - 86_400_000, attachments: [] },
+    { id: 'no-transcript', text: 'обычное сообщение', base: 0, at: Date.now() - 86_400_000, attachments: [] },
   ]));
   calls.api.mockResolvedValue({ available: false, total: 0, turns: [] });
   const { loadLatest, pendingMessages } = await import('./chat');

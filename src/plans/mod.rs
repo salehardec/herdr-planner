@@ -1,7 +1,7 @@
 //! Subscription limits, read by the planner itself (PLN-84): the same sources and the same arithmetic as herdr-gpui's
 //! `herdr-usage` crate, written here so that the planner depends on neither its crate, its program nor its files.
 //!
-//! A provider is signed in when its own agent's sign-in file is on this machine (Claude Code, the Codex CLI, the Kimi Code CLI)
+//! A provider is signed in when its own agent's sign-in file is on this machine (the Codex CLI, the Kimi Code CLI)
 //! or a key is in the planner's config or environment (DeepSeek). The planner asks the provider's service with it, through
 //! `curl` with the secret on its standard input, and keeps only the numbers: the sign-in never goes into the snapshot, the
 //! log, the page or the gate. Readings are cached: every ten minutes, half as often after a rejection, an hour later after a
@@ -37,12 +37,11 @@ pub const MANUAL_SPACING_MS: u64 = 10_000;
 pub const LOOK_MS: u64 = 30_000;
 
 /// The providers, in the order their tabs are listed (the registry's order in herdr-gpui).
-pub const IDS: [&str; 4] = ["codex", "claude", "kimi", "deepseek"];
+pub const IDS: [&str; 3] = ["codex", "kimi", "deepseek"];
 
 pub fn name_of(id: &str) -> &'static str {
     match id {
         "codex" => "Codex",
-        "claude" => "Claude",
         "kimi" => "Kimi Code",
         "deepseek" => "DeepSeek",
         _ => "",
@@ -53,7 +52,6 @@ pub fn name_of(id: &str) -> &'static str {
 pub fn links_of(id: &str) -> (&'static str, &'static str) {
     match id {
         "codex" => ("https://chatgpt.com/codex/settings/usage", "https://status.openai.com"),
-        "claude" => ("https://claude.ai/settings/usage", "https://status.anthropic.com"),
         "kimi" => ("https://www.kimi.com/code/console", ""),
         "deepseek" => ("https://platform.deepseek.com/usage", "https://status.deepseek.com"),
         _ => ("", ""),
@@ -62,8 +60,6 @@ pub fn links_of(id: &str) -> (&'static str, &'static str) {
 
 /// Where the sign-ins are, and what the planner's own config says about them.
 pub struct Sources {
-    pub home: PathBuf,
-    pub claude_dir: PathBuf,
     pub codex_dir: PathBuf,
     pub opencode_auth: PathBuf,
     pub kimi_home: PathBuf,
@@ -83,17 +79,15 @@ impl Sources {
         let home = crate::config::home();
         let var = |name: &str| std::env::var_os(name).filter(|v| !v.is_empty()).map(PathBuf::from);
         let env = std::env::vars()
-            .filter(|(k, v)| !v.trim().is_empty() && ["ANTHROPIC_", "CLAUDE_CODE_", "DEEPSEEK_", "KIMI_"].iter().any(|p| k.starts_with(p)))
+            .filter(|(k, v)| !v.trim().is_empty() && ["DEEPSEEK_", "KIMI_"].iter().any(|p| k.starts_with(p)))
             .collect();
         let mut s = Self {
-            claude_dir: var("CLAUDE_CONFIG_DIR").unwrap_or_else(|| home.join(".claude")),
             codex_dir: var("CODEX_HOME").unwrap_or_else(|| home.join(".codex")),
             opencode_auth: var("XDG_DATA_HOME").unwrap_or_else(|| home.join(".local/share")).join("opencode/auth.json"),
             kimi_home: var("KIMI_CODE_HOME").unwrap_or_else(|| home.join(".kimi-code")),
             pi_auth: var("PI_CODING_AGENT_DIR").unwrap_or_else(|| home.join(".pi/agent")).join("auth.json"),
             omp_db: var("OMP_CODING_AGENT_DIR").unwrap_or_else(|| home.join(".omp/agent")).join("agent.db"),
             routes: Vec::new(),
-            home,
             hidden: Vec::new(),
             settings: toml::Table::new(),
             env,
@@ -139,8 +133,6 @@ impl Sources {
     #[cfg(test)]
     pub fn for_tests(root: &Path) -> Self {
         Self {
-            home: root.to_path_buf(),
-            claude_dir: root.join(".claude"),
             codex_dir: root.join(".codex"),
             opencode_auth: root.join(".local/share/opencode/auth.json"),
             kimi_home: root.join(".kimi-code"),
@@ -170,7 +162,6 @@ pub async fn fetch(id: &str, src: &Sources, now: u64) -> Option<Res<Report>> {
         return None;
     }
     let mut got = match id {
-        "claude" => providers::claude::fetch(src, now).await,
         "codex" => providers::codex::fetch(src, now).await,
         "kimi" => providers::kimi::fetch(src, now).await,
         "deepseek" => providers::deepseek::fetch(src, now).await,
@@ -425,9 +416,9 @@ pub mod tests {
     fn everything_is_due_at_first_and_a_good_read_waits_ten_minutes() {
         let mut s = Store::default();
         assert_eq!(s.due(NOW), IDS);
-        assert!(s.apply("claude", NOW, Some(Ok(report("claude")))));
-        assert!(!s.due(NOW + REFRESH_MS - 1).contains(&"claude"));
-        assert!(s.due(NOW + REFRESH_MS).contains(&"claude"));
+        assert!(s.apply("codex", NOW, Some(Ok(report("codex")))));
+        assert!(!s.due(NOW + REFRESH_MS - 1).contains(&"codex"));
+        assert!(s.due(NOW + REFRESH_MS).contains(&"codex"));
     }
 
     #[test]
@@ -458,22 +449,22 @@ pub mod tests {
     #[test]
     fn a_rate_limit_waits_longer_and_a_rejection_twice_as_long_each_time_up_to_six_hours() {
         let mut s = Store::default();
-        s.apply("claude", NOW, Some(Err(Fail::RateLimited)));
-        assert!(s.due(NOW + RATE_LIMITED_MS).contains(&"claude") && !s.due(NOW + RATE_LIMITED_MS - 1).contains(&"claude"));
+        s.apply("codex", NOW, Some(Err(Fail::RateLimited)));
+        assert!(s.due(NOW + RATE_LIMITED_MS).contains(&"codex") && !s.due(NOW + RATE_LIMITED_MS - 1).contains(&"codex"));
         let mut t = NOW;
         let mut waits = Vec::new();
         for _ in 0..8 {
-            s.apply("claude", t, Some(Err(Fail::Rejected)));
-            let due = s.entries["claude"].due_ms;
+            s.apply("codex", t, Some(Err(Fail::Rejected)));
+            let due = s.entries["codex"].due_ms;
             waits.push((due - t) / MIN);
             t = due;
         }
         assert_eq!(waits, [10, 20, 40, 80, 160, 320, 360, 360]);
         // an outage in between does not reset the count; an answer does
-        s.apply("claude", t, Some(Err(Fail::Network)));
-        assert_eq!(s.entries["claude"].strikes, 8);
-        s.apply("claude", t, Some(Ok(report("claude"))));
-        assert_eq!(s.entries["claude"].strikes, 0);
+        s.apply("codex", t, Some(Err(Fail::Network)));
+        assert_eq!(s.entries["codex"].strikes, 8);
+        s.apply("codex", t, Some(Ok(report("codex"))));
+        assert_eq!(s.entries["codex"].strikes, 0);
     }
 
     #[test]
@@ -487,11 +478,11 @@ pub mod tests {
     #[test]
     fn the_button_asks_for_everything_forgets_rejections_and_cannot_be_pressed_twice_in_ten_seconds() {
         let mut s = Store::default();
-        s.apply("claude", NOW, Some(Err(Fail::Rejected)));
-        s.apply("claude", NOW, Some(Err(Fail::Rejected)));
+        s.apply("codex", NOW, Some(Err(Fail::Rejected)));
+        s.apply("codex", NOW, Some(Err(Fail::Rejected)));
         assert!(s.refresh_now(NOW + 1000));
         assert_eq!(s.due(NOW + 1000), IDS);
-        assert_eq!(s.entries["claude"].strikes, 0);
+        assert_eq!(s.entries["codex"].strikes, 0);
         assert!(!s.refresh_now(NOW + 1000 + MANUAL_SPACING_MS - 1));
         assert!(s.refresh_now(NOW + 1000 + MANUAL_SPACING_MS));
     }

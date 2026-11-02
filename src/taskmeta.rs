@@ -18,9 +18,9 @@ pub struct TaskMeta {
     /// `created`, milliseconds since the epoch.
     pub created_ms: u64,
     pub description: String,
-    /// `claude`, `omp`, `pi` or `codex` (falls back to `agent`).
+    /// `omp`, `pi` or `codex` (falls back to `agent`).
     pub app: String,
-    /// `settings["worker.agent"]`, e.g. `claude/claude-sonnet-5-5`; `""` when unset.
+    /// `settings["worker.agent"]`, e.g. `codex/gpt-6-luna`; `""` when unset.
     pub worker_agent: String,
     pub model: String,
     pub session: String,
@@ -39,7 +39,7 @@ pub struct TaskMeta {
     pub working: bool,
     /// Task refs this task waits for, e.g. `herdr-planner/2`.
     pub after: Vec<String>,
-    /// `agent`: the program on the task (`claude`).
+    /// `agent`: the program on the task (`codex`).
     pub agent: String,
     /// `on`: the agent that took the task over from the first one (`codex/gpt-6-luna`); `""` while the first is on it.
     pub on: String,
@@ -117,7 +117,7 @@ pub fn merge_pr(settings: &Value, repo: &str) -> Option<bool> {
 }
 
 /// The hand-overs the board kept on task `repo/n` (`handovers`, oldest first: `{at, role, from, to, why}`): the lasting
-/// record of «codex took over from claude: out of allowance until 17:00», which the row's own line loses at the
+/// record of «codex took over from omp: out of allowance until 17:00», which the row's own line loses at the
 /// next report of the agent. Empty when there is no record or none was kept.
 pub fn read_handovers(data_dir: &Path, repo: &str, n: u64) -> Vec<Value> {
     let Some(dir) = task_dir(data_dir, repo, n) else { return Vec::new() };
@@ -320,7 +320,7 @@ mod tests {
         "agent": "omp",
         "on": "codex/gpt-6-luna",
         "reviewerOn": "codex",
-        "link": {"agent": "sw-herdr-planner-2", "reviewer": {"agent": "sw-herdr-planner-2-r", "kind": "claude", "pane": "w:p4"}},
+        "link": {"agent": "sw-herdr-planner-2", "reviewer": {"agent": "sw-herdr-planner-2-r", "kind": "codex", "pane": "w:p4"}},
         "tokens": "not read"
     }"#;
 
@@ -355,7 +355,7 @@ mod tests {
         assert_eq!(t.own_reviewer, "", "no reviewer of its own");
         assert_eq!(
             (t.link_agent.as_str(), t.link_reviewer.as_str(), t.reviewer_kind.as_str()),
-            ("sw-herdr-planner-2", "sw-herdr-planner-2-r", "claude")
+            ("sw-herdr-planner-2", "sw-herdr-planner-2-r", "codex")
         );
     }
 
@@ -363,10 +363,10 @@ mod tests {
     fn tolerates_missing_and_odd_fields() {
         let dir = data_with(&[(
             "tasks/apicache/5/task.json",
-            r#"{"agent":"claude","settings":null,"exitedAt":null,"after":[{"id":"a/1"},3,""]}"#,
+            r#"{"agent":"omp","settings":null,"exitedAt":null,"after":[{"id":"a/1"},3,""]}"#,
         )]);
         let t = read_task(dir.path(), "apicache", 5).unwrap();
-        assert_eq!(t.app, "claude", "app falls back to agent");
+        assert_eq!(t.app, "omp", "app falls back to agent");
         assert_eq!(t.worker_agent, "");
         assert_eq!(t.exited_at_ms, 0);
         assert_eq!(t.after, vec!["a/1"]);

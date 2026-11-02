@@ -916,7 +916,7 @@ mod tests {
             proc(21, 1, &format!("{WT}/herdr-planner/work-8-omp"), "omp --auto-approve"),
             proc(22, 1, &format!("{WT}/herdr-planner/work-8-omp/web"), "vite"),
             proc(23, 1, "/home/me/Projects/herdr-planner", "node outside.js"),
-            proc(24, 1, &format!("{WT}/APICache/hp-apicache-t-0161"), "claude"),
+            proc(24, 1, &format!("{WT}/APICache/hp-apicache-t-0161"), "omp"),
             proc(25, 1, &format!("{WT}/herdr-planner/scratch"), "sleep 9"),
             proc(26, 1, &format!("{WT}/unknown-repo/work-3"), "sleep 9"),
             proc(27, 1, &format!("{WT}/herdr-planner/work-12-omp"), "not-the-copy-of-7"),

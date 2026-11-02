@@ -4,7 +4,7 @@
 //   node scripts/fixture.mjs DIR [--scale 50x500]
 //
 // DIR gets:
-//   bin/        stand-ins on PATH: herdr-projects, herdr, claude (translation), gh, glab,
+//   bin/        stand-ins on PATH: herdr-projects, herdr, omp (translation), gh, glab,
 //               xdg-terminal-exec, nvidia-smi (answers from load/nvidia.csv).
 //               Each is a node script built from the functions below (nvidia-smi is a shell script).
 //   state/      the stand-ins' own world: board.json (rows, waits, meta), coordinator.json,
@@ -13,14 +13,14 @@
 //               tasks/<repo>/<n>/task.json and closing.md, coordinator/default/…
 //   projects/   the repositories' folders in two groups (AI, herdr); alpha, beta are git clones
 //               of origins/ (alpha's clone is two commits behind its origin).
-//   claude/, omp/, codex/   the sub-agents' session files (CLAUDE_CONFIG_DIR, omp sessions, CODEX_HOME).
-//   log/        one JSON line per command a stand-in got (calls, commands, claude, …).
+//   transcripts/, omp/, codex/   generic Coordinator transcripts and sub-agent sessions.
+//   log/        one JSON line per command a stand-in got (calls, commands, translation, …).
 // Every name, id and env var is listed in scripts/fixture-notes.md.
 //
 // Run the planner on it (run-checks.sh does this):
 //   HERDR_PROJECTS_BIN=DIR/bin/herdr-projects HERDR_SOCKET_PATH=DIR/herdr.sock
 //   OMARCHY_THEME_DIR=DIR/theme XDG_STATE_HOME=DIR/state XDG_CONFIG_HOME=DIR/cfg
-//   CLAUDE_CONFIG_DIR=DIR/claude CODEX_HOME=DIR/codex KIMI_CODE_HOME=DIR/kimi PI_CODING_AGENT_DIR=DIR/pi-agent HERDR_PLANNER_USAGE_STUB=DIR/usage-stub PATH=DIR/bin:$PATH
+//   HERDR_PLANNER_TRANSCRIPTS=DIR/transcripts CODEX_HOME=DIR/codex KIMI_CODE_HOME=DIR/kimi PI_CODING_AGENT_DIR=DIR/pi-agent HERDR_PLANNER_USAGE_STUB=DIR/usage-stub PATH=DIR/bin:$PATH
 //   herdr-planner --port N --data DIR/board
 // The time-dependent parts (created, mtimes, rate limits) are relative to now; the rest is fixed.
 
@@ -65,7 +65,7 @@ const root = path.resolve(pos[0]);
 fs.rmSync(root, { recursive: true, force: true });
 fs.mkdirSync(root, { recursive: true });
 const dir = fs.realpathSync(root);
-for (const d of ['board', 'bin', 'log', 'state', 'state/herdr-planner', 'cfg', 'cache', 'theme', 'worktrees', 'reports', 'projects', 'origins', 'claude', 'codex', 'omp']) {
+for (const d of ['board', 'bin', 'log', 'state', 'state/herdr-planner', 'cfg', 'cache', 'theme', 'worktrees', 'reports', 'projects', 'origins', 'transcripts', 'codex', 'omp']) {
   fs.mkdirSync(path.join(dir, d), { recursive: true });
 }
 
@@ -238,7 +238,7 @@ function common(DATA, mods) {
       }
       for (const [name, value] of Object.entries(cfg.builtin)) {
         if (list.some((x) => x.name === name)) continue;
-        list.push({ name, kind: kindOf(name), value, from: 'built in', place: 'builtin', own: false, note: name === 'reviewer.fast' ? 'does nothing: claude has no fast mode' : '' });
+        list.push({ name, kind: kindOf(name), value, from: 'built in', place: 'builtin', own: false, note: name === 'reviewer.fast' ? 'does nothing: the program has no fast mode' : '' });
       }
       if (task) return { settings: list };
       return repo ? { repo: { name: repo, key: cfg.keys[repo] || '', folder: '' }, settings: list } : { settings: list };
@@ -285,12 +285,12 @@ function common(DATA, mods) {
 
 // ---------------------------------------------------------------- the world
 
-const passed = { findings: [{ id: 'F1', severity: 'minor', subject: 'Название кнопки можно короче', where: 'ui/button.rs:12', proof: 'ok', preexisting: false }], meets: true, gate: 'major', pass: true, text: 'Ревью пройдено: замечание раунда 1 исправлено, тесты зелёные.', checks: ['cargo test — 42 passed', 'ручная проверка: кнопка на месте'], by: 'claude/opus' };
-const failedReview = { findings: [{ id: 'F1', severity: 'critical', subject: 'Кэш не сбрасывается при смене отчёта', where: 'cache.rs:40', proof: 'тест cache_reset падает', preexisting: false }, { id: 'F2', severity: 'major', subject: 'Нет теста на пустой отчёт', where: '', proof: '', preexisting: false }], meets: false, gate: 'major', pass: false, text: 'Нужно исправить кэш и добавить тест.', checks: ['cargo test cache_reset — failed'], by: 'claude/opus' };
+const passed = { findings: [{ id: 'F1', severity: 'minor', subject: 'Название кнопки можно короче', where: 'ui/button.rs:12', proof: 'ok', preexisting: false }], meets: true, gate: 'major', pass: true, text: 'Ревью пройдено: замечание раунда 1 исправлено, тесты зелёные.', checks: ['cargo test — 42 passed', 'ручная проверка: кнопка на месте'], by: 'omp/deepseek/deepseek-v4-pro' };
+const failedReview = { findings: [{ id: 'F1', severity: 'critical', subject: 'Кэш не сбрасывается при смене отчёта', where: 'cache.rs:40', proof: 'тест cache_reset падает', preexisting: false }, { id: 'F2', severity: 'major', subject: 'Нет теста на пустой отчёт', where: '', proof: '', preexisting: false }], meets: false, gate: 'major', pass: false, text: 'Нужно исправить кэш и добавить тест.', checks: ['cargo test cache_reset — failed'], by: 'omp/deepseek/deepseek-v4-pro' };
 const longPermission = 'Разреши, пожалуйста, удалить девять старых веток work/1–work/9 на машине с доской: все они уже влиты в main, но удаление необратимо. Ветку work/10 не трогай, на ней ещё идёт работа.';
 
 const rows = [];
-const task = (repo, n, row) => rows.push({ id: `${repo}/${n}`, app: 'claude', ...row });
+const task = (repo, n, row) => rows.push({ id: `${repo}/${n}`, app: 'omp', ...row });
 
 task('alpha', 2, { state: 'blocked', kind: 'question', stage: 'working', title: 'Схема экспорта', msg: 'Какую схему брать: старую или новую? Старая совместима с клиентами, новая чище.' });
 task('alpha', 3, { state: 'blocked', kind: 'permission', stage: 'plan', title: 'План миграции', msg: 'Plan ready' });
@@ -318,8 +318,8 @@ task('delta', 2, { state: 'blocked', stage: 'pick', title: 'Три вариан�
 task('delta', 3, {
   state: 'blocked', stage: 'pick', title: 'Как кешировать', msg: 'Pick one of 3: память, диск или оба',
   attempts: [
-    { letter: 'A', id: 'delta/3a', agent: 'omp/deepseek-v4-flash', standing: 'passed', stage: 'done', stat: '+120 −40', diff: 'https://example.invalid/delta/3a', report: 'http://127.0.0.1:34925/delta/3/a/report.html' },
-    { letter: 'B', id: 'delta/3b', agent: 'claude/fable', standing: 'passed', stage: 'done', stat: '+90 −55', diff: 'https://example.invalid/delta/3b', report: 'http://127.0.0.1:34925/delta/3/b/report.html' },
+    { letter: 'A', id: 'delta/3a', agent: 'omp/deepseek/deepseek-v4-flash', standing: 'passed', stage: 'done', stat: '+120 −40', diff: 'https://example.invalid/delta/3a', report: 'http://127.0.0.1:34925/delta/3/a/report.html' },
+    { letter: 'B', id: 'delta/3b', agent: 'omp/deepseek/deepseek-v4-pro', standing: 'passed', stage: 'done', stat: '+90 −55', diff: 'https://example.invalid/delta/3b', report: 'http://127.0.0.1:34925/delta/3/b/report.html' },
     { letter: 'C', id: 'delta/3c', agent: 'pi/qwen', standing: 'failed', stage: 'failed', stat: '+200 −10', diff: 'https://example.invalid/delta/3c', report: '' },
   ],
 });
@@ -362,8 +362,8 @@ const META = {
   'sigma/2': { ago: 26 * HOUR, desc: 'Ревьюеру нужен человек: спорный вопрос про лицензию зависимости.', worker: 'omp/deepseek/deepseek-v4-flash', model: 'deepseek-v4-flash', reviewerOn: 'codex/gpt-6-luna' },
   'docs/1': { ago: 9 * DAY, desc: 'Archived documentation pass.' },
 };
-const WORKER_BY_APP = { claude: 'claude/claude-sonnet-5-5', omp: 'omp/deepseek/deepseek-v4-flash', pi: 'pi/default', codex: 'codex/gpt-5-codex' };
-const MODEL_BY_APP = { claude: 'claude-sonnet-5-5', omp: 'deepseek-v4-flash', pi: null, codex: 'gpt-5-codex' };
+const WORKER_BY_APP = { omp: 'omp/deepseek/deepseek-v4-flash', pi: 'pi/default', codex: 'codex/gpt-5-codex' };
+const MODEL_BY_APP = { omp: 'deepseek-v4-flash', pi: null, codex: 'gpt-5-codex' };
 const CLOSING = {
   'sigma/2': 'Итог SIG-2: лицензия зависимости совместима, оставляем. Решение: зависимость берём только из реестра, не из форка.\n',
   'delta/1': 'Итог DEL-1: переписали кэш delta. Проверки линта падают на шаге форматирования — это известно и не относится к задаче.\nMR: https://gitlab.example.org/team/delta/-/merge_requests/4\n',
@@ -414,7 +414,7 @@ const CLOSING = {
   ].join('\n') + '\n',
 };
 
-// The Coordinator: a Claude transcript of ten turns, the last one unanswered.
+// The Coordinator: a generic JSONL transcript of ten turns, the last one unanswered.
 const chatDir = path.join(dir, 'board', 'coordinator', 'default', 'chat');
 fs.mkdirSync(chatDir, { recursive: true });
 const chatFolder = fs.realpathSync(chatDir).replace(/[^A-Za-z0-9]/g, '-');
@@ -523,76 +523,14 @@ for (const r of rows) {
   };
 }
 
-// The worktrees exist before anything resolves them (Claude names its folders after realpaths).
+// The worktrees exist before anything resolves their real paths.
 for (const r of rows) fs.mkdirSync(W[r.id].worktree, { recursive: true });
-// A Claude session has a folder even when it has no sub-agents: then the list is empty, with no «нет папки сессии» note.
-for (const r of rows.filter((x) => x.app === 'claude')) {
-  const folder = fs.realpathSync(W[r.id].worktree).replace(/[^A-Za-z0-9]/g, '-');
-  fs.mkdirSync(path.join(dir, 'claude', 'projects', folder, W[r.id].session), { recursive: true });
-}
 
-// The board's waits: one inside a universe, one between universes (kept as before).
+// The board's waits: one inside a universe, one between universes.
 const after = { 'alpha/10': ['ALP-9'], 'gamma/1': ['ALP-4'] };
 
 // ---------------------------------------------------------------- sub-agent files
-
 const wt = (repo, n) => path.join(dir, 'worktrees', `${repo}-${n}`);
-const userRec = (at, text) => ({ type: 'user', timestamp: iso(at), message: { role: 'user', content: text } });
-const toolUse = (at, id, name, input) => ({ type: 'assistant', timestamp: iso(at), message: { role: 'assistant', content: [{ type: 'tool_use', id, name, input }], stop_reason: 'tool_use' } });
-const toolRes = (at, id, text) => ({ type: 'user', timestamp: iso(at), message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: id, content: text }] } });
-const textRec = (at, text, stop) => ({ type: 'assistant', timestamp: iso(at), message: { role: 'assistant', content: [{ type: 'text', text }], stop_reason: stop ?? null } });
-
-// Claude: <claude>/projects/<dashed realpath of the worktree>/<session>/subagents/agent-<id>.jsonl (+ .meta.json).
-function claudeSub(cwd, session, id, { records, meta, mtime }) {
-  const folder = fs.realpathSync(cwd).replace(/[^A-Za-z0-9]/g, '-');
-  const sub = path.join(dir, 'claude', 'projects', folder, session, 'subagents');
-  fs.mkdirSync(sub, { recursive: true });
-  const file = path.join(sub, `agent-${id}.jsonl`);
-  fs.writeFileSync(file, jl(records));
-  fs.writeFileSync(path.join(sub, `agent-${id}.meta.json`), JSON.stringify(meta));
-  if (mtime) fs.utimesSync(file, mtime / 1000, mtime / 1000);
-}
-const ALP2 = W['alpha/2'].session;
-// alpha/2 (Waiting, claude): one running, one quiet (15 min), one done.
-claudeSub(wt('alpha', 2), ALP2, 'a1f0c3e9d7b24e10', {
-  records: [
-    userRec(NOW - 14 * MIN, 'Найди все места, где бэкенд отдаёт отчёты: хендлеры, сериализация, кеш.'),
-    toolUse(NOW - 13 * MIN, 'toolu_01', 'Grep', { pattern: 'export', path: 'src' }),
-    toolRes(NOW - 13 * MIN + 4000, 'toolu_01', 'src/api/export.rs:14: pub async fn export(...)'),
-    toolUse(NOW - 90 * 1000, 'toolu_02', 'Read', { file_path: 'src/api/export.rs' }),
-  ],
-  meta: { agentType: 'Explore', description: 'Explore Rust backend', finished: false },
-  mtime: NOW - 30 * 1000,
-});
-claudeSub(wt('alpha', 2), ALP2, 'b2e8d5a4c9f31b07', {
-  records: [
-    userRec(NOW - 70 * MIN, 'Проверь, какие клиенты читают старую схему.'),
-    textRec(NOW - 16 * MIN, 'Жду ответа по клиенту mobile-2: он в отпуске до понедельника.', null),
-  ],
-  meta: { agentType: 'general-purpose', description: 'Проверить клиентов старой схемы', finished: false },
-  mtime: NOW - 15 * MIN,
-});
-claudeSub(wt('alpha', 2), ALP2, 'c3d9e6b5daf42c18', {
-  records: [
-    userRec(NOW - 40 * MIN, 'Сравни старую и новую схему по полям.'),
-    toolUse(NOW - 39 * MIN, 'toolu_11', 'Read', { file_path: 'docs/schema-v1.md' }),
-    toolRes(NOW - 39 * MIN + 3000, 'toolu_11', '# schema v1: owner_id, period, amount, …'),
-    textRec(NOW - 38 * MIN, 'Старая схема: 14 полей, 2 таблицы.\nНовая: 11 полей, одна таблица.\nДля клиентов v1 нужны owner_id и period, в новой их нет.\nРекомендация: оставить старую схему для v1, новую отдавать с /v2.', 'end_turn'),
-  ],
-  meta: { agentType: 'Explore', description: 'Сравнить схемы', finished: true },
-  mtime: NOW - 5 * MIN,
-});
-// alpha/16 (claude): one running sub-agent.
-claudeSub(wt('alpha', 16), W['alpha/16'].session, 'd4aa7f6c0b53d229', {
-  records: [
-    userRec(NOW - 11 * MIN, 'Найди ветки work/1–work/9 и проверь, что они влиты в main.'),
-    toolUse(NOW - 10 * MIN, 'toolu_21', 'Bash', { command: 'git branch --merged main' }),
-    toolRes(NOW - 10 * MIN + 2000, 'toolu_21', '  work/1\n  work/2\n  work/3'),
-    toolUse(NOW - MIN, 'toolu_22', 'Bash', { command: 'git log -1 --format=%ci work/9' }),
-  ],
-  meta: { agentType: 'general-purpose', description: 'Найти старые ветки', finished: false },
-  mtime: NOW - 20 * 1000,
-});
 
 // omp: the parent session file (task.json `session`), its children `<parent without .jsonl>/<Name>.jsonl` (+ `.md`).
 function ompParent(file, cwd, ms, id, text, toolPath) {
@@ -635,6 +573,13 @@ ompChild(parentPath, 'Migration-Index', {
   ],
   mtime: NOW - 30 * 1000,
 });
+ompChild(parentPath, 'Migration-Review', {
+  records: [
+    { type: 'session', version: 3, id: C0.uuid('review'), timestamp: iso(NOW - 70 * MIN), cwd: fs.realpathSync(wt('alpha', 6)), parentSession: parentPath },
+    { type: 'message', timestamp: iso(NOW - 16 * MIN), message: { role: 'assistant', content: [{ type: 'text', text: 'Жду подтверждения порядка миграции индексов.' }] } },
+  ],
+  mtime: NOW - 15 * MIN,
+});
 // sigma/2 (omp): a parent with no children yet.
 const omp11Id = C0.uuid('omp sigma/2');
 const omp11 = ompFile(wt('sigma', 2), createdOf('sigma/2'), omp11Id);
@@ -671,11 +616,11 @@ const usage = (i) => (i === 9
   ? { input_tokens: 3000, cache_read_input_tokens: 140000, cache_creation_input_tokens: 7000 }
   : { input_tokens: 2000, cache_read_input_tokens: 30000 + i * 1000, cache_creation_input_tokens: 500 });
 const cuser = (i, text) => JSON.stringify({ type: 'user', timestamp: new Date(1792389360000 + i * 60000).toISOString(), message: { role: 'user', content: text } });
-const csaid = (i, text) => JSON.stringify({ type: 'assistant', timestamp: new Date(1792389361000 + i * 60000).toISOString(), message: { role: 'assistant', model: 'claude-opus-5-5', content: [{ type: 'text', text }], usage: usage(i) } });
+const csaid = (i, text) => JSON.stringify({ type: 'assistant', timestamp: new Date(1792389361000 + i * 60000).toISOString(), message: { role: 'assistant', model: 'deepseek-v4-pro', content: [{ type: 'text', text }], usage: usage(i) } });
 const ctool = (i) => JSON.stringify({ type: 'user', timestamp: new Date(1792389360500 + i * 60000).toISOString(), message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 't', content: 'ok' }] } });
 // A tool call of the running turn: the page shows its description as what the Coordinator is doing.
-const ccall = (i, description, command) => JSON.stringify({ type: 'assistant', timestamp: new Date(1792389360300 + i * 60000).toISOString(), message: { role: 'assistant', model: 'claude-opus-5-5', stop_reason: 'tool_use', content: [{ type: 'tool_use', id: `tu${i}`, name: 'Bash', input: { command, description } }] } });
-// A message sent with a picture, the way Claude Code writes it (2.1.3xx): a text block that ends at the planner's header
+const ccall = (i, description, command) => JSON.stringify({ type: 'assistant', timestamp: new Date(1792389360300 + i * 60000).toISOString(), message: { role: 'assistant', model: 'deepseek-v4-pro', stop_reason: 'tool_use', content: [{ type: 'tool_use', id: `tu${i}`, name: 'Bash', input: { command, description } }] } });
+// A message sent with a picture: a text block that ends at the planner's header
 // (the path lines are dropped) and an image block with the bytes inside; the planner serves it from the transcript.
 const PNG_1PX = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAFgwJ/lK3Q6wAAAABJRU5ErkJggg==';
 const cimage = (i, text) => JSON.stringify({ type: 'user', timestamp: new Date(1792389360000 + i * 60000).toISOString(), message: { role: 'user', content: [{ type: 'text', text: `${text}\nКартинки (файлы на машине с доской):` }, { type: 'image', source: { type: 'base64', media_type: 'image/png', data: PNG_1PX } }] } });
@@ -696,23 +641,20 @@ for (let i = 1; i <= 10; i++) {
   if (i < 10) transcript.push(csaid(i, ANSWERS[i] ?? `Ответ ${i}: ALP-${i} идёт по плану.`));
 }
 // The last assistant turn is the one with the big usage (i = 9 above).
-write(path.join(dir, 'claude', 'projects', chatFolder, 'fixture.jsonl'), transcript.join('\n') + '\n');
-write(path.join(dir, 'board', 'coordinator', 'default', 'state.json'), JSON.stringify({ run: { kind: 'claude' }, session: 'fixture' }));
-// What the Coordinator's program knows as commands (the `/` list): a skill of the person's own folder,
-// a command there, and a command of the Coordinator's own folder. Claude Code's built-ins come with the planner.
-write(path.join(dir, 'claude', 'skills', 'fixture-skill', 'SKILL.md'), '---\nname: fixture-skill\ndescription: Навык фикстуры: проверяет подсказки ввода\n---\n\n# Fixture skill\n');
-write(path.join(dir, 'claude', 'commands', 'fixture-cmd.md'), '---\ndescription: Команда фикстуры\n---\n\nDo the fixture thing.\n');
-write(path.join(chatDir, '.claude', 'commands', 'here-cmd.md'), '---\ndescription: Команда папки Координатора\n---\n\nHere.\n');
-// A skill that is a link, as most of `~/.claude/skills` are on this machine: it must be offered too.
+write(path.join(dir, 'transcripts', chatFolder, 'fixture.jsonl'), transcript.join('\n') + '\n');
+write(path.join(dir, 'board', 'coordinator', 'default', 'state.json'), JSON.stringify({ run: { kind: 'omp' }, session: 'fixture' }));
+// OMP skills of the Coordinator's project, including a linked skill and a long name.
+const skillRoot = path.join(chatDir, '.agents', 'skills');
+write(path.join(skillRoot, 'fixture-skill', 'SKILL.md'), '---\nname: fixture-skill\ndescription: Навык фикстуры: проверяет подсказки ввода\n---\n\n# Fixture skill\n');
 write(path.join(dir, 'agents', 'ui-ux-pro-max', 'SKILL.md'), '---\nname: ui-ux-pro-max\ndescription: Навык-ссылка фикстуры\n---\n');
-fs.mkdirSync(path.join(dir, 'claude', 'skills'), { recursive: true });
-fs.symlinkSync(path.join(dir, 'agents', 'ui-ux-pro-max'), path.join(dir, 'claude', 'skills', 'ui-ux-pro-max'));
-// A name longer than the list is wide: it must wrap, not run past the edge and hide its words.
-write(
-  path.join(dir, 'claude', 'skills', 'superpowers-executing-plans-with-subagent-driven-development-review', 'SKILL.md'),
-  '---\nname: superpowers-executing-plans-with-subagent-driven-development-review\ndescription: Навык с длинным именем\n---\n',
-);
-
+fs.mkdirSync(skillRoot, { recursive: true });
+fs.symlinkSync(path.join(dir, 'agents', 'ui-ux-pro-max'), path.join(skillRoot, 'ui-ux-pro-max'));
+write(path.join(skillRoot, 'superpowers-executing-plans-with-subagent-driven-development-review', 'SKILL.md'), '---\nname: superpowers-executing-plans-with-subagent-driven-development-review\ndescription: Навык с длинным именем\n---\n');
+for (const r of rows.filter((x) => x.app === 'omp')) {
+  const agents = path.join(W[r.id].worktree, '.agents');
+  fs.mkdirSync(agents, { recursive: true });
+  fs.symlinkSync(skillRoot, path.join(agents, 'skills'));
+}
 // Memory (Markdown files; the planner indexes them). The Galaxy's own: two entries and no MEMORY.md (the planner makes it).
 const memEntry = (id, title, desc, type, body, extra = '') => `---\nname: ${id}\ntitle: ${title}\ndescription: ${desc}\ntype: ${type}\nadded: 2026-10-19\nsource: chat\n${extra}---\n\n${body}\n`;
 const memGalaxy = path.join(dir, 'memory', 'galaxy');
@@ -724,25 +666,10 @@ const boardRules = "<!-- herdr-projects: the Coordinator's standing rules. The b
 write(path.join(dir, 'board', 'coordinator', 'default', 'machine', 'chat', 'AGENTS.md'), boardRules + "You are the machine Coordinator.\n<!-- /herdr-projects -->\n");
 write(path.join(dir, 'board', 'coordinator', 'default', 'projects', 'alpha', 'rules.md'), 'Правила проектного Координатора alpha.\n');
 write(path.join(chatDir, 'AGENTS.md'), "Мои заметки выше маркера доски.\n\n<!-- herdr-projects: the Coordinator's standing rules. The board writes what is between this line and the closing one, at every start: your own notes go outside them. -->\nYou are the Coordinator of the human's work board in herdr (herdr-projects).\n<!-- /herdr-projects -->\n");
-write(path.join(chatDir, 'CLAUDE.md'), "<!-- herdr-projects: the Coordinator's standing rules. The board writes what is between this line and the closing one, at every start: your own notes go outside them. -->\n@AGENTS.md\n<!-- /herdr-projects -->\n");
-// Claude Code's own memory of that project folder (read only for the planner).
-write(path.join(dir, 'claude', 'projects', chatFolder, 'memory', 'user-answers-short.md'), '---\nname: user-answers-short\ndescription: Человек просит отвечать коротко, с результата\nmetadata:\n  type: feedback\n---\n\nОтвечать коротко и начинать с результата. Подробности — только если спросят.\n');
-write(path.join(dir, 'claude', 'projects', chatFolder, 'memory', 'MEMORY.md'), '- [user-answers-short](user-answers-short.md) — коротко\n');
 // A universe's memory: alpha has one entry that is not in git; docs is a git folder without memory yet.
 write(path.join(alphaDir, 'docs', 'memory', 'merge-squash.md'), memEntry('merge-squash', 'Слияние — squash', 'В alpha задачи сливаются squash, история ветки не нужна', 'decision', 'Решили сливать squash: ветки задач короткие, а лента main остаётся читаемой.'));
-// The Coordinator's own sub-agent: one, under the transcript's folder. Its state follows the
-// Coordinator: `done` while it is idle; `state/coordinator-busy` makes the Coordinator «working».
-claudeSub(chatDir, 'fixture', 'f6cc9b8e2d75f44b', {
-  records: [
-    userRec(NOW - 6 * MIN, 'Проверь очередь ALP-9 и ALP-10 и скажи, что мешает.'),
-    toolUse(NOW - 5 * MIN, 'toolu_31', 'Bash', { command: 'herdr-projects list --json' }),
-    toolRes(NOW - 5 * MIN + 1000, 'toolu_31', '[…]'),
-  ],
-  meta: { agentType: 'general-purpose', description: 'Проверить очередь ALP', finished: false },
-  mtime: NOW - 20 * 1000,
-});
 fs.writeFileSync(path.join(dir, 'state', 'coordinator.json'), JSON.stringify({
-  status: 'idle · claude · claude-opus-5-5 · medium',
+  status: 'idle · omp · deepseek-v4-pro · medium',
   reply: 'Жду задач. Доска спокойна.\n\nЧто делаем?\n1) Показать план на день\n2) Разобрать «Ждёт тебя»',
 }));
 fs.writeFileSync(path.join(dir, 'state', 'herdr-planner', 'todo.json'), JSON.stringify([
@@ -769,7 +696,6 @@ const PLANET = [
 // ---------------------------------------------------------------- the stand-ins
 
 const models = {
-  claude: ['claude/claude-sonnet-5-5', 'claude/claude-opus-5-5', 'claude/claude-haiku-5-5'],
   omp: ['omp/deepseek/deepseek-v4-flash', 'omp/deepseek/deepseek-v4-pro', 'omp/openai/gpt-5'],
   codex: ['codex/gpt-5-codex', 'codex/o4-mini'],
   pi: ['pi/default', 'pi/qwen-coder-3'],
@@ -781,7 +707,6 @@ const ORIGIN_URL = alphaBare;
 // what its doctor says. The PATH gets codex and omp stand-ins below.
 const BOARD = {
   efforts: {
-    claude: ['low', 'medium', 'high', 'xhigh', 'max'],
     codex: ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'],
     omp: ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'auto'],
   },
@@ -794,9 +719,9 @@ const BOARD = {
   },
   seed: {
     home: {
-      'coordinator.agent': 'claude/claude-opus-5-5', 'coordinator.effort': 'medium', 'plan.agent': 'claude/claude-opus-5-5',
-      'reviewer.agent': 'claude/claude-opus-5-5', 'reviewer.effort': 'high', 'worker.agent': 'claude/claude-sonnet-5-5',
-      'worker.effort': 'high', 'watcher.agent': 'claude/claude-haiku-5-5', 'board.agents': 6,
+      'coordinator.agent': 'omp/deepseek/deepseek-v4-pro', 'coordinator.effort': 'medium', 'plan.agent': 'omp/deepseek/deepseek-v4-pro',
+      'reviewer.agent': 'omp/deepseek/deepseek-v4-pro', 'reviewer.effort': 'high', 'worker.agent': 'omp/deepseek/deepseek-v4-flash',
+      'worker.effort': 'high', 'watcher.agent': 'omp/deepseek/deepseek-v4-flash', 'board.agents': 6,
       'coordinator.instructions': 'Мои правила, поверх общих:\n1. Настройки меняй только с моего явного согласия.\n2. Если непонятно, к какой задаче это относится, — спроси.',
     },
     alpha: { 'worker.effort': 'max' },
@@ -805,7 +730,6 @@ const BOARD = {
   doctor: {
     home: [
       '✓ herdr-projects 1.2.4, downloaded: the fixture plugin',
-      '✓ claude 2.1.303, signed in (worker.agent, reviewer.agent, coordinator.agent and 5 more)',
       '✗ codex 0.9.2, not signed in: codex login',
       '✓ omp 1.5.0, API keys: no sign-in needed',
       '1 problem.',
@@ -951,9 +875,9 @@ function herdrProjectsMain(C, DATA) {
     const c = coord();
     if (fs.existsSync(join('state', 'coordinator-dialog'))) {
       const dialog = fs.existsSync(join('state', 'dialog.txt')) ? fs.readFileSync(join('state', 'dialog.txt'), 'utf8') : 'May I continue?\n❯ 1. Yes\n  2. No';
-      console.log('Coordinator: blocked · claude · claude-opus-5-5 · medium\n\n' + dialog);
+      console.log('Coordinator: blocked · omp · deepseek-v4-pro · medium\n\n' + dialog);
     } else if (fs.existsSync(join('state', 'coordinator-busy'))) {
-      console.log('Coordinator: working · claude · claude-opus-5-5 · medium\n\n' + c.reply);
+      console.log('Coordinator: working · omp · deepseek-v4-pro · medium\n\n' + c.reply);
     } else {
       console.log('Coordinator: ' + c.status + '\n\n' + c.reply);
     }
@@ -983,7 +907,7 @@ function herdrProjectsMain(C, DATA) {
     log('commands.jsonl', { argv });
     const n = nextN(w, repo);
     const id = repo + '/' + n;
-    const row = { id, app: opts['--app'] || 'claude', state: 'idle', stage: 'todo', title, msg: '' };
+    const row = { id, app: opts['--app'] || 'omp', state: 'idle', stage: 'todo', title, msg: '' };
     w.rows.push(row);
     const worktree = path.join(D, 'worktrees', repo + '-' + n);
     w.meta[id] = {
@@ -1056,7 +980,7 @@ function herdrProjectsMain(C, DATA) {
 
   if (cmd === 'show') {
     const id = rest[1] || rest[0];
-    console.log(tag(world(), id) + ': every setting\n* worker.agent              claude/claude-sonnet-5-5  this task\n  worker.effort             high\n');
+    console.log(tag(world(), id) + ': every setting\n* worker.agent              omp/deepseek/deepseek-v4-flash  this task\n  worker.effort             high\n');
     return;
   }
 
@@ -1074,7 +998,7 @@ function herdrProjectsMain(C, DATA) {
       agent: r.app,
       agent_model: r.app + '/model-5',
       report: r.state === 'done' ? { url: 'http://127.0.0.1:34925/alpha/' + n + '/review.html' } : null,
-      plan: r.stage === 'plan' ? { text: '1. Снять копию базы\n2. Прогнать миграцию\n3. Проверить откат', by: 'claude/opus', locked: false } : null,
+      plan: r.stage === 'plan' ? { text: '1. Снять копию базы\n2. Прогнать миграцию\n3. Проверить откат', by: 'omp/deepseek/deepseek-v4-pro', locked: false } : null,
       pr: r.pr || null,
       worktree: path.join(D, 'worktrees', repo + '-' + n),
       branch: 'work/' + n,
@@ -1237,7 +1161,7 @@ function herdrMain(C, DATA) {
 }
 
 // The translator: reads the text between <<< and >>> on stdin; answers «ПЕРЕВОД: » and the first 60 characters.
-function claudeMain(C, DATA) {
+function ompMain(C, DATA) {
   const { log } = C;
   const argv = process.argv.slice(2);
   let input = '';
@@ -1248,18 +1172,17 @@ function claudeMain(C, DATA) {
     const to = input.lastIndexOf('>>>');
     const text = from >= 0 && to > from ? input.slice(from + 3, to).trim() : input.trim();
     const chars = Array.from(text);
-    const at = argv.indexOf('--tools');
     const mi = argv.indexOf('--model');
-    log('claude.jsonl', { argv, toolsEmpty: at >= 0 && argv[at + 1] === '', model: mi >= 0 ? argv[mi + 1] : null, chars: chars.length });
+    log('translation.jsonl', { argv, toolsEmpty: argv.includes('--no-tools'), model: mi >= 0 ? argv[mi + 1] : null, chars: chars.length });
     const si = argv.indexOf('--system-prompt');
     if (si >= 0 && String(argv[si + 1]).includes('Название: до 60 знаков')) {
-      log('claude.jsonl', { digest: chars.length });
+      log('translation.jsonl', { digest: chars.length });
       process.stdout.write('Название: Выжимка ответа\nОписание: Выжимка ответа — одна мысль вместо всей реплики\nТип: convention\nТекст:\nСуть: ' + chars.slice(0, 40).join('') + '\n');
       return;
     }
     if (si >= 0 && String(argv[si + 1]).includes('долговременную память')) {
       const tag = (/Задача: (\S+)/.exec(text) || [])[1] || 'TASK';
-      log('claude.jsonl', { suggest: tag });
+      log('translation.jsonl', { suggest: tag });
       process.stdout.write('- decision: ' + tag + ' — тема не хранится в базе: хватает localStorage и системной настройки.\n- pitfall: класс темы ставить до первой отрисовки, иначе страница мигает.\n');
       return;
     }
@@ -1521,7 +1444,7 @@ function writeBin(name, fn) {
 }
 writeBin('herdr-projects', herdrProjectsMain);
 writeBin('herdr', herdrMain);
-writeBin('claude', claudeMain);
+writeBin('omp', ompMain);
 writeBin('gh', ghMain);
 writeBin('glab', glabMain);
 writeBin('ssh', sshMain);
@@ -1561,7 +1484,7 @@ function addScale(w) {
     const quiet = u % 10 < 3; // 30 % of the universes have finished work only
     for (let p = 1; p <= perUniverse; p++) {
       const tpl = quiet ? PLANET[7] : PLANET[(u + p) % PLANET.length];
-      const row = { id: `${name}/${p}`, app: p % 7 === 0 ? 'omp' : 'claude', ...tpl, title: `Планета ${name}-${p}` };
+      const row = { id: `${name}/${p}`, app: p % 7 === 0 ? 'codex' : 'omp', ...tpl, title: `Планета ${name}-${p}` };
       const ago = Math.floor(rnd() * 9 * DAY);
       const created = NOW - Math.max(2 * MIN, ago);
       w.rows.push(row);
@@ -1569,8 +1492,8 @@ function addScale(w) {
         created,
         at: row.state === 'done' ? created + MIN : created,
         description: `Планета ${row.id}: ${row.title}. Сгенерирована для проверки на большом объёме.`,
-        settings: { 'worker.agent': 'claude/claude-sonnet-5-5' },
-        model: 'claude-sonnet-5-5',
+        settings: { 'worker.agent': 'omp/deepseek/deepseek-v4-flash' },
+        model: 'deepseek-v4-flash',
         session: C0.uuid('scale ' + row.id),
         worktree: path.join(dir, 'worktrees', `${name}-${p}`),
         branch: `work/${p}`,
@@ -1613,23 +1536,10 @@ cyan = "#5bcbcb"
 blue = "#77b0e9"
 magenta = "#da8fbf"
 `);
-// Omarchy's agent usage records: Claude has real subscription windows, omp and pi are API-key
-// agents and must stay honestly empty. Pi's record is old enough to exercise the stale marking.
+// Omarchy usage: omp and pi use API keys and honestly have no subscription windows.
 const usageAt = Date.now();
 const inHours = (hours) => new Date(usageAt + hours * 3600 * 1000).toISOString();
-const claudeLimits = [
-  { label: 'Session (5-hour)', percent: 0.21, resetsAt: inHours(2) },
-  // 30 hours guarantees another calendar day, so the page must add a date.
-  { label: 'Weekly (7-day)', percent: 0.91, resetsAt: inHours(30) },
-  { label: 'Fable Weekly', percent: 0.97, resetsAt: inHours(30), title: 'Fable Weekly' },
-];
 const usageDir = path.join(dir, 'state', 'omarchy', 'agents', 'usage');
-write(path.join(usageDir, 'claude.json'), JSON.stringify({
-  schemaVersion: 1, id: 'claude', name: 'Claude Code', updatedAt: new Date(usageAt).toISOString(),
-  ready: true, hasLocalStats: true, tierLabel: 'Max 5x', usageStatusText: '', limits: claudeLimits,
-  todayPrompts: 0, todaySessions: 0, todayTotalTokens: 0, todayTokensByModel: {}, recentDays: [],
-  totalPrompts: 0, totalSessions: 0, activeDays: 0, activeDates: [], modelUsage: {},
-}));
 for (const [id, name] of [['omp', 'OMP'], ['pi', 'Pi']]) {
   write(path.join(usageDir, `${id}.json`), JSON.stringify({
     id, name, ready: true, usageStatusText: 'API keys · no subscription',
@@ -1638,18 +1548,13 @@ for (const [id, name] of [['omp', 'OMP'], ['pi', 'Pi']]) {
     hasLocalStats: true, hasPromptStats: true,
   }));
 }
-write(path.join(dir, 'cache', 'omarchy', 'agent-usage', 'claude-limits.json'), JSON.stringify({ fetchedAtMs: usageAt, limits: claudeLimits }));
 const old = new Date(usageAt - 2 * 3600 * 1000);
 fs.utimesSync(path.join(usageDir, 'pi.json'), old, old);
-// The planner's own limits reading (PLN-84): the four providers' sign-ins as their programs keep them (fake tokens, far from expiry)
+// The planner's own limits reading: the three providers' sign-ins as their programs keep them (fake tokens, far from expiry)
 // and the services' answers as saved files, which HERDR_PLANNER_USAGE_STUB makes the planner read instead of asking the network.
-// Claude's numbers are Omarchy's own above, so the old checks of the numbers hold; what is new is the account, the surfaces and the
-// extra usage, the pace, the other three providers and their balance.
 {
   const b64u = (o) => Buffer.from(JSON.stringify(o)).toString('base64url');
   const FAR = 4102444800;
-  write(path.join(dir, 'claude', '.credentials.json'), JSON.stringify({ claudeAiOauth: { accessToken: 'fixture-claude-token', expiresAt: FAR * 1000, subscriptionType: 'max', rateLimitTier: 'default_claude_max_5x' } }));
-  write(path.join(dir, 'claude', '.claude.json'), JSON.stringify({ oauthAccount: { emailAddress: 'fixture@example.test' } }));
   write(path.join(dir, 'codex', 'auth.json'), JSON.stringify({ tokens: { access_token: `${b64u({ alg: 'none' })}.${b64u({ exp: FAR })}.sig`, account_id: 'fixture-account' } }));
   write(path.join(dir, 'kimi', 'credentials', 'kimi-code.json'), JSON.stringify({ access_token: 'fixture-kimi-token', expires_at: FAR }));
   write(path.join(dir, 'kimi', 'device_id'), 'fixture-device\n');
@@ -1658,22 +1563,13 @@ fs.utimesSync(path.join(usageDir, 'pi.json'), old, old);
   const stub = path.join(dir, 'usage-stub');
   const at = (ms) => new Date(usageAt + ms).toISOString();
   const H = 3600 * 1000;
-  write(path.join(stub, 'claude.json'), JSON.stringify({
-    limits: [
-      { kind: 'session', percent: 21, resets_at: at(2 * H) },
-      { kind: 'weekly_all', percent: 91, resets_at: at(30 * H) },
-      { kind: 'weekly_scoped', percent: 97, resets_at: at(30 * H), scope: { model: { display_name: 'Fable Weekly' } } },
-    ],
-    seven_day_breakdown: { rows: [{ display_name: 'Claude Code', percent: 100 }] },
-    spend: { enabled: false },
-  }));
   write(path.join(stub, 'codex.json'), JSON.stringify({
     email: 'codex@example.test', plan_type: 'plus',
     rate_limit: {
-      primary_window: { used_percent: 4, limit_window_seconds: 18000, reset_at: Math.round((usageAt + 1.5 * H) / 1000) },
-      secondary_window: { used_percent: 12, limit_window_seconds: 604800, reset_at: Math.round((usageAt + 5 * 24 * H) / 1000) },
+      primary_window: { used_percent: 21, limit_window_seconds: 18000, reset_at: Math.round((usageAt + 2 * H) / 1000) },
+      secondary_window: { used_percent: 97, limit_window_seconds: 604800, reset_at: Math.round((usageAt + 30 * H) / 1000) },
     },
-    code_review_rate_limit: { primary_window: { used_percent: 3, limit_window_seconds: 604800, reset_at: Math.round((usageAt + 3 * 24 * H) / 1000) } },
+    code_review_rate_limit: { primary_window: { used_percent: 91, limit_window_seconds: 604800, reset_at: Math.round((usageAt + 30 * H) / 1000) } },
     credits: { unlimited: false, balance: '7.50' },
   }));
   write(path.join(stub, 'kimi.json'), JSON.stringify({
@@ -1702,8 +1598,8 @@ write(path.join(dir, 'settings', 'runners.json'), JSON.stringify({
   assign: {},
 }, null, 1));
 write(path.join(dir, 'state', 'runner.json'), JSON.stringify({ ids: [], networks: [], volumes: [] }));
-// The crew's programs on PATH (the planner looks for them there): stand-ins for codex and omp (claude is above).
-for (const name of ['codex', 'omp']) {
+// The crew's programs on PATH (the planner looks for them there): a stand-in for codex (omp is above).
+for (const name of ['codex']) {
   const p = path.join(dir, 'bin', name);
   fs.writeFileSync(p, '#!/bin/sh\necho "' + name + ' stand-in"\n');
   fs.chmodSync(p, 0o755);

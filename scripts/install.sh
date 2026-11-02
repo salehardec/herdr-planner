@@ -676,7 +676,7 @@ wait_http() {
 
 service_path() {
   p=$bin_dir
-  for tool in herdr-projects herdr claude; do
+  for tool in herdr-projects herdr omp codex; do
     t=$(command -v "$tool" 2>/dev/null || true)
     [ -n "$t" ] || continue
     d=$(dirname "$t")

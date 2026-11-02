@@ -9,7 +9,7 @@
 //! The files are the truth: any agent reads them without the planner. Every entry is one file, `<id>.md`, with a
 //! small header; `MEMORY.md` next to them is the table of contents, rebuilt from the files. The planner's SQLite
 //! (FTS5) only indexes them — together with the tasks' closing notes, the Coordinator's chat and, read-only, the
-//! memory its own program keeps (Claude Code's `memory/` folder).
+//! memory its own program keeps (Codex's `memories/` folder).
 //!
 //! This module is the pure part and the local file part; the endpoints are in `memory_api`.
 
@@ -274,7 +274,7 @@ fn quote(v: &str) -> String {
 }
 
 /// Reads an entry file. A file without a header is still an entry: its first heading is the title and all of it the
-/// body. Claude Code's memory files (`name`, `description`, `metadata: type`) read the same way.
+/// body. Memory files with `name`, `description` and `metadata: type` read the same way.
 pub fn parse_entry(id: &str, text: &str) -> Entry {
     let text = text.strip_prefix('\u{feff}').unwrap_or(text);
     let mut e = Entry {
@@ -713,40 +713,22 @@ pub struct Foreign {
     pub dir: PathBuf,
 }
 
-/// The memory folders of the Coordinator's program that exist: Claude Code's `memory/` of the Coordinator's project
-/// folder; Codex's `memories/`. Programs without a memory of their own (omp, pi, …) have none.
+/// The memory folder of the Coordinator's program when it exists: Codex's `memories/`.
+/// Programs without a memory of their own (omp, pi, …) have none.
 pub fn foreign_sources(cfg: &AppConfig) -> Vec<Foreign> {
-    foreign_sources_at(cfg, &history::claude_home())
+    let home = std::env::var_os("CODEX_HOME")
+        .filter(|v| !v.is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| crate::config::home().join(".codex"));
+    foreign_sources_at(cfg, &home)
 }
 
-/// `foreign_sources` with Claude Code's home folder given (`~/.claude`, or `CLAUDE_CONFIG_DIR`).
-pub fn foreign_sources_at(cfg: &AppConfig, claude_home: &Path) -> Vec<Foreign> {
+/// `foreign_sources` with Codex's home folder given.
+pub fn foreign_sources_at(cfg: &AppConfig, codex_home: &Path) -> Vec<Foreign> {
     let program = history::coordinator_program(cfg);
     let mut out = Vec::new();
-    match program.as_str() {
-        "claude" => out.push(Foreign {
-            program: "claude".into(),
-            label: "Claude Code".into(),
-            dir: claude_home
-                .join("projects")
-                .join(history::project_folder(&{
-                    let cwd = cfg.data_dir.join("coordinator/default/chat");
-                    std::fs::canonicalize(&cwd).unwrap_or(cwd)
-                }))
-                .join("memory"),
-        }),
-        "codex" => {
-            let home = std::env::var_os("CODEX_HOME")
-                .filter(|v| !v.is_empty())
-                .map(PathBuf::from)
-                .unwrap_or_else(|| crate::config::home().join(".codex"));
-            out.push(Foreign {
-                program: "codex".into(),
-                label: "Codex".into(),
-                dir: home.join("memories"),
-            });
-        }
-        _ => {}
+    if program == "codex" {
+        out.push(Foreign { program: "codex".into(), label: "Codex".into(), dir: codex_home.join("memories") });
     }
     out.retain(|f| f.dir.is_dir());
     out
@@ -893,7 +875,7 @@ pub fn agent_connect_value(current: &str, on: bool) -> Result<Option<String>, St
 
 /* ───────── the index in SQLite ───────── */
 
-/// Where an entry belongs, in one string for the page: `` for the Galaxy, a repo name for a universe, `@claude` for the
+/// Where an entry belongs, in one string for the page: `` for the Galaxy, a repo name for a universe, `@codex` for the
 /// memory of the Coordinator's program. The id of an index document is `<scope>|<entry id>`.
 pub fn doc_id(scope: &str, id: &str) -> String {
     format!("{scope}|{id}")
@@ -918,10 +900,11 @@ pub fn docs_of(scope: &str, path: &str, entries: &[Entry]) -> Vec<SearchDoc> {
 
 /// The documents for this machine: the Galaxy's memory, every local universe's, the Coordinator program's own.
 pub fn home_docs(cfg: &AppConfig, host: &str) -> Vec<SearchDoc> {
-    home_docs_at(cfg, host, &history::claude_home())
+    let home = std::env::var_os("CODEX_HOME").filter(|v| !v.is_empty()).map(PathBuf::from).unwrap_or_else(|| crate::config::home().join(".codex"));
+    home_docs_at(cfg, host, &home)
 }
 
-pub fn home_docs_at(cfg: &AppConfig, host: &str, claude_home: &Path) -> Vec<SearchDoc> {
+pub fn home_docs_at(cfg: &AppConfig, host: &str, codex_home: &Path) -> Vec<SearchDoc> {
     let mut docs = docs_of(
         "",
         &format!("Память › {host} (Галактика)"),
@@ -938,7 +921,7 @@ pub fn home_docs_at(cfg: &AppConfig, host: &str, claude_home: &Path) -> Vec<Sear
             &entries,
         ));
     }
-    for f in foreign_sources_at(cfg, claude_home) {
+    for f in foreign_sources_at(cfg, codex_home) {
         docs.extend(docs_of(
             &format!("@{}", f.program),
             &format!("Память {} (только чтение)", f.label),
@@ -1523,7 +1506,7 @@ mod tests {
     }
 
     #[test]
-    fn claude_code_memory_files_read_the_same() {
+    fn program_memory_files_read_the_same() {
         let text = "---\nname: user-prefers-short\ndescription: Отвечать коротко\nmetadata:\n  type: feedback\n---\n\nПользователь просит коротко.\n";
         let p = parse_entry("user-prefers-short", text);
         assert_eq!(p.title, "Отвечать коротко");
@@ -2033,27 +2016,24 @@ mod tests {
         let cfg = crate::testutil::test_cfg(dir.path());
         let coord = cfg.data_dir.join("coordinator/default");
         std::fs::create_dir_all(coord.join("chat")).unwrap();
-        std::fs::write(coord.join("state.json"), r#"{"run":{"kind":"claude"}}"#).unwrap();
-        // Claude's home is a folder of the test's own: nothing is written under the real ~/.claude
-        let claude = dir.path().join("claude-home");
-        assert!(foreign_sources_at(&cfg, &claude).is_empty(), "no memory folder yet, nothing to read");
-        let theirs = claude
-            .join("projects")
-            .join(history::project_folder(&std::fs::canonicalize(coord.join("chat")).unwrap()))
-            .join("memory");
+        std::fs::write(coord.join("state.json"), r#"{"run":{"kind":"codex"}}"#).unwrap();
+        // Codex's home is a folder of the test's own.
+        let codex = dir.path().join("codex-home");
+        assert!(foreign_sources_at(&cfg, &codex).is_empty(), "no memory folder yet, nothing to read");
+        let theirs = codex.join("memories");
         std::fs::create_dir_all(&theirs).unwrap();
         std::fs::write(theirs.join("a.md"), "---\nname: a\ndescription: коротко отвечать\nmetadata:\n  type: feedback\n---\n\nтело\n").unwrap();
         std::fs::write(theirs.join("MEMORY.md"), "- [a](a.md)\n").unwrap();
-        let src = foreign_sources_at(&cfg, &claude);
-        assert_eq!((src.len(), src[0].program.as_str()), (1, "claude"));
-        let docs = home_docs_at(&cfg, "host", &claude);
+        let src = foreign_sources_at(&cfg, &codex);
+        assert_eq!((src.len(), src[0].program.as_str()), (1, "codex"));
+        let docs = home_docs_at(&cfg, "host", &codex);
         let mine: Vec<_> = docs.iter().filter(|d| d.id.starts_with('@')).collect();
         assert_eq!(mine.len(), 1);
-        assert_eq!(mine[0].id, "@claude|a");
+        assert_eq!(mine[0].id, "@codex|a");
         assert!(mine[0].path.contains("только чтение"));
         // another program has no memory of its own
         std::fs::write(coord.join("state.json"), r#"{"run":{"kind":"omp"}}"#).unwrap();
-        assert!(foreign_sources_at(&cfg, &claude).is_empty());
+        assert!(foreign_sources_at(&cfg, &codex).is_empty());
     }
 
     #[test]

@@ -33,7 +33,7 @@ describe('board events at the end of an answer', () => {
     expect(eventText(parseEvent('Updated PLN-7 (description)')!)).toBe('Updated PLN-7 (description)');
     expect(eventText(parseEvent('Removed BOT-1, OMRC-1')!)).toBe('Removed BOT-1, OMRC-1');
   });
-  it('the forms Claude Code uses most: parentheses after the keys, «;», a plan', () => {
+  it('the common event forms: parentheses after the keys, «;», a plan', () => {
     expect(eventText(parseEvent('Added PLN-12 (queued after PLN-9) and started an agent on it')!)).toBe('Добавлена PLN-12, агент запущен (в очереди после PLN-9)');
     expect(eventText(parseEvent('Updated APC-3 (description) and started an agent on it')!)).toBe('Изменена APC-3, агент запущен (описание)');
     expect(eventText(parseEvent("Approved PLN-7's plan")!)).toBe('Одобрен план PLN-7');
@@ -126,7 +126,7 @@ describe('attachments of a human message', () => {
     const r = splitAttachments(`смотри\n\nВложения (файлы на машине с доской):\n/x/${A}\n/x/${B}\n/x/0123456789abcdef0123456789abcdef.txt`);
     expect(r.files.map((f) => f.id)).toEqual([A, B, '0123456789abcdef0123456789abcdef.txt']);
   });
-  it('the header alone (Claude Code kept the files as image blocks) is taken off the text', () => {
+  it('the header alone (the transcript kept the files as image blocks) is taken off the text', () => {
     expect(splitAttachments('вот снимок\nКартинки (файлы на машине с доской):')).toEqual({ text: 'вот снимок', files: [], pasted: 0 });
     expect(splitAttachments('смотри\n\nВложения (файлы на машине с доской):  ')).toEqual({ text: 'смотри', files: [], pasted: 0 });
   });

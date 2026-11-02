@@ -25,7 +25,7 @@ pub(crate) fn test_cfg(dir: &Path) -> AppConfig {
         password_hash: String::new(),
         tls_cert: None,
         tls_key: None,
-        translator: "claude/claude-haiku-5-5".into(),
+        translator: "omp/deepseek/deepseek-v4-flash".into(),
         ssh_bin: "ssh".into(),
         projects_dir: dir.join("Projects"),
         trusted_hosts: Vec::new(),

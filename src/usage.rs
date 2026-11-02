@@ -2,10 +2,7 @@
 //!
 //! The planner never probes a provider itself. Omarchy's
 //! `omarchy-agent-usage-update` writes one record per agent under
-//! `~/.local/state/omarchy/agents/usage/`, and the Claude collector keeps the
-//! last successful limits probe in
-//! `~/.cache/omarchy/agent-usage/claude-limits.json` together with
-//! `fetchedAtMs`. A record may carry `limits[]`, a prepaid `balance`, both, or
+//! `~/.local/state/omarchy/agents/usage/`. A record may carry `limits[]`, a prepaid `balance`, both, or
 //! neither; when neither is there the dashboard says «нет данных» instead of
 //! inventing a number.
 
@@ -23,10 +20,8 @@ pub const WARN_AT: f64 = 0.80;
 /// A window at or above this share is critical.
 pub const CRIT_AT: f64 = 0.95;
 
-/// The subscriptions the dashboard reports, in display order. `claude` is the
-/// only agent whose collector provides subscription limits today; `omp` and
-/// `pi` are API-key agents and their records carry stats only.
-pub const AGENTS: [(&str, &str); 3] = [("claude", "Claude"), ("omp", "omp"), ("pi", "pi")];
+/// The API-key agents whose statistics records the dashboard reports, in display order.
+pub const AGENTS: [(&str, &str); 2] = [("omp", "omp"), ("pi", "pi")];
 
 #[derive(Debug, Clone, Serialize, PartialEq, Default)]
 pub struct Usage {
@@ -67,7 +62,7 @@ pub struct AgentUsage {
     /// Further limits that are not part of the headline windows (a review limit, a weekly code limit).
     pub extra: Vec<LimitWindow>,
     pub sections: Vec<SectionOut>,
-    /// Whose sign-in or key was asked with (`pi`, `omp`, `claude`, `codex`, `kimi`, `opencode`, `config`, `env`), the crew role that runs the provider
+    /// Whose sign-in or key was asked with (`pi`, `omp`, `codex`, `kimi`, `opencode`, `config`, `env`), the crew role that runs the provider
     /// through that program, and the other programs the crew runs it through. Never the key itself.
     pub key_from: String,
     pub key_role: String,
@@ -121,8 +116,6 @@ impl LimitWindow {
 pub enum SectionOut {
     /// Label and value pairs under a heading.
     Facts { title: String, facts: Vec<(String, String)> },
-    /// Shares (0..100) of one whole.
-    Shares { title: String, shares: Vec<(String, f64)> },
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -257,7 +250,6 @@ pub fn merge_agent(agent: &mut AgentUsage, r: &crate::plans::Reading, now: u64) 
         .iter()
         .filter_map(|s| match s {
             Section::Facts { title, facts } => Some(SectionOut::Facts { title: title.clone(), facts: facts.clone() }),
-            Section::Shares { title, shares } => Some(SectionOut::Shares { title: title.clone(), shares: shares.clone() }),
             Section::Limit(_) => None,
         })
         .collect();
@@ -284,16 +276,12 @@ pub fn merge_agent(agent: &mut AgentUsage, r: &crate::plans::Reading, now: u64) 
 pub fn agent_at(now: u64, id: &str, state_dir: &Path, cache_dir: &Path) -> AgentUsage {
     let path = state_dir.join(format!("{id}.json"));
     let record = read_json(&path);
-    let cache = if id == "claude" {
-        read_json(&cache_dir.join("claude-limits.json"))
-    } else {
-        None
-    };
-    agent_usage(id, id, record.as_ref(), file_mtime_ms(&path), cache.as_ref(), now)
+    let _ = cache_dir;
+    agent_usage(id, id, record.as_ref(), file_mtime_ms(&path), now)
 }
 
 /// The model names a program's record says it was used with (`modelUsage`, `todayTokensByModel`), as the program
-/// wrote them: `deepseek-v4-flash`, `anthropic/claude-opus-5`. Empty without a record.
+/// wrote them: `deepseek-v4-flash`, `openai/gpt-6-luna`. Empty without a record.
 pub fn seen_models(id: &str) -> Vec<String> {
     seen_models_at(&state_home().join("omarchy/agents/usage"), id)
 }
@@ -323,20 +311,14 @@ fn cache_home() -> PathBuf {
         .unwrap_or_else(|| crate::config::home().join(".cache"))
 }
 
-pub fn read_at(now: u64, state_dir: &Path, cache_dir: &Path) -> Usage {
-    let claude_cache = read_json(&cache_dir.join("claude-limits.json"));
+pub fn read_at(now: u64, state_dir: &Path, _cache_dir: &Path) -> Usage {
     let agents = AGENTS
         .iter()
         .map(|(id, fallback_name)| {
             let path = state_dir.join(format!("{id}.json"));
             let record = read_json(&path);
             let mtime = file_mtime_ms(&path);
-            let cache = if *id == "claude" {
-                claude_cache.as_ref()
-            } else {
-                None
-            };
-            agent_usage(id, fallback_name, record.as_ref(), mtime, cache, now)
+            agent_usage(id, fallback_name, record.as_ref(), mtime, now)
         })
         .collect();
     Usage {
@@ -352,7 +334,6 @@ fn agent_usage(
     fallback_name: &str,
     record: Option<&Value>,
     mtime: Option<u64>,
-    claude_cache: Option<&Value>,
     now: u64,
 ) -> AgentUsage {
     let Some(record) = record else {
@@ -378,21 +359,7 @@ fn agent_usage(
         updated_at_ms = mtime.unwrap_or(0);
     }
 
-    let mut limits = parse_limits(record, now);
-    if let Some(cache) = claude_cache {
-        let cached = parse_limits(cache, now);
-        if limits.is_empty() && !cached.is_empty() {
-            limits = cached;
-        }
-        // The probe cache is the only file that records when a provider
-        // actually answered; the record itself is rewritten after every scan
-        // even when its limits came from that cache.
-        if let Some(fetched) = parse_time_ms(cache.get("fetchedAtMs")) {
-            if fetched > 0 {
-                updated_at_ms = fetched;
-            }
-        }
-    }
+    let limits = parse_limits(record, now);
 
     let stale = updated_at_ms > 0 && now.saturating_sub(updated_at_ms) > STALE_AFTER_MS;
     let balance = parse_balance(record);
@@ -722,8 +689,6 @@ fn days_from_civil(year: i64, month: i64, day: i64) -> i64 {
 mod tests {
     use super::*;
 
-    const CLAUDE: &str = include_str!("../tests/fixtures/agent-usage/claude.json");
-    const CLAUDE_LIMITS: &str = include_str!("../tests/fixtures/agent-usage/claude-limits.json");
     const OMP: &str = include_str!("../tests/fixtures/agent-usage/omp.json");
     const PI: &str = include_str!("../tests/fixtures/agent-usage/pi.json");
     const NOW: u64 = 1_792_413_620_000; // 2026-10-19T12:40:20Z
@@ -733,21 +698,25 @@ mod tests {
     }
 
     fn fixture_agent(id: &str, record: &str) -> AgentUsage {
-        let name = AGENTS.iter().find(|(a, _)| *a == id).unwrap().1;
         let value = json(record);
-        agent_usage(id, name, Some(&value), Some(NOW), None, NOW)
+        agent_usage(id, id, Some(&value), Some(NOW), NOW)
+    }
+
+    fn limited_record() -> Value {
+        json(r#"{"name":"Codex","ready":true,"tierLabel":"plus","updatedAt":"2026-10-19T12:40:09Z","limits":[{"label":"Session (5-hour)","percent":0.21,"resetsAt":"2026-10-19T15:00:00Z"},{"label":"Weekly (7-day)","percent":0.81,"resetsAt":"2026-10-20T15:19:59.677Z"},{"label":"Extra Weekly","percent":0.97,"resetsAt":"2026-10-20T15:19:59.677Z"}]}"#)
     }
 
     #[test]
-    fn parses_claude_limits_tier_and_status() {
-        let agent = fixture_agent("claude", CLAUDE);
+    fn parses_limits_tier_and_status() {
+        let value = limited_record();
+        let agent = agent_usage("codex", "Codex", Some(&value), Some(NOW), NOW);
         assert!(agent.present);
-        assert_eq!(agent.name, "Claude Code");
-        assert_eq!(agent.tier, "Max 5x");
+        assert_eq!(agent.name, "Codex");
+        assert_eq!(agent.tier, "plus");
         assert_eq!(agent.limits.len(), 3);
         assert_eq!(agent.limits[0].label, "Session (5-hour)");
         assert!((agent.limits[0].percent - 0.21).abs() < 1e-9);
-        assert_eq!(agent.limits[2].label, "Fable Weekly");
+        assert_eq!(agent.limits[2].label, "Extra Weekly");
         assert!((agent.limits[2].percent - 0.97).abs() < 1e-9);
         assert_eq!(agent.limits[2].severity, "crit");
         assert_eq!(agent.note, "");
@@ -756,30 +725,13 @@ mod tests {
 
     #[test]
     fn parses_reset_times_to_the_epoch() {
-        let value = json(CLAUDE);
-        let at = parse_time_ms(
-            value
-                .get("limits")
-                .and_then(|l| l.get(1))
-                .and_then(|l| l.get("resetsAt")),
-        );
-        assert_eq!(at, Some(1_792_472_399_677));
-        assert_eq!(
-            parse_time_ms(Some(&json("\"2026-10-19T17:40:09+05:00\""))),
-            Some(1_792_413_609_000)
-        );
-        assert_eq!(
-            parse_time_ms(Some(&json("\"1970-01-01T00:00:00Z\""))),
-            Some(0)
-        );
-        assert_eq!(
-            parse_time_ms(Some(&json("1792413609000"))),
-            Some(1_792_413_609_000)
-        );
-        assert_eq!(
-            parse_time_ms(Some(&json("1792413609"))),
-            Some(1_792_413_609_000)
-        );
+        let value = limited_record();
+        let at = parse_time_ms(value.get("limits").and_then(|l| l.get(1)).and_then(|l| l.get("resetsAt")));
+        assert_eq!(at, Some(1_792_509_599_677));
+        assert_eq!(parse_time_ms(Some(&json("\"2026-10-19T17:40:09+05:00\""))), Some(1_792_413_609_000));
+        assert_eq!(parse_time_ms(Some(&json("\"1970-01-01T00:00:00Z\""))), Some(0));
+        assert_eq!(parse_time_ms(Some(&json("1792413609000"))), Some(1_792_413_609_000));
+        assert_eq!(parse_time_ms(Some(&json("1792413609"))), Some(1_792_413_609_000));
         assert_eq!(parse_time_ms(Some(&json("\"not a time\""))), None);
     }
 
@@ -803,40 +755,6 @@ mod tests {
     }
 
     #[test]
-    fn claude_probe_cache_supplies_the_real_fetch_time() {
-        let record = json(CLAUDE);
-        let cache = json(CLAUDE_LIMITS);
-        let agent = agent_usage(
-            "claude",
-            "Claude",
-            Some(&record),
-            Some(NOW),
-            Some(&cache),
-            NOW,
-        );
-        // 12:40:15Z is later than the record's own 12:40:09Z.
-        assert_eq!(agent.updated_at_ms, 1_792_413_615_000);
-        assert_eq!(agent.limits.len(), 3);
-    }
-
-    #[test]
-    fn the_cache_also_stands_in_when_a_record_has_no_limits() {
-        let mut record = json(CLAUDE);
-        record["limits"] = json("[]");
-        let cache = json(CLAUDE_LIMITS);
-        let agent = agent_usage(
-            "claude",
-            "Claude",
-            Some(&record),
-            Some(NOW),
-            Some(&cache),
-            NOW,
-        );
-        assert_eq!(agent.limits.len(), 3);
-        assert_eq!(agent.note, "");
-    }
-
-    #[test]
     fn omp_and_pi_say_no_data_instead_of_inventing_limits() {
         for (id, record) in [("omp", OMP), ("pi", PI)] {
             let agent = fixture_agent(id, record);
@@ -851,7 +769,7 @@ mod tests {
 
     #[test]
     fn a_missing_record_is_reported_as_no_data() {
-        let agent = agent_usage("pi", "pi", None, None, None, NOW);
+        let agent = agent_usage("pi", "pi", None, None, NOW);
         assert!(!agent.present);
         assert!(agent.limits.is_empty());
         assert!(agent.note.contains("не пишет запись"));
@@ -859,45 +777,27 @@ mod tests {
 
     #[test]
     fn old_records_are_marked_stale() {
-        let record = json(CLAUDE);
-        let cache = json(CLAUDE_LIMITS);
-        let much_later = NOW + STALE_AFTER_MS + 1;
-        let agent = agent_usage(
-            "claude",
-            "Claude",
-            Some(&record),
-            None,
-            Some(&cache),
-            much_later,
-        );
+        let record = limited_record();
+        let agent = agent_usage("codex", "Codex", Some(&record), None, NOW + STALE_AFTER_MS + 1);
         assert!(agent.stale);
     }
 
     #[test]
-    fn read_at_reads_the_state_and_cache_directories() {
-        let dir = std::env::temp_dir().join(format!(
-            "herdr-planner-usage-{}-{}",
-            std::process::id(),
-            NOW
-        ));
-        let state = dir.join("state");
-        let cache = dir.join("cache");
-        let _ = fs::remove_dir_all(&dir);
+    fn read_at_reads_only_the_supported_stats_records() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = dir.path().join("state");
+        let cache = dir.path().join("cache");
         fs::create_dir_all(&state).unwrap();
         fs::create_dir_all(&cache).unwrap();
-        fs::write(state.join("claude.json"), CLAUDE).unwrap();
         fs::write(state.join("omp.json"), OMP).unwrap();
         fs::write(state.join("pi.json"), PI).unwrap();
-        fs::write(cache.join("claude-limits.json"), CLAUDE_LIMITS).unwrap();
-
+        fs::write(state.join("removed.json"), limited_record().to_string()).unwrap();
         let usage = read_at(NOW, &state, &cache);
         assert_eq!(usage.stale_after_secs, 1800);
-        assert_eq!(usage.agents.len(), 3);
-        assert_eq!(usage.agents[0].limits.len(), 3);
-        assert_eq!(usage.agents[1].id, "omp");
-        assert!(usage.agents[1].limits.is_empty());
-        assert_eq!(usage.agents[2].id, "pi");
-        let _ = fs::remove_dir_all(&dir);
+        assert_eq!(usage.agents.len(), 2);
+        assert_eq!(usage.agents[0].id, "omp");
+        assert!(usage.agents[0].limits.is_empty());
+        assert_eq!(usage.agents[1].id, "pi");
     }
 
     #[test]
@@ -907,36 +807,26 @@ mod tests {
         assert_eq!(alert.level, "ok");
         assert!(alert.worst.is_none());
 
-        let record = json(CLAUDE);
-        let cache = json(CLAUDE_LIMITS);
-        let claude = agent_usage("claude", "Claude", Some(&record), None, Some(&cache), NOW);
-        let usage = Usage {
-            at: NOW,
-            stale_after_secs: 1800,
-            agents: vec![claude],
-            ..Usage::default()
-        };
+        let record = limited_record();
+        let codex = agent_usage("codex", "Codex", Some(&record), None, NOW);
+        let usage = Usage { at: NOW, stale_after_secs: 1800, agents: vec![codex], ..Usage::default() };
         let alert = alert_at(&usage, NOW);
         assert_eq!(alert.level, "crit");
         let worst = alert.worst.unwrap();
-        assert_eq!(worst.agent, "Claude Code");
-        assert_eq!(worst.label, "Fable Weekly");
+        assert_eq!(worst.agent, "Codex");
+        assert_eq!(worst.label, "Extra Weekly");
         assert_eq!(worst.remaining_percent, 3);
         assert!(!alert.stale);
 
-        // After every window resets, the stale 97% no longer counts.
-        let after_reset = 1_792_472_400_000;
-        let alert = alert_at(&usage, after_reset);
+        let alert = alert_at(&usage, 1_792_509_600_000);
         assert_eq!(alert.level, "ok");
         assert!(alert.worst.is_none());
     }
 
     #[test]
     fn balance_is_read_when_a_record_has_one() {
-        let record = json(
-            r#"{"id":"pi","name":"Pi","ready":true,"balance":{"remaining":12.5,"funded":20,"spent":7.5,"currency":"USD","estimated":true}}"#,
-        );
-        let agent = agent_usage("pi", "pi", Some(&record), Some(NOW), None, NOW);
+        let record = json(r#"{"id":"pi","name":"Pi","ready":true,"balance":{"remaining":12.5,"funded":20,"spent":7.5,"currency":"USD","estimated":true}}"#);
+        let agent = agent_usage("pi", "pi", Some(&record), Some(NOW), NOW);
         let balance = agent.balance.unwrap();
         assert_eq!(balance.remaining, 12.5);
         assert_eq!(balance.funded, 20.0);
@@ -944,8 +834,6 @@ mod tests {
         assert!(balance.estimated);
         assert_eq!(agent.note, "");
     }
-
-    /* ───────── PLN-84: the planner's own readings over Omarchy's records ───────── */
 
     use crate::plans::http::Fail;
     use crate::plans::model::{Account, Balance as PlanBalance, Kind, Report, Section, Window as PlanWindow, DAY, HOUR, MIN, SESSION, WEEK};
@@ -955,47 +843,48 @@ mod tests {
         Reading { id, report, fetched_at_ms: at, error }
     }
 
-    fn claude_report() -> Report {
+    fn codex_report() -> Report {
         let mut r = Report::new(
-            "claude",
-            Account { email: Some("me@x.y".into()), plan: Some("Max 5x".into()) },
+            "codex",
+            Account { email: Some("me@x.y".into()), plan: Some("plus".into()) },
             vec![
                 PlanWindow::new(Kind::Session, 7., Some(NOW + HOUR + 33 * MIN), Some(SESSION)),
                 PlanWindow::new(Kind::Weekly, 12., Some(NOW + 5 * DAY + HOUR), Some(WEEK)),
             ],
         );
-        r.sections.push(Section::Shares { title: "This week by surface".into(), shares: vec![("Claude Code".into(), 100.)] });
+        r.sections.push(Section::Facts { title: "Credits".into(), facts: vec![("Balance".into(), "7.50".into())] });
         r.sections.push(Section::Limit(PlanWindow::new(Kind::Named("Code review".into()), 3., Some(NOW + DAY), Some(WEEK))));
         r
     }
 
     #[test]
     fn a_live_reading_replaces_the_numbers_of_the_record_and_carries_the_pace_and_the_extras() {
-        let mut agent = fixture_agent("claude", CLAUDE);
-        merge_agent(&mut agent, &live("claude", Some(claude_report()), NOW, None), NOW);
+        let record = limited_record();
+        let mut agent = agent_usage("codex", "Codex", Some(&record), Some(NOW), NOW);
+        merge_agent(&mut agent, &live("codex", Some(codex_report()), NOW, None), NOW);
         assert_eq!(agent.source, "live");
-        assert_eq!(agent.name, "Claude");
-        assert_eq!(agent.tier, "Max 5x");
+        assert_eq!(agent.name, "Codex");
+        assert_eq!(agent.tier, "plus");
         assert_eq!(agent.account, "me@x.y");
         assert_eq!(agent.limits.len(), 2, "the record's three windows are gone");
         let session = &agent.limits[0];
         assert_eq!((session.kind.as_str(), session.length_ms), ("session", SESSION));
         assert!((session.percent - 0.07).abs() < 1e-9);
-        assert_eq!(session.reserve.map(f64::round), Some(62.0), "62% in reserve, as in the screenshot");
+        assert_eq!(session.reserve.map(f64::round), Some(62.0));
         assert_eq!(session.runs_out_ms, None);
         assert_eq!(session.resets_at_ms, NOW + HOUR + 33 * MIN);
         assert_eq!(agent.limits[1].reserve.map(f64::round), Some(16.0));
         assert_eq!(agent.extra.len(), 1);
         assert_eq!(agent.extra[0].label, "Code review");
-        assert!(matches!(&agent.sections[0], SectionOut::Shares { shares, .. } if shares[0].0 == "Claude Code"));
-        assert!(agent.dashboard.contains("claude.ai") && agent.status_page.contains("anthropic"));
+        assert!(matches!(&agent.sections[0], SectionOut::Facts { facts, .. } if facts[0].0 == "Balance"));
+        assert!(agent.dashboard.contains("chatgpt.com") && agent.status_page.contains("openai"));
         assert_eq!((agent.updated_at_ms, agent.stale, agent.why.as_str(), agent.note.as_str()), (NOW, false, "", ""));
     }
 
     #[test]
     fn a_reading_that_is_old_is_stale_and_one_that_failed_since_says_why_but_keeps_its_numbers() {
         let mut agent = AgentUsage::default();
-        let r = live("claude", Some(claude_report()), NOW - 31 * MIN, Some(Fail::Network));
+        let r = live("codex", Some(codex_report()), NOW - 31 * MIN, Some(Fail::Network));
         merge_agent(&mut agent, &r, NOW);
         assert!(agent.stale);
         assert_eq!(agent.why, "network");
@@ -1004,13 +893,14 @@ mod tests {
 
     #[test]
     fn when_the_planners_read_fails_the_record_stays_and_the_reason_is_named() {
-        let mut agent = fixture_agent("claude", CLAUDE);
-        merge_agent(&mut agent, &live("claude", None, 0, Some(Fail::Expired)), NOW);
+        let record = limited_record();
+        let mut agent = agent_usage("codex", "Codex", Some(&record), Some(NOW), NOW);
+        merge_agent(&mut agent, &live("codex", None, 0, Some(Fail::Expired)), NOW);
         assert_eq!(agent.source, "omarchy");
         assert_eq!(agent.why, "expired");
-        assert_eq!(agent.limits.len(), 3, "Omarchy's numbers are still the best there are");
+        assert_eq!(agent.limits.len(), 3);
         assert_eq!(agent.note, "");
-        assert_eq!(agent.name, "Claude Code");
+        assert_eq!(agent.name, "Codex");
     }
 
     #[test]
@@ -1041,26 +931,16 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let (state, cache) = (tmp.path().join("state"), tmp.path().join("cache"));
         fs::create_dir_all(&state).unwrap();
-        fs::write(
-            state.join("codex.json"),
-            r#"{"name":"Codex","ready":true,"tierLabel":"plus","updatedAt":"2026-10-19T12:39:00Z","limits":[{"label":"5h window","percent":0.04,"resetsAt":"2026-10-19T15:00:00Z"}]}"#,
-        )
-        .unwrap();
+        fs::write(state.join("codex.json"), limited_record().to_string()).unwrap();
         let mut usage = read_at(NOW, &state, &cache);
-        assert_eq!(usage.agents.len(), 3, "the three agents of the dashboard, as before");
-        merge_live(
-            &mut usage,
-            &[live("codex", None, 0, Some(Fail::Rejected)), live("deepseek", None, 0, Some(Fail::NoLogin))],
-            NOW,
-            &state,
-            &cache,
-        );
+        assert_eq!(usage.agents.len(), 2);
+        merge_live(&mut usage, &[live("codex", None, 0, Some(Fail::Rejected)), live("deepseek", None, 0, Some(Fail::NoLogin))], NOW, &state, &cache);
         let ids: Vec<_> = usage.agents.iter().map(|a| a.id.as_str()).collect();
-        assert_eq!(ids, ["claude", "omp", "pi", "codex", "deepseek"]);
-        let codex = &usage.agents[3];
-        assert_eq!((codex.limits.len(), codex.source.as_str(), codex.why.as_str()), (1, "omarchy", "rejected"));
-        assert_eq!(codex.limits[0].kind, "session", "the label says it is the 5-hour window");
-        assert_eq!(usage.agents[4].why, "no_login");
+        assert_eq!(ids, ["omp", "pi", "codex", "deepseek"]);
+        let codex = &usage.agents[2];
+        assert_eq!((codex.limits.len(), codex.source.as_str(), codex.why.as_str()), (3, "omarchy", "rejected"));
+        assert_eq!(codex.limits[0].kind, "session");
+        assert_eq!(usage.agents[3].why, "no_login");
     }
 
     #[test]
@@ -1068,20 +948,18 @@ mod tests {
         assert_eq!(kind_of_label("Session (5-hour)"), ("session", SESSION));
         assert_eq!(kind_of_label("5h window"), ("session", SESSION));
         assert_eq!(kind_of_label("Weekly (7-day)"), ("weekly", WEEK));
-        assert_eq!(kind_of_label("Fable Weekly"), ("named", WEEK));
+        assert_eq!(kind_of_label("Extra Weekly"), ("named", WEEK));
         assert_eq!(kind_of_label("Monthly total").0, "named");
         assert_eq!(kind_of_label("Credits"), ("", 0));
-        let value = json(CLAUDE);
-        let limits = parse_limits(&value, NOW);
+        let limits = parse_limits(&limited_record(), NOW);
         assert!(limits[0].length_ms == SESSION && limits[1].length_ms == WEEK);
-        let none: Vec<_> = limits.iter().filter(|w| w.length_ms == 0).collect();
-        assert!(none.is_empty());
+        assert!(limits.iter().all(|w| w.length_ms > 0));
     }
 
     #[test]
     fn the_light_page_gets_the_readings_without_the_account() {
         let mut u = Usage::default();
-        u.agents.push(AgentUsage { id: "claude".into(), account: "me@x.y".into(), ..AgentUsage::default() });
+        u.agents.push(AgentUsage { id: "codex".into(), account: "me@x.y".into(), ..AgentUsage::default() });
         let phone = u.without_accounts();
         assert_eq!(phone.agents[0].account, "");
         assert_eq!(u.agents[0].account, "me@x.y");
@@ -1091,12 +969,12 @@ mod tests {
 
     #[test]
     fn the_card_says_whose_sign_in_was_asked_with_and_never_carries_a_key() {
-        let mut report = claude_report();
+        let mut report = codex_report();
         report.from = "pi".into();
         report.role = "worker".into();
         report.also = vec!["omp".into()];
         let mut agent = AgentUsage::default();
-        merge_agent(&mut agent, &live("claude", Some(report), NOW, None), NOW);
+        merge_agent(&mut agent, &live("codex", Some(report), NOW, None), NOW);
         assert_eq!((agent.key_from.as_str(), agent.key_role.as_str(), agent.key_also.clone()), ("pi", "worker", vec!["omp".to_string()]));
         let json = serde_json::to_string(&agent).unwrap();
         assert!(json.contains("\"key_from\":\"pi\""));

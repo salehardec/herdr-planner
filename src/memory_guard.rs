@@ -895,7 +895,7 @@ mod tests {
             "Решили не хранить тему в базе: хватает localStorage и системной настройки.",
             "Сервер слушает 127.0.0.1:7600, а не 0.0.0.0; версия 2.1.303, коммит 7a0b10a1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7.",
             "См. docs/memory/MEMORY.md и src/memory.rs, затем https://github.com/o/r/pull/12 или git@github.com:o/r.git.",
-            "Claude Code и Pull Request — это названия, а не люди. Token хранится в keyring. Время 12:30:45.",
+            "Codex CLI и Pull Request — это названия, а не люди. Token хранится в keyring. Время 12:30:45.",
             "Пароль хранится в связке ключей, токен — тоже; пример: password: <секрет>, token=$TOKEN.",
         ] {
             assert!(scan(t, "text", &[]).is_empty(), "{t:?} → {:?}", scan(t, "text", &[]));
@@ -978,7 +978,7 @@ mod tests {
         assert_eq!(kinds("ответственный Смирнова А. В. сказал"), ["person"]);
         assert_eq!(kinds("И. И. Сидоров просил"), ["person"]);
         assert_eq!(kinds("написал Aleksey Smith"), ["person"]);
-        assert!(kinds("Claude Code, Pull Request, Open Source и Merge Request").is_empty());
+        assert!(kinds("Codex CLI, Pull Request, Open Source и Merge Request").is_empty());
         assert!(kinds("Решили сливать squash. Дальше смотрим логи.").is_empty());
     }
 

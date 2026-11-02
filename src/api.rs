@@ -177,13 +177,11 @@ pub async fn subagent_api(State(app): State<Shared>, Query(q): Query<SubagentQue
         return error(StatusCode::NOT_FOUND, "no such task");
     };
     let id = q.id.clone();
-    let root = taskmeta::repos(&app.cfg.data_dir).into_iter().find(|r| r.name == t.repo).map(|r| r.root).unwrap_or_default();
     let found = tokio::task::spawn_blocking(move || {
         let agent_name = format!("sw-{}-{}", t.repo, t.n);
         let query = subagents::Query {
             app: &t.app,
             session: &t.session,
-            cwd: if t.worktree.is_empty() { &root } else { &t.worktree },
             agent_name: &agent_name,
             parent_active: matches!(t.status, board::Status::Working | board::Status::Review | board::Status::Plan | board::Status::Waiting)
                 && t.exited_at == 0,

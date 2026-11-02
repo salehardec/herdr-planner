@@ -173,7 +173,7 @@ export function noticeStatus(n: Notice): string {
 
 /** What a file saved by the planner is called: `<32 hex>.<ext>` (the same shape as `attachments::parse_id`). */
 const SAVED = /^[0-9a-f]{32}\.(png|jpe?g|gif|webp|mp3|wav|ogg|flac|m4a|aac|txt|md|log|json|ya?ml|toml|csv)$/i;
-// Claude Code keeps the files of a message as image blocks and drops the path lines: the header may stand alone
+// A transcript may keep the files of a message as image blocks and drop the path lines: the header may stand alone
 const FILES_TAIL = /\n*(?:Картинки|Вложения) \(файлы на машине с доской\):[ \t]*(?:\n([\s\S]*))?$/;
 const PASTED = /\[Image(?: #\d+| ?: ?source: ?[^\]]*)?\]\s*/g;
 

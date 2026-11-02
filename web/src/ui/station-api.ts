@@ -130,7 +130,7 @@ export interface FailoverSwitched {
   until: string;
   /** The agent it left can be given work again: the return is offered. */
   back_ready: boolean;
-  /** Why it left, in words («лимит Claude до 17:00»). */
+  /** Why it left, in words («лимит Codex до 17:00»). */
   words: string;
 }
 
@@ -308,7 +308,7 @@ export function fromLabel(from: string): string {
 
 /** The programs the crew may name, in the order the page offers them. */
 export const PROGRAM_ORDER = [
-  'claude', 'codex', 'omp', 'pi', 'opencode', 'agy', 'copilot', 'cursor-agent', 'droid', 'grok', 'devin', 'gemini',
+  'codex', 'omp', 'pi', 'opencode', 'agy', 'copilot', 'cursor-agent', 'droid', 'grok', 'devin', 'gemini',
   'kimi', 'qwen', 'kilo', 'hermes', 'letta', 'mastracode', 'qodercli',
 ];
 

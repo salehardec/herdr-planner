@@ -17,13 +17,13 @@ const words = (s: string): string => splitAttachments(s).text.replace(/\s+/g, ' 
 export function matchesEcho(e: Echo, t: TurnData): boolean {
   if (t.from !== 'human' || t.n <= e.base || words(e.text) !== words(t.q)) return false;
   const parsed = splitAttachments(t.q);
-  // Claude replaces file paths with image blocks. When paths survive, compare the actual IDs;
+  // A transcript may replace file paths with image blocks. When paths survive, compare the actual IDs;
   // otherwise require all images, including a message containing only images.
   if (parsed.files.length) return e.attachments.map((f) => f.id).join() === parsed.files.map((f) => f.id).join();
   return e.attachments.length === (t.images?.length ?? 0);
 }
 
-/** Some accepted input never becomes a human transcript record (slash commands; non-Claude Coordinators). */
+/** Some accepted input never becomes a human transcript record (slash commands; programs without one). */
 export const ECHO_WAIT_MS = 10 * 60 * 1000;
 
 export function reconcileEchoes(receipts: Echo[], turns: TurnData[], now = Date.now()): Echo[] {

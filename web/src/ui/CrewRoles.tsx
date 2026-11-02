@@ -12,6 +12,8 @@ import { toast } from '../toast';
 import { AgentPick, ChainEditor, EffortPick } from './CrewPick';
 import type { Task } from '../types';
 import { callError, StationData } from './station-api';
+import { cleanChain, removedAgent } from './crew-view';
+import { roleBrief as brief } from './crew-brief';
 import { markFrom, markLabel, marksOf } from './crew-roles';
 import {
   CrewRole, CrewRule, RoleInput, RolePreview, RoleUsage, RoleWay, RolesData, roleApply, rolePreview, rolesGet, rolesPost,
@@ -168,7 +170,7 @@ const emptyInput = (): RoleInput => ({ name: '', kind: 'worker', agent: '', effo
 
 function RoleEditor(props: { role?: CrewRole; programs: StationData['programs']; locked: boolean; onDone: () => void }): JSX.Element {
   const r = props.role;
-  const [v, setV] = useState<RoleInput>(r ? { name: r.name, kind: r.kind, agent: r.agent, effort: r.effort, fallback: r.fallback, instructions: r.instructions, how: r.how } : emptyInput());
+  const [v, setV] = useState<RoleInput>(r ? { name: r.name, kind: r.kind, agent: removedAgent(r.agent) ? '' : r.agent, effort: r.effort, fallback: cleanChain(r.fallback), instructions: r.instructions, how: r.how } : emptyInput());
   const [err, setErr] = useState('');
   const [busy, setBusy] = useState(false);
   const set = (patch: Partial<RoleInput>): void => setV((x) => ({ ...x, ...patch }));
@@ -270,11 +272,6 @@ function SetsList(props: { role: CrewRole }): JSX.Element {
       ))}
     </details>
   );
-}
-
-function brief(r: CrewRole): string {
-  const parts = [r.agent || t('cr.inherit'), r.effort && `${t('st.f.effort')}: ${r.effort}`, r.fallback && `${t('st.f.fallback')}: ${r.fallback}`].filter(Boolean);
-  return parts.join(' · ');
 }
 
 /* ───────── the roles ───────── */

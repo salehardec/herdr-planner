@@ -84,9 +84,9 @@ pub struct CoordinatorState {
     pub subagents_note: String,
     /// How full its context is.
     pub context: ContextOut,
-    /// `/compact` can be sent: a Claude Coordinator that is not busy.
+    /// `/compact` can be sent: a Coordinator whose program supports it and that is not busy.
     pub can_compact: bool,
-    /// Its program: `claude`, `omp`, …
+    /// Its program: `codex`, `omp`, …
     pub program: String,
 }
 
@@ -576,21 +576,15 @@ fn apply_meta(t: &mut Task, meta: Option<&taskmeta::TaskMeta>, key: &str) {
 }
 
 /// Sub-agents of every active task, from the agents' own session files (blocking IO).
-fn collect_subagents(tasks: &mut [Task], roots: &HashMap<String, String>, now: u64) {
+fn collect_subagents(tasks: &mut [Task], now: u64) {
     for t in tasks.iter_mut() {
         if t.status == Status::Done || t.archived || t.session.is_empty() && t.app != "pi" {
             continue;
         }
-        let cwd = if t.worktree.is_empty() {
-            roots.get(&t.repo).cloned().unwrap_or_default()
-        } else {
-            t.worktree.clone()
-        };
         let agent_name = format!("sw-{}-{}", t.repo, t.n);
         let q = subagents::Query {
             app: &t.app,
             session: &t.session,
-            cwd: &cwd,
             agent_name: &agent_name,
             parent_active: matches!(
                 t.status,
@@ -893,7 +887,6 @@ async fn refresh_inner(app: &Shared) {
     };
 
     let repos = taskmeta::repos(&cfg.data_dir);
-    let roots: HashMap<String, String> = repos.iter().map(|r| (r.name.clone(), r.root.clone())).collect();
     let keys: HashMap<String, String> = repos.iter().map(|r| (r.name.clone(), r.key.clone())).collect();
 
     // The waits are read outside the snapshot lock: each is a board process,
@@ -906,7 +899,6 @@ async fn refresh_inner(app: &Shared) {
             }
             // The tasks' own records, and the sub-agents of the live ones (file reads).
             let data_dir = cfg.data_dir.clone();
-            let roots2 = roots.clone();
             let keys2 = keys.clone();
             let settings_file = cfg.settings_file();
             let origins: HashMap<String, String> = app.lag.lock().await.iter().map(|(k, l)| (k.clone(), l.origin.clone())).collect();
@@ -954,7 +946,7 @@ async fn refresh_inner(app: &Shared) {
                         metas_local.insert(t.id.clone(), m);
                     }
                 }
-                collect_subagents(&mut tasks, &roots2, now_ms());
+                collect_subagents(&mut tasks, now_ms());
                 (tasks, metas_local)
             })
             .await;
@@ -1021,7 +1013,7 @@ async fn refresh_inner(app: &Shared) {
     snap.limits = usage;
     snap.herdr.running = cfg.herdr_socket.exists();
     snap.coordinator = CoordinatorState {
-        can_compact: program == "claude" && !busy && !coord_view.dialog && coord_view.error.is_empty(),
+        can_compact: matches!(program.as_str(), "codex" | "omp" | "pi") && !busy && !coord_view.dialog && coord_view.error.is_empty(),
         view: coord_view,
         source: "herdr-projects coordinator · последние строки окна Координатора".into(),
         history: history_msgs,

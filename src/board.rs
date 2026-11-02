@@ -899,7 +899,7 @@ mod tests {
     #[test]
     fn working_review_and_queued() {
         let t = task(
-            json!({"id":"p/1","state":"working","stage":"working","title":"T","progress":4,"app":"claude","msg":"Reading"}),
+            json!({"id":"p/1","state":"working","stage":"working","title":"T","progress":4,"app":"codex","msg":"Reading"}),
         );
         assert_eq!(
             (t.status, t.board_label.as_str()),

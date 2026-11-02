@@ -298,7 +298,7 @@ export function installTodoDnD(canvas: HTMLElement): void {
     endDrag();
     if (!target) return;
     void todoDropOn(id, target).then((r) => {
-      if (r === 'asked') { openNewTask(id, target.id); void loadModels('claude'); }
+      if (r === 'asked') { openNewTask(id, target.id); void loadModels('codex'); }
       else if (r === 'tell') openTell(id, target.id);
     });
   });

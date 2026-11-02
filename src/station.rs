@@ -24,7 +24,6 @@ use std::time::Duration;
 
 /// The programs the crew may name, in the order the page offers them.
 pub const PROGRAMS: &[&str] = &[
-    "claude",
     "codex",
     "omp",
     "pi",
@@ -219,7 +218,7 @@ fn first_word(line: &str) -> Option<&str> {
         .next()
 }
 
-/// The line `herdr-projects doctor` prints about one program, e.g. `✓ claude 2.1.303, signed in (...)`.
+/// The line `herdr-projects doctor` prints about one program, e.g. `✓ codex 0.9.2, signed in (...)`.
 pub fn doctor_line(doctor: &str, program: &str) -> Option<String> {
     doctor
         .lines()
@@ -323,11 +322,14 @@ pub fn agent_program(value: &str) -> Result<String, String> {
         Some((p, m)) => (p, Some(m)),
         None => (value, None),
     };
-    if models::valid_program(program) && model.map_or(true, |m| !m.is_empty() && !m.starts_with('-')) {
+    if !models::removed_agent(value)
+        && models::valid_program(program)
+        && model.map_or(true, |m| !m.is_empty() && !m.starts_with('-'))
+    {
         Ok(program.to_string())
     } else {
         Err(format!(
-            "«{value}»: нужно «программа/модель», например claude/claude-opus-5-5, или одна программа"
+            "«{value}»: нужно «программа/модель», например codex/gpt-6-luna, или одна программа"
         ))
     }
 }
@@ -335,6 +337,9 @@ pub fn agent_program(value: &str) -> Result<String, String> {
 /// A `*.agent` value against the models its program lists. An empty list (not read yet, or a program with no
 /// list) checks nothing: the board decides on apply.
 pub fn check_agent(value: &str, names: &[String]) -> Result<(), String> {
+    if models::removed_agent(value) {
+        return Err(format!("«{value}»: эта модель относится к удалённому провайдеру"));
+    }
     if names.is_empty() || !value.contains('/') || names.iter().any(|n| n == value) {
         return Ok(());
     }
@@ -366,11 +371,12 @@ const LIGHT_ENTRY: &str = "";
 
 /// The light-task preset in the planner's crew file.
 pub fn light_of(doc: &Map<String, Value>) -> String {
-    doc.get(LIGHT_ENTRY)
-        .and_then(|e| e.get("light"))
-        .and_then(Value::as_str)
-        .unwrap_or("")
-        .to_string()
+    models::without_removed(
+        doc.get(LIGHT_ENTRY)
+            .and_then(|e| e.get("light"))
+            .and_then(Value::as_str)
+            .unwrap_or(""),
+    )
 }
 
 /// Sets (or, for `""`, clears) the light-task preset. Entries of other names (the machines an older planner
@@ -565,11 +571,12 @@ async fn gather(app: &Shared, doctor: &str, installed: &[String]) -> Vec<Gathere
         } else {
             usage::AgentUsage::default()
         };
-        let listed = if program.installed {
+        let mut listed = if program.installed {
             models::get(&app.cfg, &program.name).await
         } else {
             models::Models::default()
         };
+        listed.names.retain(|name| !models::removed_agent(name));
         let state = crew::judge(&crew::Facts {
             program: &program.name,
             installed: program.installed,
@@ -722,17 +729,18 @@ async fn models_read(app: &Shared, q: ModelsQuery) -> Result<Value, Fail> {
         return Err(Fail::new(400, "такой программы нет"));
     }
     let listed = models_of(app, &q.program).await;
+    let names: Vec<String> = listed.names.into_iter().filter(|name| !models::removed_agent(name)).collect();
     let seen = usage::seen_models(&q.program);
     Ok(json!({
         "ok": true,
         "program": q.program,
-        "names": listed.names,
+        "names": names,
         "effort": listed.effort,
         "note": listed.note,
         "loading": listed.loading,
-        "listed": !listed.names.is_empty(),
-        "suggested": if listed.names.is_empty() { crew::seen_names(&q.program, &seen) } else { Vec::new() },
-        "providers": crew::providers_of(&q.program, &listed.names, &seen),
+        "listed": !names.is_empty(),
+        "suggested": if names.is_empty() { crew::seen_names(&q.program, &seen) } else { Vec::new() },
+        "providers": crew::providers_of(&q.program, &names, &seen),
     }))
 }
 
@@ -985,7 +993,7 @@ pub struct PresetBody {
     id: Option<String>,
     name: Option<String>,
     roles: Option<std::collections::BTreeMap<String, crew::RoleSet>>,
-    /// `max`, `claude`, `economy` or `noclaude` for `template`.
+    /// `max` or `economy` for `template`.
     kind: Option<String>,
     repo: Option<String>,
 }
@@ -1232,16 +1240,15 @@ mod tests {
     /// `herdr-projects show --json` as the board printed it (trimmed to three settings, one of them inherited).
     const SHOW: &str = r#"{
   "settings": [
-    {"name": "worker.agent", "kind": "work", "value": "claude/claude-sonnet-5-5", "from": "you", "place": "you", "own": true, "note": ""},
+    {"name": "worker.agent", "kind": "work", "value": "omp/deepseek/deepseek-v4-flash", "from": "you", "place": "you", "own": true, "note": ""},
     {"name": "worker.fast", "kind": "work", "value": false, "from": "built in", "place": "builtin", "own": false, "note": ""},
-    {"name": "reviewer.fast", "kind": "work", "value": true, "from": "built in", "place": "builtin", "own": false, "note": "does nothing: claude has no fast mode"}
+    {"name": "reviewer.fast", "kind": "work", "value": true, "from": "built in", "place": "builtin", "own": false, "note": "does nothing: codex has no fast mode"}
   ],
   "problems": []
 }"#;
 
     const DOCTOR: &str = "✓ herdr-projects 1.2.4, downloaded: ~/.config/herdr/plugins/x\n\
-✓ claude 2.1.303, signed in (worker.agent, reviewer.agent)\n\
-✓ codex 0.9.2, not signed in\n\
+✓ codex 2.1.303, signed in (worker.agent, reviewer.agent)\n\
 ✓ omp 1.5.0, API keys: no sign-in needed\n\
 ✗ pi not found\n";
 
@@ -1250,11 +1257,11 @@ mod tests {
         let s = parse_settings(SHOW).unwrap();
         assert_eq!(s.len(), 3);
         assert_eq!(s[0].name, "worker.agent");
-        assert_eq!(s[0].value, "claude/claude-sonnet-5-5");
+        assert_eq!(s[0].value, "omp/deepseek/deepseek-v4-flash");
         assert!(s[0].own);
         assert_eq!(s[1].value, "false");
         assert!(!s[1].own);
-        assert_eq!(s[2].note, "does nothing: claude has no fast mode");
+        assert_eq!(s[2].note, "does nothing: codex has no fast mode");
         assert_eq!(s[2].place, "builtin");
     }
 
@@ -1271,12 +1278,9 @@ mod tests {
     #[test]
     fn doctor_lines_give_version_and_sign_in() {
         assert_eq!(doctor_version(DOCTOR), "1.2.4");
-        let claude = doctor_line(DOCTOR, "claude").unwrap();
-        assert_eq!(version_of(&claude), "2.1.303");
-        assert_eq!(signed_in_of(&claude), Some(true));
         let codex = doctor_line(DOCTOR, "codex").unwrap();
-        assert_eq!(version_of(&codex), "0.9.2");
-        assert_eq!(signed_in_of(&codex), Some(false));
+        assert_eq!(version_of(&codex), "2.1.303");
+        assert_eq!(signed_in_of(&codex), Some(true));
         let omp = doctor_line(DOCTOR, "omp").unwrap();
         assert_eq!(signed_in_of(&omp), None);
         assert!(doctor_line(DOCTOR, "pi").is_some());
@@ -1286,16 +1290,13 @@ mod tests {
 
     #[test]
     fn programs_mark_installed_and_what_doctor_knows() {
-        let avail = vec!["claude".to_string(), "omp".to_string()];
+        let avail = vec!["codex".to_string(), "omp".to_string()];
         let list = programs_of(DOCTOR, &avail);
         assert_eq!(list.len(), PROGRAMS.len());
-        let claude = list.iter().find(|p| p.name == "claude").unwrap();
-        assert!(claude.installed);
-        assert_eq!(claude.version, "2.1.303");
-        assert_eq!(claude.signed_in, Some(true));
         let codex = list.iter().find(|p| p.name == "codex").unwrap();
-        assert!(!codex.installed);
-        assert_eq!(codex.signed_in, Some(false));
+        assert!(codex.installed);
+        assert_eq!(codex.version, "2.1.303");
+        assert_eq!(codex.signed_in, Some(true));
         let gemini = list.iter().find(|p| p.name == "gemini").unwrap();
         assert_eq!(gemini.signed_in, None);
         assert_eq!(gemini.line, "");
@@ -1342,27 +1343,36 @@ mod tests {
 
     #[test]
     fn an_agent_needs_a_program_and_a_listed_model() {
-        assert_eq!(agent_program("claude/claude-opus-5-5").unwrap(), "claude");
+        assert_eq!(agent_program("codex/gpt-6-luna").unwrap(), "codex");
         assert_eq!(
             agent_program("omp/deepseek/deepseek-v4-flash").unwrap(),
             "omp"
         );
         assert_eq!(agent_program("kimi").unwrap(), "kimi", "a program alone takes its own default model");
-        assert!(agent_program("claude/").is_err());
-        assert!(agent_program("claude/-x").is_err());
-        assert!(agent_program("Claude/x").is_err());
+        assert!(agent_program("codex/").is_err());
+        assert!(agent_program("codex/-x").is_err());
+        assert!(agent_program("Codex/x").is_err());
+        for removed in [
+            "claude/legacy",
+            "anthropic/claude-sonnet-4-6",
+            "omp/pi/anthropic/claude-sonnet-4-6",
+            "omp/anthropic/claude-sonnet-4-6",
+        ] {
+            assert!(agent_program(removed).is_err(), "{removed}: removed providers are refused in every segment");
+            assert!(check_agent(removed, &[]).is_err(), "{removed}: an unavailable model list is not a bypass");
+        }
         let names = vec![
-            "claude/claude-opus-5-5".to_string(),
-            "claude/fable".to_string(),
+            "codex/gpt-6-luna".to_string(),
+            "codex/gpt-5.5".to_string(),
         ];
-        assert!(check_agent("claude/fable", &names).is_ok());
-        let err = check_agent("claude/nope", &names).unwrap_err();
-        assert!(err.contains("claude/fable"), "{err}");
+        assert!(check_agent("codex/gpt-5.5", &names).is_ok());
+        let err = check_agent("codex/nope", &names).unwrap_err();
+        assert!(err.contains("codex/gpt-5.5"), "{err}");
         assert!(
-            check_agent("claude/nope", &[]).is_ok(),
+            check_agent("codex/nope", &[]).is_ok(),
             "no list checks nothing"
         );
-        assert!(check_agent("claude", &names).is_ok(), "a program alone is not a model");
+        assert!(check_agent("codex", &names).is_ok(), "a program alone is not a model");
     }
 
     #[test]
@@ -1382,6 +1392,10 @@ mod tests {
         assert_eq!(light_of(&doc), "omp/deepseek/deepseek-v4-flash");
         set_light_in(&mut doc, "codex/gpt-5.5");
         assert_eq!(light_of(&doc), "codex/gpt-5.5");
+        doc.insert(LIGHT_ENTRY.into(), json!({"light": "claude/claude-haiku-5-5"}));
+        assert_eq!(light_of(&doc), "", "an old saved light preset is not shown or used");
+        doc.insert(LIGHT_ENTRY.into(), json!({"light": "omp/anthropic/claude-haiku-5-5"}));
+        assert_eq!(light_of(&doc), "", "a composite old preset is removed too");
         set_light_in(&mut doc, "");
         assert_eq!(light_of(&doc), "");
         assert!(doc.is_empty());
@@ -1414,13 +1428,13 @@ mod tests {
     fn show_json(extra: &[(&str, &str, &str)]) -> String {
         let mut rows: Vec<String> = Vec::new();
         let mut all = vec![
-            ("coordinator.agent", "claude/claude-opus-5-5", "you"),
+            ("coordinator.agent", "codex/gpt-6-luna", "you"),
             ("coordinator.effort", "medium", "you"),
-            ("plan.agent", "claude/claude-opus-5-5", "you"),
-            ("reviewer.agent", "claude/claude-opus-5-5", "you"),
+            ("plan.agent", "codex/gpt-6-luna", "you"),
+            ("reviewer.agent", "codex/gpt-6-luna", "you"),
             ("reviewer.effort", "high", "you"),
             ("reviewer.fallback", "none", "built in"),
-            ("worker.agent", "claude/claude-sonnet-5-5", "you"),
+            ("worker.agent", "omp/deepseek/deepseek-v4-flash", "you"),
             ("worker.effort", "high", "you"),
             ("worker.fallback", "none", "built in"),
         ];
@@ -1448,10 +1462,9 @@ mod tests {
             r#"echo "$@" >> {log}
 case "$1" in
   show) case "$2" in --main-coordinator) cat {main};; *) cat {show};; esac;;
-  doctor) echo "✓ claude 2.1.303, signed in (worker.agent)"; echo "✗ codex 0.9.2, not signed in: codex login"; echo "✓ omp 1.5.0, API keys: no sign-in needed";;
+  doctor) echo "✓ codex 2.1.303, signed in (worker.agent)"; echo "✓ omp 1.5.0, API keys: no sign-in needed";;
   models)
     case "$2" in
-      claude) printf 'claude takes a short name.\n\nclaude/claude-opus-5-5\nclaude/claude-sonnet-5-5\nclaude/claude-haiku-5-5\n\nEffort (worker.effort and the like): low, medium, high, xhigh, max (from `claude --help`).\n';;
       codex) printf 'codex takes the names codex lists for the account it is signed in with (here: your ChatGPT sign-in (go plan)). Write one:\n\ncodex/gpt-6-luna\n\nEffort (worker.effort and the like): low, high, ultra (from `codex debug models`).\n';;
       omp) printf 'omp: any name omp takes (not checked: omp has no list of them).\n\nEffort (worker.effort and the like): off, low, high (from `omp --help`).\n';;
       *) echo "models: unknown program $2" >&2; exit 2;;
@@ -1499,9 +1512,9 @@ esac"#,
 
     fn economy(app: &Shared) -> String {
         let roles = crew_roles(&[
-            ("coordinator", "claude/claude-opus-5-5", "medium", ""),
-            ("worker", "codex/gpt-6-luna", "ultra", "claude/claude-sonnet-5-5, omp"),
-            ("reviewer", "claude/claude-opus-5-5", "high", "codex/gpt-6-luna"),
+            ("coordinator", "codex/gpt-6-luna", "medium", ""),
+            ("worker", "codex/gpt-6-luna", "ultra", "omp/deepseek/deepseek-v4-flash, omp"),
+            ("reviewer", "codex/gpt-6-luna", "high", "codex/gpt-6-luna"),
             ("light", "omp/deepseek/deepseek-v4-flash", "", ""),
         ]);
         crew::edit_store(&app.cfg, |s| crew::add_preset(s, "Экономный", &roles)).unwrap()
@@ -1536,7 +1549,7 @@ esac"#,
         let (app, log) = app_with_board(dir.path(), "");
         let id = economy(&app);
         // warm the models answers so the checks have lists
-        wait_models(&app, &["claude", "codex", "omp"]).await;
+        wait_models(&app, &["codex", "codex", "omp"]).await;
         let body = || ApplyBody { id: id.clone(), repo: None, confirm: Some(true) };
         let (code, prev) = json_of(station_preset_preview(State(app.clone()), headers(), Json(ApplyBody { confirm: None, ..body() })).await).await;
         assert_eq!(code, StatusCode::OK, "{prev}");
@@ -1546,9 +1559,9 @@ esac"#,
             steps,
             vec![
                 "reviewer.fallback none → codex/gpt-6-luna",
-                "worker.agent claude/claude-sonnet-5-5 → codex/gpt-6-luna",
+                "worker.agent omp/deepseek/deepseek-v4-flash → codex/gpt-6-luna",
                 "worker.effort high → ultra",
-                "worker.fallback none → claude/claude-sonnet-5-5, omp",
+                "worker.fallback none → omp/deepseek/deepseek-v4-flash, omp",
                 "light  → omp/deepseek/deepseek-v4-flash",
             ],
             "the preview lists every field that changes, the roles in order, the agent before its effort and fallback"
@@ -1571,7 +1584,7 @@ esac"#,
                 "set reviewer.fallback codex/gpt-6-luna",
                 "set worker.agent codex/gpt-6-luna",
                 "set worker.effort ultra",
-                "set worker.fallback claude/claude-sonnet-5-5, omp",
+                "set worker.fallback omp/deepseek/deepseek-v4-flash, omp",
             ]
         );
         assert_eq!(read_light(&app.cfg), "omp/deepseek/deepseek-v4-flash", "the light preset is kept by the planner");
@@ -1583,19 +1596,19 @@ esac"#,
         let dir = tempfile::tempdir().unwrap();
         let (app, log) = app_with_board(dir.path(), "");
         let rid = roles::edit_store(&app.cfg, |s| {
-            roles::add_role(s, &roles::RoleInput { name: "Дизайнер".into(), kind: "worker".into(), agent: "claude/claude-sonnet-5-5".into(), effort: "high".into(), ..Default::default() })
+            roles::add_role(s, &roles::RoleInput { name: "Дизайнер".into(), kind: "worker".into(), agent: "omp/deepseek/deepseek-v4-flash".into(), effort: "high".into(), ..Default::default() })
         })
         .unwrap();
         let want = crew_roles(&[("light", "", "", "")]);
         let mut held = want.clone();
         held.insert(roles::preset_key(&rid), crew::RoleSet { agent: "codex/gpt-6-luna".into(), effort: "ultra".into(), fallback: "none".into() });
         let id = crew::edit_store(&app.cfg, |s| crew::add_preset(s, "Дизайн дешевле", &held)).unwrap();
-        wait_models(&app, &["claude", "codex"]).await;
+        wait_models(&app, &["codex", "codex"]).await;
         let body = || ApplyBody { id: id.clone(), repo: None, confirm: Some(true) };
         let (_, prev) = json_of(station_preset_preview(State(app.clone()), headers(), Json(ApplyBody { confirm: None, ..body() })).await).await;
         let own: Vec<&Value> = prev["steps"].as_array().unwrap().iter().filter(|s| s["role"] == "custom").collect();
         let fields: Vec<String> = own.iter().map(|s| format!("{} {} {} → {}", s["label"].as_str().unwrap(), s["field"].as_str().unwrap(), s["was"].as_str().unwrap(), s["now"].as_str().unwrap_or("unset"))).collect();
-        assert_eq!(fields, ["Дизайнер agent claude/claude-sonnet-5-5 → codex/gpt-6-luna", "Дизайнер effort high → ultra", "Дизайнер fallback  → none"], "{prev}");
+        assert_eq!(fields, ["Дизайнер agent omp/deepseek/deepseek-v4-flash → codex/gpt-6-luna", "Дизайнер effort high → ultra", "Дизайнер fallback  → none"], "{prev}");
         assert!(own.iter().all(|s| s["command"] == ""), "the role is the planner's own: no board command");
         assert_eq!(prev["valid"], true, "{prev}");
         assert_eq!((prev["affects"]["running"].as_array().unwrap().len(), prev["affects"]["waiting"].as_array().unwrap().len()), (0, 0), "the planner's own roles touch no task");
@@ -1620,7 +1633,7 @@ esac"#,
         let dir = tempfile::tempdir().unwrap();
         let (app, log) = app_with_board(dir.path(), "worker.effort");
         let id = economy(&app);
-        wait_models(&app, &["claude", "codex", "omp"]).await;
+        wait_models(&app, &["codex", "codex", "omp"]).await;
         let (code, err) = json_of(
             station_preset_apply(State(app.clone()), headers(), Json(ApplyBody { id: id.clone(), repo: None, confirm: Some(true) })).await,
         )
@@ -1639,9 +1652,9 @@ esac"#,
     async fn a_preset_with_a_bad_model_is_refused_before_anything_runs() {
         let dir = tempfile::tempdir().unwrap();
         let (app, log) = app_with_board(dir.path(), "");
-        let roles = crew_roles(&[("reviewer", "claude/claude-nope", "", ""), ("worker", "codex/gpt-6-luna", "", "")]);
+        let roles = crew_roles(&[("reviewer", "codex/nope", "", ""), ("worker", "codex/gpt-6-luna", "", "")]);
         let id = crew::edit_store(&app.cfg, |s| crew::add_preset(s, "Кривой", &roles)).unwrap();
-        wait_models(&app, &["claude", "codex"]).await;
+        wait_models(&app, &["codex", "codex"]).await;
         let (code, err) = json_of(station_preset_apply(State(app.clone()), headers(), Json(ApplyBody { id, repo: None, confirm: Some(true) })).await).await;
         assert_eq!(code, StatusCode::UNPROCESSABLE_ENTITY);
         assert!(err["error"].as_str().unwrap().contains("такой модели нет"), "{err}");
@@ -1660,29 +1673,27 @@ esac"#,
             t.tag = "PLN-7".into();
             t.app = "codex".into();
             t.status = Status::Working;
-            t.msg = "codex took over from claude: out of allowance until 17:00".into();
+            t.msg = "codex took over from codex: out of allowance until 17:00".into();
             snap.tasks = vec![t];
         }
-        let installed: Vec<String> = ["claude", "codex", "omp"].map(String::from).to_vec();
+        let installed: Vec<String> = ["codex", "codex", "omp"].map(String::from).to_vec();
         let q = StationQuery { repo: None };
         let v = station_read(&app, q, &installed).await.unwrap();
-        wait_models(&app, &["claude", "codex", "omp"]).await;
+        wait_models(&app, &["codex", "codex", "omp"]).await;
         let prog = |name: &str| v["programs"].as_array().unwrap().iter().find(|p| p["name"] == name).unwrap().clone();
-        let claude = prog("claude");
-        assert_eq!(claude["state"]["avail"]["state"], "limited", "{claude}");
-        assert_eq!(claude["state"]["avail"]["until"], "17:00");
-        assert_eq!(claude["state"]["avail"]["source"], "board");
-        let tags: Vec<&str> = claude["roles"].as_array().unwrap().iter().map(|r| r["role"].as_str().unwrap()).collect();
-        assert_eq!(tags, vec!["coordinator", "plan", "reviewer", "worker"], "who uses it");
         let codex = prog("codex");
-        assert_eq!(codex["state"]["avail"]["state"], "signed_out", "codex is not signed in: {codex}");
+        assert_eq!(codex["state"]["avail"]["state"], "limited", "{codex}");
+        assert_eq!(codex["state"]["avail"]["until"], "17:00");
+        assert_eq!(codex["state"]["avail"]["source"], "board");
+        let tags: Vec<&str> = codex["roles"].as_array().unwrap().iter().map(|r| r["role"].as_str().unwrap()).collect();
+        assert_eq!(tags, vec!["coordinator", "plan", "reviewer"], "who uses it");
         assert_eq!(codex["tasks"][0]["id"], "PLN-7", "the task that runs on codex now");
         let omp = prog("omp");
         assert_eq!(omp["state"]["signed_in"], Value::Null);
         assert!(omp["state"]["unknown_why"].as_str().unwrap().contains("ключам API"), "{omp}");
         assert_eq!(prog("pi")["state"]["avail"]["state"], "missing");
-        // the stand-in board lists three models for claude only after the first read: the program says it is loading or not
-        assert!(claude["models"]["loading"].is_boolean());
+        // the stand-in board lists three models for codex only after the first read: the program says it is loading or not
+        assert!(codex["models"]["loading"].is_boolean());
     }
 
     #[tokio::test]
@@ -1700,9 +1711,9 @@ esac"#,
         let (code, saved) = json_of(station_presets(State(app.clone()), headers(), Json(make("capture", "Сейчас"))).await).await;
         assert_eq!(code, StatusCode::OK, "{saved}");
         let id = saved["id"].as_str().unwrap().to_string();
-        let installed: Vec<String> = vec!["claude".into()];
+        let installed: Vec<String> = vec!["codex".into()];
         let v = station_read(&app, StationQuery { repo: None }, &installed).await.unwrap();
-        wait_models(&app, &["claude"]).await;
+        wait_models(&app, &["codex"]).await;
         assert_eq!(v["presets"]["list"][0]["name"], "Сейчас");
         assert_eq!(v["presets"]["list"][0]["diff"], 0, "the captured crew is the crew");
         assert_eq!(v["presets"]["active"]["state"], "matches");
@@ -1724,7 +1735,7 @@ esac"#,
         let (app, _log) = app_with_board(dir.path(), "");
         let task_dir = dir.path().join("data/tasks/planner/7");
         std::fs::create_dir_all(&task_dir).unwrap();
-        let rec = json!({"handovers": [{"at": now_ms() - 60_000, "role": "worker", "from": "omp", "to": "claude", "why": "out of allowance"}]});
+        let rec = json!({"handovers": [{"at": now_ms() - 60_000, "role": "worker", "from": "omp", "to": "codex", "why": "out of allowance"}]});
         std::fs::write(task_dir.join("task.json"), rec.to_string()).unwrap();
         {
             let mut snap = app.snapshot.write().await;
@@ -1733,14 +1744,14 @@ esac"#,
             t.repo = "planner".into();
             t.n = 7;
             t.tag = "PLN-7".into();
-            t.app = "claude".into();
+            t.app = "codex".into();
             t.status = Status::Working;
             t.msg = "Writing the tests".into();
             snap.tasks = vec![t];
         }
-        let installed: Vec<String> = ["claude", "omp"].map(String::from).to_vec();
+        let installed: Vec<String> = ["codex", "omp"].map(String::from).to_vec();
         let v = station_read(&app, StationQuery { repo: None }, &installed).await.unwrap();
-        wait_models(&app, &["claude", "omp"]).await;
+        wait_models(&app, &["codex", "omp"]).await;
         let omp = v["programs"].as_array().unwrap().iter().find(|p| p["name"] == "omp").unwrap().clone();
         assert_eq!(omp["state"]["avail"]["state"], "limited", "{omp}");
         assert_eq!(omp["state"]["avail"]["source"], "board");
@@ -1749,8 +1760,8 @@ esac"#,
 
     /* ───────── the spares of the Coordinator, the planner and the light tasks (PLN-89) ───────── */
 
-    /// A task whose line says claude is out of allowance until 17:00 (or no task at all).
-    async fn claude_limited(app: &Shared, on: bool) {
+    /// A task whose line says codex is out of allowance until 17:00 (or no task at all).
+    async fn codex_limited(app: &Shared, on: bool) {
         let mut snap = app.snapshot.write().await;
         snap.tasks.clear();
         if on {
@@ -1760,13 +1771,13 @@ esac"#,
             t.tag = "PLN-7".into();
             t.app = "omp".into();
             t.status = Status::Working;
-            t.msg = "omp took over from claude: out of allowance until 17:00".into();
+            t.msg = "omp took over from codex: out of allowance until 17:00".into();
             snap.tasks = vec![t];
         }
     }
 
     fn installed() -> Vec<String> {
-        ["claude", "codex", "omp"].map(String::from).to_vec()
+        ["codex", "codex", "omp"].map(String::from).to_vec()
     }
 
     /// What the board was told to do (not what it was asked to read).
@@ -1793,20 +1804,20 @@ esac"#,
         let (app, log) = app_with_board(dir.path(), "");
         // codex is signed out in the stand-in's doctor, so the chain skips it and lands on omp
         keep_chain(&app, "coordinator", "codex/gpt-6-luna, omp/deepseek/deepseek-v4-flash", true);
-        claude_limited(&app, true).await;
-        wait_models(&app, &["claude", "codex", "omp"]).await;
+        codex_limited(&app, true).await;
+        wait_models(&app, &["codex", "codex", "omp"]).await;
         failover::tick_with(&app, &installed()).await;
         assert_eq!(board_commands(&log), vec!["set coordinator.agent omp/deepseek/deepseek-v4-flash --main-coordinator"]);
         assert!(all_calls(&log).iter().any(|l| l == "coordinator new"), "and a new Coordinator is started: {:?}", all_calls(&log));
         let sw = failover::read_store(&app.cfg).switched["coordinator"].clone();
-        assert_eq!((sw.home.as_str(), sw.to.as_str(), sw.until.as_str()), ("claude/claude-opus-5-5", "omp/deepseek/deepseek-v4-flash", "17:00"));
+        assert_eq!((sw.home.as_str(), sw.to.as_str(), sw.until.as_str()), ("codex/gpt-6-luna", "omp/deepseek/deepseek-v4-flash", "17:00"));
         let journal = app.snapshot.read().await.journal.iter().map(|e| e.text.clone()).collect::<Vec<_>>();
         assert!(
-            journal.iter().any(|t| t == "Координатор: claude/claude-opus-5-5 → omp/deepseek/deepseek-v4-flash, лимит Claude до 17:00"),
+            journal.iter().any(|t| t == "Координатор: codex/gpt-6-luna → omp/deepseek/deepseek-v4-flash, лимит Codex до 17:00"),
             "{journal:?}"
         );
         // the board keeps the Coordinator's agent in its own layer (`show --main-coordinator`), and a plain `show` still
-        // says claude: the next looks must not take that for a hand-made change and switch again
+        // says codex: the next looks must not take that for a hand-made change and switch again
         let before = all_calls(&log).len();
         failover::tick_with(&app, &installed()).await;
         failover::tick_with(&app, &installed()).await;
@@ -1819,15 +1830,15 @@ esac"#,
         let dir = tempfile::tempdir().unwrap();
         let (app, log) = app_with_board(dir.path(), "");
         keep_chain(&app, "coordinator", "omp/deepseek/deepseek-v4-flash", true);
-        claude_limited(&app, true).await;
-        wait_models(&app, &["claude", "codex", "omp"]).await;
+        codex_limited(&app, true).await;
+        wait_models(&app, &["codex", "codex", "omp"]).await;
         failover::tick_with(&app, &installed()).await;
         failover::tick_with(&app, &installed()).await;
         failover::tick_with(&app, &installed()).await;
         assert_eq!(board_commands(&log).len(), 1, "one switch, however many looks: {:?}", all_calls(&log));
         assert_eq!(all_calls(&log).iter().filter(|l| *l == "coordinator new").count(), 1);
         // the subscription is back: the planner says so once and changes nothing
-        claude_limited(&app, false).await;
+        codex_limited(&app, false).await;
         failover::tick_with(&app, &installed()).await;
         failover::tick_with(&app, &installed()).await;
         assert_eq!(board_commands(&log).len(), 1, "no silent return");
@@ -1847,7 +1858,7 @@ esac"#,
             "the return clears the Coordinator's own layer: the human's value shows again, a later choice is not shadowed"
         );
         let layer = crate::station::read_coordinator_settings(&app.cfg).await.unwrap();
-        assert_eq!(find(&layer, "coordinator.agent").unwrap().value, "claude/claude-opus-5-5");
+        assert_eq!(find(&layer, "coordinator.agent").unwrap().value, "codex/gpt-6-luna");
         assert_eq!(all_calls(&log).iter().filter(|l| *l == "coordinator new").count(), 2);
         assert!(failover::read_store(&app.cfg).switched.is_empty());
     }
@@ -1857,8 +1868,8 @@ esac"#,
         let dir = tempfile::tempdir().unwrap();
         let (app, log) = app_with_board(dir.path(), "");
         keep_chain(&app, "plan", "omp/deepseek/deepseek-v4-flash", true);
-        claude_limited(&app, true).await;
-        wait_models(&app, &["claude", "codex", "omp"]).await;
+        codex_limited(&app, true).await;
+        wait_models(&app, &["codex", "codex", "omp"]).await;
         failover::tick_with(&app, &installed()).await;
         assert_eq!(board_commands(&log), vec!["set plan.agent omp/deepseek/deepseek-v4-flash"]);
         assert!(!all_calls(&log).iter().any(|l| l.starts_with("coordinator ")), "the Coordinator is not touched");
@@ -1869,8 +1880,8 @@ esac"#,
     async fn nothing_is_done_without_a_chain_with_the_mark_off_or_when_no_spare_is_usable() {
         let dir = tempfile::tempdir().unwrap();
         let (app, log) = app_with_board(dir.path(), "");
-        claude_limited(&app, true).await;
-        wait_models(&app, &["claude", "codex", "omp"]).await;
+        codex_limited(&app, true).await;
+        wait_models(&app, &["codex", "codex", "omp"]).await;
         failover::tick_with(&app, &installed()).await;
         assert!(all_calls(&log).is_empty(), "no chain: nothing is done: {:?}", all_calls(&log));
         keep_chain(&app, "coordinator", "omp/deepseek/deepseek-v4-flash", false);
@@ -1884,12 +1895,12 @@ esac"#,
     async fn a_light_task_starts_on_the_first_usable_agent_and_carries_the_rest_as_its_fallback() {
         let dir = tempfile::tempdir().unwrap();
         let (app, _log) = app_with_board(dir.path(), "");
-        write_light(&app.cfg, "claude/claude-haiku-5-5").unwrap();
+        write_light(&app.cfg, "codex/gpt-6-luna").unwrap();
         keep_chain(&app, "light", "codex/gpt-6-luna, omp/deepseek/deepseek-v4-flash", true);
-        claude_limited(&app, true).await;
-        wait_models(&app, &["claude", "codex", "omp"]).await;
+        codex_limited(&app, true).await;
+        wait_models(&app, &["codex", "omp"]).await;
         let down = down_programs(&app, &installed()).await.unwrap();
-        let pick = failover::pick_light("claude/claude-haiku-5-5", &failover::read_store(&app.cfg).spare("light"), &down).unwrap();
+        let pick = failover::pick_light("codex/gpt-6-luna", &failover::read_store(&app.cfg).spare("light"), &down).unwrap();
         assert_eq!((pick.agent.as_str(), pick.fallback.as_str()), ("omp/deepseek/deepseek-v4-flash", ""));
         let v = station_read(&app, StationQuery { repo: None }, &installed()).await.unwrap();
         assert_eq!(v["failover"]["light"]["use"], "omp/deepseek/deepseek-v4-flash", "the page says where light tasks would go now");
@@ -1900,20 +1911,27 @@ esac"#,
     async fn the_chain_of_a_role_is_kept_checked_and_cleared_by_the_planner() {
         let dir = tempfile::tempdir().unwrap();
         let (app, log) = app_with_board(dir.path(), "");
-        wait_models(&app, &["claude", "codex", "omp"]).await;
+        wait_models(&app, &["codex", "codex", "omp"]).await;
         let body = |role: &str, chain: Option<&str>, auto: Option<bool>| failover::SpareBody::test(role, chain, auto);
         let (code, _) = json_of(failover::failover_set(State(app.clone()), headers(), Json(failover::SpareBody::unconfirmed("coordinator", Some("omp")))).await).await;
         assert_eq!(code, StatusCode::BAD_REQUEST, "not without the confirmation");
         let (code, _) = json_of(failover::failover_set(State(app.clone()), headers(), Json(body("reviewer", Some("omp"), None))).await).await;
         assert_eq!(code, StatusCode::BAD_REQUEST, "the board keeps the Reviewer's");
-        let (code, err) = json_of(failover::failover_set(State(app.clone()), headers(), Json(body("coordinator", Some("claude/claude-nope"), None))).await).await;
+        let (code, err) = json_of(failover::failover_set(State(app.clone()), headers(), Json(body("coordinator", Some("codex/nope"), None))).await).await;
         assert_eq!(code, StatusCode::UNPROCESSABLE_ENTITY, "{err}");
-        let (code, ok) = json_of(failover::failover_set(State(app.clone()), headers(), Json(body("plan", Some("omp, claude/claude-haiku-5-5"), None))).await).await;
+        let (code, err) = json_of(failover::failover_set(
+            State(app.clone()),
+            headers(),
+            Json(body("coordinator", Some("codex, omp/pi/anthropic/claude-sonnet-4-6"), None)),
+        ).await).await;
+        assert_eq!(code, StatusCode::UNPROCESSABLE_ENTITY, "a removed provider is rejected, not silently dropped: {err}");
+        assert!(failover::read_store(&app.cfg).spare("coordinator").chain.is_empty());
+        let (code, ok) = json_of(failover::failover_set(State(app.clone()), headers(), Json(body("plan", Some("omp, omp/deepseek/deepseek-v3-flash"), None))).await).await;
         assert_eq!(code, StatusCode::OK, "{ok}");
         let (code, _) = json_of(failover::failover_set(State(app.clone()), headers(), Json(body("plan", None, Some(false)))).await).await;
         assert_eq!(code, StatusCode::OK);
         let s = failover::read_store(&app.cfg).spare("plan");
-        assert_eq!((s.chain.as_str(), s.auto), ("omp, claude/claude-haiku-5-5", false));
+        assert_eq!((s.chain.as_str(), s.auto), ("omp, omp/deepseek/deepseek-v3-flash", false));
         let v = station_read(&app, StationQuery { repo: None }, &installed()).await.unwrap();
         assert_eq!(v["failover"]["plan"]["auto"], false);
         let (code, _) = json_of(failover::failover_set(State(app.clone()), headers(), Json(body("plan", Some("none"), Some(true)))).await).await;
@@ -1927,12 +1945,12 @@ esac"#,
         let dir = tempfile::tempdir().unwrap();
         let (app, log) = app_with_board(dir.path(), "coordinator-new");
         keep_chain(&app, "coordinator", "omp/deepseek/deepseek-v4-flash", true);
-        claude_limited(&app, true).await;
-        wait_models(&app, &["claude", "codex", "omp"]).await;
+        codex_limited(&app, true).await;
+        wait_models(&app, &["codex", "codex", "omp"]).await;
         failover::tick_with(&app, &installed()).await;
         assert_eq!(board_commands(&log), vec!["set coordinator.agent omp/deepseek/deepseek-v4-flash --main-coordinator"]);
         let store = failover::read_store(&app.cfg);
-        assert_eq!(store.switched["coordinator"].home, "claude/claude-opus-5-5", "the setting changed, so the switch is on record");
+        assert_eq!(store.switched["coordinator"].home, "codex/gpt-6-luna", "the setting changed, so the switch is on record");
         let journal = app.snapshot.read().await.journal.iter().map(|e| e.text.clone()).collect::<Vec<_>>();
         assert!(journal.iter().any(|t| t.contains("не удалось перейти") && t.contains("coordinator new")), "{journal:?}");
         failover::tick_with(&app, &installed()).await;
@@ -1943,10 +1961,10 @@ esac"#,
     async fn a_light_task_made_from_a_todo_starts_on_the_spare_and_carries_the_rest() {
         let dir = tempfile::tempdir().unwrap();
         let (app, log) = app_with_board(dir.path(), "");
-        write_light(&app.cfg, "claude/claude-haiku-5-5").unwrap();
+        write_light(&app.cfg, "codex/gpt-6-luna").unwrap();
         keep_chain(&app, "light", "codex/gpt-6-luna, omp/deepseek/deepseek-v4-flash", true);
-        claude_limited(&app, true).await;
-        wait_models(&app, &["claude", "codex", "omp"]).await;
+        codex_limited(&app, true).await;
+        wait_models(&app, &["codex", "omp"]).await;
         app.snapshot.write().await.projects.push(crate::board::Project { name: "planner".into(), ..Default::default() });
         let item = app.db.todo_add("Поправить опечатку", now_ms());
         let add_lines = || {
@@ -1955,7 +1973,7 @@ esac"#,
         let create = |agent: &str| -> crate::server::ActionBody {
             serde_json::from_value(json!({"action": "todo-create", "id": item.id, "repo": "planner", "agent": agent})).unwrap()
         };
-        let res = crate::server::perform_action(&app, create("claude/claude-haiku-5-5"), true).await;
+        let res = crate::server::perform_action(&app, create("codex/gpt-6-luna"), true).await;
         assert_eq!(res.status(), StatusCode::OK);
         let lines = add_lines();
         assert_eq!(lines.len(), 1, "{lines:?}");
@@ -1969,24 +1987,24 @@ esac"#,
         app.snapshot.write().await.projects.push(crate::board::Project { name: "planner".into(), ..Default::default() });
         let item2 = app.db.todo_add("Вторая", now_ms());
         let body: crate::server::ActionBody =
-            serde_json::from_value(json!({"action": "todo-create", "id": item2.id, "repo": "planner", "agent": "claude/claude-sonnet-5-5"})).unwrap();
+            serde_json::from_value(json!({"action": "todo-create", "id": item2.id, "repo": "planner", "agent": "omp/deepseek/deepseek-v4-flash"})).unwrap();
         let (code, said) = json_of(crate::server::perform_action(&app, body, true).await).await;
         assert_eq!(code, StatusCode::OK, "{said}");
         let lines = add_lines();
-        assert!(lines[1].contains("--worker.agent claude/claude-sonnet-5-5") && !lines[1].contains("--worker.fallback"), "{}", lines[1]);
+        assert!(lines[1].contains("--worker.agent omp/deepseek/deepseek-v4-flash") && !lines[1].contains("--worker.fallback"), "{}", lines[1]);
 
         // the preset is usable: it starts first and the chain goes with it as the task's fallback
-        claude_limited(&app, false).await;
+        codex_limited(&app, false).await;
         app.snapshot.write().await.projects.push(crate::board::Project { name: "planner".into(), ..Default::default() });
         let item3 = app.db.todo_add("Третья", now_ms());
         let body: crate::server::ActionBody =
-            serde_json::from_value(json!({"action": "todo-create", "id": item3.id, "repo": "planner", "agent": "claude/claude-haiku-5-5"})).unwrap();
+            serde_json::from_value(json!({"action": "todo-create", "id": item3.id, "repo": "planner", "agent": "codex/gpt-6-luna"})).unwrap();
         let (code, said) = json_of(crate::server::perform_action(&app, body, true).await).await;
         assert_eq!(code, StatusCode::OK, "{said}");
         let lines = add_lines();
         assert!(
-            lines[2].contains("--worker.agent claude/claude-haiku-5-5")
-                && lines[2].contains("--worker.fallback codex/gpt-6-luna, omp/deepseek/deepseek-v4-flash"),
+            lines[2].contains("--worker.agent codex/gpt-6-luna")
+                && lines[2].contains("--worker.fallback omp/deepseek/deepseek-v4-flash"),
             "{}",
             lines[2]
         );
@@ -1996,7 +2014,7 @@ esac"#,
     fn pin_coordinator_layer(dir: &FsPath, agent: &str) {
         let main = dir.join("main-coordinator.json");
         let text = std::fs::read_to_string(&main).unwrap();
-        let from = r#"{"name":"coordinator.agent","kind":"work","value":"claude/claude-opus-5-5","from":"you","place":"you","own":true"#;
+        let from = r#"{"name":"coordinator.agent","kind":"work","value":"codex/gpt-6-luna","from":"you","place":"you","own":true"#;
         assert!(text.contains(from));
         let to = format!(r#"{{"name":"coordinator.agent","kind":"work","value":"{agent}","from":"coordinator","place":"coord","own":true"#);
         std::fs::write(&main, text.replace(from, &to)).unwrap();
@@ -2006,17 +2024,17 @@ esac"#,
     async fn a_value_the_coordinators_layer_held_before_is_put_back_by_the_return() {
         let dir = tempfile::tempdir().unwrap();
         let (app, log) = app_with_board(dir.path(), "");
-        pin_coordinator_layer(dir.path(), "claude/claude-opus-5-5");
+        pin_coordinator_layer(dir.path(), "codex/gpt-6-luna");
         keep_chain(&app, "coordinator", "omp/deepseek/deepseek-v4-flash", true);
-        claude_limited(&app, true).await;
-        wait_models(&app, &["claude", "codex", "omp"]).await;
+        codex_limited(&app, true).await;
+        wait_models(&app, &["codex", "codex", "omp"]).await;
         failover::tick_with(&app, &installed()).await;
         assert!(failover::read_store(&app.cfg).switched["coordinator"].pinned_home);
-        claude_limited(&app, false).await;
+        codex_limited(&app, false).await;
         failover::tick_with(&app, &installed()).await;
         let (code, done) = json_of(failover::back_for_test(&app, failover::BackBody::test("back", "coordinator"), &installed()).await).await;
         assert_eq!(code, StatusCode::OK, "{done}");
-        assert_eq!(board_commands(&log).last().unwrap(), "set coordinator.agent claude/claude-opus-5-5 --main-coordinator");
+        assert_eq!(board_commands(&log).last().unwrap(), "set coordinator.agent codex/gpt-6-luna --main-coordinator");
     }
 
     #[tokio::test]
@@ -2024,8 +2042,8 @@ esac"#,
         let dir = tempfile::tempdir().unwrap();
         let (app, log) = app_with_board(dir.path(), "");
         keep_chain(&app, "coordinator", "omp/deepseek/deepseek-v4-flash", true);
-        claude_limited(&app, true).await;
-        wait_models(&app, &["claude", "codex", "omp"]).await;
+        codex_limited(&app, true).await;
+        wait_models(&app, &["codex", "codex", "omp"]).await;
         failover::tick_with(&app, &installed()).await;
         let news = all_calls(&log).iter().filter(|l| *l == "coordinator new").count();
         let (code, done) = json_of(failover::back_for_test(&app, failover::BackBody::test("keep", "coordinator"), &installed()).await).await;
@@ -2045,7 +2063,7 @@ esac"#,
     fn human_picks_coordinator(dir: &FsPath, agent: &str) {
         let show = dir.join("show.json");
         let text = std::fs::read_to_string(&show).unwrap();
-        let from = r#"{"name":"coordinator.agent","kind":"work","value":"claude/claude-opus-5-5""#;
+        let from = r#"{"name":"coordinator.agent","kind":"work","value":"codex/gpt-6-luna""#;
         assert!(text.contains(from));
         std::fs::write(&show, text.replace(from, &format!(r#"{{"name":"coordinator.agent","kind":"work","value":"{agent}""#))).unwrap();
     }
@@ -2055,12 +2073,12 @@ esac"#,
         let dir = tempfile::tempdir().unwrap();
         let (app, log) = app_with_board(dir.path(), "");
         keep_chain(&app, "coordinator", "omp/deepseek/deepseek-v4-flash", true);
-        claude_limited(&app, true).await;
-        wait_models(&app, &["claude", "codex", "omp"]).await;
+        codex_limited(&app, true).await;
+        wait_models(&app, &["codex", "codex", "omp"]).await;
         failover::tick_with(&app, &installed()).await;
-        assert_eq!(failover::read_store(&app.cfg).switched["coordinator"].human, "claude/claude-opus-5-5");
+        assert_eq!(failover::read_store(&app.cfg).switched["coordinator"].human, "codex/gpt-6-luna");
         // the human picks another one in the Crew window
-        human_picks_coordinator(dir.path(), "claude/claude-sonnet-5-5");
+        human_picks_coordinator(dir.path(), "omp/deepseek/deepseek-v4-flash");
         failover::tick_with(&app, &installed()).await;
         assert_eq!(
             board_commands(&log),
@@ -2072,7 +2090,7 @@ esac"#,
         );
         assert!(failover::read_store(&app.cfg).switched.is_empty());
         let layer = crate::station::read_coordinator_settings(&app.cfg).await.unwrap();
-        assert_eq!(find(&layer, "coordinator.agent").unwrap().value, "claude/claude-sonnet-5-5");
+        assert_eq!(find(&layer, "coordinator.agent").unwrap().value, "omp/deepseek/deepseek-v4-flash");
         assert!(all_calls(&log).iter().filter(|l| *l == "coordinator new").count() == 1, "no new Coordinator for it");
     }
 
@@ -2082,11 +2100,11 @@ esac"#,
             let dir = tempfile::tempdir().unwrap();
             let (app, log) = app_with_board(dir.path(), "");
             keep_chain(&app, "coordinator", "omp/deepseek/deepseek-v4-flash", true);
-            claude_limited(&app, true).await;
-            wait_models(&app, &["claude", "codex", "omp"]).await;
+            codex_limited(&app, true).await;
+            wait_models(&app, &["codex", "codex", "omp"]).await;
             failover::tick_with(&app, &installed()).await;
-            claude_limited(&app, false).await;
-            human_picks_coordinator(dir.path(), "claude/claude-sonnet-5-5");
+            codex_limited(&app, false).await;
+            human_picks_coordinator(dir.path(), "omp/deepseek/deepseek-v4-flash");
             let (code, said) = json_of(failover::back_for_test(&app, failover::BackBody::test(op, "coordinator"), &installed()).await).await;
             assert_eq!(code, StatusCode::CONFLICT, "{op}: {said}");
             assert_eq!(

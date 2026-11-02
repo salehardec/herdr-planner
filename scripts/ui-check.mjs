@@ -358,7 +358,7 @@ section('navigator', async () => {
   await evalJs('document.querySelector("#nav [data-kind=\\"group\\"][aria-expanded=\\"false\\"]").click()');
   check('a click unfolds it again', await waitFor(`document.querySelectorAll("#nav [data-kind=\\"group\\"][aria-expanded=\\"true\\"]").length === ${openDays}`, 3000));
   const moons = await evalJs('[...document.querySelectorAll("#nav [data-kind=\\"moon\\"]")].map((e) => e.innerText.replace(/\\s+/g, " ").trim())');
-  check('sub-agents are under their planet (Explore under ALP-2)', moons?.some((m) => m.includes('Explore')), JSON.stringify(moons));
+  check('sub-agents are under their planet (Migration under ALP-6)', moons?.some((m) => m.includes('Migration')), JSON.stringify(moons));
   await evalJs('document.querySelector("#nav [data-kind=\\"planet\\"]").focus()');
   await press('ArrowDown');
   check('the arrow keys move along the tree', await waitFor('document.activeElement.dataset.nav !== undefined', 3000));
@@ -904,10 +904,10 @@ section('search', async () => {
   await send('Input.insertText', { text: 'старую схему' });
   check('and by the words of its description', await waitFor('[...document.querySelectorAll("#sres .srow")].some((e) => e.dataset.kind === "planet")', 3000), await text('#sres'));
   await evalJs('document.getElementById("q").select()');
-  await send('Input.insertText', { text: 'deepseek' });
-  check('and by its agent and model', await waitFor('[...document.querySelectorAll("#sres .srow")].some((e) => e.dataset.id === "alpha/6")', 4000), await text('#sres'));
+  await send('Input.insertText', { text: 'gpt-5-codex' });
+  check('and by its agent and model', await waitFor('[...document.querySelectorAll("#sres .srow")].some((e) => e.dataset.id === "delta/1")', 4000), await text('#sres'));
   await evalJs('document.getElementById("q").select()');
-  await send('Input.insertText', { text: 'Explore' });
+  await send('Input.insertText', { text: 'Migration' });
   check('sub-agents are found', await waitFor('[...document.querySelectorAll("#sres .srow")].some((e) => e.dataset.kind === "moon")', 3000), await text('#sres'));
   await evalJs('document.getElementById("q").select()');
   await send('Input.insertText', { text: 'вопрос 4' });
@@ -1000,7 +1000,7 @@ section('chat', async () => {
   // the Coordinator at work: how long, what it does (the last tool call of the running turn), its sub-agents
   writeFileSync(join(fixture, 'state', 'coordinator-busy'), '1');
   writeFileSync(coordPoke, readFileSync(coordPoke, 'utf8'));
-  check('while it works the chat says so, with what it does and for how long', await waitFor(`(() => { const w = document.querySelector('#cworking'); return !!w && w.innerText.includes('Читаю board details ALP-10') && /работает · \\d+ (ч|мин|с)/.test(w.innerText) && w.innerText.includes('1 субагент'); })()`, 25000), await text('#cworking'));
+  check('while it works the chat says so, with what it does and for how long', await waitFor(`(() => { const w = document.querySelector('#cworking'); return !!w && w.innerText.includes('Читаю board details ALP-10') && /работает · \\d+ (ч|мин|с)/.test(w.innerText) && !w.innerText.includes('субагент'); })()`, 25000), await text('#cworking'));
   await send('Emulation.setEmulatedMedia', { features: [{ name: 'prefers-reduced-motion', value: 'reduce' }] });
   check('reduced motion: the pulse and the dots do not animate', await waitFor(`getComputedStyle(document.querySelector('#cworking .pulse')).animationName === 'none' && getComputedStyle(document.querySelector('#cworking .dots i')).animationName === 'none'`, 3000));
   await send('Emulation.setEmulatedMedia', { features: [] });
@@ -1018,7 +1018,7 @@ section('chat', async () => {
   // PLN-60: a board notice is its own kind of message; an image of a message opens large
   const notice = await evalJs(`(() => { const t = document.querySelector('#clog .turn[data-n="6"]'); if (!t) return null; const n = t.querySelector('.msg.notice'); return { notice: !!n, q: !!t.querySelector('.msg.q'), who: n?.querySelector('.who')?.innerText || '', chip: !!n?.querySelector('.ntl [data-tag="ALP-7"]'), badge: n?.querySelector('.ntl > .badge')?.innerText || '', text: n?.innerText || '' }; })()`);
   check('turn 7 is a board notice: «Доска», the task as a chip, its name (with its own quotes) and its state, without the instruction', !!notice && notice.notice && !notice.q && notice.who === 'Доска' && notice.chip && notice.badge === 'ждёт тебя' && notice.text.includes('«Документация «API экспорта»: примеры»') && !notice.text.includes('Посмотри') && !notice.text.includes('[Уведомление'), JSON.stringify(notice));
-  // the picture is an image block of the transcript record (Claude Code drops the path lines): the planner serves it from there
+  // the picture is an image block of the transcript record (OMP Code drops the path lines): the planner serves it from there
   // Revealing older turns only inserts their lazy images; reveal the thumbnail in the log and wait for its bytes too.
   await evalJs(`document.querySelector('#clog .turn[data-n="5"] .shot img')?.scrollIntoView({ block: 'nearest', behavior: 'instant' }); true`);
   await waitFor(`(() => { const img = document.querySelector('#clog .turn[data-n="5"] .shot img'); return img?.complete && img.naturalWidth > 0; })()`, 8000);
@@ -1235,7 +1235,7 @@ section('chat', async () => {
 
 section('chat echo', async () => {
   const folder = realpathSync(join(fixture, 'board', 'coordinator', 'default', 'chat')).replace(/[^A-Za-z0-9]/g, '-');
-  const file = join(fixture, 'claude', 'projects', folder, 'fixture.jsonl');
+  const file = join(fixture, 'transcripts', folder, 'fixture.jsonl');
   const before = readFileSync(file, 'utf8');
   const busyFile = join(fixture, 'state', 'coordinator-busy');
   const key = 'planner.chat.echoes';
@@ -1428,10 +1428,10 @@ section('hints', async () => {
   await line('/');
   check('a slash at the start shows the program\'s own commands', await waitFor('!!document.querySelector("#ask-complete")', 10000) && (await headings()).map((h) => h.toLowerCase()).includes('команды программы'), JSON.stringify(await headings()));
   const all = await rows();
-  check('Claude Code\'s built-in commands are there, with words about them', all.some((r) => r.label === '/compact' && r.hint.length > 0), JSON.stringify(all.slice(0, 4)));
-  check('the skill and the commands of this machine are there too', ['/fixture-skill', '/fixture-cmd', '/here-cmd'].every((l) => all.some((r) => r.label === l)), JSON.stringify(all.map((r) => r.label)));
-  check('a skill that is a link is offered too, as most of ~/.claude/skills are', all.some((r) => r.label === '/ui-ux-pro-max' && r.hint.length > 0), JSON.stringify(all.filter((r) => r.hint.includes('ссылк'))));
-  check('the commands come first, the skill and the folder commands after them', all.findIndex((r) => r.label === '/here-cmd') > all.findIndex((r) => r.label === '/compact'));
+  check('OMP\'s built-in commands are there, with words about them', all.some((r) => r.label === '/compact' && r.hint.length > 0), JSON.stringify(all.slice(0, 4)));
+  check('the project skills are there too', all.some((r) => r.label === '/skill:fixture-skill'), JSON.stringify(all.map((r) => r.label)));
+  check('a skill that is a link is offered too', all.some((r) => r.label === '/skill:ui-ux-pro-max' && r.hint.length > 0), JSON.stringify(all.filter((r) => r.hint.includes('ссылк'))));
+  check('the built-in commands come before the skills', all.findIndex((r) => r.label === '/skill:fixture-skill') > all.findIndex((r) => r.label === '/compact'));
   const named = await evalJs(`(() => {
     const rows = [...document.querySelectorAll('#ask-complete .cmpl-row')].slice(0, 6);
     const seen = rows.map((r) => {
@@ -1465,9 +1465,9 @@ section('hints', async () => {
   check('the list is inside the chat and on top of it', shown.inChat && shown.onTop && !/, 0\)$/.test(shown.bg), JSON.stringify(shown));
   await shot('hints-commands.png');
   await line('/fix');
-  check('the list narrows as the words are typed', await waitFor('[...document.querySelectorAll("#ask-complete .cmpl-row")].length === 2', 4000) && (await rows()).every((r) => r.label.includes('fixture')), JSON.stringify(await rows()));
+  check('the list narrows as the words are typed', await waitFor('[...document.querySelectorAll("#ask-complete .cmpl-row")].length === 1', 4000) && (await rows()).every((r) => r.label.includes('fixture')), JSON.stringify(await rows()));
   await press('Tab');
-  check('Tab inserts the chosen command, with a space for its words', await waitFor('document.querySelector("#ask-in").value === "/fixture-skill "', 3000), await evalJs('document.querySelector("#ask-in").value'));
+  check('Tab inserts the chosen command, with a space for its words', await waitFor('document.querySelector("#ask-in").value === "/skill:fixture-skill "', 3000), await evalJs('document.querySelector("#ask-in").value'));
   check('and the list closes after the insertion', await waitFor('!document.querySelector("#ask-complete")', 3000));
   await line('/comp');
   await waitFor('!!document.querySelector("#ask-complete")', 4000);
@@ -1527,17 +1527,18 @@ section('hints', async () => {
   })()`));
   const tellsBefore = calls().filter((c) => c.argv[0] === 'tell').length;
   await press('Enter');
-  check('Enter picks a command there too, instead of telling the agent', await waitFor('document.querySelector("#tell").value === "/add-dir "', 3000) && calls().filter((c) => c.argv[0] === 'tell').length === tellsBefore, JSON.stringify({ value: await evalJs('document.querySelector("#tell").value'), tells: calls().filter((c) => c.argv[0] === 'tell').length - tellsBefore, last: lastCall() }));
+  check('Enter picks a command there too, instead of telling the agent', await waitFor('document.querySelector("#tell").value === "/model "', 3000) && calls().filter((c) => c.argv[0] === 'tell').length === tellsBefore, JSON.stringify({ value: await evalJs('document.querySelector("#tell").value'), tells: calls().filter((c) => c.argv[0] === 'tell').length - tellsBefore, last: lastCall() }));
   await evalJs('(() => { const el = document.querySelector("#tell"); el.value = "@ALP-2"; el.setSelectionRange(6, 6); el.dispatchEvent(new Event("input", { bubbles: true })); return true; })()');
   check('@ in the reply field names a task by its id as well', await waitFor('[...document.querySelectorAll("#tell-complete .cmpl-row")].some((e) => e.querySelector(".cmpl-name").innerText === "ALP-2")', 5000), await evalJs('document.querySelector("#tell-complete")?.innerText'));
   await press('Enter');
   check('and inserts it', (await evalJs('document.querySelector("#tell").value')) === 'ALP-2', await evalJs('document.querySelector("#tell").value'));
   await evalJs('(() => { const el = document.querySelector("#tell"); el.value = ""; el.dispatchEvent(new Event("input", { bubbles: true })); return true; })()');
   // A skill with a name longer than the list is wide: it wraps inside its column, its words stay beside it.
-  const longName = '/superpowers-executing-plans-with-subagent-driven-development-review';
-  await evalJs(`(() => { const el = document.querySelector("#tell"); el.focus(); el.value = "/super"; el.setSelectionRange(6, 6); el.dispatchEvent(new Event("input", { bubbles: true })); return true; })()`);
-  check('a name longer than the list wraps inside it, and its words stay', await waitFor(`[...document.querySelectorAll("#tell-complete .cmpl-name")].some((n) => n.innerText === ${JSON.stringify(longName)})`, 10000) && await evalJs(`(() => {
-    const list = document.querySelector('#tell-complete');
+  await press('Slash', '/');
+  const longName = '/skill:superpowers-executing-plans-with-subagent-driven-development-review';
+  await evalJs(`(() => { const el = document.querySelector("#ask-in"); el.focus(); el.value = "/skill:super"; el.setSelectionRange(11, 11); el.dispatchEvent(new Event("input", { bubbles: true })); return true; })()`);
+  check('a name longer than the list wraps inside it, and its words stay', await waitFor(`[...document.querySelectorAll("#ask-complete .cmpl-name")].some((n) => n.innerText === ${JSON.stringify(longName)})`, 10000) && await evalJs(`(() => {
+    const list = document.querySelector('#ask-complete');
     const row = [...list.querySelectorAll('.cmpl-row')].find((r) => r.querySelector('.cmpl-name').innerText === ${JSON.stringify(longName)});
     if (!row) return false;
     const n = row.querySelector('.cmpl-name');
@@ -1546,13 +1547,15 @@ section('hints', async () => {
     const rb = row.getBoundingClientRect();
     return list.scrollWidth <= list.clientWidth + 1 && nb.right <= rb.right + 1 && n.scrollWidth <= n.clientWidth + 1 && n.scrollHeight <= n.clientHeight + 1 && h.getBoundingClientRect().width > 10;
   })()`), JSON.stringify(await evalJs(`(() => {
-    const list = document.querySelector('#tell-complete');
+    const list = document.querySelector('#ask-complete');
     const row = [...list.querySelectorAll('.cmpl-row')].find((r) => r.querySelector('.cmpl-name').innerText.length > 40);
     if (!row) return { rows: list.innerText.slice(0, 200) };
     const n = row.querySelector('.cmpl-name'); const nb = n.getBoundingClientRect();
     return { listScroll: [list.scrollWidth, list.clientWidth], name: [nb.left, nb.right, nb.top, nb.bottom], scroll: [n.scrollWidth, n.clientWidth, n.scrollHeight, n.clientHeight], hint: row.querySelector('.cmpl-hint').getBoundingClientRect().width };
   })()`)));
-  await evalJs('(() => { const el = document.querySelector("#tell"); el.value = ""; el.dispatchEvent(new Event("input", { bubbles: true })); return true; })()');
+  await evalJs('(() => { const el = document.querySelector("#ask-in"); el.value = ""; el.dispatchEvent(new Event("input", { bubbles: true })); return true; })()');
+  await press('Escape');
+  await press('Escape');
   // The list of a task whose agent is omp: its own commands, and a skill only as omp calls it (`/skill:name`).
   await go('alpha/6');
   check('an omp task opens its own reply field', await waitFor('!!document.querySelector("#tell") && plannerSnap().tasks.find((t) => t.id === "alpha/6")?.app === "omp"', 10000));
@@ -1567,16 +1570,19 @@ section('hints', async () => {
   check('omp skill commands are named skill:<name>, not bare names', Array.isArray(ompApi?.commands) && ompApi.commands.filter((c) => c.kind !== 'builtin').every((c) => c.name.startsWith('skill:')), JSON.stringify((ompApi?.commands || []).filter((c) => c.kind !== 'builtin').slice(0, 5)));
   // The row a person picks inserts a command omp knows: `/skill:<name> ` with the space for its words.
   const ompSkill = (ompApi?.commands || []).find((c) => c.kind === 'skill');
+  await press('Slash', '/');
   if (ompSkill) {
     const cmd = `/${ompSkill.name}`;
-    await evalJs(`(() => { const el = document.querySelector("#tell"); el.focus(); el.value = ${JSON.stringify(cmd)}; el.setSelectionRange(el.value.length, el.value.length); el.dispatchEvent(new Event("input", { bubbles: true })); return true; })()`);
-    const offered = await waitFor(`[...document.querySelectorAll("#tell-complete .cmpl-row .cmpl-name")].some((n) => n.innerText === ${JSON.stringify(cmd)})`, 8000);
+    await evalJs(`(() => { const el = document.querySelector("#ask-in"); el.focus(); el.value = ${JSON.stringify(cmd)}; el.setSelectionRange(el.value.length, el.value.length); el.dispatchEvent(new Event("input", { bubbles: true })); return true; })()`);
+    const offered = await waitFor(`[...document.querySelectorAll("#ask-complete .cmpl-row .cmpl-name")].some((n) => n.innerText === ${JSON.stringify(cmd)})`, 8000);
     await press('Enter');
-    check('Enter inserts the whole skill command, as the program calls it', offered && (await evalJs('document.querySelector("#tell").value')) === `${cmd} `, JSON.stringify({ cmd, value: await evalJs('document.querySelector("#tell").value') }));
+    check('Enter inserts the whole skill command, as the program calls it', offered && (await evalJs('document.querySelector("#ask-in").value')) === `${cmd} `, JSON.stringify({ cmd, value: await evalJs('document.querySelector("#ask-in").value') }));
   }
+  await press('Escape');
+  await press('Escape');
   const piApi = await evalJs(`fetch('/api/hints/slash?program=pi&dir=').then((r) => r.json())`);
   check('pi does the same, and has its own commands', Array.isArray(piApi?.commands) && piApi.commands.filter((c) => c.kind !== 'builtin').every((c) => c.name.startsWith('skill:')) && ['settings', 'model', 'thinking', 'new', 'resume', 'compact'].every((n) => piApi.commands.some((c) => c.name === n && c.kind === 'builtin')), JSON.stringify((piApi?.commands || []).slice(0, 6)));
-  await evalJs('(() => { const el = document.querySelector("#tell"); el.value = ""; el.dispatchEvent(new Event("input", { bubbles: true })); return true; })()');
+  await evalJs('(() => { const el = document.querySelector("#ask-in"); el.value = ""; el.dispatchEvent(new Event("input", { bubbles: true })); return true; })()');
   await resetUi();
 }, { retry: true });
 
@@ -1831,11 +1837,12 @@ section('todo', async () => {
   check('the model list loads (free input first, then names)', await waitFor('document.querySelectorAll("#models-list option").length >= 2', 15000), await evalJs('document.querySelectorAll("#models-list option").length'));
   check('the words of the task can be corrected there', await waitFor('document.querySelector("#pop-text")?.value === "Новая задача из дела"'));
   await evalJs('(() => { const i = document.querySelector("#pop-text"); i.value = "Новая задача из дела (правка)"; i.dispatchEvent(new Event("input", { bubbles: true })); })()');
-  await click('#pop [data-prog="claude"]');
-  await evalJs('(() => { const i = document.querySelector("#pop-model"); i.value = "claude-sonnet-5-5"; i.dispatchEvent(new Event("input", { bubbles: true })); })()');
+  await click('#pop [data-prog="omp"]');
+  await evalJs('(() => { const i = document.querySelector("#pop-model"); i.value = "omp/deepseek/deepseek-v4-flash"; i.dispatchEvent(new Event("input", { bubbles: true })); })()');
   await click('#pop-go');
-  check('the task is created with the chosen agent/model', await waitLog(() => calls().some((c) => c.argv[0] === 'add' && c.argv.includes('--repo') && c.argv.includes('delta') && c.argv.includes('--worker.agent') && c.argv.includes('claude/claude-sonnet-5-5')), 12000), JSON.stringify(lastCall()));
-  check('with the corrected title', calls().some((c) => c.argv[0] === 'add' && c.argv[1] === 'Новая задача из дела (правка)'), JSON.stringify(lastCall()));
+  await waitLog(() => calls().some((c) => c.argv?.[0] === 'add' && c.argv.includes('--repo') && c.argv.includes('delta') && c.argv.includes('--worker.agent') && c.argv.includes('omp/deepseek/deepseek-v4-flash')), 12000);
+  check('the task is created with the chosen agent/model', calls().some((c) => c.argv?.[0] === 'add' && c.argv.includes('--repo') && c.argv.includes('delta') && c.argv.includes('--worker.agent') && c.argv.includes('omp/deepseek/deepseek-v4-flash')), JSON.stringify(lastCall()));
+  check('with the corrected title', calls().some((c) => c.argv?.[0] === 'add' && c.argv[1] === 'Новая задача из дела (правка)'), JSON.stringify(lastCall()));
   check('the new planet appears in its date group', await waitFor(`plannerSnap().tasks.some((t) => t.repo === 'delta' && t.title === 'Новая задача из дела (правка)')`, 12000));
   // reorder
   const ids = await evalJs('[...document.querySelectorAll("#todo-list .titem")].map((e) => e.dataset.todo)');
@@ -2239,8 +2246,8 @@ section('focus', async () => {
   await send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: 12, y: 12, button: 'left', clickCount: 1 });
   check('a click on the background closes the expanded result', behind === 'summary' && await waitFor('!document.querySelector("#summary")', 4000), String(behind));
   await click('#closing [data-act="translate"]');
-  check('the translation comes from the server model (the fake claude)', await waitFor('(document.querySelector("#closing").innerText || "").includes("ПЕРЕВОД:")', 12000), (await text('#closing')).slice(0, 100));
-  check('the translator ran without tools and the text was not in its arguments', calls('claude.jsonl').some((c) => c.tools_empty === true || c.toolsEmpty === true || JSON.stringify(c).includes('"--tools"')) && !calls('claude.jsonl').some((c) => JSON.stringify(c.argv).includes('implemented')), JSON.stringify(calls('claude.jsonl').at(-1)).slice(0, 200));
+  check('the translation comes from the server model (the fake omp)', await waitFor('(document.querySelector("#closing").innerText || "").includes("ПЕРЕВОД:")', 12000), (await text('#closing')).slice(0, 100));
+  check('the translator ran without tools and the text was not in its arguments', calls('translation.jsonl').some((c) => c.tools_empty === true || c.toolsEmpty === true || JSON.stringify(c).includes('"--tools"')) && !calls('translation.jsonl').some((c) => JSON.stringify(c.argv).includes('implemented')), JSON.stringify(calls('translation.jsonl').at(-1)).slice(0, 200));
   await click('#closing [data-act="translate-orig"]');
   check('the original can be shown again', await waitFor('!(document.querySelector("#closing").innerText || "").includes("ПЕРЕВОД:")', 4000));
   await click('#closing [data-act="summary-open"]');
@@ -2304,25 +2311,25 @@ section('focus', async () => {
   check('sub-agents are listed in the focus with what they do', await hasText('#focus .moons', 'Migration'), await text('#focus .moons'));
   await shot('focus-omp.png');
   // moons in the world
-  await go('alpha/2');
-  const moonsOk = `(() => { const m = world.debug().moons; return ['running', 'quiet'].every((st) => m.some((x) => x.key.startsWith('alpha/2#') && x.state === st)) && !m.some((x) => x.key.startsWith('alpha/2#') && x.state === 'done' && !x.leaving); })()`;
+  await go('alpha/6');
+  const moonsOk = `(() => { const m = world.debug().moons; return ['running', 'quiet'].every((st) => m.some((x) => x.key.startsWith('alpha/6#') && x.state === st)) && !m.some((x) => x.key.startsWith('alpha/6#') && x.state === 'done' && !x.leaving); })()`;
   check('a running and a quiet sub-agent are drawn as moons; a finished one is not (it has left)', await waitFor(moonsOk, 10000), JSON.stringify(await evalJs('world.debug().moons')));
-  check('all three states exist in the snapshot', ['running', 'quiet', 'done'].every((st) => (async () => true)() && true) && await evalJs(`['running','quiet','done'].every((st) => plannerSnap().tasks.find((t) => t.id === 'alpha/2').subagents.some((s) => s.state === st))`));
-  const sub = await evalJs(`plannerSnap().tasks.find((t) => t.id === 'alpha/2').subagents.find((s) => s.state === 'running')`);
-  await evalJs(`planner.navigateTo({kind:'moon',id:'alpha/2#${sub.id}'}); true`);
+  check('all three states exist in the snapshot', await evalJs(`['running','quiet','done'].every((st) => plannerSnap().tasks.find((t) => t.id === 'alpha/6').subagents.some((s) => s.state === st))`));
+  const sub = await evalJs(`plannerSnap().tasks.find((t) => t.id === 'alpha/6').subagents.find((s) => s.state === 'running')`);
+  await evalJs(`planner.navigateTo({kind:'moon',id:'alpha/6#${sub.id}'}); true`);
   check('choosing a moon flies to it and opens its card', await waitFor('plannerDebug().selected?.kind === "moon" && world.debug().flight === "idle"', 15000) && await exists('#focus [data-focus="moon"]'), JSON.stringify(await pd()));
-  check('the card says what it does now, how long, the role', await hasText('#focus', 'Explore') && await hasText('#focus', 'что делает', 4000, true) && /идёт\s+\d/.test(await text('#focus')), (await text('#focus')).replace(/\s+/g, ' ').slice(0, 200));
+  check('the card says what it does now, how long, the role', await hasText('#focus', 'Migration') && await hasText('#focus', 'что делает', 4000, true) && /идёт\s+\d/.test(await text('#focus')), (await text('#focus')).replace(/\s+/g, ' ').slice(0, 200));
   await shot('moon-card.png');
   await press('Escape');
-  await waitFor('plannerDebug().selected?.id === "alpha/2"', 15000);
-  const done = await evalJs(`plannerSnap().tasks.find((t) => t.id === 'alpha/2').subagents.find((s) => s.state === 'done')`);
-  await evalJs(`planner.navigateTo({kind:'moon',id:'alpha/2#${done.id}'}); true`);
+  await waitFor('plannerDebug().selected?.id === "alpha/6"', 15000);
+  const done = await evalJs(`plannerSnap().tasks.find((t) => t.id === 'alpha/6').subagents.find((s) => s.state === 'done')`);
+  await evalJs(`planner.navigateTo({kind:'moon',id:'alpha/6#${done.id}'}); true`);
   await waitFor('plannerDebug().selected?.kind === "moon" && world.debug().flight === "idle"', 15000);
   check('a finished sub-agent shows its result', await hasText('#focus', 'итог', 4000, true) && !(await text('#focus')).includes('Итог будет') && (await text('#focus')).length > 200, (await text('#focus')).slice(0, 160));
   const pi = await evalJs(`plannerSnap().tasks.find((t) => t.id === 'alpha/7')?.subagents_note`);
   check('pi has no sub-agents and says so honestly', typeof pi === 'string' && pi.includes('нет данных'), String(pi));
   writeFileSync(join(fixture, 'state', 'coordinator-busy'), '1');
-  check('while the Coordinator works its sub-agents are moons of the Quasar', await waitFor('world.debug().moons.some((m) => m.key.startsWith("quasar#") && m.state === "running")', 20000), JSON.stringify((await debug())?.moons));
+  check('the Coordinator honestly reports that its sub-agents are unavailable', await waitFor('plannerSnap().coordinator.subagents_note.includes("нет данных") && !world.debug().moons.some((m) => m.key.startsWith("quasar#"))', 20000), JSON.stringify((await debug())?.moons));
   unlinkSync(join(fixture, 'state', 'coordinator-busy'));
   await resetUi();
 });
@@ -2501,7 +2508,7 @@ section('requests', async () => {
   await quiet();
   const focusScreenReads = () => evalJs('window.__net.log.filter((u) => u.includes("/screen?target=alpha%2F16")).length');
   const focusReadsBefore = await focusScreenReads();
-  writeFileSync(join(fixture, 'state', 'dialog.txt'), readFileSync(new URL('../src/menu_samples/claude-trust-folder.txt', import.meta.url), 'utf8'));
+  writeFileSync(join(fixture, 'state', 'dialog.txt'), readFileSync(new URL('../src/menu_samples/form-trust-folder.txt', import.meta.url), 'utf8'));
   await sleep(4500);
   check('a waiting Focus card does not poll the agent screen', await focusScreenReads() === focusReadsBefore
     && await exists('#focus [data-act="perm-allow"]'));
@@ -2524,7 +2531,7 @@ section('requests', async () => {
       && await exists('#focus [data-reach="screen"] [data-act="screen"][data-target="alpha/16"]')
       && !(await exists('#focus [data-act="perm-allow"]')) && !(await exists('#focus [data-act="dlg-allow"]')),
     (await text('#focus')).slice(0, 240));
-  writeFileSync(join(fixture, 'state', 'dialog.txt'), readFileSync(new URL('../src/menu_samples/claude-trust-folder.txt', import.meta.url), 'utf8'));
+  writeFileSync(join(fixture, 'state', 'dialog.txt'), readFileSync(new URL('../src/menu_samples/form-trust-folder.txt', import.meta.url), 'utf8'));
   const trustCard = '#focus [data-type="permission"]';
   await quiet();
   const beforeReread = await focusScreenReads();
@@ -2583,7 +2590,7 @@ section('requests', async () => {
   await click('#focus [data-act="files"]');
   check('the folder button opens yazi in the worktree', await waitLog(() => calls('terminal.jsonl').some((c) => c.argv[0] === 'yazi' && c.argv[1].includes('worktrees')), 6000), JSON.stringify(lastCall('terminal.jsonl')));
   // ── PLN-61: «План готов», a permission dialog and a question without text are different cards with working buttons.
-  const permScreen = readFileSync(new URL('../src/menu_samples/claude-permission.txt', import.meta.url), 'utf8');
+  const permScreen = readFileSync(new URL('../src/menu_samples/form-permission.txt', import.meta.url), 'utf8');
   writeFileSync(join(fixture, 'state', 'dialog.txt'), permScreen);
   await go('alpha/16');
   const permCard = '#focus [data-type="permission"]';
@@ -2629,7 +2636,7 @@ section('requests', async () => {
   await resetUi();
   // ── The PLN-60 case itself: the board calls the stopped agent a question (or gives it no kind) and «Needs you»; the
   // screen has the real dialog. The card must come from the screen.
-  const fileScreen = readFileSync(new URL('../src/menu_samples/claude-create-file.txt', import.meta.url), 'utf8');
+  const fileScreen = readFileSync(new URL('../src/menu_samples/form-create-file.txt', import.meta.url), 'utf8');
   writeFileSync(join(fixture, 'state', 'dialog.txt'), fileScreen);
   await go('alpha/21');
   const dialogCard = '#focus [data-type="permission"]';
@@ -2671,7 +2678,7 @@ section('requests', async () => {
     (await text('#focus')).slice(0, 240));
   check('its badge names a permission too', await hasText('#focus .badge', 'Ждёт тебя · разрешение'), await text('#focus .badge'));
   // A question with no board text: the screen's question is shown, never the board's «Needs you».
-  writeFileSync(join(fixture, 'state', 'dialog.txt'), readFileSync(new URL('../src/menu_samples/claude-single.txt', import.meta.url), 'utf8'));
+  writeFileSync(join(fixture, 'state', 'dialog.txt'), readFileSync(new URL('../src/menu_samples/form-single.txt', import.meta.url), 'utf8'));
   await go('alpha/20');
   check('a question the board has no words for shows the agent\'s own question, not «Needs you»',
     await waitFor('!!document.querySelector(\'#focus [data-type="question"]\')', 15000)
@@ -2729,11 +2736,11 @@ section('requests', async () => {
   // The board writes that line into the transcript as a board turn (a real Coordinator does it): it must be shown once.
   const noticeLine = '[Действие в планировщике] ALP-3: план одобрен';
   const chatFolder = realpathSync(join(fixture, 'board', 'coordinator', 'default', 'chat')).replace(/[^A-Za-z0-9]/g, '-');
-  const transcript = join(fixture, 'claude', 'projects', chatFolder, 'fixture.jsonl');
+  const transcript = join(fixture, 'transcripts', chatFolder, 'fixture.jsonl');
   // The transcript is the fixture's for the sections after this one: the two records go away once the line is seen once.
   const transcriptBefore = readFileSync(transcript, 'utf8');
   appendFileSync(transcript, JSON.stringify({ type: 'user', timestamp: new Date().toISOString(), message: { role: 'user', content: noticeLine } }) + '\n');
-  appendFileSync(transcript, JSON.stringify({ type: 'assistant', timestamp: new Date().toISOString(), message: { role: 'assistant', model: 'claude-opus-5-5', stop_reason: 'end_turn', content: [{ type: 'text', text: 'Принято.' }] } }) + '\n');
+  appendFileSync(transcript, JSON.stringify({ type: 'assistant', timestamp: new Date().toISOString(), message: { role: 'assistant', model: 'deepseek-v4-pro', stop_reason: 'end_turn', content: [{ type: 'text', text: 'Принято.' }] } }) + '\n');
   // The chat is closed here: opening it reads the transcript again, and the line is in it now.
   await press('Slash', '/');
   check('the chat opens after the transcript has the line', await waitFor('!document.querySelector("#chat").classList.contains("off")', 5000));
@@ -2748,7 +2755,7 @@ section('requests', async () => {
   const later = Date.now();
   for (let i = 0; i < 4; i++) {
     appendFileSync(transcript, JSON.stringify({ type: 'user', timestamp: new Date(later + i * 1000).toISOString(), message: { role: 'user', content: `Ответ ${i + 1}` } }) + '\n');
-    appendFileSync(transcript, JSON.stringify({ type: 'assistant', timestamp: new Date(later + i * 1000 + 500).toISOString(), message: { role: 'assistant', model: 'claude-opus-5-5', stop_reason: 'end_turn', content: [{ type: 'text', text: `Принято ${i + 1}.` }] } }) + '\n');
+    appendFileSync(transcript, JSON.stringify({ type: 'assistant', timestamp: new Date(later + i * 1000 + 500).toISOString(), message: { role: 'assistant', model: 'deepseek-v4-pro', stop_reason: 'end_turn', content: [{ type: 'text', text: `Принято ${i + 1}.` }] } }) + '\n');
   }
   await navigate(base + '/?noauto&nocoach&bloom=0');
   await waitFor('window.world && world.debug().planets > 0', 20000);
@@ -3109,11 +3116,11 @@ section('top bar', async () => {
 // that used to move the entire cockpit up: the panels reached y=0 and the header left the viewport (PLN-97).
 section('top bar visibility', async () => {
   const folder = realpathSync(join(fixture, 'board', 'coordinator', 'default', 'chat')).replace(/[^A-Za-z0-9]/g, '-');
-  const file = join(fixture, 'claude', 'projects', folder, 'fixture.jsonl');
+  const file = join(fixture, 'transcripts', folder, 'fixture.jsonl');
   const original = readFileSync(file, 'utf8');
   const marker = 'PLN-97: длинный ответ для перехода по истории';
   appendFileSync(file, JSON.stringify({ type: 'user', timestamp: new Date().toISOString(), message: { role: 'user', content: marker } }) + '\n'
-    + JSON.stringify({ type: 'assistant', timestamp: new Date().toISOString(), message: { role: 'assistant', model: 'claude-opus-5-5', content: [{ type: 'text', text: Array.from({ length: 60 }, (_, i) => `${marker}, абзац ${i + 1}.`).join('\n\n') }] } }) + '\n');
+    + JSON.stringify({ type: 'assistant', timestamp: new Date().toISOString(), message: { role: 'assistant', model: 'deepseek-v4-pro', content: [{ type: 'text', text: Array.from({ length: 60 }, (_, i) => `${marker}, абзац ${i + 1}.`).join('\n\n') }] } }) + '\n');
   try {
     for (const [screenW, screenH] of [[1280, 720], [1920, 1080], [2560, 1440]]) {
       for (const zoom of [1, 0.8, 1.25]) {
@@ -3172,14 +3179,14 @@ section('limits', async () => {
   })()`);
   check('the limits panel is above the others and fully in view', box.inView && box.top && box.center, JSON.stringify(box));
   const lt = (await text('.pop.limits')).replace(/\s+/g, ' ');
-  check('the panel lists Claude, Codex, Kimi Code, DeepSeek, omp and pi', ['Claude', 'Codex', 'Kimi Code', 'DeepSeek', 'OMP', 'Pi'].every((n) => lt.includes(n)), lt.slice(0, 200));
-  check('the panel carries the account and the pace of a window, and says where Omarchy\'s record stood in', /fixture@example\.test/.test(lt) && /запас \d+ % · хватит до сброса/.test(lt) && /перерасход \d+ % · кончится через/.test(lt), lt.slice(0, 500));
+  check('the panel lists Codex, Kimi Code, DeepSeek, omp and pi', ['Codex', 'Kimi Code', 'DeepSeek', 'OMP', 'Pi'].every((n) => lt.includes(n)), lt.slice(0, 200));
+  check('the panel carries the account and the pace of a window', /codex@example\.test/.test(lt) && /запас \d+ % · хватит до сброса/.test(lt) && /перерасход \d+ % · кончится через/.test(lt), lt.slice(0, 500));
   check('remaining is the inverse of the used share', /Осталось 79 %/.test(lt) && /Осталось 9 %/.test(lt) && /Осталось 3 %/.test(lt), lt.slice(0, 260));
   check('80% is a warning and 95% is critical', (await evalJs('document.querySelectorAll(".lim-win.warn").length')) === 1 && (await evalJs('document.querySelectorAll(".lim-win.crit").length')) === 1);
   check('omp and pi honestly say there is no data; an old record is stale', await hasText('.lim-agent[data-agent="omp"]', 'нет данных') && lt.toLowerCase().includes('устарело'));
-  check('the world draws one arc per agent with windows (Claude, Codex, Kimi Code) and the Quasar flickers on 95%', (await debug())?.limitArcs === 3 && (await debug())?.limitCrit === true, JSON.stringify({ a: (await debug())?.limitArcs, c: (await debug())?.limitCrit }));
+  check('the world draws one arc per agent with windows (Codex and Kimi Code) and the Quasar flickers on 95%', (await debug())?.limitArcs === 2 && (await debug())?.limitCrit === true, JSON.stringify({ a: (await debug())?.limitArcs, c: (await debug())?.limitCrit }));
   const alert = await api('/api/limits');
-  check('the bar alert names the worst live window', alert[0] === 200 && alert[1].level === 'crit' && alert[1].worst.label === 'Fable Weekly', JSON.stringify(alert[1]));
+  check('the bar alert names the worst live window', alert[0] === 200 && alert[1].level === 'crit' && alert[1].worst.percent === 0.97, JSON.stringify(alert[1]));
   await press('KeyQ', 'q');
   check('Q closes the limits panel', await waitFor('!document.querySelector(".pop.limits")', 3000));
 
@@ -3194,10 +3201,10 @@ section('limits', async () => {
       if (wide) await click('#cwide');
       await waitFor(`document.querySelector('#chat').getAnimations().every((a) => a.playState !== 'running')`);
       const at = `${w}×${h} ${wide ? 'wide' : 'docked'} chat`;
-      check(`${at}: provider row sits below memory and before messages`, await evalJs(`document.querySelector('.cmem').nextElementSibling?.contains(document.querySelector('#chat-limits')) && !document.querySelector('#chat > header #chat-limits') && document.querySelectorAll('#chat-limits .lp').length === 4`));
+      check(`${at}: provider row sits below memory and before messages`, await evalJs(`document.querySelector('.cmem').nextElementSibling?.contains(document.querySelector('#chat-limits')) && !document.querySelector('#chat > header #chat-limits') && document.querySelectorAll('#chat-limits .lp').length === 3`));
       check(`${at}: row, status, search and input fit inside the chat`, await evalJs(`(() => { const chat = document.querySelector('#chat').getBoundingClientRect(); return ['#chat-limits', '#cstate', '#chat-q', '#ask-in'].every((s) => { const e = document.querySelector(s); const r = e.getBoundingClientRect(); return r.left >= chat.left - 1 && r.right <= chat.right + 1 && e.scrollWidth <= e.clientWidth + 1; }) && document.documentElement.scrollWidth <= innerWidth; })()`));
       const words = (await text('#chat-limits')).replace(/\s+/g, ' ');
-      check(`${at}: every provider keeps its icon, gauge, both windows and balance`, /97 % исп\. Fable Weekly/.test(words) && /35 % исп\. \d+м · 21 % исп\. Total usage/.test(words) && /\$11\.92/.test(words) && await evalJs(`document.querySelectorAll('#chat-limits .lp svg').length === 4 && document.querySelectorAll('#chat-limits .lp-bar').length === 3`), words);
+      check(`${at}: every provider keeps its icon, gauge, windows and balance`, /97 % исп\./.test(words) && /35 % исп\. \d+м · 21 % исп\. Total usage/.test(words) && /\$11\.92/.test(words) && await evalJs(`document.querySelectorAll('#chat-limits .lp svg').length === 3 && document.querySelectorAll('#chat-limits .lp-bar').length === 2`), words);
       for (const anchor of ['#chat-limits', '#hud-limits']) {
         await click(anchor);
         check(`${at}: ${anchor} opens the provider card`, await cardOpen('limits') && await evalJs(`document.querySelector(${JSON.stringify(anchor)}).getAttribute('aria-expanded') === 'true'`));
@@ -3243,8 +3250,8 @@ section('top cards', async () => {
   await mouseTo(700, 600);
 
   const chipText = (await text('#hud-limits')).trim();
-  check('the subscription row: a provider after provider (Claude, Codex, Kimi Code, DeepSeek), each with its icon, a gauge and what is used', await evalJs(`[...document.querySelectorAll('#chat-limits .lp')].map((e) => e.dataset.p).sort().join() === 'claude,codex,deepseek,kimi' && [...document.querySelectorAll('#chat-limits .lp')].every((e) => e.querySelector('svg')) && document.querySelectorAll('#chat-limits .lp-bar').length === 3`) && /\d+\s*%/.test(chipText), chipText);
-  check('the row says «used» and when the window resets, and a balance as money', await evalJs(`(() => { const a = document.querySelector('#hud-limits').getAttribute('aria-label'); return /Kimi Code: 35 % исп\\.[^;]* · 21 % исп\\. Total usage/.test(a) && /DeepSeek: \\$11\\.92/.test(a) && /Codex: 4 % исп\\. 1ч \\d+м · 12 % исп\\. \\d+д \\d+ч/.test(a); })()`), await evalJs(`document.querySelector('#hud-limits').getAttribute('aria-label')`));
+  check('the subscription row: Codex, Kimi Code and DeepSeek, each with its icon, a gauge and what is used', await evalJs(`[...document.querySelectorAll('#chat-limits .lp')].map((e) => e.dataset.p).sort().join() === 'codex,deepseek,kimi' && [...document.querySelectorAll('#chat-limits .lp')].every((e) => e.querySelector('svg')) && document.querySelectorAll('#chat-limits .lp-bar').length === 2`) && /\d+\s*%/.test(chipText), chipText);
+  check('the row says «used» and when the window resets, and a balance as money', await evalJs(`(() => { const a = document.querySelector('#hud-limits').getAttribute('aria-label'); return /Kimi Code: 35 % исп\\.[^;]* · 21 % исп\\. Total usage/.test(a) && /DeepSeek: \\$11\\.92/.test(a) && /Codex: 21 % исп\\. (1ч \\d+м|2ч 0м) · 97 % исп\\./.test(a); })()`), await evalJs(`document.querySelector('#hud-limits').getAttribute('aria-label')`));
   check('the bars carry no long captions: only CPU, MEM, GPU and the numbers', !/ядер|ГБ|обновлено|видеопамять/i.test(await text('#load-chip')), await text('#load-chip'));
   check('no card is open before anyone asks', !(await exists('#top-card')));
 
@@ -3315,11 +3322,11 @@ section('top cards', async () => {
   check('the pointer over the chip opens the subscriptions card', await cardOpen('limits'));
   await cardPlace('#hud-limits', 'subscriptions', 1500, 950, 'hover');
   const lt = (await text('#top-card')).replace(/\s+/g, ' ');
-  check('the card opens on the provider closest to its limit (Claude), with its account and plan, each window with what is left and when it resets', /^Claude fixture@example\.test/.test(lt) && /Вход: из Claude Code/.test(lt) && /Max 5x/.test(lt) && /Сессия: осталось 79 %/.test(lt) && /Неделя: осталось 9 %/.test(lt) && /Fable Weekly: осталось 3 %/.test(lt) && /Сброс через (1ч \d+м|2ч 0м)/.test(lt), lt.slice(0, 500));
+  check('the card opens on the provider closest to its limit (Codex), with its account and plan, each window with what is left and when it resets', /^Codex codex@example\.test/.test(lt) && /Вход: из Codex CLI/.test(lt) && /Plus/.test(lt) && /Сессия: осталось 79 %/.test(lt) && /Code review: осталось 9 %/.test(lt) && /Неделя: осталось 3 %/.test(lt) && /Сброс через (1ч \d+м|2ч 0м)/.test(lt), lt.slice(0, 500));
   check('all the windows of the provider are there, with the thresholds in colour', (await evalJs('document.querySelectorAll("#top-card .lc-win").length')) === 3 && (await evalJs('document.querySelectorAll("#top-card .lc-win.warn").length')) === 1 && (await evalJs('document.querySelectorAll("#top-card .lc-win.crit").length')) === 1);
   check('the pace: a session with room to spare «lasts until reset», a weekly one that is spent too fast says when it runs out', /запас \d+ % · хватит до сброса/.test(lt) && /перерасход \d+ % · кончится через/.test(lt), lt.slice(0, 700));
-  check('every window has a tick where an even spend would stand, and the sections: surfaces and extra usage', (await evalJs('document.querySelectorAll("#top-card .lc-win .lc-tick").length')) === 3 && /На этой неделе по клиентам Claude Code 100%/.test(lt) && /Дополнительный расход Статус выкл\./.test(lt), lt.slice(0, 900));
-  check('the actions are Refresh, the usage page and the status page; the tabs of the providers are at the bottom, Claude\'s open', await evalJs(`(() => { const c = document.querySelector('#top-card'); const a = [...c.querySelectorAll('.lc-act')].map((e) => e.innerText.trim()); const t = [...c.querySelectorAll('.lc-tab')]; return a.join('|') === 'Обновить|Страница расхода|Статус сервиса' && c.querySelector('a.lc-act').href.startsWith('https://claude.ai/') && t.map((e) => e.dataset.tab).join() === 'codex,claude,kimi,deepseek' && t.find((e) => e.getAttribute('aria-selected') === 'true')?.dataset.tab === 'claude' && t.every((e) => e.querySelector('svg')); })()`));
+  check('every window has a tick where an even spend would stand, and the credits section', (await evalJs('document.querySelectorAll("#top-card .lc-win .lc-tick").length')) === 3 && /Кредиты Баланс 7\.50/.test(lt), lt.slice(0, 900));
+  check('the actions are Refresh, the usage page and the status page; the tabs of the providers are at the bottom, Codex\'s open', await evalJs(`(() => { const c = document.querySelector('#top-card'); const a = [...c.querySelectorAll('.lc-act')].map((e) => e.innerText.trim()); const t = [...c.querySelectorAll('.lc-tab')]; return a.join('|') === 'Обновить|Страница расхода|Статус сервиса' && c.querySelector('a.lc-act').href.startsWith('https://chatgpt.com/') && t.map((e) => e.dataset.tab).join() === 'codex,kimi,deepseek' && t.find((e) => e.getAttribute('aria-selected') === 'true')?.dataset.tab === 'codex' && t.every((e) => e.querySelector('svg')); })()`));
   // a tab switches the provider without leaving the card
   await click('#top-card [data-tab="kimi"]');
   check('the Kimi Code tab: its plan, «35% used» as «осталось 65 %», the monthly total as a window of its own', await waitFor('document.querySelector("#top-card .lc-body")?.dataset.agent === "kimi"', 3000) && (await text('#top-card')).replace(/\s+/g, ' ').includes('Сессия: осталось 65 %') && /Total usage: осталось 79 %/.test((await text('#top-card')).replace(/\s+/g, ' ')) && /Allegretto/.test(await text('#top-card')) && /Вход: из Kimi Code CLI/.test(await text('#top-card')), (await text('#top-card')).replace(/\s+/g, ' ').slice(0, 400));
@@ -3327,10 +3334,10 @@ section('top cards', async () => {
   await click('#top-card [data-tab="deepseek"]');
   check('the DeepSeek tab: the balance as money and the paid and granted parts, no windows', await waitFor('document.querySelector("#top-card .lc-body")?.dataset.agent === "deepseek"', 3000) && /остаток \$11\.92/.test((await text('#top-card')).replace(/\s+/g, ' ')) && /Вход: из pi/.test(await text('#top-card')) && /Оплачено \$11\.92/.test((await text('#top-card')).replace(/\s+/g, ' ')) && (await evalJs('document.querySelectorAll("#top-card .lc-win").length')) === 0);
   await click('#top-card [data-tab="codex"]');
-  check('the Codex tab: the plan and the account, the review limit as one more window, the credits', await waitFor('document.querySelector("#top-card .lc-body")?.dataset.agent === "codex"', 3000) && /Plus/.test(await text('#top-card')) && /codex@example\.test/.test(await text('#top-card')) && /Вход: из Codex CLI/.test(await text('#top-card')) && (await evalJs('document.querySelectorAll("#top-card .lc-win").length')) === 3 && /Code review: осталось 97 %/.test((await text('#top-card')).replace(/\s+/g, ' ')) && /Кредиты Баланс 7\.50/.test((await text('#top-card')).replace(/\s+/g, ' ')));
-  await click('#top-card [data-tab="claude"]');
-  await waitFor('document.querySelector("#top-card .lc-body")?.dataset.agent === "claude"', 3000);
-  check('the bar follows the tab picked: the provider of the open tab leads the row', await evalJs(`document.querySelector('#chat-limits .lp').dataset.p === 'claude'`));
+  check('the Codex tab: the plan and the account, the review limit as one more window, the credits', await waitFor('document.querySelector("#top-card .lc-body")?.dataset.agent === "codex"', 3000) && /Plus/.test(await text('#top-card')) && /codex@example\.test/.test(await text('#top-card')) && /Вход: из Codex CLI/.test(await text('#top-card')) && (await evalJs('document.querySelectorAll("#top-card .lc-win").length')) === 3 && /Code review: осталось 9 %/.test((await text('#top-card')).replace(/\s+/g, ' ')) && /Кредиты Баланс 7\.50/.test((await text('#top-card')).replace(/\s+/g, ' ')));
+  await click('#top-card [data-tab="kimi"]');
+  await waitFor('document.querySelector("#top-card .lc-body")?.dataset.agent === "kimi"', 3000);
+  check('the bar follows the tab picked: the provider of the open tab leads the row', await evalJs(`document.querySelector('#chat-limits .lp').dataset.p === 'kimi'`));
   // Refresh asks the planner to read the providers again, and the card says so
   await click('#limits-refresh');
   check('Refresh is pressed: the card shows it while the providers are read again', await waitFor('document.querySelector("#limits-refresh")?.disabled === true || /Обновляю/.test(document.querySelector("#limits-refresh")?.innerText || "")', 3000) || (await text('#limits-refresh')).includes('Обновить'));
@@ -3383,8 +3390,11 @@ section('top cards', async () => {
   await evalJs('setLang("en"); true');
   await evalJs('document.querySelector("#hud-limits").focus(); true');
   await cardOpen('limits');
+  await click('#top-card [data-tab="codex"]');
+  await waitFor('document.querySelector("#top-card .lc-body")?.dataset.agent === "codex"', 3000);
   const le = (await text('#top-card')).replace(/\s+/g, ' ');
-  check('English: the card, as in herdr-gpui: «Session 79% left», «Resets in 1h 59m», «in reserve · Lasts until reset», the actions', /Claude fixture@example\.test/.test(le) && /Sign-in: from Claude Code/.test(le) && /Session 79% left/.test(le) && /Resets in (1h \d+m|2h 0m)/.test(le) && /\d+% in reserve · Lasts until reset/.test(le) && /\d+% in deficit · Runs out in/.test(le) && /This week by surface/.test(le) && /Extra usage Status Off/.test(le) && /Refresh Usage Dashboard Status Page/.test(le) && le.includes('Subscription limits'), le.slice(0, 700));
+  check('English: Codex, its account, windows and pace', /Codex codex@example\.test/.test(le) && /Sign-in: from the Codex CLI/.test(le) && /Session 79% left/.test(le) && /Resets in (1h \d+m|2h 0m)/.test(le) && /\d+% in reserve · Lasts until reset/.test(le) && /\d+% in deficit · Runs out in/.test(le), le);
+  check('English: credits and actions', /Credits Balance 7\.50/.test(le) && /Refresh Usage Dashboard Status Page/.test(le), le);
   await evalJs('document.querySelector("#load-chip").focus(); true');
   await cardOpen('load');
   const me = (await text('#top-card')).replace(/\s+/g, ' ');
@@ -3925,10 +3935,10 @@ section('station', async () => {
   check('the Station has no presets and no crew roles (PLN-90): a link «Экипаж» instead', !(await exists('#st-presets')) && !(await exists('#st-crew')) && !(await exists('#st-programs')) && await exists('#st-open-crew'));
   await click('#st-open-crew');
   check('the link opens the crew window and closes the Station', await waitFor('!!document.querySelector("#crew")', 4000) && !(await exists('#station')));
-  const crew = await waitFor('!!document.querySelector(\'[data-role="plan"] [data-value="plan.agent"]\')', 40000);
-  check('each role shows its current value and where it comes from', crew && (await text('[data-role="plan"] [data-value="plan.agent"]')) === 'claude/claude-opus-5-5'
+  const crew = await waitFor('document.querySelector(\'[data-role="plan"] [data-value="plan.agent"]\')?.innerText === "omp/deepseek/deepseek-v4-pro"', 40000);
+  check('each role shows its current value and where it comes from', crew && (await text('[data-role="plan"] [data-value="plan.agent"]')) === 'omp/deepseek/deepseek-v4-pro'
     && (await evalJs('document.querySelector(\'[data-role="plan"] .src\')?.innerText')) === 'вы'
-    && (await text('[data-role="worker"] [data-value="worker.agent"]')) === 'claude/claude-sonnet-5-5', await text('#st-crew').then((x) => x.slice(0, 200)));
+    && (await text('[data-role="worker"] [data-value="worker.agent"]')) === 'omp/deepseek/deepseek-v4-flash', await text('#st-crew').then((x) => x.slice(0, 200)));
   check('the light tasks preset and the watcher are roles of their own', await exists('[data-role="light"]') && await exists('[data-role="watcher"]'));
   check('every role says which board settings it sets, and the heavy ones on which tasks they work now', await hasText('[data-std-sets="worker"]', 'worker.fallback') && await exists('[data-std-tasks]') && await hasText('[data-std-sets="light"]', 'планировщика'), await text('[data-std-sets="worker"]'));
   check('the programs of this machine: codex says it is not signed in', await hasText('[data-program="codex"]', 'не выполнен'), await text('[data-program="codex"]'));
@@ -3938,10 +3948,10 @@ section('station', async () => {
   await click('[data-act="st-edit-plan.agent"]');
   await waitFor('!!document.querySelector(\'[id="st-model-plan.agent"]\')', 5000);
   check('the model is chosen from the names the program takes: a list, not a text field', await waitFor('document.querySelectorAll(\'select[id="st-model-plan.agent"] option\').length >= 3', 30000) && !(await exists('input[id="st-model-plan.agent"]')), String(await evalJs('document.querySelectorAll(\'[id="st-model-plan.agent"] option\').length')));
-  await typeIn('[id="st-model-plan.agent"]', 'claude/claude-haiku-5-5');
+  await typeIn('[id="st-model-plan.agent"]', 'omp/deepseek/deepseek-v4-flash');
   await click('[id="st-next-plan.agent"]');
   await readyCard();
-  check('a change shows «было → стало» before anything is sent', await waitFor('(document.querySelector("#st-now")?.innerText || "") === "claude/claude-haiku-5-5"', 6000) && (await text('#st-change')).includes('claude/claude-opus-5-5'), await text('#st-change'));
+  check('a change shows «было → стало» before anything is sent', await waitFor('(document.querySelector("#st-now")?.innerText || "") === "omp/deepseek/deepseek-v4-flash"', 6000) && (await text('#st-change')).includes('omp/deepseek/deepseek-v4-pro'), await text('#st-change'));
   const live = (await stateApi()).tasks.filter((x) => !x.archived && x.status !== 'done').length;
   check('and the live tasks it touches are counted', await hasText('#st-affects', String(live)), `${await text('#st-affects')} vs ${live}`);
   const sets = setCalls('plan.agent').length;
@@ -3950,14 +3960,14 @@ section('station', async () => {
   await quiet();
   check('the first press only asks again', asked && setCalls('plan.agent').length === sets, await text('#st-confirm'));
   await secondPress('#st-confirm');
-  check('the second press sends it to the board as its own set command', await waitLog(() => setCalls('plan.agent').some((c) => c.argv.includes('claude/claude-haiku-5-5')), 8000), JSON.stringify(calls().slice(-1)));
-  check('the board answers the new value; the card is gone', await waitFor('fetch("/api/station").then((r) => r.json()).then((d) => d.settings.some((s) => s.name === "plan.agent" && s.value === "claude/claude-haiku-5-5") && !document.querySelector("#st-change"))', 15000));
+  check('the second press sends it to the board as its own set command', await waitLog(() => setCalls('plan.agent').some((c) => c.argv.includes('omp/deepseek/deepseek-v4-flash')), 8000), JSON.stringify(calls().slice(-1)));
+  check('the board answers the new value; the card is gone', await waitFor('fetch("/api/station").then((r) => r.json()).then((d) => d.settings.some((s) => s.name === "plan.agent" && s.value === "omp/deepseek/deepseek-v4-flash") && !document.querySelector("#st-change"))', 15000));
   await shot('station-home.png');
 
   // a model the program does not take is refused with the board's words, whoever asks (the page offers only listed ones)
-  const [badStatus, bad] = await post('/api/station/preview', { name: 'plan.agent', value: 'claude/claude-nope' });
+  const [badStatus, bad] = await post('/api/station/preview', { name: 'plan.agent', value: 'omp/omp-nope' });
   check('an invalid model is refused before confirming, in the board\'s words', badStatus === 200 && bad.valid === false && String(bad.error).includes('такой модели нет'), JSON.stringify(bad));
-  const [setStatus] = await post('/api/station/set', { name: 'plan.agent', value: 'claude/claude-nope', confirm: true });
+  const [setStatus] = await post('/api/station/set', { name: 'plan.agent', value: 'omp/omp-nope', confirm: true });
   check('and a set of it is refused too', setStatus === 422, String(setStatus));
 
   // reset: unset, with what the value becomes
@@ -3993,9 +4003,9 @@ section('station', async () => {
     window.__lightPick = false;
     const pick = () => {
       const el = document.querySelector('[id="st-model-light"]');
-      if (!el || el.disabled || ![...el.options].some((o) => o.value === 'claude/claude-haiku-5-5')) return;
+      if (!el || el.disabled || ![...el.options].some((o) => o.value === 'omp/deepseek/deepseek-v4-flash')) return;
       observer.disconnect();
-      el.value = 'claude/claude-haiku-5-5';
+      el.value = 'omp/deepseek/deepseek-v4-flash';
       el.dispatchEvent(new Event('change', { bubbles: true }));
       window.__lightPick = true;
     };
@@ -4005,15 +4015,15 @@ section('station', async () => {
     pick();
     return true;
   })()`);
-  await typeIn('[id="st-prog-light"]', 'claude');
+  await typeIn('[id="st-prog-light"]', 'omp');
   const pickedLight = await waitFor('window.__lightPick', 45000);
   await evalJs('window.__lightPickObserver?.disconnect(); delete window.__lightPickObserver; delete window.__lightPick; true');
   check('the light model can be selected as soon as its list arrives', pickedLight);
   await click('[id="st-next-light"]');
   await readyCard();
-  check('the light preset keeps the selected model in its preview and says it is kept by the planner', await hasText('#st-change', 'Лёгкие задачи') && await hasText('#st-change', 'не на доске') && (await text('#st-now')) === 'claude/claude-haiku-5-5', await text('#st-change'));
+  check('the light preset keeps the selected model in its preview and says it is kept by the planner', await hasText('#st-change', 'Лёгкие задачи') && await hasText('#st-change', 'не на доске') && (await text('#st-now')) === 'omp/deepseek/deepseek-v4-flash', await text('#st-change'));
   const lightLook = '({ card: document.querySelector("#st-change")?.innerText, armed: plannerDebug().armed, pending: window.__net?.pending, bad: window.__net?.bad?.slice(-3) })';
-  const lightKept = await untilDone('the light preset confirmation', () => twoPresses('#st-confirm'), 'fetch("/api/station").then((r) => r.json()).then((d) => d.light === "claude/claude-haiku-5-5")', 15000, lightLook);
+  const lightKept = await untilDone('the light preset confirmation', () => twoPresses('#st-confirm'), 'fetch("/api/station").then((r) => r.json()).then((d) => d.light === "omp/deepseek/deepseek-v4-flash")', 15000, lightLook);
   check('the planner keeps the preset', lightKept, JSON.stringify(await evalJs(lightLook)));
   check('and the board is not asked to change anything for it', !calls().some((c) => c.argv?.[0] === 'set' && c.argv.some((a) => String(a).includes('light'))));
 
@@ -4043,7 +4053,7 @@ section('station', async () => {
 
 section('crew', async () => {
   // PLN-63: the state of each subscription, the models, the presets (saved, edited, applied in the order shown) and the
-  // fallback chains. The fixture's codex is signed out, omp works by API keys, claude has Omarchy's windows.
+  // fallback chains. The fixture's codex is signed out, and omp works by API keys.
   await resetUi();
   await evalJs('planner.goHome()');
   check('the crew window opens from the menu', await menuPick('Экипаж') && await waitFor('!!document.querySelector("#crew")', 4000));
@@ -4053,41 +4063,14 @@ section('crew', async () => {
   check('the lead of the heavy tasks in the summary is the board\'s worker.agent', await hasText('#st-summary [data-lead="worker"]', st0.settings.find((x) => x.name === 'worker.agent').value), await text('#st-summary'));
   check('codex is signed out, so the summary lists it as down', await exists('#st-summary [data-down-program="codex"]') && await hasText('#st-summary-down', 'нет входа'), await text('#st-summary-down'));
   check('the codex card says it is signed out, and why', (await evalJs('document.querySelector(\'[data-program="codex"]\')?.dataset.state')) === 'signed_out' && await hasText('[data-program="codex"] [data-reason]', 'codex login'), await text('[data-program="codex"]'));
-  check('claude shows its plan and its windows from Omarchy', await hasText('[data-program="claude"] [data-account]', 'Max 5x') && await exists('[data-program="claude"] [data-limits] li'), await text('[data-program="claude"]'));
   check('omp, which works by API keys, is honestly unknown, with the reason', (await evalJs('document.querySelector(\'[data-program="omp"]\')?.dataset.state')) === 'unknown' && await hasText('[data-program="omp"] [data-account]', 'ключам API'), await text('[data-program="omp"]'));
   check('a task that runs on omp shows under it', await exists('[data-program="omp"] [data-used-tasks]'), await text('[data-program="omp"] [data-used]'));
-  check('claude lists the roles it leads', await hasText('[data-program="claude"] [data-used-roles]', 'Координатор'), await text('[data-program="claude"] [data-used]'));
+  check('omp lists the roles it leads', await hasText('[data-program="omp"] [data-used-roles]', 'Координатор'), await text('[data-program="omp"] [data-used]'));
 
   // the models of a program come from `herdr-projects models <program>`
-  await click('[data-models-for="claude"] summary');
-  check('a program\'s models are listed on its card', await waitFor('document.querySelectorAll(\'[data-models-list="claude"] code\').length >= 3', 40000), await text('[data-models-for="claude"]'));
-  await click('[data-models-for="claude"] summary');
-
-  // a subscription that is out of allowance, from Omarchy's window: it is down, with when it comes back
-  const usageFile = join(fixture, 'state', 'omarchy', 'agents', 'usage', 'claude.json');
-  const usageWas = readFileSync(usageFile, 'utf8');
-  const spent = JSON.parse(usageWas);
-  spent.limits = [{ label: 'Session (5-hour)', percent: 1, resetsAt: new Date(Date.now() + 3 * 3600 * 1000).toISOString() }];
-  writeFileSync(usageFile, JSON.stringify(spent));
-  // the planner's own reading of Claude (PLN-84) comes first, so the stand-in service says the same, and the planner is asked to read it again
-  const stubFile = join(fixture, 'usage-stub', 'claude.json');
-  const stubWas = readFileSync(stubFile, 'utf8');
-  const stubSpent = JSON.parse(stubWas);
-  stubSpent.limits[0] = { kind: 'session', percent: 100, resets_at: new Date(Date.now() + 3 * 3600 * 1000).toISOString() };
-  writeFileSync(stubFile, JSON.stringify(stubSpent));
-  await post('/api/refresh?limits=1', {});
-  await waitFor('plannerSnap().limits.agents.find((a) => a.id === "claude")?.limits?.[0]?.percent === 1', 15000);
-  await click('#crew header button');
-  await waitFor('!document.querySelector("#crew")', 4000);
-  await menuPick('Экипаж');
-  check('with the Session window spent, claude is out of allowance until its reset', await waitFor('document.querySelector(\'[data-down-program="claude"]\')?.innerText.includes("лимит до")', 40000)
-    && (await evalJs('document.querySelector(\'[data-program="claude"]\')?.dataset.state')) === 'limited', await text('#st-summary-down'));
-  await shot('crew-summary.png');
-  writeFileSync(usageFile, usageWas);
-  writeFileSync(stubFile, stubWas);
-  await sleep(10500);
-  await post('/api/refresh?limits=1', {});
-  await waitFor('plannerSnap().limits.agents.find((a) => a.id === "claude")?.limits?.[0]?.percent === 0.21', 15000);
+  await click('[data-models-for="omp"] summary');
+  check('a program\'s models are listed on its card', await waitFor('document.querySelectorAll(\'[data-models-list="omp"] code\').length >= 3', 40000), await text('[data-models-for="omp"]'));
+  await click('[data-models-for="omp"] summary');
 
   // presets: save the current crew, edit it, apply it
   const before = (await stationOf()).presets.list.length;
@@ -4107,9 +4090,9 @@ section('crew', async () => {
   // edit: another worker model, a lower effort, a fallback chain of subscriptions
   await click(`[data-preset-edit="${saved.id}"]`);
   await waitFor('!!document.querySelector("#st-prog-pe-worker")', 5000);
-  await typeIn('#st-prog-pe-worker', 'claude');
+  await typeIn('#st-prog-pe-worker', 'omp');
   await waitFor('document.querySelectorAll(\'select[id="st-model-pe-worker"] option\').length >= 3', 40000);
-  await typeIn('#st-model-pe-worker', 'claude/claude-haiku-5-5');
+  await typeIn('#st-model-pe-worker', 'omp/deepseek/deepseek-v4-pro');
   await waitFor('document.querySelectorAll(\'select[id="st-effort-pe-worker"] option\').length >= 3', 40000);
   await typeIn('#st-effort-pe-worker', 'low');
   await click('[data-pe-fb-set="worker"]');
@@ -4123,7 +4106,7 @@ section('crew', async () => {
   await evalJs('document.querySelector("[data-preset-editor]").scrollIntoView({ block: "start" }); true');
   await shot('crew-editor.png');
   await click('#st-pe-save');
-  check('the saved preset holds the three fields', await waitFor(`fetch("/api/station").then((r) => r.json()).then((d) => { const p = d.presets.list.find((x) => x.id === ${JSON.stringify(saved.id)}); return p && p.roles.worker.agent === "claude/claude-haiku-5-5" && p.roles.worker.effort === "low" && p.roles.worker.fallback === "omp"; })`, 15000));
+  check('the saved preset holds the three fields', await waitFor(`fetch("/api/station").then((r) => r.json()).then((d) => { const p = d.presets.list.find((x) => x.id === ${JSON.stringify(saved.id)}); return p && p.roles.worker.agent === "omp/deepseek/deepseek-v4-pro" && p.roles.worker.effort === "low" && p.roles.worker.fallback === "omp"; })`, 15000));
   check('the crew now differs from the active preset, and the page says by how much', await waitFor('document.querySelector("#st-pr-active")?.dataset.state === "differs" && /3/.test(document.querySelector("#st-pr-active").innerText)', 10000), await text('#st-pr-active'));
 
   // apply: the whole list first, nothing sent; then two presses; the board's commands in the order shown
@@ -4140,7 +4123,7 @@ section('crew', async () => {
   check('the first press only asks again', await hasText('#st-pv-confirm', 'Подтвердить') && calls().slice(cmdsBefore).filter((c) => c.argv?.[0] === 'set').length === 0);
   await secondPress('#st-pv-confirm');
   check('the board gets its own set commands, one after the other, in the order of the card', await waitLog(() => calls().slice(cmdsBefore).filter((c) => c.argv?.[0] === 'set').length >= 3, 15000)
-    && JSON.stringify(calls().slice(cmdsBefore).filter((c) => c.argv?.[0] === 'set').map((c) => c.argv.slice(0, 3).join(' '))) === JSON.stringify(['set worker.agent claude/claude-haiku-5-5', 'set worker.effort low', 'set worker.fallback omp']),
+    && JSON.stringify(calls().slice(cmdsBefore).filter((c) => c.argv?.[0] === 'set').map((c) => c.argv.slice(0, 3).join(' '))) === JSON.stringify(['set worker.agent omp/deepseek/deepseek-v4-pro', 'set worker.effort low', 'set worker.fallback omp']),
   JSON.stringify(calls().slice(cmdsBefore).map((c) => c.argv)));
   check('the preset is active and matches the crew again', await waitFor(`fetch("/api/station").then((r) => r.json()).then((d) => d.presets.active && d.presets.active.id === ${JSON.stringify(saved.id)} && d.presets.active.state === "matches")`, 15000), await text('#st-pr-active'));
   await evalJs('document.querySelector("#st-presets").scrollIntoView({ block: "start" }); true');
@@ -4150,9 +4133,9 @@ section('crew', async () => {
   await typeIn('#st-pr-name', 'Свой максимум');
   await typeIn('#st-pr-kind', 'max');
   await click('#st-pr-template');
-  check('«Максимум» is made from the models claude lists', await waitFor('!!document.querySelector(\'[data-preset][data-name="Свой максимум"]\')', 60000), await text('#st-pr-err'));
+  check('«Максимум» is made from the models omp lists', await waitFor('!!document.querySelector(\'[data-preset][data-name="Свой максимум"]\')', 60000), await text('#st-pr-err'));
   const maxp = (await stationOf()).presets.list.find((x) => x.name === 'Свой максимум');
-  check('Opus on every role, none for the light tasks to differ', !!maxp && ['coordinator', 'plan', 'reviewer', 'worker', 'light'].every((r) => maxp.roles[r].agent.includes('opus')), JSON.stringify(maxp));
+  check('the strongest DeepSeek model on every role, including light tasks', !!maxp && ['coordinator', 'plan', 'reviewer', 'worker', 'light'].every((r) => maxp.roles[r].agent.includes('deepseek-v4-pro')), JSON.stringify(maxp));
   await click(`[data-preset-rename="${maxp.id}"]`);
   await typeIn(`[id="st-pr-rename-${maxp.id}"]`, 'Максимум Opus');
   await evalJs(`(() => { const f = document.querySelector('[id="st-pr-rename-${maxp.id}"]')?.closest('form'); if (f) f.requestSubmit(); return !!f; })()`);
@@ -4243,11 +4226,11 @@ section('crew wizard', async () => {
   check('the coach tour comes first', await waitFor('!!document.querySelector("#coach")', 15000) && !(await exists('#crew')));
   await evalJs('(() => { const b = [...document.querySelectorAll("#coach button")].find((x) => x.innerText.includes("Пропустить")); if (b) b.click(); return !!b; })()');
   check('then the wizard «Экипаж корабля» opens by itself, once', await waitFor('!!document.querySelector("#crew.wizard")', 8000) && (await text('#crew header b')) === 'Экипаж корабля', await text('#crew header b'));
-  check('it says the crew is not tied to Claude: these are the board’s settings', await hasText('#st-intro', 'не привязаны к Claude'), await text('#st-intro'));
+  check('it says the crew is configured on the board', await hasText('#st-intro', 'настраиваются на доске'), await text('#st-intro'));
   await waitFor('!!document.querySelector(\'[data-role="light"]\')', 15000);
   await waitFor('!!document.querySelector(\'#st-done\')', 15000);
   const sugg = await evalJs('[...document.querySelectorAll(".sugline code")].map((x) => x.innerText)');
-  check('the programs of this machine are shown, and every suggestion is for a signed-in program (claude is the only one)', await exists('[data-program="claude"]') && Array.isArray(sugg) && sugg.every((s) => s.startsWith('claude/')), JSON.stringify(sugg));
+  check('the programs of this machine are shown, and every suggestion is for a signed-in program (omp is the only one)', await exists('[data-program="omp"]') && Array.isArray(sugg) && sugg.every((s) => s.startsWith('omp/')), JSON.stringify(sugg));
   check('the wizard has «Готово» and «Пропустить»', await exists('#st-done') && await exists('#st-skip'));
   await click('#st-skip');
   check('skipping marks the wizard seen', await waitFor('localStorage.getItem("herdr-planner.crew-seen") === "1" && !document.querySelector("#crew")', 4000));
@@ -4564,7 +4547,7 @@ section('rest room', async () => {
   const boardEdit = (f) => { const w = JSON.parse(readFileSync(boardFile, 'utf8')); f(w); writeFileSync(boardFile, JSON.stringify(w, null, 1)); };
   const waitingBefore = await evalJs('plannerSnap().tasks.filter((t) => t.status === "waiting").length');
   check('what waited before the room was entered is no news: no notice yet', (await evalJs('document.querySelectorAll("#rm-notes .rm-note").length')) === 0 && waitingBefore > 0, String(waitingBefore));
-  boardEdit((w) => { if (!w.rows.some((r) => r.id === 'alpha/23')) w.rows.push({ id: 'alpha/23', app: 'claude', state: 'blocked', kind: 'question', stage: 'working', title: 'Вопрос из комнаты отдыха', msg: 'Оставить старый файл настроек или удалить?' }); });
+  boardEdit((w) => { if (!w.rows.some((r) => r.id === 'alpha/23')) w.rows.push({ id: 'alpha/23', app: 'omp', state: 'blocked', kind: 'question', stage: 'working', title: 'Вопрос из комнаты отдыха', msg: 'Оставить старый файл настроек или удалить?' }); });
   await post('/api/refresh', {});
   check('a request that comes while resting is a notice in the corner, with the words', await waitFor('!!document.querySelector("#rm-notes .rm-note[data-note=\\"alpha/23\\"]")', 15000) && await hasText('#rm-notes', 'Оставить старый файл'), await text('#rm-notes'));
   check('with «Позже» and «Лететь →»', await exists('#rm-notes [data-act="later"]') && await hasText('#rm-notes [data-act="fly"]', 'Лететь'));
@@ -4612,7 +4595,7 @@ section('rest room', async () => {
   await press('KeyO', 'o');
   await opened();
   check('entered from a task, the button says where it leads: «Назад к ALP-4»', await hasText('#rm-back', 'Назад к ALP-4'), await text('#rm-back'));
-  boardEdit((w) => { if (!w.rows.some((r) => r.id === 'alpha/24')) w.rows.push({ id: 'alpha/24', app: 'claude', state: 'blocked', kind: 'question', stage: 'working', title: 'Ещё вопрос', msg: 'Брать ли новую схему?' }); });
+  boardEdit((w) => { if (!w.rows.some((r) => r.id === 'alpha/24')) w.rows.push({ id: 'alpha/24', app: 'omp', state: 'blocked', kind: 'question', stage: 'working', title: 'Ещё вопрос', msg: 'Брать ли новую схему?' }); });
   await post('/api/refresh', {});
   check('a request that comes meanwhile is a notice again', await waitFor('!!document.querySelector("#rm-notes .rm-note[data-note=\\"alpha/24\\"]")', 15000), await text('#rm-notes'));
   await press('Space', ' ');
@@ -4652,11 +4635,11 @@ section('theme and language', async () => {
   // The Russian interface has no English left: every button, label, hint and tooltip of the open panels is read
   // (names of things — tasks, projects, machines — are the operator's own and are left out).
   const english = `(() => {
-    const SAME = new Set(['herdr', 'claude', 'codex', 'omp', 'pi', 'Ctrl', 'Esc', 'Enter', 'Shift', 'Alt', 'Tab', 'Space', 'Home', 'TLS', 'WASD', 'main', 'origin', 'upstream', 'English', 'CPU', 'MEM', 'GPU']);
+    const SAME = new Set(['herdr', 'omp', 'codex', 'omp', 'pi', 'Ctrl', 'Esc', 'Enter', 'Shift', 'Alt', 'Tab', 'Space', 'Home', 'TLS', 'WASD', 'main', 'origin', 'upstream', 'English', 'CPU', 'MEM', 'GPU']);
     const bad = new Set();
     const look = (t, where) => {
       t = String(t || '').replace(/\s+/g, ' ').trim();
-      // a name of the language itself or a figure with a model's name (150 000 / 200 000 · claude-opus-5-5) is data, not a word
+      // a name of the language itself or a figure with a model's name (150 000 / 200 000 · deepseek-v4-pro) is data, not a word
       if (!/[A-Za-z]{3,}/.test(t) || /[А-Яа-яЁё]/.test(t) || /\d/.test(t)) return;
       if (t.split(/[^A-Za-z]+/).every((w) => !w || w.length < 3 || SAME.has(w))) return;
       bad.add(where + ': ' + t.slice(0, 60));
@@ -5148,7 +5131,6 @@ section('memory galaxy', async () => {
   // The board's own files are the board's: the planner writes none of them (the board makes them from settings)
   const boardFiles = {
     [join(coordFiles, 'AGENTS.md')]: readFile(join(coordFiles, 'AGENTS.md')),
-    [join(coordFiles, 'CLAUDE.md')]: readFile(join(coordFiles, 'CLAUDE.md')),
     [join(fixture, 'board', 'coordinator', 'default', 'machine', 'chat', 'AGENTS.md')]: readFile(join(fixture, 'board', 'coordinator', 'default', 'machine', 'chat', 'AGENTS.md')),
     [join(fixture, 'board', 'coordinator', 'default', 'projects', 'alpha', 'rules.md')]: readFile(join(fixture, 'board', 'coordinator', 'default', 'projects', 'alpha', 'rules.md')),
   };
@@ -5157,13 +5139,7 @@ section('memory galaxy', async () => {
   check('the human\'s own instructions are on the board as a setting', humanRules.startsWith('Мои правила, поверх общих:'), humanRules);
   const conn = await text('#mem-connect');
   check('the panel says the Coordinator is not connected yet, and for what the change is', conn.includes('не подключена') && conn.includes('coordinator.instructions'), conn);
-  check('the planner has written none of the board\'s files (AGENTS.md, CLAUDE.md, the machine\'s and a project\'s)', boardFilesUntouched());
-  await click('#mem-lv-claude');
-  await waitFor('!!document.querySelector("#mem-window[data-level=foreign] [data-mem=user-answers-short]")', 6000);
-  await click('#mem-window [data-mem="user-answers-short"] .mm-line');
-  check('the Coordinator program\'s own memory is a tab of the window, read only', await exists('#mem-window[data-level="foreign"] [data-mem="user-answers-short"]') && !(await exists('#mem-window [data-act="mem-edit"]')) && !(await exists('#mem-window [data-act="mem-del"]')) && !(await exists('#mem-window #mem-add')));
-  await click('#mem-lv-galaxy');
-  await waitFor('document.querySelectorAll("#mem-window #mem-list [data-mem]").length === 2', 6000);
+  check('the planner has written none of the board\'s files (AGENTS.md, the machine\'s and a project\'s)', boardFilesUntouched());
   await shot('memory-galaxy.png');
 
   // add: a form, a Markdown file with a header, the index
@@ -5281,7 +5257,7 @@ section('memory galaxy', async () => {
   check('it opens the dialog with that answer in it', await waitFor('!!document.querySelector("#remember")', 3000) && (await evalJs('document.querySelector("#rem-text").value')).includes('Ответ 9'), await evalJs('document.querySelector("#rem-text")?.value'));
   check('while the cheap model boils it down, the fields wait', (await evalJs('document.querySelector("#rem-digest")?.dataset.state')) === 'busy' || (await evalJs('document.querySelector("#rem-digest")?.dataset.state')) === 'done');
   check('the draft is short: a title, a description and a gist instead of the whole reply', await waitFor('document.querySelector("#rem-digest")?.dataset.state === "done"', 8000) && (await evalJs('document.querySelector("#rem-title").value')) === 'Выжимка ответа' && (await evalJs('document.querySelector("#rem-desc").value')).includes('одна мысль') && (await evalJs('document.querySelector("#rem-kind").value')) === 'convention' && (await evalJs('document.querySelector("#rem-text").value')).startsWith('Суть: Ответ 9') && !(await evalJs('document.querySelector("#rem-text").value')).includes('Started an agent'), await evalJs('document.querySelector("#rem-text")?.value'));
-  check('the model was asked once for the draft', calls('claude.jsonl').filter((c) => c.digest !== undefined).length === 1);
+  check('the model was asked once for the draft', calls('translation.jsonl').filter((c) => c.digest !== undefined).length === 1);
   check('the draft can be edited before it is saved', !(await evalJs('document.querySelector("#rem-title").disabled || document.querySelector("#rem-desc").disabled || document.querySelector("#rem-text").disabled')));
   check('the Galaxy is the level, and the universe can be chosen', (await evalJs('document.querySelector("#rem-galaxy").classList.contains("on")')) && !(await evalJs('document.querySelector("#rem-universe").disabled')));
   await press('Escape');
@@ -5499,8 +5475,6 @@ section('memory window', async () => {
   check('a universe\'s button opens its level, with the universe chosen', (await evalJs('document.querySelector("#mem-window").dataset.level')) === 'universe' && (await evalJs('document.querySelector("#mem-lv-repo").value')) === 'docs' && await exists('#mem-f-state'));
   await typeIn('#mem-lv-repo', 'alpha');
   check('the universe can be changed in the window', await waitFor('document.querySelector("#mem-window .mm-dir")?.innerText.includes("alpha") || !!document.querySelector("#mem-list [data-mem=merge-squash]")', 8000) && (await evalJs('document.querySelector("#mem-window header b").innerText')).includes('alpha'), await text('#mem-window header'));
-  await click('#mem-lv-claude');
-  check('the program\'s own memory is a level too: read only, no add button', await waitFor('document.querySelector("#mem-window").dataset.level === "foreign"', 5000) && !(await exists('#mem-add')) && (await text('#mem-window')).includes('Только чтение'), await text('#mem-window'));
   await click('#mem-lv-galaxy');
   check('and the Galaxy again', await waitFor('document.querySelector("#mem-window").dataset.level === "galaxy" && !!document.querySelector("#mem-add")', 5000));
   await closeMem();
@@ -5639,10 +5613,6 @@ section('memory find', async () => {
   await resetUi();
   await evalJs('planner.goOverview()');
   await sleep(300);
-  await query('коротко');
-  check('the memory the Coordinator\'s program keeps is searched (read only)', await waitFor('!!document.querySelector(\'#sres .srow[data-kind="memory"][data-id="@claude|user-answers-short"]\')', 6000), await text('#sres'));
-  await click('#sres .srow[data-kind="memory"]');
-  check('and opens in the window, on the program\'s own tab', await waitFor('document.querySelector(\'#mem-window[data-level="foreign"] [data-mem="user-answers-short"]\')?.classList.contains("open")', 12000));
   await resetUi();
 });
 
@@ -5651,14 +5621,14 @@ section('memory suggestions', async () => {
   const pending = async () => (await stateApi()).memory_suggestions.map((m) => m.task);
   // The sections before this one may have approved alpha/4 already (`requests`): its suggestion is then waiting, asked once.
   const doneAlready = (await stateApi()).tasks.some((t) => t.id === 'alpha/4' && t.status === 'done');
-  const asked = (tag) => calls('claude.jsonl').filter((c) => c.suggest && (!tag || c.suggest === tag)).length;
+  const asked = (tag) => calls('translation.jsonl').filter((c) => c.suggest && (!tag || c.suggest === tag)).length;
   if (!doneAlready) {
     check('there is no suggestion yet', (await pending()).length === 0);
     const ok = await post('/api/action', { action: 'approve', id: 'alpha/4', confirm: true });
     check('a task is approved', ok?.[0] === 200, JSON.stringify(ok));
   }
-  check('the model is asked once, by the planner, for lines to keep', await waitLog(() => asked('ALP-4') === 1, 15000), JSON.stringify(calls('claude.jsonl').slice(-2)));
-  check('the call has no tools (a fixed prompt, the text as data)', calls('claude.jsonl').filter((c) => !c.suggest && c.toolsEmpty).length >= 1);
+  check('the model is asked once, by the planner, for lines to keep', await waitLog(() => asked('ALP-4') === 1, 15000), JSON.stringify(calls('translation.jsonl').slice(-2)));
+  check('the call has no tools (a fixed prompt, the text as data)', calls('translation.jsonl').filter((c) => !c.suggest && c.toolsEmpty).length >= 1);
   check('its suggestion waits in the snapshot for the human', await waitFor('fetch("/api/state").then((r) => r.json()).then((s) => s.memory_suggestions.some((m) => m.task === "alpha/4" && m.lines.length === 2))', 15000), JSON.stringify(await pending()));
   check('and nothing is written without the human', filesIn(alphaMem).every((f) => !readFile(join(alphaMem, f)).includes('source: task alpha/4')) && filesIn(draftsOf('alpha')).every((f) => !readFile(join(draftsOf('alpha'), f)).includes('source: task alpha/4')));
   if (!doneAlready) check('the page tells about it', await waitFor('(document.querySelector("#toasts")?.innerText || "").includes("Есть что запомнить")', 8000), await text('#toasts'));
@@ -5750,13 +5720,13 @@ section('memory suggestions', async () => {
   const boardFile = join(fixture, 'state', 'board.json');
   const boardEdit = (f) => { const w = JSON.parse(readFileSync(boardFile, 'utf8')); f(w); writeFileSync(boardFile, JSON.stringify(w, null, 1)); };
   const bulk = [[17, 'Первая пачка'], [18, 'Вторая пачка'], [19, 'Третья пачка']];
-  boardEdit((w) => { for (const [n, title] of bulk) if (!w.rows.some((r) => r.id === `alpha/${n}`)) w.rows.push({ id: `alpha/${n}`, app: 'claude', state: 'blocked', kind: 'permission', stage: 'approval', title, msg: 'Pass · 1 minor', reviewRound: 1 }); });
+  boardEdit((w) => { for (const [n, title] of bulk) if (!w.rows.some((r) => r.id === `alpha/${n}`)) w.rows.push({ id: `alpha/${n}`, app: 'omp', state: 'blocked', kind: 'permission', stage: 'approval', title, msg: 'Pass · 1 minor', reviewRound: 1 }); });
   await post('/api/refresh', {});
   check('three more tasks wait for approval', await waitFor('fetch("/api/state").then((r) => r.json()).then((s) => [17, 18, 19].every((n) => s.tasks.some((t) => t.id === "alpha/" + n)))', 15000));
   for (const [n, title] of bulk) { const d = join(fixture, 'board', 'tasks', 'alpha', String(n)); mkdirSync(d, { recursive: true }); writeFileSync(join(d, 'closing.md'), `Сделано: ${title}. Тема больше не мигает при старте.\n`); }
   const approved = [];
   for (const [n] of bulk) approved.push(await post('/api/action', { action: 'approve', id: `alpha/${n}`, confirm: true }));
-  check('all three are proposed', await waitFor('fetch("/api/state").then((r) => r.json()).then((s) => [17, 18, 19].every((n) => s.memory_suggestions.some((m) => m.task === "alpha/" + n)))', 20000), JSON.stringify([await pending(), calls('claude.jsonl').filter((c) => c.suggest).map((c) => c.suggest), ]));
+  check('all three are proposed', await waitFor('fetch("/api/state").then((r) => r.json()).then((s) => [17, 18, 19].every((n) => s.memory_suggestions.some((m) => m.task === "alpha/" + n)))', 20000), JSON.stringify([await pending(), calls('translation.jsonl').filter((c) => c.suggest).map((c) => c.suggest), ]));
   await resetUi();
   await press('KeyB', 'b');
   const bar = '#drawer-wait [data-batch="wait"]';
@@ -6464,16 +6434,16 @@ section('runners', async () => {
 
 
 // ── the selection menu of an agent as a card with buttons ─────────────────────────────────────────────
-// The screens are what the programs draw (Claude Code's AskUserQuestion, omp's ask), read from real sessions. The server parses the
+// The screens are what the programs draw (OMP Code's AskUserQuestion, omp's ask), read from real sessions. The server parses the
 // screen (src/menu.rs) and answers with keys: the fixture's herdr logs `send-keys` (keys.jsonl) and `pane send-text` (text.jsonl).
 const RULE = '─'.repeat(70);
-const CLAUDE_Q1 = [RULE, '←  ☐ Lib  ☐ Features  ✔ Submit  →', '', 'Which library?', '',
+const FORM_Q1 = [RULE, '←  ☐ Lib  ☐ Features  ✔ Submit  →', '', 'Which library?', '',
   '❯ 1. date-fns', '     Modular, tree-shakeable, works with any date type, and it has a very long description that explains why it is the best pick for most projects',
   '  2. dayjs', '     Small', '  3. Type something.', RULE, '  4. Chat about this', '', 'Enter to select · Tab/Arrow keys to navigate · Esc to cancel'].join('\n');
-const CLAUDE_Q2 = [RULE, '←  ☒ Lib  ☐ Features  ✔ Submit  →', '', 'Which features?', '',
+const FORM_Q2 = [RULE, '←  ☒ Lib  ☐ Features  ✔ Submit  →', '', 'Which features?', '',
   '❯ 1. [ ] A', '         First', '  2. [ ] B', '         Second', '  3. [ ] C', '         Third', '  4. [ ] Type something', '     Submit', RULE, '  5. Chat about this', '',
   'Enter to select · Tab/Arrow keys to navigate · Esc to cancel'].join('\n');
-const CLAUDE_OWN = [RULE, '←  ☐ Database  ✔ Submit  →', '', 'Which database?', '',
+const FORM_OWN = [RULE, '←  ☐ Database  ✔ Submit  →', '', 'Which database?', '',
   '❯ 1. Postgres', '     Relational', '  2. SQLite', '     Embedded', '  3. Type something.', RULE, '  4. Chat about this', '', 'Enter to select · Tab/Arrow keys to navigate · Esc to cancel'].join('\n');
 const OMP_SINGLE = ['╭─ Ask ' + '─'.repeat(40) + '╮', '│  lib    feat    Submit' + ' '.repeat(18) + '│', '│ Which engine?' + ' '.repeat(30) + '│', '├' + '─'.repeat(48) + '┤',
   '│   turbo' + ' '.repeat(33) + '│', '│    diesel' + ' '.repeat(33) + '│', '│    Other (type your own)' + ' '.repeat(21) + '│', '│' + ' '.repeat(48) + '│', '├' + '─'.repeat(48) + '┤',
@@ -6488,7 +6458,7 @@ section('menu card', async () => {
   await resetUi();
   const dialogFlag = join(fixture, 'state', 'coordinator-dialog');
   writeFileSync(dialogFlag, '1');
-  setScreen(CLAUDE_Q1);
+  setScreen(FORM_Q1);
   await evalJs('planner.goOverview(); true');
   await waitFor('world.debug().flight === "idle" && plannerDebug().selected === null', 15000);
   await press('Slash', '/');
@@ -6521,7 +6491,7 @@ section('menu card', async () => {
   check('a second press does nothing', keysSince(k0, 'sw-coordinator').length === 2, JSON.stringify(keysSince(k0)));
   check('the card is not locked for good: the same menu still on the screen after a while can be answered again', await waitFor(`document.querySelector(${JSON.stringify(menuCard())})?.dataset.state === 'open' && !!document.querySelector(${JSON.stringify(menuCard() + ' [data-menu-status="stale"]')})`, 14000), await cardState());
   // the next question comes on its own: a multiple choice with boxes
-  setScreen(CLAUDE_Q2);
+  setScreen(FORM_Q2);
   check('the next question is a new card: a multiple choice with boxes and «Отправить»', await waitFor(`(document.querySelector(${JSON.stringify(menuCard() + ' [data-menu-question]')})?.innerText || '') === 'Which features?'`, 10000) && (await text(menuCard() + ' [data-menu-step]')).includes('Вопрос 2 из 2') && (await evalJs(`document.querySelectorAll(${JSON.stringify(menuCard() + ' [role="checkbox"]')}).length`)) === 4 && await hasText(menuCard() + ' [data-menu="send"]', 'Отправить'), JSON.stringify(await optTexts()));
   check('«Отправить» waits for a choice', await evalJs(`document.querySelector(${JSON.stringify(menuCard() + ' [data-menu="send"]')}).disabled`));
   await click(menuCard() + ' [data-menu-opt="0"]');
@@ -6532,7 +6502,7 @@ section('menu card', async () => {
   check('«Отправить» ticks A and C and presses Submit: space, down, down, space, down, down, enter', await waitLog(() => JSON.stringify(keysSince(k1, 'sw-coordinator')) === JSON.stringify(['space', 'down', 'down', 'space', 'down', 'down', 'enter']), 10000), JSON.stringify(keysSince(k1)));
   check('the answered card is locked', await waitFor(`document.querySelector(${JSON.stringify(menuCard())})?.dataset.state === 'answered'`, 5000));
   // «Свой ответ»: the field, the words typed into the own row, Enter
-  setScreen(CLAUDE_OWN);
+  setScreen(FORM_OWN);
   await waitFor(`(document.querySelector(${JSON.stringify(menuCard() + ' [data-menu-question]')})?.innerText || '') === 'Which database?'`, 10000);
   check('a new question unlocks the card', await cardState() === 'open');
   await click(menuCard() + ' [data-own]');
@@ -6546,7 +6516,7 @@ section('menu card', async () => {
   await waitFor(`(document.querySelector(${JSON.stringify(menuCard() + ' [data-menu-question]')})?.innerText || '') === 'Which engine?'`, 10000);
   check('omp\'s ask is a card too: its rows without numbers are the options', JSON.stringify(await optTexts()) === JSON.stringify(['turbo', 'diesel', 'Свой ответ']), JSON.stringify(await optTexts()));
   check('«Esc» of the program is the card\'s «Отменить»', await hasText(menuCard() + ' [data-menu="cancel"]', 'Отменить'));
-  // answered through the card, and the program draws a screen that is no menu at once (as Claude Code does): the card goes on showing the
+  // answered through the card, and the program draws a screen that is no menu at once (as OMP Code does): the card goes on showing the
   // choice for a while, the raw screen does not flash in its place; later the card makes way for the screen
   writeFileSync(join(fixture, 'state', 'after-enter.txt'), '● Принято, работаю дальше…');
   const net0 = await evalJs('window.__net.log.filter((u) => u.includes("/api/coordinator/screen")).length');
@@ -6557,7 +6527,7 @@ section('menu card', async () => {
   check('after a while the card makes way for the raw screen', await waitFor(`!document.querySelector(${JSON.stringify(menuCard())}) && !!document.querySelector('#cdialog')`, 14000), await cardState());
   setScreen(OMP_SINGLE);
   await waitFor(`!!document.querySelector(${JSON.stringify(menuCard())})`, 10000);
-  // the same question asked again right after an answer (Claude Code: two edits of one file): a new card, not the old answer
+  // the same question asked again right after an answer (OMP Code: two edits of one file): a new card, not the old answer
   writeFileSync(join(fixture, 'state', 'after-enter.txt'), '● Принято, работаю дальше…');
   const net1 = await evalJs('window.__net.log.filter((u) => u.includes("/api/coordinator/screen")).length');
   await click(menuCard() + ' [data-menu-opt="1"]');
@@ -6568,7 +6538,7 @@ section('menu card', async () => {
   const k9 = calls('keys.jsonl').length;
   await click(menuCard() + ' [data-menu-opt="0"]');
   check('and it can be answered', await waitLog(() => keysSince(k9, 'sw-coordinator').length >= 1, 10000), JSON.stringify(keysSince(k9)));
-  // the same question comes back with no screen between (Claude Code's second parallel edit of one file, drawn some 30 ms after Enter):
+  // the same question comes back with no screen between (OMP Code's second parallel edit of one file, drawn some 30 ms after Enter):
   // the card does not hold the old answer for long, it opens for the new question
   await waitFor(`document.querySelector(${JSON.stringify(menuCard())})?.dataset.state === 'open'`, 10000);
   writeFileSync(join(fixture, 'state', 'after-enter.txt'), OMP_SINGLE);
@@ -6588,7 +6558,7 @@ section('menu card', async () => {
   check('an answer given in the terminal closes the card', await waitFor(`!document.querySelector(${JSON.stringify(menuCard())})`, 10000));
   check('the screen that is no menu falls back to the raw screen and its keys, the chat does not break', await waitFor('!!document.querySelector("#cdialog") && !!document.querySelector("#cdialog [data-act=\\"keys\\"]")', 10000) && (await text('#cdialog')).includes('Работаю над задачей'), await text('#cdialog'));
   // the wide chat
-  setScreen(CLAUDE_Q1);
+  setScreen(FORM_Q1);
   await waitFor(`!!document.querySelector(${JSON.stringify(menuCard())})`, 10000);
   const small = await evalJs(`document.querySelector(${JSON.stringify(menuCard())}).getBoundingClientRect().width`);
   await click('#cwide');
@@ -6607,7 +6577,7 @@ section('menu card', async () => {
   await waitFor('document.querySelector("#chat").classList.contains("off")', 4000);
 
   // ── the server: an answer to a menu that has changed is refused, never sent into the next one
-  setScreen(CLAUDE_Q1);
+  setScreen(FORM_Q1);
   const shown = await api('/api/coordinator/screen?target=coordinator');
   const sig = shown?.[1]?.menu?.sig;
   check('the screen answer carries the parsed menu', !!sig && shown[1].menu.options.length === 3 && shown[1].menu.cursor === 0 && shown[1].menu.steps === 2, JSON.stringify(shown?.[1]?.menu)?.slice(0, 200));
@@ -6617,7 +6587,7 @@ section('menu card', async () => {
   setScreen('Просто текст, меню нет.');
   const none = await post('/api/menu/answer', { target: 'coordinator', sig, answer: { kind: 'pick', at: 0 } });
   check('with no menu on the screen nothing is sent either', none[0] === 409 && keysSince(k4).length === 0, JSON.stringify(none));
-  setScreen(CLAUDE_Q1);
+  setScreen(FORM_Q1);
   const own = await post('/api/menu/answer', { target: 'coordinator', sig, answer: { kind: 'pick', at: 2 } });
   check('the own row needs words: refused', own[0] === 400 && keysSince(k4).length === 0, JSON.stringify(own));
   const ctl = await post('/api/menu/answer', { target: 'coordinator', sig, answer: { kind: 'own', text: 'a\nb' } });
@@ -6631,7 +6601,7 @@ section('menu card', async () => {
   check('omp\'s own answer: to the row, Enter opens its editor, the words, Enter', ownOmp[0] === 200 && JSON.stringify(keysSince(k5)) === JSON.stringify(['down', 'down', 'enter', 'enter']) && calls('text.jsonl').slice(x5).map((c) => c.text).join() === 'свой движок', JSON.stringify({ ownOmp, keys: keysSince(k5), text: calls('text.jsonl').slice(x5) }));
 
   // ── an agent of a task, in the window of its screen
-  setScreen(CLAUDE_Q1);
+  setScreen(FORM_Q1);
   await go('alpha/6');
   await click('#focus [data-act="screen"]');
   check('the agent\'s window shows its menu as a card above the terminal', await waitFor(`!!document.querySelector(${JSON.stringify(menuCard('#agent-screen'))}) && !!document.querySelector('#screen-term')`, 10000));
@@ -6642,13 +6612,13 @@ section('menu card', async () => {
   await click(menuCard('#agent-screen') + ' [data-menu-opt="1"]');
   check('a button sends its choice to this task\'s agent', await waitLog(() => JSON.stringify(keysSince(k6, 'sw-alpha-6')) === JSON.stringify(['down', 'enter']), 10000), JSON.stringify(calls('keys.jsonl').slice(k6)));
   check('the window\'s card is locked after the answer', await waitFor(`document.querySelector(${JSON.stringify(menuCard('#agent-screen'))})?.dataset.state === 'answered'`, 5000));
-  setScreen(CLAUDE_Q2);
+  setScreen(FORM_Q2);
   await waitFor(`(document.querySelector(${JSON.stringify(menuCard('#agent-screen') + ' [data-menu-question]')})?.innerText || '') === 'Which features?'`, 10000);
   await click(menuCard('#agent-screen') + ' [data-menu-opt="1"]');
   const k7 = calls('keys.jsonl').length;
   await click(menuCard('#agent-screen') + ' [data-menu="send"]');
   check('a multiple choice in the window: space on B, down ×3, Enter on Submit', await waitLog(() => JSON.stringify(keysSince(k7, 'sw-alpha-6')) === JSON.stringify(['down', 'space', 'down', 'down', 'down', 'enter']), 10000), JSON.stringify(keysSince(k7)));
-  setScreen(CLAUDE_OWN);
+  setScreen(FORM_OWN);
   await waitFor(`(document.querySelector(${JSON.stringify(menuCard('#agent-screen') + ' [data-menu-question]')})?.innerText || '') === 'Which database?'`, 10000);
   const k8 = calls('keys.jsonl').length;
   await click(menuCard('#agent-screen') + ' [data-menu="cancel"]');
@@ -6657,7 +6627,7 @@ section('menu card', async () => {
   check('an answer given in the terminal closes the card in the window too', await waitFor(`!document.querySelector(${JSON.stringify(menuCard('#agent-screen'))})`, 10000));
   check('the terminal stays', await hasText('#screen-term', 'Ответ принят'));
   // English
-  setScreen(CLAUDE_Q2);
+  setScreen(FORM_Q2);
   await evalJs('window.setLang("en"); true');
   check('the card is in English, its buttons start with a capital', await waitFor(`(document.querySelector(${JSON.stringify(menuCard('#agent-screen'))})?.innerText || '').toLowerCase().includes('the agent is waiting for a choice')`, 10000) && await hasText(menuCard('#agent-screen') + ' [data-menu="send"]', 'Send') && await hasText(menuCard('#agent-screen') + ' [data-menu="cancel"]', 'Cancel') && (await text(menuCard('#agent-screen') + ' [data-menu-step]')).includes('Question 2 of 2') && await hasText(menuCard('#agent-screen') + ' [data-own]', 'Your own answer'), await text(menuCard('#agent-screen')));
   await press('Escape');
@@ -7220,7 +7190,7 @@ section('chat unread', async () => {
   const CHAT_WAIT = 60000;
   const READ = 'herdr-planner.chat.read';
   const folder = realpathSync(join(fixture, 'board', 'coordinator', 'default', 'chat')).replace(/[^A-Za-z0-9]/g, '-');
-  const file = join(fixture, 'claude', 'projects', folder, 'fixture.jsonl');
+  const file = join(fixture, 'transcripts', folder, 'fixture.jsonl');
   let next = 11;
   // A turn of the transcript: a question and its answer (`lines` makes the answer tall).
   const usage = { input_tokens: 3000, cache_read_input_tokens: 140000, cache_creation_input_tokens: 7000 };
@@ -7228,15 +7198,15 @@ section('chat unread', async () => {
   const when = (i, k) => new Date(1792389360000 + i * 60000 + k).toISOString();
   // A turn by pieces: the question (or a notice of the board), an interim line with a tool call, the tool's result, the final answer.
   const ask = (text) => { const i = next++; raw({ type: 'user', timestamp: when(i, 0), message: { role: 'user', content: text } }); return i; };
-  const interim = (i, text) => raw({ type: 'assistant', timestamp: when(i, 500), message: { role: 'assistant', model: 'claude-opus-5-5', stop_reason: 'tool_use', content: [{ type: 'text', text }, { type: 'tool_use', id: `tu${i}`, name: 'Bash', input: { command: 'ls' } }], usage } });
+  const interim = (i, text) => raw({ type: 'assistant', timestamp: when(i, 500), message: { role: 'assistant', model: 'deepseek-v4-pro', stop_reason: 'tool_use', content: [{ type: 'text', text }, { type: 'tool_use', id: `tu${i}`, name: 'Bash', input: { command: 'ls' } }], usage } });
   const toolDone = (i) => raw({ type: 'user', timestamp: when(i, 800), message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: `tu${i}`, content: 'ok' }] } });
-  const final = (i, text) => raw({ type: 'assistant', timestamp: when(i, 1000), message: { role: 'assistant', model: 'claude-opus-5-5', stop_reason: 'end_turn', content: [{ type: 'text', text }], usage } });
+  const final = (i, text) => raw({ type: 'assistant', timestamp: when(i, 1000), message: { role: 'assistant', model: 'deepseek-v4-pro', stop_reason: 'end_turn', content: [{ type: 'text', text }], usage } });
   const say = (lines = 1) => {
     const i = next++;
     const at = (k) => when(i, k);
     const body = Array.from({ length: lines }, (_, k) => `Ответ ${i}, строка ${k + 1}: всё идёт по плану.`).join('\n');
     appendFileSync(file, JSON.stringify({ type: 'user', timestamp: at(0), message: { role: 'user', content: `Вопрос ${i}: что нового?` } }) + '\n'
-      + JSON.stringify({ type: 'assistant', timestamp: at(1000), message: { role: 'assistant', model: 'claude-opus-5-5', content: [{ type: 'text', text: body }], usage } }) + '\n');
+      + JSON.stringify({ type: 'assistant', timestamp: at(1000), message: { role: 'assistant', model: 'deepseek-v4-pro', content: [{ type: 'text', text: body }], usage } }) + '\n');
     return i - 1;   // its place in the conversation (the fixture has turns 0…9)
   };
   // «The window is the one in front» is decided by the page from hasFocus and the visibility; here it is set by hand, so the
@@ -7731,7 +7701,7 @@ section('light page rest room', async () => {
       await openPhone([w, h], mode); await tap('#m-rest'); await tap(pad('a'));
       check(`${w}×${h}: playing before a notice arrives`, await waitFor('restroomGame.mode === "shoot" && !restroomGame.paused', 4000));
       const board = JSON.parse(original);
-      board.rows.push({ id, app: 'claude', state: 'blocked', kind: 'question', stage: 'working', title: 'Вопрос с телефона', msg: 'Нужно уточнение с телефона' });
+      board.rows.push({ id, app: 'omp', state: 'blocked', kind: 'question', stage: 'working', title: 'Вопрос с телефона', msg: 'Нужно уточнение с телефона' });
       writeFileSync(taskFile, JSON.stringify(board));
       await post('/api/refresh', {});
       check(`${w}×${h}: a new waiting task appears during play`, await waitFor(`!!document.querySelector('#rm-notes [data-note="${id}"]')`, 20000));
@@ -7871,7 +7841,7 @@ section('light page actions', async () => {
   await quiet();
   const phoneScreenReads = () => evalJs('window.__net.log.filter((u) => u.includes("/screen?target=alpha%2F16")).length');
   const phoneReadsBefore = await phoneScreenReads();
-  writeFileSync(join(fixture, 'state', 'dialog.txt'), readFileSync(new URL('../src/menu_samples/claude-permission.txt', import.meta.url), 'utf8'));
+  writeFileSync(join(fixture, 'state', 'dialog.txt'), readFileSync(new URL('../src/menu_samples/form-permission.txt', import.meta.url), 'utf8'));
   await sleep(4500);
   check('a waiting phone card does not poll the agent screen', await phoneScreenReads() === phoneReadsBefore
     && await exists(perm + ' [data-reach="screen"]'));
@@ -7949,9 +7919,9 @@ section('crew roles', async () => {
   await click('#cr-add');
   await waitFor('!!document.querySelector("#cr-name-new")', 4000);
   await typeIn('#cr-name-new', 'Дизайнер');
-  await typeIn('#st-prog-cr-new', 'claude');
+  await typeIn('#st-prog-cr-new', 'omp');
   await waitFor('document.querySelectorAll(\'select[id="st-model-cr-new"] option\').length >= 3', 40000);
-  await typeIn('#st-model-cr-new', 'claude/claude-sonnet-5-5');
+  await typeIn('#st-model-cr-new', 'omp/deepseek/deepseek-v4-flash');
   await waitFor('document.querySelectorAll(\'select[id="st-effort-cr-new"] option\').length >= 3', 40000);
   await typeIn('#st-effort-cr-new', 'high');
   await click('[data-cr-fb-set="new"]');
@@ -7967,7 +7937,7 @@ section('crew roles', async () => {
   check('the role «Дизайнер» is added to the list', await waitFor('!!document.querySelector(\'[data-role-name="Дизайнер"]\')', 8000), await text('#st-roles'));
   const rid = await idOf('Дизайнер');
   check('the planner keeps it in its own file, and the board was not asked anything', existsSync(join(fixture, 'state', 'herdr-planner', 'crew-roles.json')) && calls().length === calls0, JSON.stringify(calls().slice(calls0)));
-  check('it says what it will set on the board', await click(`[data-sets="${rid}"] summary`) && await hasText(`[data-sets="${rid}"]`, 'worker.fallback') && await hasText(`[data-sets="${rid}"]`, 'worker.instructions') && await hasText(`[data-sets="${rid}"]`, 'claude/claude-sonnet-5-5'), await text(`[data-sets="${rid}"]`));
+  check('it says what it will set on the board', await click(`[data-sets="${rid}"] summary`) && await hasText(`[data-sets="${rid}"]`, 'worker.fallback') && await hasText(`[data-sets="${rid}"]`, 'worker.instructions') && await hasText(`[data-sets="${rid}"]`, 'omp/deepseek/deepseek-v4-flash'), await text(`[data-sets="${rid}"]`));
   check('and that it is on no task yet', await exists(`[data-usage="${rid}"] [data-usage-none]`));
   check('a second role cannot take the same name', (await post('/api/crew/roles', { op: 'add', role: { name: 'дизайнер', kind: 'worker', agent: '', effort: '', fallback: '', instructions: '', how: '' } }))[0] === 422);
 
@@ -7985,7 +7955,7 @@ section('crew roles', async () => {
   check('nothing has gone to the board yet', calls().length === c1);
   await twoPresses('#cr-put-confirm');
   check('the board gets its own set commands for the task, one after the other', await waitLog(() => calls().slice(c1).filter((c) => c.argv?.[0] === 'set' && argvOf(c).includes('alpha/11')).length >= 4, 15000)
-    && JSON.stringify(calls().slice(c1).filter((c) => c.argv?.[0] === 'set').map((c) => argvOf(c).slice(1, 3).join(' '))) === JSON.stringify(['worker.agent claude/claude-sonnet-5-5', 'worker.effort high', 'worker.fallback omp', 'worker.instructions Следи за единым видом интерфейса: отступы, цвета, состояния.']),
+    && JSON.stringify(calls().slice(c1).filter((c) => c.argv?.[0] === 'set').map((c) => argvOf(c).slice(1, 3).join(' '))) === JSON.stringify(['worker.agent omp/deepseek/deepseek-v4-flash', 'worker.effort high', 'worker.fallback omp', 'worker.instructions Следи за единым видом интерфейса: отступы, цвета, состояния.']),
   JSON.stringify(calls().slice(c1).map((c) => c.argv)));
   check('the task\'s row says «Дизайнер» and that it was chosen by hand', await waitFor(`fetch("/api/state").then((r) => r.json()).then((d) => (d.tasks.find((x) => x.id === "alpha/11")?.crew_roles || [])[0]?.name === "Дизайнер")`, 15000)
     && (await taskOfApi('alpha/11')).crew_roles[0].by === 'chosen');
@@ -8053,7 +8023,7 @@ section('crew roles', async () => {
   const c4 = calls().length;
   const created = await post('/api/action', { action: 'todo-create', id: t1, repo: 'gamma' });
   const addCall = calls().slice(c4).find((c) => c.argv?.[0] === 'add');
-  check('a task made from the list for gamma gets «Дизайнер» by the rule: its agent and effort go with `add`', created[0] === 200 && !!addCall && argvOf(addCall).includes('--worker.agent') && argvOf(addCall).includes('claude/claude-sonnet-5-5') && argvOf(addCall).includes('--worker.effort') && argvOf(addCall).includes('high'), JSON.stringify([created, addCall]));
+  check('a task made from the list for gamma gets «Дизайнер» by the rule: its agent and effort go with `add`', created[0] === 200 && !!addCall && argvOf(addCall).includes('--worker.agent') && argvOf(addCall).includes('omp/deepseek/deepseek-v4-flash') && argvOf(addCall).includes('--worker.effort') && argvOf(addCall).includes('high'), JSON.stringify([created, addCall]));
   const made = await waitFor('fetch("/api/state").then((r) => r.json()).then((d) => d.tasks.some((x) => x.title === "Новая кнопка входа" && (x.crew_roles || [])[0]?.by === "rule"))', 15000);
   check('and its row says it came by a rule', made && (await stateApi()).tasks.find((x) => x.title === 'Новая кнопка входа').crew_roles[0].rule.includes('gamma'));
   const t2 = await todoId('Ещё одна кнопка');
@@ -8091,9 +8061,9 @@ section('crew roles', async () => {
   // a preset holds the own roles: applying it changes the roles (the planner's), not the board
   const [, cap] = await post('/api/station/presets', { op: 'capture', name: 'С ролями' });
   const withRoles = (await stationOf()).presets.list.find((x) => x.id === cap.id);
-  check('a preset captured from the crew holds the own roles next to the standard ones', !!withRoles && withRoles.roles[`role:${rid}`]?.agent === 'claude/claude-sonnet-5-5' && withRoles.roles[`role:${sid}`], JSON.stringify(withRoles?.roles));
+  check('a preset captured from the crew holds the own roles next to the standard ones', !!withRoles && withRoles.roles[`role:${rid}`]?.agent === 'omp/deepseek/deepseek-v4-flash' && withRoles.roles[`role:${sid}`], JSON.stringify(withRoles?.roles));
   const role = (await rolesApi()).roles.find((x) => x.id === rid);
-  await post('/api/crew/roles', { op: 'update', id: rid, role: { name: role.name, kind: role.kind, agent: 'claude/claude-haiku-5-5', effort: 'low', fallback: role.fallback, instructions: role.instructions, how: role.how } });
+  await post('/api/crew/roles', { op: 'update', id: rid, role: { name: role.name, kind: role.kind, agent: 'omp/deepseek/deepseek-v4-pro', effort: 'low', fallback: role.fallback, instructions: role.instructions, how: role.how } });
   await click('#crew header button');
   await menuPick('Экипаж');
   await waitFor(`!!document.querySelector('[data-preset="${cap.id}"]')`, 40000);
@@ -8106,11 +8076,11 @@ section('crew roles', async () => {
     await waitFor('!!document.querySelector("#st-preset-card")', 8000);
   }
   check('the card shows the role\'s steps as «было → стало», by the planner, not by a board command', await waitFor(`document.querySelectorAll('#st-pv-steps li[data-step="role:${rid}"]').length === 2`, 15000)
-    && await hasText('#st-pv-steps', 'Дизайнер') && await hasText('#st-pv-steps', 'claude/claude-haiku-5-5'), await text('#st-preset-card'));
+    && await hasText('#st-pv-steps', 'Дизайнер') && await hasText('#st-pv-steps', 'omp/deepseek/deepseek-v4-pro'), await text('#st-preset-card'));
   await evalJs('document.querySelector("#st-preset-card").scrollIntoView({ block: "center" }); true');
   await shot('crew-preset-roles.png');
   await twoPresses('#st-pv-confirm');
-  check('applying it puts the role back, and the board is not asked', await waitFor(`fetch("/api/crew/roles").then((r) => r.json()).then((d) => { const r = d.roles.find((x) => x.id === ${JSON.stringify(rid)}); return r.agent === "claude/claude-sonnet-5-5" && r.effort === "high"; })`, 15000)
+  check('applying it puts the role back, and the board is not asked', await waitFor(`fetch("/api/crew/roles").then((r) => r.json()).then((d) => { const r = d.roles.find((x) => x.id === ${JSON.stringify(rid)}); return r.agent === "omp/deepseek/deepseek-v4-flash" && r.effort === "high"; })`, 15000)
     && calls().slice(c6).filter((c) => c.argv?.[0] === 'set' || c.argv?.[0] === 'unset').length === 0, JSON.stringify(calls().slice(c6).map((c) => c.argv)));
   await post('/api/station/presets', { op: 'delete', id: cap.id });
 

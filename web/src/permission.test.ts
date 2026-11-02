@@ -3,27 +3,27 @@ import { boardPlaceholder, dialogReach, permissionPrompt, questionText, taskPerm
 import type { MenuData, Task } from './types';
 
 const menu = (labels: string[], over: Partial<MenuData> = {}): MenuData => ({
-  program: 'claude', sig: 's', question: 'Do you want to proceed?', context: '', multi: false, cursor: 0,
+  program: 'codex', sig: 's', question: 'Do you want to proceed?', context: '', multi: false, cursor: 0,
   submit_at: null, own_editor: false, step: 0, steps: 0, tabs: [],
   options: labels.map((label, at) => ({ at, label, desc: '', checked: false, own: false })),
   ...over,
 });
 
 const task = (over: Partial<Task>): Task => ({
-  id: 'a/1', repo: 'a', n: 1, tag: 'A-1', title: 't', state: 'blocked', kind: '', stage: '', msg: '', app: 'claude',
+  id: 'a/1', repo: 'a', n: 1, tag: 'A-1', title: 't', state: 'blocked', kind: '', stage: '', msg: '', app: 'codex',
   progress: null, eta: null, pr: '', review: null, round: 0, queue: null, status: 'waiting', label: '', board_label: '',
   review_failed: false, merge_blocked: false, archived: false, actions: [], created: 0, description: '', worker_agent: '',
   model: '', session: '', worktree: '', exited_at: 0, key: 'A', subagents: [], subagents_note: '', ...over,
 });
 
-// Claude Code 2.1.309, a file to be created (the PLN-60 case): no «always allow», the session row instead.
+// A file to be created: no «always allow», the session row instead.
 const FILE_PROMPT = menu(
   ['Yes', 'Yes, and switch to accept edits (shift+tab) for this session', 'No'],
   { question: 'Do you want to create closing-note2.md?', context: 'Create file\nclosing-note2.md' },
 );
 
 describe('permission prompts', () => {
-  it('reads the rows of a Claude Code prompt: yes, yes and never ask again, no', () => {
+  it('reads the rows of a prompt: yes, yes and never ask again, no', () => {
     const p = permissionPrompt(menu(['Yes', 'Yes, and always allow access to /tmp/x from this project', 'Yes, and switch to auto mode', 'No']));
     expect(p).toEqual({ allow: 0, always: 1, deny: 3, question: 'Do you want to proceed?', context: '' });
   });
@@ -31,7 +31,7 @@ describe('permission prompts', () => {
     const p = permissionPrompt(menu(['Yes, proceed (y)', "Yes, and don't ask again for commands that start with `rm -rf build` (p)", 'No, and tell Codex what to do differently (esc)']));
     expect(p).toMatchObject({ allow: 0, always: 1, deny: 2 });
   });
-  it('reads Claude Code’s session row in a file prompt', () => {
+  it('reads the session row in a file prompt', () => {
     expect(permissionPrompt(FILE_PROMPT)).toEqual({
       allow: 0, always: 1, deny: 2,
       question: 'Do you want to create closing-note2.md?', context: 'Create file\nclosing-note2.md',

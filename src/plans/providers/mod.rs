@@ -2,7 +2,6 @@
 //! Each follows the same provider of herdr-gpui's `herdr-usage` crate (which ports CodexBar), so the same account reads
 //! the same numbers. A provider that finds no sign-in answers `None` and is left out of the bar.
 
-pub mod claude;
 pub mod codex;
 pub mod deepseek;
 pub mod kimi;
@@ -63,7 +62,7 @@ pub fn jwt_exp_ms(token: &super::http::Secret) -> Option<u64> {
     v.get("exp")?.as_f64().filter(|e| *e > 0.).map(|e| (e * 1000.) as u64)
 }
 
-/// A token or key found on this machine: which program's file it came from (`pi`, `omp`, `claude`, `codex`, `kimi`, `opencode`, or the planner's
+/// A token or key found on this machine: which program's file it came from (`pi`, `omp`, `codex`, `kimi`, `opencode`, or the planner's
 /// own `config` and `env`), the crew role that runs the provider through that program (empty when none does), and when it stops working (ms),
 /// when that is known.
 pub struct Cred {
@@ -92,10 +91,9 @@ pub fn stamp(report: super::http::Res<super::model::Report>, cred: &Cred) -> sup
     })
 }
 
-/// What an agent keeps for a provider: the sign-in, and the account when it says whose it is.
+/// What an agent keeps for a provider: the sign-in and account id.
 pub struct Found {
     pub cred: Cred,
-    pub email: Option<String>,
     pub account_id: Option<String>,
 }
 
@@ -107,7 +105,6 @@ fn kept_as(agent: &str, provider: &str) -> Option<&'static str> {
         ("omp", "kimi") => "kimi-code",
         ("pi", "codex") => "openai",
         ("omp", "codex") => "openai-codex",
-        ("pi", "claude") | ("omp", "claude") => "anthropic",
         _ => return None,
     })
 }
@@ -138,7 +135,6 @@ fn found_in(entry: &serde_json::Value, from: &'static str) -> Option<Found> {
     };
     Some(Found {
         cred: Cred::new(token, expires_ms, from),
-        email: super::http::text_at(entry, &["email"]),
         account_id: super::http::text_at(entry, &["accountId"]),
     })
 }
@@ -251,7 +247,6 @@ pub mod tests {
         assert_eq!(format!("{:?}", pi_key(&src, "deepseek").unwrap()), "Secret(…)");
         assert!(pi_key(&src, "kimi-coding").is_none(), "an oauth entry is no API key");
         assert!(pi_oauth(&src, "deepseek").is_none(), "an API key is no oauth sign-in");
-        assert!(pi_key(&src, "anthropic").is_none() && pi_oauth(&src, "anthropic").is_none());
         let kimi = pi_oauth(&src, "kimi-coding").unwrap();
         assert!(!kimi.stale(1_792_000_000_000) && kimi.stale(4_102_444_800_000));
         let openai = pi_oauth(&src, "openai").unwrap();
@@ -297,7 +292,6 @@ pub mod tests {
             &[
                 ("deepseek", "api_key", r#"{"key":"old-omp-key"}"#, None),
                 ("deepseek", "api_key", r#"{"key":"new-omp-key"}"#, None),
-                ("anthropic", "oauth", r#"{"access":"a","refresh":"r","expires":4102444800000,"email":"me@x.y"}"#, None),
                 ("openai-codex", "oauth", r#"{"access":"c","refresh":"r","expires":1000,"accountId":"acct-9"}"#, None),
                 ("kimi-code", "oauth", r#"{"access":"k","refresh":"r","expires":4102444800000}"#, Some("revoked")),
             ],
@@ -305,14 +299,11 @@ pub mod tests {
         let before = std::fs::read(&src.omp_db).unwrap();
         let key = agent_login(&src, "omp", "deepseek").unwrap();
         assert_eq!((key.cred.from, key.cred.expires_ms), ("omp", None));
-        let claude = agent_login(&src, "omp", "claude").unwrap();
-        assert_eq!(claude.email.as_deref(), Some("me@x.y"));
-        assert!(!claude.cred.stale(1_792_000_000_000));
         let codex = agent_login(&src, "omp", "codex").unwrap();
         assert_eq!(codex.account_id.as_deref(), Some("acct-9"));
         assert!(codex.cred.stale(1_792_000_000_000));
         assert!(agent_login(&src, "omp", "kimi").is_none(), "a disabled credential is not used");
-        assert!(agent_login(&src, "opencode", "deepseek").is_none() && agent_login(&src, "claude", "claude").is_none());
+        assert!(agent_login(&src, "opencode", "deepseek").is_none() && agent_login(&src, "codex", "codex").is_none());
         assert_eq!(std::fs::read(&src.omp_db).unwrap(), before, "the database is only read");
     }
 }

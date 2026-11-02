@@ -27,9 +27,9 @@ export const STATUS_COLOR_KEY: Record<Status, string> = {
   review: 'magenta', working: 'blue', queued: 'muted', done: 'muted',
 };
 
-export const PROGRAM_COLOR_KEY: Record<string, string> = { claude: 'accent', omp: 'blue', pi: 'magenta', codex: 'green' };
+export const PROGRAM_COLOR_KEY: Record<string, string> = { omp: 'blue', pi: 'magenta', codex: 'green' };
 export const PROGRAM_SHAPE: Record<string, 'sphere' | 'box' | 'octa' | 'tetra'> = {
-  claude: 'sphere', omp: 'box', pi: 'octa', codex: 'tetra',
+  omp: 'box', pi: 'octa', codex: 'tetra',
 };
 
 const color = (raw: Record<string, string>, key: string, fallback: string): Color => {

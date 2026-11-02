@@ -381,16 +381,16 @@ let PROJECTS=[
  {id:'beta',key:'BET',color:'green',angle:.3,lag:null,fork:{up:'acme/beta',behind:12,tool:'gh',kind:'GitHub'}},
  {id:'docs',key:'DOC',color:'cyan',angle:5.25,quiet:true,lag:null,gitlab:true,research:{up:'team/docs',behind:5,tool:'glab',kind:'GitLab'}},
 ];
-const T=(p,n,title,st,d,extra={})=>({id:`${p}/${n}`,repo:p,tag:`${PROJECTS.find(x=>x.id===p).key}-${n}`,title,st,created:day(d),agent:'claude/sonnet-5.5',...extra});
+const T=(p,n,title,st,d,extra={})=>({id:`${p}/${n}`,repo:p,tag:`${PROJECTS.find(x=>x.id===p).key}-${n}`,title,st,created:day(d),agent:'omp/deepseek-v4-flash',...extra});
 let TASKS=[
- T('alpha',16,'Лишние ветки в репозитории','waiting',0,{subs:[{id:'s1',role:'Explore',title:'Explore Rust backend',doing:'Grep «git branch -D» в src/',min:4,state:'running',kind:'claude'}],ask:{q:'Удалить 6 веток без PR старше 30 дней?',opts:['Да, все 6','Только мои','Нет']}}),
- T('alpha',15,'Кэш SSH-соединений','working',0,{subs:[{id:'s2',role:'Plan',title:'План переноса ControlPath',doing:'Read remote.rs',min:2,state:'running',kind:'claude'},{id:'s3',role:'general-purpose',title:'Проверить тесты',doing:'затих 12 мин назад',min:19,state:'quiet',kind:'claude'}]}),
+ T('alpha',16,'Лишние ветки в репозитории','waiting',0,{subs:[{id:'s1',role:'Explore',title:'Explore Rust backend',doing:'Grep «git branch -D» в src/',min:4,state:'running',kind:'omp'}],ask:{q:'Удалить 6 веток без PR старше 30 дней?',opts:['Да, все 6','Только мои','Нет']}}),
+ T('alpha',15,'Кэш SSH-соединений','working',0,{subs:[{id:'s2',role:'Plan',title:'План переноса ControlPath',doing:'Read remote.rs',min:2,state:'running',kind:'omp'},{id:'s3',role:'general-purpose',title:'Проверить тесты',doing:'затих 12 мин назад',min:19,state:'quiet',kind:'omp'}]}),
  T('alpha',14,'Таймаут models 90 с','review',0,{after:['alpha/15']}),
  T('alpha',12,'Экспорт истории в CSV','done',1),
  T('alpha',11,'Флаг --dry-run','done',1),
  T('alpha',9,'Тёмная тема в виджете','queued',6,{after:['alpha/14']}),
- T('herdr-planner',9,'Галактика herdr-projects: полёт на корабле','plan',0,{agent:'claude/opus-5.5',closing:"Plan v3 is ready for approval. I rewrote the stack section (axum + SQLite + SSE), added the subagent satellites with a reliable 'done' rule, and described far galaxies over SSH. Open questions: the name of the centre (Quasar vs Pulsar) and whether the chat docks bottom-centre.",closingRu:"План v3 готов к одобрению. Переписал раздел о стеке (axum + SQLite + SSE), добавил спутники-субагенты с надёжным правилом «завершён» и описал далёкие галактики по SSH. Открытые вопросы: имя центра (Квазар или Пульсар) и где пристыковать чат — по центру снизу или нет.",subs:[{id:'s4',role:'Explore',title:'Обзор web/world.js',doing:'Read world.js:480–620',min:6,state:'running',kind:'claude'}]}),
- T('herdr-planner',10,'Макеты Галактики для одобрения','working',0,{agent:'claude/opus-5.5',after:['herdr-planner/9']}),
+ T('herdr-planner',9,'Галактика herdr-projects: полёт на корабле','plan',0,{agent:'omp/deepseek-v4-pro',closing:"Plan v3 is ready for approval. I rewrote the stack section (axum + SQLite + SSE), added the subagent satellites with a reliable 'done' rule, and described far galaxies over SSH. Open questions: the name of the centre (Quasar vs Pulsar) and whether the chat docks bottom-centre.",closingRu:"План v3 готов к одобрению. Переписал раздел о стеке (axum + SQLite + SSE), добавил спутники-субагенты с надёжным правилом «завершён» и описал далёкие галактики по SSH. Открытые вопросы: имя центра (Квазар или Пульсар) и где пристыковать чат — по центру снизу или нет.",subs:[{id:'s4',role:'Explore',title:'Обзор web/world.js',doing:'Read world.js:480–620',min:6,state:'running',kind:'omp'}]}),
+ T('herdr-planner',10,'Макеты Галактики для одобрения','working',0,{agent:'omp/deepseek-v4-pro',after:['herdr-planner/9']}),
  T('herdr-planner',8,'Чат с историей из стенограммы','done',2),
  T('herdr-planner',7,'3D-мир','done',6),
  T('portal-web',16,'Экспорт заявок: фильтр по датам','ready',0,{agent:'codex/gpt-5.5',ask:{q:'PR #41 готов: одобрить и влить?',opts:['Одобрить','Вернуть на доработку']}}),
@@ -401,7 +401,7 @@ let TASKS=[
  T('beta',3,'Ночной бэкап','working',6,{agent:'omp/kimi-k2',subs:[{id:'s6',role:'Backup',title:'Проверка rsync',doing:'toolCall: bash',min:1,state:'running',kind:'omp'}]}),
  T('docs',2,'Справка по клавишам','done',6),
 ];
-const QUASAR={subs:[{id:'q1',role:'Explore',title:'Где живёт поиск по доске',doing:'Grep «search_fts»',min:3,state:'running',kind:'claude'}]};
+const QUASAR={subs:[{id:'q1',role:'Explore',title:'Где живёт поиск по доске',doing:'Grep «search_fts»',min:3,state:'running',kind:'omp'}]};
 let GALAXIES=[
  {id:'orion',label:'orion',here:true},
  {id:'vm-a',label:'vm-a',target:'deploy@vm-a',ok:true,tasks:136,wait:2,version:'1.2.4',angle:4.55},
@@ -421,8 +421,8 @@ function bigData(){
   const st=['done','done','done','done','done','done','queued','queued','working','working','plan','review','review','ready','waiting','failed'];
   let id=0;for(let k=0;T.length<500;k++){const pr=P[k%50];if(pr.quiet&&r()<.75)continue;const n=++id;
     const s0=pr.quiet?(r()<.8?'done':'queued'):st[Math.floor(r()*st.length)];
-    T.push({id:`${pr.id}/${n}`,repo:pr.id,tag:`${pr.key}-${n}`,title:`Задача ${n} проекта ${pr.id}`,st:s0,created:day(Math.floor(r()*40)),agent:['claude/sonnet-5.5','codex/gpt-5.5','omp/kimi-k2'][n%3],
-      subs:s0==='working'&&r()<.5?[{id:'s'+n,role:'Explore',title:'Обзор кода',doing:'Read src/',min:1+n%20,state:'running',kind:'claude'}]:undefined})}
+    T.push({id:`${pr.id}/${n}`,repo:pr.id,tag:`${pr.key}-${n}`,title:`Задача ${n} проекта ${pr.id}`,st:s0,created:day(Math.floor(r()*40)),agent:['omp/deepseek-v4-flash','codex/gpt-5.5','omp/kimi-k2'][n%3],
+      subs:s0==='working'&&r()<.5?[{id:'s'+n,role:'Explore',title:'Обзор кода',doing:'Read src/',min:1+n%20,state:'running',kind:'omp'}]:undefined})}
   // раскладка: рукав спирали на папку (группу), активные внутри по активности, тихие — внешнее кольцо, мельче и тусклее
   GROUPS.forEach(([g],gi)=>{const act=P.filter(p=>p.group===g&&!p.quiet).sort((a,b)=>T.filter(t=>t.repo===b.id&&t.st!=='done').length-T.filter(t=>t.repo===a.id&&t.st!=='done').length);
     act.forEach((p,j)=>{const rr=150+j*85,th=gi*Math.PI/3+j*.42;p.pos=V(Math.cos(th)*rr,(j%2?6:-6),Math.sin(th)*rr);p.scale=.5});
@@ -437,7 +437,7 @@ function setData(d){S.data=d;const D=d==='big'?bigData():d==='empty'?{P:[],T:[]}
   if(d==='big'){R_BOUND=630;R_FAR=1100}else{R_BOUND=R_QUIET+120;R_FAR=900}
   indexTasks();S.sel=null;S.level='galaxy';S.nebula=null;S.folds={};$('log').innerHTML='';LSset('data',d)}
 const FAR_PROJECTS=[{id:'herdr-planner',key:'PLN',color:'accent',angle:.8,lag:{behind:0,ahead:3}},{id:'infra',key:'INF',color:'green',angle:3.0,lag:null},{id:'site',key:'SIT',color:'cyan',angle:5,lag:null}];
-const FT=(p,n,title,st,d,extra={})=>({id:`vm-a~${p}/${n}`,g:'vm-a',repo:p,tag:`${FAR_PROJECTS.find(x=>x.id===p).key}-${n}`,title,st,created:day(d),agent:'claude/sonnet-5.5',...extra});
+const FT=(p,n,title,st,d,extra={})=>({id:`vm-a~${p}/${n}`,g:'vm-a',repo:p,tag:`${FAR_PROJECTS.find(x=>x.id===p).key}-${n}`,title,st,created:day(d),agent:'omp/deepseek-v4-flash',...extra});
 const FTASKS=[
  FT('infra',4,'Перезапуск nginx на проде','waiting',0,{ask:{q:'Перезапустить nginx на проде сейчас?',opts:['Да','Ночью','Нет']}}),
  FT('infra',3,'Ротация логов','working',0,{agent:'omp/kimi-k2'}),
@@ -455,7 +455,7 @@ const CHAT=[
  ['q','Покажи, что делает vm-a','14:40'],['a','vm-a на связи, 136 задач, 2 ждут тебя. Клон herdr-planner там впереди на 3 коммита — здесь main отстаёт.','14:40'],
 ];
 const CHATS={orion:CHAT,'vm-a':[['a','vm-a: INF-4 ждёт тебя — подтвердить перезапуск nginx на проде.','13:20'],['a','SIT-7 готов к одобрению, ревью прошло.','13:55'],['a','Клон herdr-planner здесь впереди origin на 3 коммита — не запушено.','14:20']]};
-const OLDER=[['q','Почему models claude так долго?','вчера'],['a','herdr-projects models claude идёт ≈42 с: два таймаута по 30 с внутри плагина. Прогрев кэша спрячет это.','вчера'],['q','Сделай тёмную тему виджета','вчера'],['a','Завёл ALP-9, after ALP-14.','вчера']];
+const OLDER=[['q','Почему models kimi так долго?','вчера'],['a','herdr-projects models kimi идёт ≈42 с: два таймаута по 30 с внутри плагина. Прогрев кэша спрячет это.','вчера'],['q','Сделай тёмную тему виджета','вчера'],['a','Завёл ALP-9, after ALP-14.','вчера']];
 let TODOS=[
  {id:'d1',text:'Спросить про ротацию логов',to:''},
  {id:'d2',text:'Проверить PRT-16 на мобильном',to:'PRT-16'},
@@ -496,7 +496,7 @@ function col(name){const th=THEMES[S.theme];return th[name]||th.accent}
 function rgba(hex,a){const n=parseInt(hex.slice(1),16);return`rgba(${n>>16},${n>>8&255},${n&255},${a})`}
 const light=()=>THEMES[S.theme].mode==='light';
 const stCol=st=>col({queued:'muted',plan:'cyan',working:'blue',review:'magenta',ready:'green',waiting:'yellow',failed:'red',done:'muted'}[st]);
-const progCol=k=>col({claude:'accent',codex:'green',omp:'cyan',pi:'magenta'}[k]||'fgDim');
+const progCol=k=>col({kimi:'accent',codex:'green',omp:'cyan',pi:'magenta'}[k]||'fgDim');
 
 /* ───────── состав мира по уровню ───────── */
 function worldProjects(){return S.galaxy==='orion'?PROJECTS:FAR_PROJECTS}
@@ -615,7 +615,7 @@ function frame(now){const t0=performance.now();STATS.parts=0;STATS.dots=0;
     for(const sgn of[1,-1]){for(let i=0;i<40;i++){const k=i/40;const fl=S.simple?1:(.7+.3*Math.sin(tm*6+i));const q=P(V(Math.sin(tm*3+i)*k*3,sgn*k*90,0));if(q){cx.fillStyle=rgba(ac,.25*(1-k)*fl);cx.beginPath();cx.arc(q.x,q.y,Math.max(1,q.s*(2+k*6)),0,6.283);cx.fill()}}}
     // аккреционный диск = дуги лимитов
     // аккреционный диск = лимиты подписок: кольцо на подписку, дуга = израсходованная доля окна; неподвижно
-    const lim=[[.62,'claude · 5 ч','сброс 17:00'],[.38,'codex · 5 ч','сброс 18:40'],[.84,'claude · неделя','сброс 23.10']];
+    const lim=[[.62,'kimi · 5 ч','сброс 17:00'],[.38,'codex · 5 ч','сброс 18:40'],[.84,'kimi · неделя','сброс 23.10']];
     const near=p.s>.9||(S.sel&&S.sel.quasar)||hoverRef==='quasar';
     lim.forEach(([v,name,reset],i)=>{const rr=18+i*6,c=v>=.8?th.red:v>=.6?th.yellow:th.green,a0=Math.PI/2;
       const ring=(from,to,style,w)=>{cx.strokeStyle=style;cx.lineWidth=w;cx.beginPath();let first=true;for(let j=0;j<=80;j++){const a=a0+from+(to-from)*j/80;const q=P(V(Math.cos(a)*rr,0,Math.sin(a)*rr));if(!q)continue;first?cx.moveTo(q.x,q.y):cx.lineTo(q.x,q.y);first=false}cx.stroke()};
@@ -859,7 +859,7 @@ function focus(){
    <div class="row s-${t.st}"><span class="chip" style="color:var(--s);border-color:var(--s)">${STAT[t.st]}</span><span class="chip">${t.agent}</span>${(t.after||[]).map(a=>`<span class="chip">after ${([...TASKS,...FTASKS].find(x=>x.id===a)||{tag:a}).tag}</span>`).join('')}</div>
    ${TRI.on?`<div class="req" style="border-style:dashed">Разбор «Ждёт тебя» · ${TRI.cur+1} из ${triList().length} · ответь или <kbd>Esc</kbd> — вернёшься к списку</div>`:''}
    ${t.ask?`<h3>Запрос к тебе</h3><div class="req">${esc(t.ask.q)}<div class="opts">${t.ask.opts.map((o,i)=>`<button class="btn" data-ask="${i}">${esc(o)}</button>`).join('')}</div></div>`:''}
-   <h3>Итог агента</h3>${t.closing?`<div class="closing" id="cl">${esc(sel.ru?t.closingRu:t.closing)}</div><div class="row" style="margin-top:6px">${tr?`<button class="btn" id="tr">Перевести на русский</button><span class="dim">текст на английском</span>`:`<button class="btn" id="tro">оригинал</button><span class="dim">перевод · claude-haiku-5-5</span>`}</div>`:'<div class="closing dim">Агент ещё работает.</div>'}
+   <h3>Итог агента</h3>${t.closing?`<div class="closing" id="cl">${esc(sel.ru?t.closingRu:t.closing)}</div><div class="row" style="margin-top:6px">${tr?`<button class="btn" id="tr">Перевести на русский</button><span class="dim">текст на английском</span>`:`<button class="btn" id="tro">оригинал</button><span class="dim">перевод · deepseek-v4-flash</span>`}</div>`:'<div class="closing dim">Агент ещё работает.</div>'}
    ${t.subs?`<h3>Субагенты · ${t.subs.length}</h3>`+t.subs.map(m=>`<div class="moonl" data-moon="${m.id}"><span>${m.role} · «${esc(m.title)}»</span><span class="dim">${m.state==='quiet'?'затих':m.min+' мин'}</span></div>`).join(''):''}
    <h3>Действия</h3><div class="row"><button class="btn" data-do="tell" title="написать агенту этой задачи">Сказать агенту</button><button class="btn" data-do="screen" title="открыть терминал агента в herdr">Экран агента</button><button class="btn" data-do="yazi" title="файлы задачи в файловом менеджере yazi">Файлы (yazi)</button>${t.st==='ready'?'<button class="btn primary" data-arm>Одобрить</button>':''}</div>`}
   else if(sel.u){const pr=sel.u,pl=planetsOf(pr.id);
@@ -869,8 +869,8 @@ function focus(){
    ${pr.lag&&pr.lag.behind?`<div class="row" style="margin-top:8px"><button class="btn" data-arm>Предложить обновить</button><code class="dim">git -C ~/src/${pr.id} pull --ff-only</code></div>`:''}
    ${forkBlock(pr)}
    <h3>Планеты</h3>${pl.map(t=>`<div class="moonl" data-go="${t.id}"><span><span class="dot s-${t.st}"></span> ${t.tag} ${esc(t.title)}</span><span class="dim">${STAT[t.st]}</span></div>`).join('')}`}
-  else if(sel.quasar){h=`<div class="dim">центр Галактики ${S.galaxy}</div><h2>${S.galaxy==="orion"?QN()+" · Координатор":"Координатор "+S.galaxy}</h2><div class="row"><span class="chip">работает</span><span class="chip">claude/opus-5.5</span></div>
-   <h3>Лимиты подписок = аккреционный диск</h3>${[['claude · 5 ч','62 %','сброс в 17:00 · 2 ч 28 мин'],['codex · 5 ч','38 %','сброс в 18:40'],['claude · неделя','84 %','сброс 23.10']].map(x=>`<div class="moonl"><span>${x[0]}</span><span>${x[1]} <span class="dim">${x[2]}</span></span></div>`).join('')}
+  else if(sel.quasar){h=`<div class="dim">центр Галактики ${S.galaxy}</div><h2>${S.galaxy==="orion"?QN()+" · Координатор":"Координатор "+S.galaxy}</h2><div class="row"><span class="chip">работает</span><span class="chip">omp/deepseek-v4-pro</span></div>
+   <h3>Лимиты подписок = аккреционный диск</h3>${[['kimi · 5 ч','62 %','сброс в 17:00 · 2 ч 28 мин'],['codex · 5 ч','38 %','сброс в 18:40'],['kimi · неделя','84 %','сброс 23.10']].map(x=>`<div class="moonl"><span>${x[0]}</span><span>${x[1]} <span class="dim">${x[2]}</span></span></div>`).join('')}
    <h3>Спутники Координатора</h3>${S.galaxy!=='orion'?'<div class="dim">нет данных: субагенты далёкой машины не передаются</div>':''}${(S.galaxy==='orion'?QUASAR.subs:[]).map(m=>`<div class="moonl" data-qm="${m.id}"><span>${m.role} · «${esc(m.title)}»</span><span class="dim">${m.min} мин</span></div>`).join('')}
    <h3 id="waith">Ждут тебя · ${triList().filter(t=>!TRI.done[t.id]).length} из ${triList().length}</h3>${triList().map((t,i)=>`<div class="moonl tri ${TRI.done[t.id]?'done':''} ${i===TRI.cur?'cur':''}" data-tri="${i}" tabindex="-1"><span><span class="dot s-${t.st}"></span> ${t.tag} ${esc(t.ask.q)}</span><span>${TRI.done[t.id]?'✓ '+esc(TRI.done[t.id]):'→'}</span></div>`).join('')}
    <div class="dim" style="font-size:11px;margin-top:6px">↑↓ — выбрать · Enter — открыть запрос · после ответа или Esc вернёшься сюда, к следующему</div>`}
@@ -977,12 +977,12 @@ cv.addEventListener('drop',e=>{e.preventDefault();const h=pick(e.clientX,e.clien
   else if(h.kind==='nebula'){newTaskPop(e.clientX,e.clientY,d,h.ref)}});
 function newTaskPop(x,y,d,pr){openPop(x,y,`<b>Новая задача из дела</b><div class="dim" style="margin-top:4px">«${esc(d.text)}»</div>
  <label>Проект</label><select id="np">${PROJECTS.map(p=>`<option ${p===pr?'selected':''}>${p.id}</option>`).join('')}</select>
- <label>Программа</label><div class="prog">${['claude','codex','pi','omp'].map((p,i)=>`<button type="button" class="btn ${i?'':'on'}" data-p="${p}">${p}</button>`).join('')}</div>
- <label>Модель</label><input id="nm" list="models" value="claude/sonnet-5.5"><datalist id="models"></datalist><div class="dim" id="mnote" style="font-size:11px;margin-top:3px">список загружается… можно ввести самому</div>
+ <label>Программа</label><div class="prog">${['omp','codex','pi'].map((p,i)=>`<button type="button" class="btn ${i?'':'on'}" data-p="${p}">${p}</button>`).join('')}</div>
+ <label>Модель</label><input id="nm" list="models" value="omp/deepseek-v4-flash"><datalist id="models"></datalist><div class="dim" id="mnote" style="font-size:11px;margin-top:3px">список загружается… можно ввести самому</div>
  <div style="margin-top:12px;display:flex;gap:6px"><button class="btn primary" id="nc">Создать задачу</button><button class="btn" id="nx">Отмена</button></div>`);
- const MODELS={claude:['claude/opus-5.5','claude/sonnet-5.5','claude/haiku-5.5'],codex:['codex/gpt-5.5','codex/gpt-5.5-mini']};let mT;
- const loadModels=p=>{clearTimeout(mT);$('models').innerHTML='';if(!MODELS[p])return;$('mnote').textContent='список загружается… можно ввести самому';mT=setTimeout(()=>{if(!$('models'))return;$('models').innerHTML=MODELS[p].map(m=>`<option value="${m}">`).join('');$('mnote').textContent=`${MODELS[p].length} модели · из herdr-projects models ${p}`},1200)};loadModels('claude');
- $('pop').querySelector('.prog').onclick=e=>{const b=e.target.closest('button');if(!b)return;$('pop').querySelectorAll('.prog button').forEach(x=>x.classList.toggle('on',x===b));const p=b.dataset.p;$('nm').value=p==='pi'?'pi/default':p==='omp'?'':MODELS[p][1]||MODELS[p][0];if(p==='omp')$('mnote').textContent='omp — свободный текст, например omp/kimi-k2';else if(p==='pi')$('mnote').textContent='pi: модель по умолчанию';loadModels(p)};
+ const MODELS={omp:['omp/deepseek-v4-pro','omp/deepseek-v4-flash'],codex:['codex/gpt-5.5','codex/gpt-5.5-mini'],pi:['pi/default']};let mT;
+ const loadModels=p=>{clearTimeout(mT);$('models').innerHTML='';if(!MODELS[p])return;$('mnote').textContent='список загружается… можно ввести самому';mT=setTimeout(()=>{if(!$('models'))return;$('models').innerHTML=MODELS[p].map(m=>`<option value="${m}">`).join('');$('mnote').textContent=`${MODELS[p].length} модели · из herdr-projects models ${p}`},1200)};loadModels('omp');
+ $('pop').querySelector('.prog').onclick=e=>{const b=e.target.closest('button');if(!b)return;$('pop').querySelectorAll('.prog button').forEach(x=>x.classList.toggle('on',x===b));const p=b.dataset.p;$('nm').value=MODELS[p]?.[0]||'';loadModels(p)};
  $('nx').onclick=closePop;$('nc').onclick=()=>{const ag=$('nm').value.trim();if(!/^[a-z]+\/[A-Za-z0-9._:\/-]+$/.test(ag)){$('mnote').textContent='нужно «программа/модель», например codex/gpt-5.5';$('nm').focus();return}TODOS=TODOS.filter(x=>x!==d);renderTodo();closePop();toast(`add «${d.text}» --repo ${$('np').value} --worker.agent ${ag}`)}}
 function openPop(x,y,html){const p=$('pop');p.innerHTML=html;p.hidden=false;p.style.left=Math.max(10,Math.min(W-360,x))+'px';p.style.top=Math.min(H-380,Math.max(60,y))+'px'}
 function closePop(){$('pop').hidden=true}

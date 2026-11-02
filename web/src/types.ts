@@ -152,9 +152,7 @@ export interface LimitWindow {
   runs_out_ms?: number | null;
 }
 
-export type UsageSection =
-  | { kind: 'facts'; title: string; facts: [string, string][] }
-  | { kind: 'shares'; title: string; shares: [string, number][] };
+export type UsageSection = { kind: 'facts'; title: string; facts: [string, string][] };
 
 export interface AgentUsage {
   id: string;
@@ -175,7 +173,7 @@ export interface AgentUsage {
   sections?: UsageSection[];
   dashboard?: string;
   status_page?: string;
-  /** Whose sign-in was asked with (`pi`, `omp`, `claude`, `env`, …), the crew role that runs the provider through it, and the other programs it runs through. */
+  /** Whose sign-in was asked with (`pi`, `omp`, `env`, …), the crew role that runs the provider through it, and the other programs it runs through. */
   key_from?: string;
   key_role?: string;
   key_also?: string[];

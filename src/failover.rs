@@ -133,7 +133,7 @@ pub fn items_of(chain: &str) -> Vec<String> {
     chain
         .split(',')
         .map(|i| i.trim().to_string())
-        .filter(|i| !i.is_empty() && i != "none")
+        .filter(|i| !i.is_empty() && i != "none" && !crate::models::removed_agent(i))
         .collect()
 }
 
@@ -256,7 +256,7 @@ fn cap(s: &str) -> String {
     c.next().map(|f| f.to_uppercase().collect::<String>() + c.as_str()).unwrap_or_default()
 }
 
-/// Why a program is down, in words: «лимит Claude до 17:00».
+/// Why a program is down, in words: «лимит Codex до 17:00».
 pub fn why_words(program: &str, g: &Gone) -> String {
     let name = cap(program);
     match g.kind.as_str() {
@@ -267,7 +267,7 @@ pub fn why_words(program: &str, g: &Gone) -> String {
     }
 }
 
-/// «Координатор: claude → codex/gpt-6-astra, лимит Claude до 17:00».
+/// «Координатор: omp → codex/gpt-6-astra, лимит OMP до 17:00».
 pub fn switch_line(role: &str, from: &str, to: &str, program: &str, g: &Gone) -> String {
     format!("{}: {} → {}, {}", role_title(role), from, to, why_words(program, g))
 }
@@ -281,10 +281,20 @@ fn file_of(cfg: &AppConfig) -> PathBuf {
 }
 
 fn read_at(path: &std::path::Path) -> Store {
-    std::fs::read_to_string(path)
+    let mut store = std::fs::read_to_string(path)
         .ok()
         .and_then(|t| serde_json::from_str::<Store>(&t).ok())
-        .unwrap_or_default()
+        .unwrap_or_default();
+    for spare in store.roles.values_mut() {
+        spare.chain = crate::models::without_removed_chain(&spare.chain);
+    }
+    store.switched.retain(|_, switched| {
+        !crate::models::removed_agent(&switched.home) && !crate::models::removed_agent(&switched.to)
+    });
+    for switched in store.switched.values_mut() {
+        switched.human = crate::models::without_removed(&switched.human);
+    }
+    store
 }
 
 pub fn read_store(cfg: &AppConfig) -> Store {
@@ -317,7 +327,7 @@ pub fn page_json(cfg: &AppConfig, light: &str, down: &Down) -> Value {
     let mut out = serde_json::Map::new();
     for role in ROLES {
         let spare = store.spare(role);
-        let mut o = json!({"chain": spare.chain, "auto": spare.auto, "switched": Value::Null});
+        let mut o = json!({"chain": items_of(&spare.chain).join(", "), "auto": spare.auto, "switched": Value::Null});
         if let Some(sw) = store.switched.get(*role) {
             let home_program = program_of(&sw.home);
             o["switched"] = json!({
@@ -339,7 +349,7 @@ pub fn page_json(cfg: &AppConfig, light: &str, down: &Down) -> Value {
 /// The programs installed here (a test says its own).
 fn installed() -> Vec<String> {
     #[cfg(test)]
-    return ["claude", "codex", "omp"].map(String::from).to_vec();
+    return ["codex", "omp"].map(String::from).to_vec();
     #[cfg(not(test))]
     station::available()
 }
@@ -597,7 +607,15 @@ pub async fn failover_set(State(app): State<Shared>, headers: HeaderMap, Json(bo
             return Err(Fail::new(400, "нужно подтверждение: было → стало"));
         }
         check_role(&body.role)?;
-        let chain = body.chain.as_deref().map(|c| items_of(c).join(", "));
+        // Do not silently repair a new chain: removed providers are rejected by `check_chain` below. Filtering is
+        // only for files saved by older versions (`read_at`).
+        let chain = body.chain.as_deref().map(|c| {
+            if c.trim() == "none" {
+                String::new()
+            } else {
+                c.split(',').map(str::trim).collect::<Vec<_>>().join(", ")
+            }
+        });
         if let Some(c) = chain.as_deref().filter(|c| !c.is_empty()) {
             if let Err(e) = station::check_chain(&app, c).await {
                 return Err(Fail::new(422, e));
@@ -751,26 +769,30 @@ mod tests {
 
     #[test]
     fn the_next_spare_is_the_first_whose_program_can_be_given_work() {
-        let items = items_of("claude/claude-sonnet-5-5, codex/gpt-6-astra, omp");
+        let items = items_of("kimi/k2, codex/gpt-6-astra, omp");
         assert_eq!(items.len(), 3);
-        let d = down(&[("claude", "limited", "17:00")]);
-        assert_eq!(next_in_chain("claude/claude-opus-5-5", &items, &d).as_deref(), Some("codex/gpt-6-astra"), "the same program is down too");
-        let d = down(&[("claude", "limited", ""), ("codex", "signed_out", "")]);
-        assert_eq!(next_in_chain("claude/claude-opus-5-5", &items, &d).as_deref(), Some("omp"), "unavailable ones are skipped");
-        let d = down(&[("claude", "limited", ""), ("codex", "limited", ""), ("omp", "missing", "")]);
-        assert_eq!(next_in_chain("claude/claude-opus-5-5", &items, &d), None);
-        assert_eq!(next_in_chain("omp", &items, &down(&[])).as_deref(), Some("claude/claude-sonnet-5-5"), "never the agent it already runs");
+        let d = down(&[("kimi", "limited", "17:00")]);
+        assert_eq!(next_in_chain("kimi/k2", &items, &d).as_deref(), Some("codex/gpt-6-astra"), "the same program is down too");
+        let d = down(&[("kimi", "limited", ""), ("codex", "signed_out", "")]);
+        assert_eq!(next_in_chain("kimi/k2", &items, &d).as_deref(), Some("omp"), "unavailable ones are skipped");
+        let d = down(&[("kimi", "limited", ""), ("codex", "limited", ""), ("omp", "missing", "")]);
+        assert_eq!(next_in_chain("kimi/k2", &items, &d), None);
+        assert_eq!(next_in_chain("omp", &items, &down(&[])).as_deref(), Some("kimi/k2"), "never the agent it already runs");
         assert!(items_of("none").is_empty() && items_of("").is_empty());
+        assert_eq!(
+            items_of("codex, anthropic/claude-sonnet-4-6, omp/pi/anthropic/claude-sonnet-4-6, omp/anthropic/claude-haiku-5-5, omp"),
+            vec!["codex", "omp"],
+        );
     }
 
     #[test]
     fn a_role_whose_agent_is_down_switches_to_the_next_usable_spare() {
-        let d = down(&[("claude", "limited", "17:00"), ("codex", "limited", "")]);
-        match decide(&spare("codex/gpt-6-astra, omp/deepseek/deepseek-v4-flash"), "claude/claude-opus-5-5", None, &d) {
+        let d = down(&[("kimi", "limited", "17:00"), ("codex", "limited", "")]);
+        match decide(&spare("codex/gpt-6-astra, omp/deepseek/deepseek-v4-flash"), "kimi/k2", None, &d) {
             Decision::Switch { to, home, from_program, gone } => {
                 assert_eq!(to, "omp/deepseek/deepseek-v4-flash");
-                assert_eq!(home, "claude/claude-opus-5-5");
-                assert_eq!(from_program, "claude");
+                assert_eq!(home, "kimi/k2");
+                assert_eq!(from_program, "kimi");
                 assert_eq!(gone.until, "17:00");
             }
             other => panic!("{other:?}"),
@@ -779,30 +801,30 @@ mod tests {
 
     #[test]
     fn nothing_happens_without_a_chain_without_the_mark_or_while_the_agent_is_usable() {
-        let d = down(&[("claude", "limited", "17:00")]);
-        assert_eq!(decide(&spare(""), "claude/claude-opus-5-5", None, &d), Decision::Nothing, "no chain: no action");
-        assert_eq!(decide(&spare("none"), "claude/claude-opus-5-5", None, &d), Decision::Nothing);
+        let d = down(&[("kimi", "limited", "17:00")]);
+        assert_eq!(decide(&spare(""), "kimi/k2", None, &d), Decision::Nothing, "no chain: no action");
+        assert_eq!(decide(&spare("none"), "kimi/k2", None, &d), Decision::Nothing);
         let off = Spare { chain: "codex".into(), auto: false };
-        assert_eq!(decide(&off, "claude/claude-opus-5-5", None, &d), Decision::Nothing, "the mark is off");
-        assert_eq!(decide(&spare("codex"), "claude/claude-opus-5-5", None, &down(&[])), Decision::Nothing, "agent is usable");
+        assert_eq!(decide(&off, "kimi/k2", None, &d), Decision::Nothing, "the mark is off");
+        assert_eq!(decide(&spare("codex"), "kimi/k2", None, &down(&[])), Decision::Nothing, "agent is usable");
         assert_eq!(decide(&spare("codex"), "none", None, &d), Decision::Nothing, "a role that is off stays off");
         assert_eq!(decide(&spare("codex"), "", None, &d), Decision::Nothing);
     }
 
     #[test]
     fn a_chain_with_nobody_usable_is_a_dead_end_not_a_switch() {
-        let d = down(&[("claude", "limited", ""), ("codex", "signed_out", "")]);
-        assert!(matches!(decide(&spare("codex"), "claude/claude-opus-5-5", None, &d), Decision::NoSpare { .. }));
+        let d = down(&[("kimi", "limited", ""), ("codex", "signed_out", "")]);
+        assert!(matches!(decide(&spare("codex"), "kimi/k2", None, &d), Decision::NoSpare { .. }));
     }
 
     #[test]
     fn the_return_is_offered_once_when_the_agent_it_left_is_usable_again_and_never_made_silently() {
         let s = spare("codex/gpt-6-astra");
-        let still = down(&[("claude", "limited", "17:00")]);
-        assert_eq!(decide(&s, "codex/gpt-6-astra", Some(&sw("claude/claude-opus-5-5", "codex/gpt-6-astra")), &still), Decision::Nothing);
+        let still = down(&[("kimi", "limited", "17:00")]);
+        assert_eq!(decide(&s, "codex/gpt-6-astra", Some(&sw("kimi/k2", "codex/gpt-6-astra")), &still), Decision::Nothing);
         let back = down(&[]);
-        assert_eq!(decide(&s, "codex/gpt-6-astra", Some(&sw("claude/claude-opus-5-5", "codex/gpt-6-astra")), &back), Decision::OfferBack);
-        let mut offered = sw("claude/claude-opus-5-5", "codex/gpt-6-astra");
+        assert_eq!(decide(&s, "codex/gpt-6-astra", Some(&sw("kimi/k2", "codex/gpt-6-astra")), &back), Decision::OfferBack);
+        let mut offered = sw("kimi/k2", "codex/gpt-6-astra");
         offered.offered = true;
         assert_eq!(decide(&s, "codex/gpt-6-astra", Some(&offered), &back), Decision::Nothing, "told once");
     }
@@ -810,11 +832,11 @@ mod tests {
     #[test]
     fn a_spare_that_goes_down_passes_the_role_on_and_keeps_the_home() {
         let s = spare("codex/gpt-6-astra, omp");
-        let d = down(&[("claude", "limited", ""), ("codex", "limited", "19:00")]);
-        match decide(&s, "codex/gpt-6-astra", Some(&sw("claude/claude-opus-5-5", "codex/gpt-6-astra")), &d) {
+        let d = down(&[("codex", "limited", ""), ("codex", "limited", "19:00")]);
+        match decide(&s, "codex/gpt-6-astra", Some(&sw("kimi/k2", "codex/gpt-6-astra")), &d) {
             Decision::Switch { to, home, .. } => {
                 assert_eq!(to, "omp");
-                assert_eq!(home, "claude/claude-opus-5-5", "a return still goes to where the role began");
+                assert_eq!(home, "kimi/k2", "a return still goes to where the role began");
             }
             other => panic!("{other:?}"),
         }
@@ -823,7 +845,7 @@ mod tests {
     #[test]
     fn a_hand_made_change_ends_the_switch() {
         let d = down(&[]);
-        assert_eq!(decide(&spare("codex"), "omp", Some(&sw("claude/claude-opus-5-5", "codex/gpt-6-astra")), &d), Decision::Forget);
+        assert_eq!(decide(&spare("codex"), "omp", Some(&sw("kimi/k2", "codex/gpt-6-astra")), &d), Decision::Forget);
     }
 
     #[test]
@@ -843,16 +865,16 @@ mod tests {
     fn a_return_clears_the_coordinators_own_layer_unless_it_held_the_home_agent_before() {
         let v = |a: &[&str]| a.iter().map(|s| s.to_string()).collect::<Vec<_>>();
         assert_eq!(
-            return_commands("coordinator", "claude/claude-opus-5-5", false),
+            return_commands("coordinator", "kimi/k2", false),
             vec![v(&["unset", "coordinator.agent", "--main-coordinator"]), v(&["coordinator", "new"])],
             "the human's own value shows again; nothing is pinned"
         );
         assert_eq!(
-            return_commands("coordinator", "claude/claude-opus-5-5", true),
-            vec![v(&["set", "coordinator.agent", "claude/claude-opus-5-5", "--main-coordinator"]), v(&["coordinator", "new"])],
+            return_commands("coordinator", "kimi/k2", true),
+            vec![v(&["set", "coordinator.agent", "kimi/k2", "--main-coordinator"]), v(&["coordinator", "new"])],
             "a value the layer held before is put back"
         );
-        assert_eq!(return_commands("plan", "claude/claude-opus-5-5", false), vec![v(&["set", "plan.agent", "claude/claude-opus-5-5"])]);
+        assert_eq!(return_commands("plan", "kimi/k2", false), vec![v(&["set", "plan.agent", "kimi/k2"])]);
         assert_eq!(
             keep_commands("coordinator", "omp/x/y", false),
             vec![v(&["set", "coordinator.agent", "omp/x/y"]), v(&["unset", "coordinator.agent", "--main-coordinator"])]
@@ -863,21 +885,21 @@ mod tests {
     #[test]
     fn a_light_task_starts_on_the_first_usable_agent_and_carries_the_rest() {
         let s = spare("omp/deepseek/deepseek-v4-flash, codex/gpt-6-astra");
-        let light = "claude/claude-haiku-5-5";
+        let light = "kimi/k2";
         assert_eq!(
             pick_light(light, &s, &down(&[])),
             Some(LightPick { agent: light.into(), fallback: "omp/deepseek/deepseek-v4-flash, codex/gpt-6-astra".into() }),
             "usable preset: it stays first and the whole chain goes to the task as its fallback"
         );
-        let d = down(&[("claude", "limited", "")]);
+        let d = down(&[("kimi", "limited", "")]);
         assert_eq!(
             pick_light(light, &s, &d),
             Some(LightPick { agent: "omp/deepseek/deepseek-v4-flash".into(), fallback: "codex/gpt-6-astra".into() })
         );
-        let d = down(&[("claude", "limited", ""), ("omp", "signed_out", "")]);
+        let d = down(&[("kimi", "limited", ""), ("omp", "signed_out", "")]);
         assert_eq!(pick_light(light, &s, &d).unwrap().agent, "codex/gpt-6-astra");
         assert_eq!(pick_light(light, &s, &d).unwrap().fallback, "");
-        let all = down(&[("claude", "limited", ""), ("omp", "signed_out", ""), ("codex", "missing", "")]);
+        let all = down(&[("kimi", "limited", ""), ("omp", "signed_out", ""), ("codex", "missing", "")]);
         assert_eq!(
             pick_light(light, &s, &all),
             Some(LightPick { agent: light.into(), fallback: "omp/deepseek/deepseek-v4-flash, codex/gpt-6-astra".into() }),
@@ -891,8 +913,8 @@ mod tests {
     fn the_words_of_a_switch() {
         let g = Gone { kind: "limited".into(), until: "17:00".into() };
         assert_eq!(
-            switch_line("coordinator", "claude/claude-opus-5-5", "codex/gpt-6-astra", "claude", &g),
-            "Координатор: claude/claude-opus-5-5 → codex/gpt-6-astra, лимит Claude до 17:00"
+            switch_line("coordinator", "kimi/k2", "codex/gpt-6-astra", "kimi", &g),
+            "Координатор: kimi/k2 → codex/gpt-6-astra, лимит Kimi до 17:00"
         );
         assert_eq!(why_words("codex", &Gone { kind: "signed_out".into(), until: String::new() }), "Codex: вход не выполнен");
     }

@@ -1,5 +1,5 @@
 import { toast } from '../toast';
-/* A selection menu of an agent's program (Claude Code's question with options, Codex's approval, omp's ask) as a card
+/* A selection menu of an agent's program (Codex's approval or omp's ask) as a card
    with buttons. A button gives the choice: the server reads the screen again and presses the keys that make it.
    Several questions come one at a time (the screen shows one); a multiple choice has boxes and «Отправить»;
    «Свой ответ» opens a field. After an answer the card shows the choice and cannot be pressed again; it goes away
@@ -253,7 +253,7 @@ export function MenuSlot(props: SlotProps): JSX.Element | null {
   const rec = answeredCards.value[key];
   const [, tick] = useState(0);
   // Once the screen has had no menu after an answer, a menu that comes back is a new question, even if it reads the same
-  // (Claude Code asks «make this edit?» twice in a row): its card starts fresh and the old answer is retired.
+  // (a program may ask «make this edit?» twice in a row): its card starts fresh and the old answer is retired.
   const gone = useRef(false);
   const gen = useRef(0);
   const retired = useRef(0);

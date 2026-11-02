@@ -80,15 +80,15 @@ describe('applyItem: what goes into the message', () => {
 
 describe('slashItems: the list of a program', () => {
   const list = [
-    cmd('compact', 'cmd.claude.compact'),
-    cmd('clear', 'cmd.claude.clear'),
+    cmd('compact', 'cmd.omp.compact'),
+    cmd('clear', 'cmd.omp.clear'),
     cmd('ui-ux-pro-max', 'Designing and reviewing interfaces', 'skill'),
     cmd('review:security', 'Check a diff for leaks', 'command'),
   ];
 
   it('shows the whole list in the order of the files', () => {
     expect(slashItems(list, '').map((i) => i.label)).toEqual(['/compact', '/clear', '/ui-ux-pro-max', '/review:security']);
-    expect(slashItems(list, '')[0].hint).toBe('cmd.claude.compact');
+    expect(slashItems(list, '')[0].hint).toBe('cmd.omp.compact');
   });
 
   it('filters by the name first, then by the description', () => {
