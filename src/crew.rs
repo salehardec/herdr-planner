@@ -540,6 +540,10 @@ pub struct Store {
     /// The preset last applied, by level: `""` for «для меня», or a repository's name.
     #[serde(default)]
     pub active: BTreeMap<String, String>,
+    /// The five owner presets (PLN-107) have already been merged in. Once set, the file is the owner's: their
+    /// renames, edits and deletions are never undone, and the defaults are not re-added on the next start.
+    #[serde(default)]
+    pub seeded: bool,
 }
 
 pub const MAX_PRESETS: usize = 40;
@@ -1079,26 +1083,36 @@ pub fn default_presets() -> Vec<(String, BTreeMap<String, RoleSet>)> {
     ]
 }
 
-/// Writes the five default presets to the planner's own crew file on the first run (the file is absent), with
-/// «Максимум (Codex)» as the active one. A file that already exists is left alone: the presets are the owner's,
-/// not rewritten on every start.
+/// Merges the five default presets into the planner's own crew file once — on the first run, and on an upgrade to a
+/// build that adds them (PLN-107) — with «Максимум (Codex)» as the active one. A preset the owner already has under
+/// one of those names is kept, not duplicated. After the merge the `seeded` flag is set, so later starts leave the
+/// file alone: the presets are the owner's, and their edits, renames and deletions are never undone.
 pub fn seed_default_presets(cfg: &AppConfig) {
     let _g = FILE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let path = presets_file(cfg);
-    if path.exists() {
+    let mut store = read_store_at(&path);
+    if store.seeded {
         return;
     }
-    let mut store = Store::default();
-    let mut active = String::new();
+    let mut first = String::new();
     for (name, roles) in default_presets() {
-        let Ok(id) = add_preset(&mut store, &name, &roles) else { continue };
-        if active.is_empty() {
-            active = id;
+        let id = if let Some(p) = store.presets.iter().find(|p| p.name.to_lowercase() == name.to_lowercase()) {
+            p.id.clone()
+        } else if let Ok(id) = add_preset(&mut store, &name, &roles) {
+            id
+        } else {
+            continue;
+        };
+        if first.is_empty() {
+            first = id;
         }
     }
-    if !active.is_empty() {
-        store.active.insert(String::new(), active);
+    if !first.is_empty() {
+        // «Максимум (Codex)» is the first default: it becomes the active preset, replacing a leftover active that
+        // pointed at removed (claude) models.
+        store.active.insert(String::new(), first);
     }
+    store.seeded = true;
     let _ = write_store_at(&path, &store);
 }
 
@@ -1568,6 +1582,30 @@ mod tests {
         // seeding again leaves the owner's file alone
         seed_default_presets(&cfg);
         assert_eq!(read_store(&cfg).presets.len(), 5);
+    }
+
+    #[test]
+    fn seeding_merges_into_an_existing_file_and_sets_the_default_active() {
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = crate::testutil::test_cfg(dir.path());
+        // An older planner already wrote a crew file: the owner's own preset, active, with agents that are gone now.
+        let path = dir.path().join("state/crew-presets.json");
+        let mut store = Store::default();
+        let own = add_preset(&mut store, "Основной (Смешанный)", &BTreeMap::new()).unwrap();
+        store.active.insert(String::new(), own);
+        write_store_at(&path, &store).unwrap();
+
+        seed_default_presets(&cfg);
+
+        let store = read_store(&cfg);
+        let names: Vec<&str> = store.presets.iter().map(|p| p.name.as_str()).collect();
+        assert_eq!(names, vec!["Основной (Смешанный)", "Максимум (Codex)", "Kimi", "Экономный (DeepSeek)", "Router — Codex", "Router — Qwen/GLM"]);
+        // the owner's preset is kept, and «Максимум (Codex)» becomes the active default in its place
+        let maximus = store.presets.iter().find(|p| p.name == "Максимум (Codex)").unwrap();
+        assert_eq!(store.active[""], maximus.id);
+        // a second run leaves the merged file alone
+        seed_default_presets(&cfg);
+        assert_eq!(read_store(&cfg).presets.len(), 6);
     }
 
     fn cat(program: &str, names: &[&str], effort: &[&str]) -> Cat {
