@@ -3,7 +3,7 @@ import { attentionLabel, collectRequests, optionShort, parseOptions, requestType
 import type { Task } from './types';
 
 const task = (over: Partial<Task>): Task => ({
-  id: 'a/1', repo: 'a', n: 1, tag: 'A-1', title: 't', state: 'blocked', kind: '', stage: '', msg: 'm', app: 'claude', progress: null, eta: null, pr: '', review: null, round: 0, queue: null,
+  id: 'a/1', repo: 'a', n: 1, tag: 'A-1', title: 't', state: 'blocked', kind: '', stage: '', msg: 'm', app: 'codex', progress: null, eta: null, pr: '', review: null, round: 0, queue: null,
   status: 'waiting', label: '', board_label: '', review_failed: false, merge_blocked: false, archived: false, actions: [], created: 0, description: '', worker_agent: '', model: '', session: '',
   worktree: '', exited_at: 0, key: 'A', subagents: [], subagents_note: '', ...over,
 });

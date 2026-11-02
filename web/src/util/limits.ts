@@ -3,10 +3,10 @@
 import type { AgentUsage, LimitWindow } from '../types';
 
 /** The providers' tabs, in the order herdr-gpui lists them; others follow in the order the server sent. */
-export const PROVIDER_ORDER = ['codex', 'claude', 'kimi', 'deepseek'];
+export const PROVIDER_ORDER = ['codex', 'kimi', 'deepseek'];
 
 /** What the providers the planner reads itself are called (the server's names, for a provider it has no reading of yet). */
-export const PROVIDER_NAMES: Record<string, string> = { codex: 'Codex', claude: 'Claude', kimi: 'Kimi Code', deepseek: 'DeepSeek' };
+export const PROVIDER_NAMES: Record<string, string> = { codex: 'Codex', kimi: 'Kimi Code', deepseek: 'DeepSeek' };
 
 /** The programs that carry only stats, never a subscription (they appear in the panel, not in the bar or the tabs). */
 const STATS_ONLY = ['omp', 'pi'];

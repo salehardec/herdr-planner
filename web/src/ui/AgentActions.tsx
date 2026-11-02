@@ -37,7 +37,7 @@ export function TellBox(props: { task: Task; input?: string; onSent?: () => void
   const id = props.input ?? 'tell';
   const dis = !boardOk();
   const ref = useRef<HTMLTextAreaElement>(null);
-  // The words go to THIS task's agent: its own program's commands, and its own folder's `.claude`.
+  // The words go to THIS task's agent: its own program's commands and its own folder's skills.
   const comp = useComplete({ program: task.app || task.worker_agent.split('/')[0], dir: task.worktree || '' });
   const submit = async (): Promise<void> => {
     const el = ref.current;

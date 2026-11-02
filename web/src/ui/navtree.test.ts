@@ -4,7 +4,7 @@ import type { GalaxyView, Project, Task } from '../types';
 
 const day = (d: number, h = 12): number => new Date(2026, 9, d, h).getTime();
 const task = (n: number, created: number, status: Task['status'] = 'working', extra: Partial<Task> = {}): Task => ({
-  id: `alpha/${n}`, repo: 'alpha', n, tag: `ALP-${n}`, title: `Задача ${n}`, state: '', kind: '', stage: '', msg: '', app: 'claude', progress: null, eta: null, pr: '', review: null, round: 0,
+  id: `alpha/${n}`, repo: 'alpha', n, tag: `ALP-${n}`, title: `Задача ${n}`, state: '', kind: '', stage: '', msg: '', app: 'codex', progress: null, eta: null, pr: '', review: null, round: 0,
   queue: null, status, label: '', board_label: '', review_failed: false, merge_blocked: false, archived: false, actions: [], created, description: '', worker_agent: '', model: '',
   session: '', worktree: '', exited_at: 0, key: 'ALP', subagents: [], subagents_note: '', ...extra,
 });
@@ -69,7 +69,7 @@ describe('navigator tree', () => {
   });
 
   it('shows sub-agents under their planet, alive ones only', () => {
-    const sub = (id: string, state: 'running' | 'quiet' | 'done') => ({ id, kind: 'claude', role: `R-${id}`, title: '', started_at_ms: 1, last_at_ms: 2, state, doing: 'работает', result: '', note: '' });
+    const sub = (id: string, state: 'running' | 'quiet' | 'done') => ({ id, kind: 'codex', role: `R-${id}`, title: '', started_at_ms: 1, last_at_ms: 2, state, doing: 'работает', result: '', note: '' });
     const t = task(1, day(20, 9), 'working', { subagents: [sub('a', 'running'), sub('b', 'done'), sub('c', 'quiet')] });
     const rows = build(view([t]));
     expect(rows.filter((r) => r.kind === 'moon').map((r) => r.label)).toEqual(['R-a', 'R-c']);

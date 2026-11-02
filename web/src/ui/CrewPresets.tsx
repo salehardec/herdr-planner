@@ -205,7 +205,7 @@ function brief(p: PresetItem, own: CrewRole[]): string {
   return [...std, ...mine].filter(Boolean).join(' · ');
 }
 
-const TEMPLATES = ['economy', 'max', 'claude', 'noclaude'] as const;
+const TEMPLATES = ['economy', 'max'] as const;
 
 export function Presets(props: { data: StationData; repo: string; own: CrewRole[]; reload: () => void }): JSX.Element {
   const { data, repo } = props;

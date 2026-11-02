@@ -4,7 +4,7 @@
 //! * The Coordinator is told about the memory through the board's own setting `coordinator.instructions`: the planner
 //!   shows the human the instructions they have and the same with a memory block added at the end (their text kept),
 //!   and on their confirmation the board's `set` makes the change (the Station's endpoints). The planner writes no
-//!   file of the board (its `AGENTS.md`, `CLAUDE.md`, `rules.md`): the board makes them from the setting and may
+//!   file of the board (its `AGENTS.md` or `rules.md`): the board makes them from the setting and may
 //!   rewrite them at any time.
 
 use crate::app::{self, Shared};

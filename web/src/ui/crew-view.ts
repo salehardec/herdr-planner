@@ -24,7 +24,7 @@ export function leadOf(data: Pick<StationData, 'settings' | 'light'>, role: Role
   if (role === 'light') return data.light;
   const name = ROLE_SETTING[role].agent;
   const v = data.settings.find((s) => s.name === name)?.value ?? '';
-  return v === 'none' ? '' : v;
+  return v === 'none' || v === 'claude' || v.startsWith('claude/') ? '' : v;
 }
 
 /** The installed programs that cannot be given work now: out of allowance, or signed out. */
@@ -47,11 +47,11 @@ export function summary(data: StationData): { leads: Lead[]; down: Down[] } {
   };
 }
 
-/** A fallback value (`codex, claude/claude-opus-5-5` or `none`) as its items. */
+/** A fallback value (`codex, omp/deepseek/deepseek-v4-flash` or `none`) as its items. */
 export function chainOf(value: string): string[] {
   const v = value.trim();
   if (!v || v === 'none') return [];
-  return v.split(',').map((x) => x.trim()).filter(Boolean);
+  return v.split(',').map((x) => x.trim()).filter((x) => x && x !== 'claude' && !x.startsWith('claude/'));
 }
 
 /** The items as the board's value: `none` for an empty chain. */

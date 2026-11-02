@@ -86,14 +86,14 @@ mod tests {
     }
 
     fn crew() -> Crew {
-        Crew { reviewer: "claude/claude-opus-5-5".into(), worker: "claude/claude-sonnet-5-5".into() }
+        Crew { reviewer: "codex/gpt-6-luna".into(), worker: "omp/deepseek/deepseek-v4-flash".into() }
     }
 
     #[test]
     fn the_reviewer_is_the_settings_when_nobody_took_over() {
         let t = task(Status::Review, "reviewing");
         let s = of(&t, &TaskMeta::default(), &crew()).unwrap();
-        assert_eq!((s.role.as_str(), s.program.as_str(), s.model.as_str(), s.took_over), ("reviewer", "claude", "claude-opus-5-5", false));
+        assert_eq!((s.role.as_str(), s.program.as_str(), s.model.as_str(), s.took_over), ("reviewer", "codex", "gpt-6-luna", false));
     }
 
     #[test]
@@ -116,13 +116,13 @@ mod tests {
     #[test]
     fn the_program_that_really_reviews_wins_over_a_setting_that_is_not_installed() {
         // codex is set and not installed here: the board reviews with the working agent's program, on its default model
-        let m = TaskMeta { own_reviewer: "codex/gpt-6-luna".into(), reviewer_kind: "claude".into(), ..TaskMeta::default() };
+        let m = TaskMeta { own_reviewer: "omp/deepseek/deepseek-v4-flash".into(), reviewer_kind: "codex".into(), ..TaskMeta::default() };
         let s = of(&task(Status::Review, "reviewing"), &m, &crew()).unwrap();
-        assert_eq!((s.program.as_str(), s.model.as_str()), ("claude", ""));
+        assert_eq!((s.program.as_str(), s.model.as_str()), ("codex", ""));
         // the program is the configured one: its model stays
-        let m = TaskMeta { reviewer_kind: "claude".into(), ..TaskMeta::default() };
+        let m = TaskMeta { reviewer_kind: "codex".into(), ..TaskMeta::default() };
         let s = of(&task(Status::Review, "reviewing"), &m, &crew()).unwrap();
-        assert_eq!((s.program.as_str(), s.model.as_str()), ("claude", "claude-opus-5-5"));
+        assert_eq!((s.program.as_str(), s.model.as_str()), ("codex", "gpt-6-luna"));
     }
 
     #[test]

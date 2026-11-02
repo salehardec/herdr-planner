@@ -61,14 +61,14 @@ describe('what the bar shows', () => {
   it('lists the providers by how close they are to a limit, the picked one first, and leaves out those without numbers', () => {
     const list = [
       agent('codex', [win(0)]),
-      agent('claude', [win(0.07)]),
+      agent('grok', [win(0.07)]),
       agent('kimi', [win(0.35)]),
       agent('deepseek', [], { balance: { remaining: 11.92, currency: 'USD' } }),
       agent('omp', []),
       agent('grok', [], { note: 'нет данных' }),
     ];
-    expect(barAgents(list, '').map((a) => a.id)).toEqual(['kimi', 'claude', 'codex', 'deepseek']);
-    expect(barAgents(list, 'deepseek').map((a) => a.id)).toEqual(['deepseek', 'kimi', 'claude', 'codex']);
+    expect(barAgents(list, '').map((a) => a.id)).toEqual(['kimi', 'grok', 'codex', 'deepseek']);
+    expect(barAgents(list, 'deepseek').map((a) => a.id)).toEqual(['deepseek', 'kimi', 'grok', 'codex']);
   });
 
   it('puts the tabs in the registry\'s order and keeps a provider that is signed in but gave nothing', () => {
@@ -76,11 +76,11 @@ describe('what the bar shows', () => {
       agent('deepseek', [], { balance: { remaining: 1, currency: 'USD' } }),
       agent('kimi', [], { why: 'rejected' }),
       agent('pi', []),
-      agent('claude', [win(0.1)]),
+      agent('grok', [win(0.1)]),
       agent('codex', [win(0.1)]),
       agent('omp', [], { source: 'omarchy' }),
     ];
-    expect(tabAgents(list).map((a) => a.id)).toEqual(['codex', 'claude', 'kimi', 'deepseek']);
+    expect(tabAgents(list).map((a) => a.id)).toEqual(['codex', 'kimi', 'deepseek', 'grok']);
   });
 });
 
@@ -95,15 +95,15 @@ describe('how long ago', () => {
 
 describe('compact subscription summary', () => {
   it('uses the worst live window across providers and ignores expired windows and stats', () => {
-    const list = [agent('claude', [win(1), win(.81, { resets_at_ms: 200 })]), agent('codex', [win(.96, { resets_at_ms: 200 })]), agent('pi', [win(1, { resets_at_ms: 200 })])];
+    const list = [agent('kimi', [win(1), win(.81, { resets_at_ms: 200 })]), agent('codex', [win(.96, { resets_at_ms: 200 })]), agent('pi', [win(1, { resets_at_ms: 200 })])];
     expect(limitSummary(list, 100)).toEqual({ percent: 96, level: 'crit', unavailable: false });
   });
   it('warns about a signed-in provider without readings alongside a healthy one', () => {
-    expect(limitSummary([agent('claude', [win(.1, { resets_at_ms: 200 })]), agent('codex', [], { why: 'unauthorized' })], 100)).toEqual({ percent: 10, level: 'warn', unavailable: true });
+    expect(limitSummary([agent('kimi', [win(.1, { resets_at_ms: 200 })]), agent('codex', [], { why: 'unauthorized' })], 100)).toEqual({ percent: 10, level: 'warn', unavailable: true });
   });
   it('warns on stale readings, but does not flag stats or unconnected providers', () => {
-    expect(limitSummary([agent('claude', [win(.1, { resets_at_ms: 200 })], { stale: true }), agent('omp', [], { source: 'omarchy' })], 100).unavailable).toBe(true);
-    expect(limitSummary([agent('claude', []), agent('omp', [], { source: 'omarchy' })], 100)).toEqual({ percent: null, level: 'ok', unavailable: false });
+    expect(limitSummary([agent('kimi', [win(.1, { resets_at_ms: 200 })], { stale: true }), agent('omp', [], { source: 'omarchy' })], 100).unavailable).toBe(true);
+    expect(limitSummary([agent('kimi', []), agent('omp', [], { source: 'omarchy' })], 100)).toEqual({ percent: null, level: 'ok', unavailable: false });
   });
   it('shows no invented percentage for balances and flags an exhausted balance', () => {
     expect(limitSummary([agent('deepseek', [], { balance: { remaining: 0, currency: 'USD' } })], 100)).toEqual({ percent: null, level: 'crit', unavailable: false });

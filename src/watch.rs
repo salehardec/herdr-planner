@@ -142,7 +142,7 @@ mod tests {
         assert_eq!(classify(Path::new("/c/chat/s.jsonl"), chat, theme), Some(Kind::Chat));
         assert_eq!(classify(Path::new("/c/chat/notes.txt"), chat, theme), None);
         assert_eq!(classify(Path::new("/t/colors.toml"), chat, theme), Some(Kind::Theme));
-        assert_eq!(classify(Path::new("/h/.cache/omarchy/agent-usage/claude-limits.json"), chat, theme), Some(Kind::Limits));
+        assert_eq!(classify(Path::new("/h/.cache/omarchy/agent-usage/codex-limits.json"), chat, theme), Some(Kind::Limits));
         assert_eq!(classify(Path::new("/h/.herdr-projects/memory/galaxy/gitlab.md"), chat, theme), Some(Kind::Memory));
         assert_eq!(classify(Path::new("/p/repo/docs/memory/decision.md"), chat, theme), Some(Kind::Memory));
         assert_eq!(classify(Path::new("/p/repo/docs/other/decision.md"), chat, theme), None);

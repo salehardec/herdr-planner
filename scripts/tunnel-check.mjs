@@ -201,7 +201,7 @@ try {
   // PLN-87: both scopes see the same native mid-turn records and every image, through the actual gate.
   if (process.env.FIXTURE) {
     const folder = realpathSync(join(process.env.FIXTURE, 'board', 'coordinator', 'default', 'chat')).replace(/[^A-Za-z0-9]/g, '-');
-    const transcript = join(process.env.FIXTURE, 'claude', 'projects', folder, 'fixture.jsonl');
+    const transcript = join(process.env.FIXTURE, 'transcripts', folder, 'fixture.jsonl');
     const before = readFileSync(transcript, 'utf8');
     const image = { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAFgwJ/lK3Q6wAAAABJRU5ErkJggg==' } };
     try {

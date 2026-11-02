@@ -146,7 +146,7 @@ export function EffortPick(props: { agent: string; value: string; onChange: (v: 
 
 /**
  * A fallback chain: the subscriptions that take over, in order, when the role's agent cannot go on. Add from the programs
- * installed here (a signed-out one cannot be added), move and remove. The value is the board's own (`codex, claude/claude-opus-5-5`
+ * installed here (a signed-out one cannot be added), move and remove. The value is the board's own (`codex, omp/deepseek/deepseek-v4-flash`
  * or `none`).
  */
 export function ChainEditor(props: { programs: StationProgram[]; value: string; onChange: (v: string) => void; id: string; agent: string }): JSX.Element {

@@ -562,13 +562,13 @@ mod tests {
     use axum::body::to_bytes;
     use std::path::{Path as FsPath, PathBuf};
 
-    const SHOW: &str = r#"{"settings":[{"name":"worker.agent","kind":"work","value":"claude/claude-opus-5-5","from":"you","place":"you","own":true,"note":""},{"name":"worker.effort","kind":"work","value":"low","from":"you","place":"you","own":true,"note":""}]}"#;
+    const SHOW: &str = r#"{"settings":[{"name":"worker.agent","kind":"work","value":"codex/gpt-6-luna","from":"you","place":"you","own":true,"note":""},{"name":"worker.effort","kind":"work","value":"low","from":"you","place":"you","own":true,"note":""}]}"#;
 
     fn stand_in(dir: &FsPath) -> (Shared, PathBuf) {
         let log = dir.join("board.log");
         let script = dir.join("board.sh");
         let body = format!(
-            "#!/bin/sh\ncase \"$1\" in\n  list|coordinator) echo '[]';;\n  show) echo '{SHOW}';;\n  models) case \"$2\" in claude) printf 'claude takes a short name.\\n\\nclaude/claude-opus-5-5\\nclaude/claude-sonnet-5-5\\nclaude/claude-haiku-5-5\\n\\nEffort (worker.effort and the like): low, medium, high, xhigh, max (from x).\\n';; *) echo 'unknown' >&2; exit 2;; esac;;\n  add) echo \"$@\" | tr '\\n' ' ' >> {log}; echo >> {log}; echo 'alpha/9: added';;\n  set|unset) echo \"$@\" | tr '\\n' ' ' >> {log}; echo >> {log};;\n  *) exit 1;;\nesac\n",
+            "#!/bin/sh\ncase \"$1\" in\n  list|coordinator) echo '[]';;\n  show) echo '{SHOW}';;\n  models) case \"$2\" in omp) printf 'omp takes a short name.\\n\\ncodex/gpt-6-luna\\nomp/deepseek/deepseek-v4-flash\\nomp/deepseek/deepseek-v3-flash\\n\\nEffort (worker.effort and the like): low, medium, high, xhigh, max (from x).\\n';; *) echo 'unknown' >&2; exit 2;; esac;;\n  add) echo \"$@\" | tr '\\n' ' ' >> {log}; echo >> {log}; echo 'alpha/9: added';;\n  set|unset) echo \"$@\" | tr '\\n' ' ' >> {log}; echo >> {log};;\n  *) exit 1;;\nesac\n",
             log = log.display()
         );
         crate::testutil::write_exec(&script, body);
@@ -607,7 +607,7 @@ mod tests {
         roles::RoleInput {
             name: "Дизайнер".into(),
             kind: "worker".into(),
-            agent: "claude/claude-sonnet-5-5".into(),
+            agent: "omp/deepseek/deepseek-v4-flash".into(),
             effort: "high".into(),
             instructions: "Следи за единым видом".into(),
             ..Default::default()
@@ -630,9 +630,9 @@ mod tests {
         let steps: Vec<String> = prev["steps"].as_array().unwrap().iter().map(|s| format!("{} {} → {}", s["setting"].as_str().unwrap(), s["was"].as_str().unwrap(), s["now"].as_str().unwrap())).collect();
         assert_eq!(
             steps,
-            ["worker.agent claude/claude-opus-5-5 → claude/claude-sonnet-5-5", "worker.effort low → high", "worker.instructions  → Следи за единым видом"]
+            ["worker.agent codex/gpt-6-luna → omp/deepseek/deepseek-v4-flash", "worker.effort low → high", "worker.instructions  → Следи за единым видом"]
         );
-        assert_eq!(prev["steps"][0]["command"], "herdr-projects set worker.agent claude/claude-sonnet-5-5 --task alpha/1");
+        assert_eq!(prev["steps"][0]["command"], "herdr-projects set worker.agent omp/deepseek/deepseek-v4-flash --task alpha/1");
         assert_eq!((prev["valid"].clone(), prev["started"].clone(), prev["how"].clone()), (json!(true), json!(true), json!("worker")));
         assert!(commands(&log).is_empty(), "the preview changes nothing");
 
@@ -645,7 +645,7 @@ mod tests {
         assert_eq!(
             commands(&log),
             [
-                "set worker.agent claude/claude-sonnet-5-5 --task alpha/1",
+                "set worker.agent omp/deepseek/deepseek-v4-flash --task alpha/1",
                 "set worker.effort high --task alpha/1",
                 "set worker.instructions Следи за единым видом --task alpha/1",
             ]
@@ -776,7 +776,7 @@ mod tests {
         let (app, log) = stand_in(dir.path());
         let id = roles::edit_store(&app.cfg, |s| roles::add_role(s, &designer())).unwrap();
         let (chosen, flags) = plan_new(&app, &Pick::Role(id), "", "alpha", "Кнопка").await.unwrap().unwrap();
-        assert_eq!(flags[..4], ["--worker.agent", "claude/claude-sonnet-5-5", "--worker.effort", "high"]);
+        assert_eq!(flags[..4], ["--worker.agent", "omp/deepseek/deepseek-v4-flash", "--worker.effort", "high"]);
         assert!(after_add(&app, &chosen, &flags, "alpha/9: added\n", "alpha", "Кнопка", "").await.is_none());
         let marks = roles::marks_of(&roles::read_store(&app.cfg));
         assert_eq!(marks["alpha/9"][0].name, "Дизайнер");
@@ -849,7 +849,7 @@ mod tests {
         let mut s = roles::Store::default();
         let id = roles::add_role(
             &mut s,
-            &roles::RoleInput { name: "Дизайнер".into(), kind: "worker".into(), agent: "claude/claude-sonnet-5-5".into(), ..Default::default() },
+            &roles::RoleInput { name: "Дизайнер".into(), kind: "worker".into(), agent: "omp/deepseek/deepseek-v4-flash".into(), ..Default::default() },
         )
         .unwrap();
         roles::add_rule(&mut s, &roles::RuleInput { role: id.clone(), repo: "web".into(), ..Default::default() }).unwrap();

@@ -1,13 +1,9 @@
 //! The Coordinator's conversation, read from its own transcript.
 //!
-//! The board has no "chat history" command, but the Coordinator is a Claude
-//! session started in `<data>/coordinator/default/chat`, and Claude keeps every
-//! turn of it in `<claude>/projects/<folder>/<session>.jsonl`. The planner reads
-//! that file (read-only) and cuts it into turns: what the human wrote and the
-//! words the Coordinator answered with. Tool calls and thinking are left out.
-//!
-//! Other programs (omp, pi, …) keep no such file here; then there is no history
-//! and the page keeps showing the tail of the Coordinator's window.
+//! The board has no "chat history" command, but a Coordinator's JSONL transcript can be read from the
+//! planner's transcript folder. The planner cuts it into turns: what the human wrote and the words the
+//! Coordinator answered with. Tool calls and thinking are left out. `HERDR_PLANNER_TRANSCRIPTS` points
+//! the fixture at its transcript root. Without transcript files the page keeps showing the window's tail.
 
 use crate::config::{home, AppConfig};
 use crate::db::{chat_row_hash, ChatHit, ChatTurnRow, Db};
@@ -44,7 +40,7 @@ pub struct Turn {
     /// When the answer was written (the assistant record's time); 0 while there is none.
     #[serde(skip_serializing_if = "is_zero")]
     pub at_a: u64,
-    /// The media types of the images in the human's message (Claude Code keeps them as blocks of the
+    /// The media types of the images in the human's message (the transcript keeps them as blocks of the
     /// record, base64 inside, and drops the file paths the planner wrote): `image(cfg, n, i)` serves them.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub images: Vec<String>,
@@ -329,7 +325,7 @@ fn parse_time(s: &str) -> u64 {
     (secs * 1000 + ms).max(0) as u64
 }
 
-/// Claude names a project folder after the directory: every character that is
+/// A transcript names a project folder after the directory: every character that is
 /// not a letter or a digit becomes `-`.
 pub(crate) fn project_folder(cwd: &Path) -> String {
     cwd.to_string_lossy()
@@ -338,29 +334,19 @@ pub(crate) fn project_folder(cwd: &Path) -> String {
         .collect()
 }
 
-pub(crate) fn claude_home() -> PathBuf {
-    std::env::var_os("CLAUDE_CONFIG_DIR")
+pub(crate) fn transcript_home() -> PathBuf {
+    std::env::var_os("HERDR_PLANNER_TRANSCRIPTS")
         .filter(|v| !v.is_empty())
         .map(PathBuf::from)
-        .unwrap_or_else(|| home().join(".claude"))
+        .unwrap_or_else(|| home().join(".local/state/herdr-planner/transcripts"))
 }
 
-/// The Coordinator's transcripts, oldest first (a new session starts a new
-/// file); empty when it is not a Claude session or has none.
+/// The Coordinator's transcripts, oldest first (a new session starts a new file); empty when there are none.
 fn transcripts(cfg: &AppConfig) -> Vec<PathBuf> {
     let coordinator = cfg.data_dir.join("coordinator").join("default");
-    if let Some(kind) = std::fs::read_to_string(coordinator.join("state.json"))
-        .ok()
-        .and_then(|s| serde_json::from_str::<Value>(&s).ok())
-        .and_then(|v| v.pointer("/run/kind").and_then(Value::as_str).map(String::from))
-    {
-        if kind != "claude" {
-            return Vec::new();
-        }
-    }
     let cwd = coordinator.join("chat");
     let cwd = std::fs::canonicalize(&cwd).unwrap_or(cwd);
-    let dir = claude_home().join("projects").join(project_folder(&cwd));
+    let dir = transcript_home().join(project_folder(&cwd));
     let mut files: Vec<(SystemTime, PathBuf)> = std::fs::read_dir(dir)
         .into_iter()
         .flatten()
@@ -409,7 +395,7 @@ pub struct ContextUse {
     pub model: String,
 }
 
-/// The Coordinator's program (`claude`, `omp`, …) from its state; `""` when unknown.
+/// The Coordinator's program (`codex`, `omp`, …) from its state; `""` when unknown.
 pub fn coordinator_program(cfg: &AppConfig) -> String {
     std::fs::read_to_string(cfg.data_dir.join("coordinator/default/state.json"))
         .ok()
@@ -422,11 +408,11 @@ pub fn coordinator_program(cfg: &AppConfig) -> String {
 pub fn transcript_dir(cfg: &AppConfig) -> PathBuf {
     let cwd = cfg.data_dir.join("coordinator/default/chat");
     let cwd = std::fs::canonicalize(&cwd).unwrap_or(cwd);
-    claude_home().join("projects").join(project_folder(&cwd))
+    transcript_home().join(project_folder(&cwd))
 }
 
 /// The last assistant turn's token count and model, read from the tail of the
-/// newest transcript. `None` when there is no Claude transcript or no usage in it.
+/// newest transcript. `None` when there is no transcript or no usage in it.
 pub fn coordinator_context(cfg: &AppConfig) -> Option<ContextUse> {
     use std::io::{Read, Seek, SeekFrom};
     let path = transcripts(cfg).pop()?;
@@ -536,9 +522,9 @@ mod context_tests {
 
     #[test]
     fn the_window_follows_the_use() {
-        assert_eq!(context_window(50_000, "claude-opus-5-5"), 200_000);
-        assert_eq!(context_window(260_000, "claude-opus-5-5"), 1_000_000);
-        assert_eq!(context_window(10, "claude-opus-5-5[1m]"), 1_000_000);
+        assert_eq!(context_window(50_000, "gpt-6-luna"), 200_000);
+        assert_eq!(context_window(260_000, "gpt-6-luna"), 1_000_000);
+        assert_eq!(context_window(10, "gpt-6-luna[1m]"), 1_000_000);
     }
 }
 
@@ -669,7 +655,7 @@ mod tests {
 
     #[test]
     fn a_message_with_images_keeps_them_as_blocks() {
-        // Claude Code writes a message sent with pictures as a text block (ending at the planner's header,
+        // The transcript writes a message sent with pictures as a text block (ending at the planner's header,
         // the path lines dropped) and an image block with the bytes inside.
         let png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAFgwJ/lK3Q6wAAAABJRU5ErkJggg==";
         let rec = format!(
@@ -760,7 +746,7 @@ mod tests {
     }
 
     #[test]
-    fn names_the_project_folder_like_claude() {
+    fn names_the_project_folder_from_the_working_directory() {
         assert_eq!(
             project_folder(Path::new(
                 "/home/me/.herdr-projects/data/coordinator/default/chat"
@@ -776,15 +762,15 @@ mod tests {
     #[test]
     fn the_index_follows_the_transcript_numbering() {
         let dir = tempfile::tempdir().unwrap();
-        let claude = dir.path().join("claude");
-        // Only this test reads CLAUDE_CONFIG_DIR.
-        std::env::set_var("CLAUDE_CONFIG_DIR", &claude);
+        let transcripts = dir.path().join("transcripts");
+        // Only this test reads HERDR_PLANNER_TRANSCRIPTS.
+        std::env::set_var("HERDR_PLANNER_TRANSCRIPTS", &transcripts);
         let mut cfg = AppConfig::load(&[]);
         cfg.data_dir = dir.path().join("data");
         let chat = cfg.data_dir.join("coordinator").join("default").join("chat");
         std::fs::create_dir_all(&chat).unwrap();
         let chat = std::fs::canonicalize(&chat).unwrap();
-        let folder = claude.join("projects").join(project_folder(&chat));
+        let folder = transcripts.join(project_folder(&chat));
         std::fs::create_dir_all(&folder).unwrap();
         let file = folder.join("s1.jsonl");
         let q1 = line("user", "2026-10-19T05:56:05.000Z", r#""message":{"content":"первый вопрос"}"#);

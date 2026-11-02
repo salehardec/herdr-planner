@@ -367,7 +367,7 @@ fn spawn_loops(app: Shared) {
         loop {
             let programs: Vec<String> = {
                 let snap = a.snapshot.read().await;
-                let mut set: std::collections::BTreeSet<String> = ["claude", "omp", "pi", "codex"].iter().map(|s| s.to_string()).collect();
+                let mut set: std::collections::BTreeSet<String> = ["omp", "pi", "codex"].iter().map(|s| s.to_string()).collect();
                 for t in &snap.tasks {
                     for p in [t.app.as_str(), t.worker_agent.split('/').next().unwrap_or("")] {
                         if models::valid_program(p) {

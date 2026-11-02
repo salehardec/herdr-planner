@@ -1269,7 +1269,7 @@ pub(crate) struct ActionBody {
     pub(crate) target: Option<String>,
     /// `reviewer` asks for `<agent>-r`; the worker is the default.
     pub(crate) role: Option<String>,
-    /// The worker agent for a new task: `claude/claude-sonnet-5-5`.
+    /// The worker agent for a new task: `codex/gpt-6-luna`.
     pub(crate) agent: Option<String>,
     /// The crew's own role for a new or starting task (PLN-90): absent — the rules decide, `none` — no role, else a role's id.
     pub(crate) crew_role: Option<String>,
@@ -1288,9 +1288,10 @@ pub(crate) struct ActionBody {
     pub(crate) via: Option<String>,
 }
 
-/// `claude/claude-sonnet-5-5`, `omp/deepseek/deepseek-v4-flash`: what `--worker.agent` takes.
+/// `codex/gpt-6-luna`, `omp/deepseek/deepseek-v4-flash`: what `--worker.agent` takes.
 pub(crate) fn valid_agent(a: &str) -> bool {
     !a.is_empty()
+        && !a.starts_with("claude/")
         && a.len() <= 120
         && a.split('/').count() >= 2
         && a.chars().next().is_some_and(|c| c.is_ascii_lowercase())
@@ -1644,7 +1645,7 @@ pub(crate) async fn perform_action(app: &Shared, body: ActionBody, local: bool) 
                 return error(StatusCode::BAD_REQUEST, "compacting needs an explicit confirmation");
             }
             if !app.snapshot.read().await.coordinator.can_compact {
-                return error(StatusCode::CONFLICT, "Координатор сейчас отвечает или это не Claude: сжать нельзя");
+                return error(StatusCode::CONFLICT, "Координатор сейчас отвечает или его программа не поддерживает сжатие");
             }
             run_board(&app.cfg, &["coordinator", "tell", "--", "/compact"], Duration::from_secs(30)).await
         }

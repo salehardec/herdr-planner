@@ -36,7 +36,7 @@ pub struct AppConfig {
     pub password_hash: String,
     pub tls_cert: Option<PathBuf>,
     pub tls_key: Option<PathBuf>,
-    /// Who translates answers for the page: `claude/<model>` (default) or `omp/<model>`.
+    /// Who translates answers for the page and drafts memory suggestions: `omp/<model>`.
     pub translator: String,
     /// The ssh program the planner uses for the shipyards (`HERDR_PLANNER_SSH` overrides, for checks).
     pub ssh_bin: String,
@@ -229,8 +229,8 @@ impl AppConfig {
             tls_key,
             translator: file
                 .translator
-                .filter(|v| !v.trim().is_empty())
-                .unwrap_or_else(|| "claude/claude-haiku-5-5".to_string()),
+                .filter(|v| v.trim().starts_with("omp/"))
+                .unwrap_or_else(|| "omp/deepseek/deepseek-v4-flash".to_string()),
             ssh_bin: env::var("HERDR_PLANNER_SSH")
                 .ok()
                 .filter(|v| !v.trim().is_empty())

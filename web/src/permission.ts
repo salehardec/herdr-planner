@@ -1,5 +1,5 @@
 /* A permission prompt on an agent's screen: which rows say «yes», «yes and never ask again» and «no». The rows are the
-   program's own words (Claude Code, Codex, omp), so they are read by meaning, and a menu without a plain yes and no is
+   program's own words (Codex, omp), so they are read by meaning, and a menu without a plain yes and no is
    not a permission prompt at all (it is a question, and the MenuCard answers it). */
 import type { MenuData, Task } from './types';
 
@@ -18,7 +18,7 @@ export interface PermissionPrompt {
 /** What the human did, as the server names it for the Coordinator. */
 export type PermissionNote = 'allow' | 'always' | 'deny';
 
-/** «Yes, and always allow…», «…don't ask again», Claude Code's «…switch to accept edits … for this session». */
+/** «Yes, and always allow…», «…don't ask again», «…switch to accept edits … for this session». */
 const ALWAYS = /don'?t ask again|always allow|and always|for this session|switch to accept edits|accept edits|не спрашив|больше не спрашив|в этой сессии/i;
 const DENY = /^(no\b|deny\b|reject\b|запрет|нет\b)/i;
 const ALLOW = /^(yes\b|allow\b|approve\b|proceed\b|разреш|да\b)/i;

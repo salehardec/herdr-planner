@@ -23,11 +23,11 @@ const json = async (r) => ({ status: r.status, body: await r.json().catch(() => 
 
 const noAuth = await get('/api/state');
 check('API without a session is 401', noAuth.status === 401, String(noAuth.status));
-for (const path of ['/api/events', '/api/search?q=alpha', '/api/models?program=claude', '/api/subagent?task=quasar&id=x', '/api/task/closing?id=alpha/1', '/api/fs/complete?path=/', '/api/universe/info?repo=alpha', '/api/chat/history?q=x']) {
+for (const path of ['/api/events', '/api/search?q=alpha', '/api/models?program=omp', '/api/subagent?task=quasar&id=x', '/api/task/closing?id=alpha/1', '/api/fs/complete?path=/', '/api/universe/info?repo=alpha', '/api/chat/history?q=x']) {
   const r = await get(path);
   check(`${path.split('?')[0]} needs a session`, r.status === 401, String(r.status));
 }
-for (const [path, body] of [['/api/translate', { text: 'hello' }], ['/api/station/set', { name: 'worker.agent', value: 'claude/x', confirm: true }], ['/api/memory/save', { title: 'x', body: 'y' }], ['/api/universe/inspect', { input: '/tmp' }], ['/api/universe/add', { mode: 'folder', name: 'x', path: '/tmp', confirm: true }], ['/api/universe/fork', { repo: 'alpha', op: 'pull', confirm: true }]]) {
+for (const [path, body] of [['/api/translate', { text: 'hello' }], ['/api/station/set', { name: 'worker.agent', value: 'omp/x', confirm: true }], ['/api/memory/save', { title: 'x', body: 'y' }], ['/api/universe/inspect', { input: '/tmp' }], ['/api/universe/add', { mode: 'folder', name: 'x', path: '/tmp', confirm: true }], ['/api/universe/fork', { repo: 'alpha', op: 'pull', confirm: true }]]) {
   const r = await get(path, null, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
   check(`POST ${path} needs a session`, r.status === 401, String(r.status));
 }

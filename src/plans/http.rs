@@ -310,7 +310,7 @@ mod tests {
 
     #[test]
     fn keys_go_only_to_https_or_this_machine() {
-        assert!(safe_url("https://api.anthropic.com/api/oauth/usage"));
+        assert!(safe_url("https://api.example.com/api/oauth/usage"));
         assert!(safe_url("http://127.0.0.1:8080/x"));
         assert!(safe_url("http://localhost/x"));
         assert!(!safe_url("http://api.example.com/x"));
@@ -372,12 +372,12 @@ mod tests {
             c.write_all(b"HTTP/1.1 429 Too Many Requests\r\nContent-Length: 7\r\nConnection: close\r\n\r\n{\"a\":1}").unwrap();
         });
         let s = Secret::new("tok-123").unwrap();
-        let r = Request::get("x", format!("http://127.0.0.1:{port}/usage")).bearer(&s).header("anthropic-beta", "b1");
+        let r = Request::get("x", format!("http://127.0.0.1:{port}/usage")).bearer(&s).header("x-provider-beta", "b1");
         let (status, body) = send(r).await.unwrap();
         assert_eq!((status, body.as_str()), (429, "{\"a\":1}"));
         let got = seen.lock().unwrap().to_lowercase();
         assert!(got.contains("authorization: bearer tok-123"), "{got}");
-        assert!(got.contains("anthropic-beta: b1"), "{got}");
+        assert!(got.contains("x-provider-beta: b1"), "{got}");
         assert!(got.starts_with("get /usage"), "{got}");
     }
 

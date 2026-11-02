@@ -125,8 +125,6 @@ pub enum Section {
     Limit(Window),
     /// Label and value pairs under a heading.
     Facts { title: String, facts: Vec<(String, String)> },
-    /// Shares of one whole, such as which surfaces spent a weekly limit.
-    Shares { title: String, shares: Vec<(String, f64)> },
 }
 
 /// Who is signed in, as far as the sign-in and the service say.
@@ -144,7 +142,7 @@ pub struct Report {
     pub windows: Vec<Window>,
     pub balances: Vec<Balance>,
     pub sections: Vec<Section>,
-    /// Whose sign-in or key read it (`pi`, `omp`, `claude`, `env`, …), the crew role that runs the provider through that program (empty when
+    /// Whose sign-in or key read it (`pi`, `omp`, `env`, …), the crew role that runs the provider through that program (empty when
     /// none does), and the other programs the crew runs the provider through.
     pub from: String,
     pub role: String,

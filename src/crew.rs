@@ -370,8 +370,6 @@ pub fn family_of(model: &str) -> &'static str {
         "deepseek"
     } else if m.starts_with("kimi") || m.starts_with("moonshot") || (m.starts_with('k') && m[1..].starts_with(|c: char| c.is_ascii_digit())) {
         "kimi"
-    } else if m.starts_with("claude") {
-        "anthropic"
     } else if m.starts_with("gpt") || m.starts_with("codex") || (m.starts_with('o') && m[1..].starts_with(|c: char| c.is_ascii_digit())) {
         "openai"
     } else if m.starts_with("gemini") {
@@ -402,6 +400,9 @@ pub fn providers_of(program: &str, names: &[String], seen: &[String]) -> Vec<Pro
     }
     let mut out: Vec<Provider> = Vec::new();
     let mut add = |name: String, source: &'static str| {
+        if name == "anthropic" {
+            return;
+        }
         if !name.is_empty() && !out.iter().any(|p| p.name == name) {
             out.push(Provider { name, source });
         }
@@ -458,12 +459,12 @@ pub fn program_of(value: &str) -> &str {
     value.split('/').next().unwrap_or("").trim()
 }
 
-/// The programs a fallback list names, in order (`codex, claude/claude-opus-5-5` → codex, claude).
+/// The supported programs a fallback list names, in order (`codex, omp/deepseek/deepseek-v4-flash` → codex, omp).
 pub fn chain_programs(value: &str) -> Vec<String> {
     value
         .split(',')
         .map(|i| program_of(i).to_string())
-        .filter(|p| !p.is_empty() && p != "none")
+        .filter(|p| !p.is_empty() && p != "none" && p != "claude")
         .collect()
 }
 
@@ -827,93 +828,46 @@ fn effort_for(cat: &Cat, want: &str) -> String {
     if cat.effort.iter().any(|e| e == want) { want.to_string() } else { String::new() }
 }
 
-/// The preset for a kind (`max`, `claude`, `economy`, `noclaude`) from the programs at hand. An error says what is missing.
+/// The preset for a kind (`max` or `economy`) from the supported programs at hand.
 pub fn template(kind: &str, cats: &[Cat]) -> Result<(String, BTreeMap<String, RoleSet>), String> {
-    let get = |p: &str| cats.iter().find(|c| c.program == p && c.usable);
-    let claude = get("claude");
-    let need_claude = || claude.ok_or_else(|| "Claude не установлен или не вошёл".to_string());
+    let usable: Vec<&Cat> = cats.iter().filter(|c| c.usable && c.program != "claude").collect();
+    let strong = usable
+        .iter()
+        .find(|c| c.program == "codex")
+        .or_else(|| usable.iter().find(|c| !c.names.is_empty()))
+        .copied()
+        .ok_or("нет установленной и вошедшей программы со списком моделей")?;
+    let big = first_with(strong, &["gpt-6", "pro"]).ok_or("нет моделей")?;
+    let strong_effort = top_effort(strong);
     let mut roles: BTreeMap<String, RoleSet> = BTreeMap::new();
     let mut put = |role: &str, agent: Option<String>, effort: String, fallback: String| {
         roles.insert(role.to_string(), RoleSet { agent: agent.unwrap_or_default(), effort, fallback });
     };
     let name = match kind {
         "max" => {
-            let c = need_claude()?;
-            let opus = first_with(c, &["opus"]).ok_or("у Claude нет моделей в списке")?;
-            let e = top_effort(c);
             for r in ["coordinator", "plan", "reviewer", "worker"] {
-                put(r, Some(opus.clone()), if r == "plan" { String::new() } else { e.clone() }, if matches!(r, "reviewer" | "worker") { "none".into() } else { String::new() });
+                put(r, Some(big.clone()), if r == "plan" { String::new() } else { strong_effort.clone() }, if matches!(r, "reviewer" | "worker") { "none".into() } else { String::new() });
             }
-            put("light", Some(opus), String::new(), String::new());
+            put("light", Some(big), String::new(), String::new());
             "Максимум"
         }
-        "claude" => {
-            let c = need_claude()?;
-            let opus = first_with(c, &["opus"]).ok_or("у Claude нет моделей в списке")?;
-            let sonnet = first_with(c, &["sonnet", "opus"]).unwrap_or_else(|| opus.clone());
-            let haiku = first_with(c, &["haiku", "sonnet"]).unwrap_or_else(|| sonnet.clone());
-            put("coordinator", Some(opus.clone()), effort_for(c, "medium"), String::new());
-            put("plan", Some(opus.clone()), String::new(), String::new());
-            put("reviewer", Some(opus.clone()), effort_for(c, "high"), sonnet.clone());
-            put("worker", Some(sonnet.clone()), effort_for(c, "high"), haiku.clone());
-            put("light", Some(haiku), String::new(), String::new());
-            "Только Claude"
-        }
         "economy" => {
-            let cheap = cats
+            let cheap = usable
                 .iter()
-                .filter(|c| c.usable && c.program != "claude")
                 .find_map(|c| {
-                    let flash = c.names.iter().find(|n| n.contains("deepseek") && n.contains("flash")).cloned();
-                    flash
+                    c.names.iter().find(|n| n.contains("deepseek") && n.contains("flash")).cloned()
                         .or_else(|| c.names.iter().find(|n| n.contains("kimi") || n.contains("deepseek")).cloned())
                         .or_else(|| (c.program == "kimi").then(|| c.names.first().cloned().unwrap_or_else(|| "kimi".into())))
                 })
                 .ok_or("нет дешёвой подписки: нужен omp с deepseek или kimi")?;
-            let cheap_effort = effort_for(cats.iter().find(|c| c.program == program_of(&cheap)).unwrap_or(&Cat::default()), "high");
-            let (big, mid, fb) = match claude {
-                Some(c) => (
-                    first_with(c, &["opus"]),
-                    first_with(c, &["sonnet", "opus"]),
-                    first_with(c, &["sonnet", "opus"]),
-                ),
-                None => (Some(cheap.clone()), Some(cheap.clone()), None),
-            };
-            let ce = claude.map(|c| effort_for(c, "medium")).unwrap_or_default();
-            put("coordinator", mid.clone(), ce.clone(), String::new());
-            put("plan", big.clone(), String::new(), String::new());
-            put("reviewer", mid, claude.map(|c| effort_for(c, "high")).unwrap_or_default(), cheap.clone());
-            put("worker", Some(cheap.clone()), cheap_effort, fb.unwrap_or_else(|| "none".into()));
+            let cheap_cat = usable.iter().find(|c| c.program == program_of(&cheap)).copied().unwrap_or(strong);
+            let cheap_effort = effort_for(cheap_cat, "high");
+            put("coordinator", Some(big.clone()), effort_for(strong, "medium"), String::new());
+            put("plan", Some(big.clone()), String::new(), String::new());
+            put("reviewer", Some(big.clone()), effort_for(strong, "high"), cheap.clone());
+            put("worker", Some(cheap.clone()), cheap_effort, if cheap == big { "none".into() } else { big.clone() });
             put("light", Some(cheap), String::new(), String::new());
             "Экономный"
-        }
-        "noclaude" => {
-            let others: Vec<&Cat> = cats.iter().filter(|c| c.usable && c.program != "claude" && !c.names.is_empty()).collect();
-            let strong = others
-                .iter()
-                .find(|c| c.program == "codex")
-                .or_else(|| others.first())
-                .ok_or("нет подписки, кроме Claude")?;
-            let big = first_with(strong, &["gpt-6", "pro", "opus"]).ok_or("нет моделей")?;
-            let se = top_effort(strong);
-            let cheap = others
-                .iter()
-                .find_map(|c| c.names.iter().find(|n| n.contains("deepseek") && n.contains("flash")).cloned())
-                .unwrap_or_else(|| big.clone());
-            let chain = |skip: &str| -> String {
-                let items: Vec<String> = others
-                    .iter()
-                    .filter(|c| c.program != skip)
-                    .filter_map(|c| first_with(c, &["flash", "mini", "gpt-5"]))
-                    .collect();
-                if items.is_empty() { "none".into() } else { items.join(", ") }
-            };
-            put("coordinator", Some(big.clone()), se.clone(), String::new());
-            put("plan", Some(big.clone()), String::new(), String::new());
-            put("reviewer", Some(big.clone()), se, chain(strong.program.as_str()));
-            put("worker", Some(cheap.clone()), String::new(), chain(program_of(&cheap)));
-            put("light", Some(cheap), String::new(), String::new());
-            "Без Claude"
         }
         _ => return Err("такого шаблона нет".into()),
     };
@@ -1053,13 +1007,13 @@ mod tests {
 
     fn crew() -> Vec<Setting> {
         vec![
-            setting("coordinator.agent", "claude/claude-opus-5-5", "you"),
+            setting("coordinator.agent", "codex/gpt-6-luna", "you"),
             setting("coordinator.effort", "medium", "you"),
-            setting("plan.agent", "claude/claude-opus-5-5", "you"),
-            setting("reviewer.agent", "claude/claude-opus-5-5", "you"),
+            setting("plan.agent", "codex/gpt-6-luna", "you"),
+            setting("reviewer.agent", "codex/gpt-6-luna", "you"),
             setting("reviewer.effort", "high", "you"),
             setting("reviewer.fallback", "none", "built in"),
-            setting("worker.agent", "claude/claude-sonnet-5-5", "you"),
+            setting("worker.agent", "omp/deepseek/deepseek-v4-flash", "you"),
             setting("worker.effort", "high", "you"),
             setting("worker.fallback", "none", "built in"),
         ]
@@ -1091,9 +1045,9 @@ mod tests {
 
     #[test]
     fn a_task_line_that_says_out_of_allowance_marks_the_program_it_took_over_from() {
-        let t = task("PLN-1", Status::Working, "codex", "codex took over from claude: out of allowance until 17:00");
+        let t = task("PLN-1", Status::Working, "codex", "codex took over from kimi: out of allowance until 17:00");
         let h = hit_of(&t).unwrap();
-        assert_eq!(h.program, "claude");
+        assert_eq!(h.program, "kimi");
         assert_eq!(h.until, "17:00");
         assert!(!h.logged_out);
         let t = task("PLN-2", Status::Queued, "codex", "Out of allowance");
@@ -1101,12 +1055,12 @@ mod tests {
         assert_eq!((h.program.as_str(), h.until.as_str()), ("codex", ""));
         let t = task("PLN-3", Status::Failed, "omp", "omp took over from pi: logged out");
         assert!(hit_of(&t).unwrap().logged_out);
-        assert!(hit_of(&task("PLN-4", Status::Working, "claude", "Writing the tests")).is_none());
+        assert!(hit_of(&task("PLN-4", Status::Working, "codex", "Writing the tests")).is_none());
     }
 
     #[test]
     fn done_and_archived_tasks_say_nothing_about_the_allowance() {
-        let mut done = task("PLN-1", Status::Done, "claude", "out of allowance");
+        let mut done = task("PLN-1", Status::Done, "codex", "out of allowance");
         let live = task("PLN-2", Status::Working, "codex", "out of allowance until 5pm");
         assert_eq!(hits_of(&[done.clone(), live]).len(), 1);
         done.status = Status::Failed;
@@ -1130,7 +1084,7 @@ mod tests {
     fn the_account_comes_from_the_models_note_or_the_tier() {
         let note = "codex takes the names codex lists for the account it is signed in with (here: your ChatGPT sign-in (go plan)). Write one after the program, as in worker.agent codex/gpt-6-luna:";
         assert_eq!(account_of_note(note), "ChatGPT sign-in (go plan)");
-        assert_eq!(account_of_note("claude takes a short name"), "");
+        assert_eq!(account_of_note("omp takes a full model name"), "");
         let none = AgentUsage::default();
         let mut f = facts("codex", &none, &[]);
         f.models_account = note;
@@ -1139,7 +1093,7 @@ mod tests {
         assert_eq!(s.account, "ChatGPT sign-in (go plan)");
         assert_eq!(s.avail.state, "ok");
         let u = usage(vec![win("Session (5-hour)", 0.02, 5_000)], true, "Max 5x");
-        let mut f = facts("claude", &u, &[]);
+        let mut f = facts("codex", &u, &[]);
         f.doctor_signed_in = Some(true);
         let s = judge(&f);
         assert_eq!(s.account, "Max 5x");
@@ -1167,8 +1121,8 @@ mod tests {
     #[test]
     fn a_program_the_board_says_is_out_of_allowance_is_limited_until_its_time() {
         let u = usage(vec![win("Session (5-hour)", 0.30, 5_000)], true, "Max 5x");
-        let hits = vec![Hit { program: "claude".into(), until: "17:00".into(), logged_out: false, task: "PLN-9".into(), until_ms: 0 }];
-        let mut f = facts("claude", &u, &hits);
+        let hits = vec![Hit { program: "codex".into(), until: "17:00".into(), logged_out: false, task: "PLN-9".into(), until_ms: 0 }];
+        let mut f = facts("codex", &u, &hits);
         f.doctor_signed_in = Some(true);
         let s = judge(&f);
         assert_eq!(s.avail.state, "limited");
@@ -1176,8 +1130,8 @@ mod tests {
         assert_eq!(s.avail.source, "board");
         assert!(s.avail.reason.contains("PLN-9") && s.avail.reason.contains("17:00"), "{}", s.avail.reason);
         // another program's hit does not touch this one
-        let other = vec![Hit { program: "codex".into(), until: String::new(), logged_out: false, task: "PLN-9".into(), until_ms: 0 }];
-        let mut f = facts("claude", &u, &other);
+        let other = vec![Hit { program: "omp".into(), until: String::new(), logged_out: false, task: "PLN-9".into(), until_ms: 0 }];
+        let mut f = facts("codex", &u, &other);
         f.doctor_signed_in = Some(true);
         assert_eq!(judge(&f).avail.state, "ok");
     }
@@ -1185,7 +1139,7 @@ mod tests {
     #[test]
     fn a_spent_window_limits_the_program_until_it_resets() {
         let u = usage(vec![win("Session (5-hour)", 1.0, 9_000), win("Weekly (7-day)", 0.4, 90_000)], true, "Max 5x");
-        let mut f = facts("claude", &u, &[]);
+        let mut f = facts("codex", &u, &[]);
         f.doctor_signed_in = Some(true);
         let s = judge(&f);
         assert_eq!(s.avail.state, "limited");
@@ -1194,7 +1148,7 @@ mod tests {
         assert!(s.avail.reason.contains("Session"), "{}", s.avail.reason);
         // a window that has reset since is not spent
         let u = usage(vec![win("Session (5-hour)", 1.0, 500)], true, "Max 5x");
-        let mut f = facts("claude", &u, &[]);
+        let mut f = facts("codex", &u, &[]);
         f.doctor_signed_in = Some(true);
         assert_eq!(judge(&f).avail.state, "ok");
     }
@@ -1217,15 +1171,16 @@ mod tests {
 
     #[test]
     fn providers_come_from_the_list_then_from_the_models_used() {
-        let names: Vec<String> = ["pi/anthropic/claude-fable-5", "pi/openai/gpt-5", "pi/anthropic/claude-opus-5"].map(String::from).to_vec();
-        let seen: Vec<String> = ["deepseek-v4-flash", "k3.1-pro", "yanao/small", "anthropic/claude-opus-5"].map(String::from).to_vec();
+        let names: Vec<String> = ["pi/openai/gpt-5", "pi/openai/gpt-5-mini"].map(String::from).to_vec();
+        let seen: Vec<String> = ["deepseek-v4-flash", "k3.1-pro", "yanao/small", "openai/gpt-5"].map(String::from).to_vec();
         let p = providers_of("pi", &names, &seen);
         let list: Vec<(&str, &str)> = p.iter().map(|x| (x.name.as_str(), x.source)).collect();
         assert_eq!(
             list,
-            vec![("anthropic", "list"), ("openai", "list"), ("deepseek", "usage"), ("kimi", "usage"), ("yanao", "usage")]
+            vec![("openai", "list"), ("deepseek", "usage"), ("kimi", "usage"), ("yanao", "usage")],
+            "one provider is listed once, then the providers seen in usage follow"
         );
-        assert!(providers_of("claude", &names, &seen).is_empty(), "claude has no providers inside");
+        assert!(providers_of("codex", &names, &seen).is_empty(), "a single-provider program has no providers inside");
         assert_eq!(providers_of("omp", &[], &["deepseek-flash".to_string()])[0].name, "deepseek");
     }
 
@@ -1239,29 +1194,28 @@ mod tests {
     #[test]
     fn roles_and_tasks_using_a_program() {
         let mut s = crew();
-        s.push(setting("worker.fallback", "codex, claude/claude-opus-5-5", "you"));
+        s.push(setting("worker.fallback", "codex, codex/gpt-6-luna", "you"));
         s.retain(|x| !(x.name == "worker.fallback" && x.value == "none"));
-        let uses = roles_using("claude", &s, "claude/claude-haiku-5-5");
+        let uses = roles_using("codex", &s, "codex/gpt-6-luna");
         let tags: Vec<String> = uses.iter().map(|u| format!("{}:{}", u.role, u.field)).collect();
-        assert_eq!(tags, vec!["coordinator:agent", "plan:agent", "reviewer:agent", "worker:agent", "worker:fallback", "light:agent"]);
-        assert_eq!(roles_using("codex", &s, "").len(), 1);
+        assert_eq!(tags, vec!["coordinator:agent", "plan:agent", "reviewer:agent", "worker:fallback", "light:agent"]);
         assert!(roles_using("pi", &s, "").is_empty());
         let tasks = vec![
-            task("PLN-1", Status::Working, "claude", ""),
+            task("PLN-1", Status::Working, "codex", ""),
             task("PLN-2", Status::Review, "codex", ""),
-            task("PLN-3", Status::Done, "claude", ""),
-            task("PLN-4", Status::Queued, "claude", ""),
+            task("PLN-3", Status::Done, "codex", ""),
+            task("PLN-4", Status::Queued, "codex", ""),
         ];
-        let ids: Vec<String> = tasks_using("claude", &tasks).into_iter().map(|t| t.id).collect();
-        assert_eq!(ids, vec!["PLN-1"]);
+        let ids: Vec<String> = tasks_using("codex", &tasks).into_iter().map(|t| t.id).collect();
+        assert_eq!(ids, vec!["PLN-1", "PLN-2"]);
     }
 
     #[test]
     fn a_preset_is_a_plan_of_the_fields_that_differ_in_the_order_of_the_roles() {
         let p = preset(&[
-            ("worker", "omp/deepseek/deepseek-v4-flash", "medium", "claude/claude-sonnet-5-5"),
-            ("coordinator", "claude/claude-opus-5-5", "medium", ""),
-            ("reviewer", "claude/claude-opus-5-5", "high", ""),
+            ("worker", "omp/deepseek/deepseek-v4-flash", "medium", "omp/deepseek/deepseek-v4-flash"),
+            ("coordinator", "codex/gpt-6-luna", "medium", ""),
+            ("reviewer", "codex/gpt-6-luna", "high", ""),
             ("light", "omp/deepseek/deepseek-v4-flash", "", ""),
         ]);
         let steps = plan(&p, &crew(), "", "");
@@ -1272,22 +1226,21 @@ mod tests {
         assert_eq!(
             list,
             vec![
-                "worker.agent claude/claude-sonnet-5-5 → omp/deepseek/deepseek-v4-flash",
                 "worker.effort high → medium",
-                "worker.fallback none → claude/claude-sonnet-5-5",
+                "worker.fallback none → omp/deepseek/deepseek-v4-flash",
                 "light  → omp/deepseek/deepseek-v4-flash",
             ],
             "coordinator and reviewer already are what the preset says"
         );
         // the commands, in this order
         let cmds: Vec<Vec<String>> = steps.iter().filter_map(|s| command_of(s, "")).collect();
-        assert_eq!(cmds[0], vec!["set", "worker.agent", "omp/deepseek/deepseek-v4-flash"]);
-        assert_eq!(cmds.len(), 3, "the light preset is the planner's, not a command of the board");
+        assert_eq!(cmds[0], vec!["set", "worker.effort", "medium"]);
+        assert_eq!(cmds.len(), 2, "the light preset is the planner's, not a command of the board");
     }
 
     #[test]
     fn an_empty_field_takes_the_boards_own_entry_away_only_when_there_is_one() {
-        let p = preset(&[("worker", "claude/claude-sonnet-5-5", "", ""), ("plan", "", "", "")]);
+        let p = preset(&[("worker", "omp/deepseek/deepseek-v4-flash", "", ""), ("plan", "", "", "")]);
         let steps = plan(&p, &crew(), "", "alpha");
         let cmds: Vec<Vec<String>> = steps.iter().filter_map(|s| command_of(s, "alpha")).collect();
         assert_eq!(
@@ -1303,11 +1256,11 @@ mod tests {
 
     #[test]
     fn the_watcher_is_a_role_of_a_preset_like_the_others() {
-        let p = preset(&[("watcher", "claude/claude-haiku-5-5", "", "")]);
+        let p = preset(&[("watcher", "omp/deepseek/deepseek-v3-flash", "", "")]);
         let steps = plan(&p, &crew(), "", "");
         assert_eq!(steps.len(), 1);
         assert_eq!((steps[0].role, steps[0].setting.as_str(), steps[0].was.as_str()), ("watcher", "watcher.agent", ""));
-        assert_eq!(command_of(&steps[0], "").unwrap(), vec!["set", "watcher.agent", "claude/claude-haiku-5-5"]);
+        assert_eq!(command_of(&steps[0], "").unwrap(), vec!["set", "watcher.agent", "omp/deepseek/deepseek-v3-flash"]);
         // a preset may also hold an own role's key; the built-in plan leaves it to the roles
         let own = preset(&[("role:r1f", "codex", "", "")]);
         assert!(plan(&own, &crew(), "", "").is_empty());
@@ -1327,20 +1280,16 @@ mod tests {
     #[test]
     fn capturing_the_crew_and_planning_it_back_changes_nothing() {
         let s = crew();
-        let roles = capture(&s, "claude/claude-haiku-5-5");
+        let roles = capture(&s, "omp/deepseek/deepseek-v3-flash");
         assert_eq!(roles["worker"].fallback, "", "the built-in none is not pinned");
-        assert_eq!(roles["worker"].agent, "claude/claude-sonnet-5-5");
-        assert_eq!(roles["light"].agent, "claude/claude-haiku-5-5");
+        assert_eq!(roles["worker"].agent, "omp/deepseek/deepseek-v4-flash");
+        assert_eq!(roles["light"].agent, "omp/deepseek/deepseek-v3-flash");
         let p = Preset { id: "p".into(), name: "Сейчас".into(), roles };
-        assert!(plan(&p, &s, "claude/claude-haiku-5-5", "").is_empty());
+        assert!(plan(&p, &s, "omp/deepseek/deepseek-v3-flash", "").is_empty());
     }
 
     fn lookup(program: &str) -> (Vec<String>, Vec<String>) {
         match program {
-            "claude" => (
-                ["claude/claude-opus-5-5", "claude/claude-sonnet-5-5", "claude/claude-haiku-5-5"].map(String::from).to_vec(),
-                ["low", "medium", "high", "xhigh", "max"].map(String::from).to_vec(),
-            ),
             "codex" => (["codex/gpt-6-luna"].map(String::from).to_vec(), ["low", "high", "ultra"].map(String::from).to_vec()),
             _ => (Vec::new(), Vec::new()),
         }
@@ -1349,9 +1298,9 @@ mod tests {
     #[test]
     fn steps_are_checked_against_the_models_and_the_effort_of_the_new_agent() {
         let p = preset(&[
-            ("worker", "codex/gpt-6-luna", "ultra", "claude/claude-nope"),
-            ("reviewer", "claude/claude-opus-5-5", "ultra", ""),
-            ("coordinator", "claude/claude-opus-5-6", "default", ""),
+            ("worker", "codex/gpt-6-luna", "ultra", "codex/nope"),
+            ("reviewer", "codex/gpt-6-luna", "medium", ""),
+            ("coordinator", "codex/nope", "default", ""),
         ]);
         let mut steps = plan(&p, &crew(), "", "");
         check_steps(&mut steps, &p, &crew(), &lookup);
@@ -1367,23 +1316,23 @@ mod tests {
     fn a_fallback_chain_is_programs_and_models_with_commas() {
         let none = |_: &str| Vec::<String>::new();
         assert!(check_fallback("none", &none).is_ok());
-        assert!(check_fallback("codex, claude/claude-opus-5-5", &none).is_ok());
-        assert!(check_fallback("codex,,claude", &none).is_err());
+        assert!(check_fallback("codex, omp/deepseek/deepseek-v4-flash", &none).is_ok());
+        assert!(check_fallback("codex,,unknown", &none).is_err());
         assert!(check_fallback("codex, codex", &none).unwrap_err().contains("дважды"));
         assert!(check_fallback("nosuch", &none).unwrap_err().contains("такой программы"));
-        assert!(check_fallback("claude, none", &none).is_err());
-        assert_eq!(chain_programs("codex, claude/claude-opus-5-5"), vec!["codex", "claude"]);
+        assert!(check_fallback("unknown, none", &none).is_err());
+        assert_eq!(chain_programs("codex, omp/deepseek/deepseek-v4-flash"), vec!["codex", "omp"]);
         assert!(chain_programs("none").is_empty());
     }
 
     #[test]
     fn who_is_touched_is_split_into_running_and_waiting() {
         let tasks = vec![
-            task("PLN-1", Status::Working, "claude", ""),
-            task("PLN-2", Status::Review, "claude", ""),
+            task("PLN-1", Status::Working, "codex", ""),
+            task("PLN-2", Status::Review, "codex", ""),
             task("PLN-3", Status::Queued, "", ""),
-            task("PLN-4", Status::Waiting, "claude", ""),
-            task("PLN-5", Status::Done, "claude", ""),
+            task("PLN-4", Status::Waiting, "codex", ""),
+            task("PLN-5", Status::Done, "codex", ""),
         ];
         let a = affected(&tasks, "");
         assert_eq!(a["running"].as_array().unwrap().len(), 2);
@@ -1412,14 +1361,14 @@ mod tests {
     #[test]
     fn presets_are_created_renamed_and_deleted_with_unique_names() {
         let mut store = Store::default();
-        let r = roles(&[("worker", "claude/claude-sonnet-5-5", "high", "none")]);
+        let r = roles(&[("worker", "omp/deepseek/deepseek-v4-flash", "high", "none")]);
         let id = add_preset(&mut store, "  Экономный  ", &r).unwrap();
         assert_eq!(store.presets[0].name, "Экономный");
         assert!(add_preset(&mut store, "экономный", &r).unwrap_err().contains("уже есть"));
         assert!(add_preset(&mut store, "  ", &r).is_err());
         assert!(add_preset(&mut store, &"я".repeat(41), &r).is_err());
         assert!(add_preset(&mut store, "Плохой", &roles(&[("captain", "", "", "")])).is_err());
-        assert!(add_preset(&mut store, "Плохой", &roles(&[("worker", "Claude", "", "")])).is_err());
+        assert!(add_preset(&mut store, "Плохой", &roles(&[("worker", "Unknown", "", "")])).is_err());
         let id2 = add_preset(&mut store, "Максимум", &r).unwrap();
         assert_ne!(id, id2);
         rename_preset(&mut store, &id2, "Максимум!").unwrap();
@@ -1437,7 +1386,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let cfg = crate::testutil::test_cfg(dir.path());
         assert!(read_store(&cfg).presets.is_empty());
-        let r = roles(&[("worker", "claude/claude-sonnet-5-5", "high", "codex")]);
+        let r = roles(&[("worker", "omp/deepseek/deepseek-v4-flash", "high", "codex")]);
         let id = edit_store(&cfg, |s| add_preset(s, "Экономный", &r)).unwrap();
         edit_store(&cfg, |s| {
             s.active.insert(String::new(), id.clone());
@@ -1465,8 +1414,7 @@ mod tests {
 
     fn machine() -> Vec<Cat> {
         vec![
-            cat("claude", &["claude/opus", "claude/sonnet", "claude/haiku"], &["low", "medium", "high", "xhigh", "max"]),
-            cat("codex", &["codex/gpt-6-luna", "codex/gpt-5.6-terra"], &["low", "high", "max"]),
+            cat("codex", &["codex/gpt-6-luna", "codex/gpt-5.6-terra"], &["low", "medium", "high", "max"]),
             cat("omp", &["omp/deepseek/deepseek-v4-pro", "omp/deepseek/deepseek-v4-flash"], &["low", "high"]),
         ]
     }
@@ -1475,37 +1423,29 @@ mod tests {
     fn the_templates_are_built_from_the_programs_that_are_there() {
         let (name, r) = template("max", &machine()).unwrap();
         assert_eq!(name, "Максимум");
-        assert!(["coordinator", "plan", "reviewer", "worker", "light"].iter().all(|k| r[*k].agent == "claude/opus"));
+        assert!(["coordinator", "plan", "reviewer", "worker", "light"].iter().all(|k| r[*k].agent == "codex/gpt-6-luna"));
         assert_eq!(r["worker"].effort, "max");
-        let (name, r) = template("claude", &machine()).unwrap();
-        assert_eq!(name, "Только Claude");
-        assert_eq!(r["worker"].agent, "claude/sonnet");
-        assert!(r.values().all(|s| s.agent.starts_with("claude/") && (s.fallback.is_empty() || s.fallback.starts_with("claude/") || s.fallback == "none")));
         let (name, r) = template("economy", &machine()).unwrap();
         assert_eq!(name, "Экономный");
         assert_eq!(r["worker"].agent, "omp/deepseek/deepseek-v4-flash");
-        assert_eq!(r["worker"].fallback, "claude/sonnet", "when the cheap one runs out, Claude takes over");
-        let (name, r) = template("noclaude", &machine()).unwrap();
-        assert_eq!(name, "Без Claude");
-        for s in r.values() {
-            assert!(!s.agent.starts_with("claude") && !s.fallback.contains("claude"), "{s:?}");
-        }
+        assert_eq!(r["worker"].fallback, "codex/gpt-6-luna", "when the cheap one runs out, Codex takes over");
         assert_eq!(r["reviewer"].agent, "codex/gpt-6-luna");
+        assert!(template("unsupported", &machine()).is_err());
         assert!(template("weird", &machine()).is_err());
     }
 
     #[test]
     fn a_template_says_what_is_missing() {
+        assert!(template("max", &[]).unwrap_err().contains("нет установленной"));
+        assert!(template("unsupported", &machine()).is_err());
+        // economy falls back to OMP when Codex is not usable
         let mut m = machine();
         m[0].usable = false;
-        assert!(template("max", &m).unwrap_err().contains("Claude"));
-        assert!(template("claude", &m).is_err());
-        // economy still works without Claude, on the cheap one alone
         let (_, r) = template("economy", &m).unwrap();
         assert_eq!(r["worker"].agent, "omp/deepseek/deepseek-v4-flash");
-        let only_claude = vec![cat("claude", &["claude/opus"], &[])];
-        assert!(template("economy", &only_claude).is_err());
-        assert!(template("noclaude", &only_claude).is_err());
+        let only_unusable = vec![Cat { usable: false, ..cat("codex", &["codex/gpt-6-luna"], &[]) }];
+        assert!(template("economy", &only_unusable).is_err());
+        assert!(template("max", &only_unusable).is_err());
     }
 
     #[test]
@@ -1534,7 +1474,7 @@ mod tests {
     fn a_kept_hand_over_marks_the_program_after_the_row_line_is_gone() {
         let at = 10 * 3_600_000u64;
         let kept = vec![
-            json!({"at": at, "role": "worker", "from": "claude/claude-opus-5-5", "to": "omp/x", "why": "out of allowance until 17:00"}),
+            json!({"at": at, "role": "worker", "from": "kimi/k2", "to": "omp/x", "why": "out of allowance until 17:00"}),
             json!({"at": at, "role": "worker", "from": "pi", "to": "omp", "why": "out of allowance"}),
             json!({"at": at, "role": "worker", "from": "codex", "to": "omp", "why": "logged out"}),
             json!({"at": at, "role": "worker", "from": "kimi", "to": "omp", "why": "its provider is overloaded, still after 5 tries"}),
@@ -1545,7 +1485,7 @@ mod tests {
         assert_eq!(
             by,
             vec![
-                ("claude", "17:00", 17 * 3_600_000, false),
+                ("kimi", "17:00", 17 * 3_600_000, false),
                 ("pi", "", at + ASSUME_MS, false),
                 ("codex", "", at + ASSUME_MS, true),
             ],

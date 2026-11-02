@@ -16,30 +16,30 @@ const data = (programs: StationProgram[]): StationData => ({
   ok: true, level: 'you', repo: '', repos: [], version: '1', programs, light: 'omp/deepseek/deepseek-v4-flash', failover: {},
   presets: { list: [], active: null },
   settings: [
-    setting('coordinator.agent', 'claude/opus'), setting('plan.agent', 'none'), setting('reviewer.agent', 'claude/opus'),
+    setting('coordinator.agent', 'codex/gpt-6-luna'), setting('plan.agent', 'none'), setting('reviewer.agent', 'codex/gpt-6-luna'),
     setting('worker.agent', 'codex/gpt-6-luna'),
   ],
 });
 
 describe('the summary line', () => {
   it('names who leads every role; no planner is an empty lead', () => {
-    const s = summary(data([program('claude'), program('codex')]));
+    const s = summary(data([program('omp'), program('codex')]));
     expect(s.leads.map((l) => `${l.role}:${l.agent}`)).toEqual([
-      'coordinator:claude/opus', 'plan:', 'reviewer:claude/opus', 'worker:codex/gpt-6-luna', 'watcher:', 'light:omp/deepseek/deepseek-v4-flash',
+      'coordinator:codex/gpt-6-luna', 'plan:', 'reviewer:codex/gpt-6-luna', 'worker:codex/gpt-6-luna', 'watcher:', 'light:omp/deepseek/deepseek-v4-flash',
     ]);
     expect(s.down).toEqual([]);
   });
 
   it('lists the subscriptions that are out of allowance or signed out, with when they come back', () => {
     const down = downPrograms([
-      program('claude', { state: 'limited', until: '17:00' }),
+      program('kimi', { state: 'limited', until: '17:00' }),
       program('codex', { state: 'signed_out' }),
       program('omp', { state: 'unknown' }),
       program('pi', { state: 'limited' }, false),
       program('kimi'),
     ]);
     expect(down).toEqual([
-      { program: 'claude', kind: 'limited', until: '17:00', untilMs: 0 },
+      { program: 'kimi', kind: 'limited', until: '17:00', untilMs: 0 },
       { program: 'codex', kind: 'signed_out', until: '', untilMs: 0 },
     ]);
   });
@@ -69,7 +69,9 @@ describe('until when', () => {
 
 describe('fallback chains', () => {
   it('splits the board\'s value into items and back', () => {
-    expect(chainOf('codex, claude/claude-opus-5-5')).toEqual(['codex', 'claude/claude-opus-5-5']);
+    expect(chainOf('codex, omp/deepseek/deepseek-v4-flash')).toEqual(['codex', 'omp/deepseek/deepseek-v4-flash']);
+    // Removed providers are filtered from an old chain.
+    expect(chainOf('codex, claude')).toEqual(['codex']);
     expect(chainOf('none')).toEqual([]);
     expect(chainOf('')).toEqual([]);
     expect(chainValue(['codex', 'omp/deepseek/deepseek-v4-flash'])).toBe('codex, omp/deepseek/deepseek-v4-flash');
@@ -77,8 +79,8 @@ describe('fallback chains', () => {
   });
 
   it('offers a subscription that is installed and not signed out; a limited one still counts', () => {
-    expect(offerable(program('claude'))).toBe(true);
-    expect(offerable(program('claude', { state: 'limited' }))).toBe(true);
+    expect(offerable(program('kimi'))).toBe(true);
+    expect(offerable(program('kimi', { state: 'limited' }))).toBe(true);
     expect(offerable(program('codex', { state: 'signed_out' }))).toBe(false);
     expect(offerable(program('pi', {}, false))).toBe(false);
   });
@@ -113,8 +115,8 @@ describe('the model picker', () => {
   });
 
   it('offers the listed models and nothing typed by hand', () => {
-    const o = modelOptions('claude', models({ names: ['claude/opus', 'claude/haiku'], listed: true }), 'claude/opus');
-    expect(o.map((x) => x.value)).toEqual(['claude/opus', 'claude/haiku']);
+    const o = modelOptions('codex', models({ names: ['codex/gpt-6-luna', 'codex/gpt-5.5'], listed: true }), 'codex/gpt-6-luna');
+    expect(o.map((x) => x.value)).toEqual(['codex/gpt-6-luna', 'codex/gpt-5.5']);
   });
 
   it('offers a program with no list its own default and the models it was used with', () => {
@@ -127,9 +129,9 @@ describe('the model picker', () => {
   });
 
   it('keeps a value that is set but not offered, at the top; and the program alone first for a chain', () => {
-    const o = modelOptions('claude', models({ names: ['claude/opus'], listed: true }), 'claude/old', true);
-    expect(o.map((x) => `${x.kind}:${x.value}`)).toEqual(['current:claude/old', 'default:claude', 'model:claude/opus']);
-    expect(modelOptions('codex', models({ names: ['codex/gpt'], listed: true }), 'claude/opus').map((x) => x.value)).toEqual(['codex/gpt']);
+    const o = modelOptions('codex', models({ names: ['codex/gpt-6-luna'], listed: true }), 'codex/old', true);
+    expect(o.map((x) => `${x.kind}:${x.value}`)).toEqual(['current:codex/old', 'default:codex', 'model:codex/gpt-6-luna']);
+    expect(modelOptions('codex', models({ names: ['codex/gpt'], listed: true }), 'omp/old').map((x) => x.value)).toEqual(['codex/gpt']);
   });
 
   it('offers nothing while the answer is not there', () => {

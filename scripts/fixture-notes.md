@@ -8,13 +8,13 @@ ids, names and statuses are fixed.
 ## Environment the planner needs
 
 `run-checks.sh` already sets `FIXTURE_DIR`, `HERDR_PROJECTS_BIN`, `HERDR_SOCKET_PATH`,
-`OMARCHY_THEME_DIR`, `CLAUDE_CONFIG_DIR`, `PATH=DIR/bin:$PATH` and the XDG dirs. The harness
+`OMARCHY_THEME_DIR`, `HERDR_PLANNER_TRANSCRIPTS=DIR/transcripts`, `PATH=DIR/bin:$PATH` and the XDG dirs. The harness
 still has to add these (the script is not edited here):
 
 | variable | value | why |
 |---|---|---|
 | `CODEX_HOME` | `DIR/codex` | **required**: codex sub-agents of `DEL-1` are read from here; without it the server reads the real `~/.codex` |
-| `HERDR_PLANNER_CLAUDE` | `DIR/bin/claude` | recommended: translation. Also found through `PATH` |
+| `HERDR_PLANNER_OMP` | `DIR/bin/omp` | recommended: translation. Also found through `PATH` |
 | `HERDR_PLANNER_GH` | `DIR/bin/gh` | recommended: hosting checks (`acme/mine`, `acme/theirs`). Also found through `PATH` |
 | `HERDR_PLANNER_GLAB` | `DIR/bin/glab` | recommended: the not-logged-in hint for gitlab.example.com. Also found through `PATH` |
 | `HERDR_BIN` | `DIR/bin/herdr` | recommended: `herdr agent list`. Also found through `PATH` |
@@ -28,7 +28,7 @@ The one that changes the answer is `CODEX_HOME`.
 - `tasks/<repo>/<n>/task.json` for every row of `list --json` (25 with the base world; 525 with
   `--scale`), and `closing.md` for `alpha/15` (English, 7 lines), `alpha/13` (Russian, 4 lines)
   and `beta/1` (one line).
-- `coordinator/default/state.json` (`run.kind` claude) and `chat/` (the transcript folder).
+- `coordinator/default/state.json` (`run.kind` omp) and `chat/` (the transcript folder).
 
 | repo | folder | git | key | notes |
 |---|---|---|---|---|
@@ -65,45 +65,33 @@ Ages (`created`): `ALP-2` 25 min, `ALP-16` 12 min, `ALP-20` 8 min, `ALP-21` 6 mi
 
 ### Task records (`task.json`)
 
-`worker.agent`: `claude/claude-sonnet-5-5` (claude tasks), `omp/deepseek/deepseek-v4-flash` (`ALP-6`,
-`SIG-2`), `pi/default` (`ALP-7`, `GAM-1`), `codex/gpt-5-codex` (`DEL-1`); `SIG-1` has none.
-`model` is `claude-sonnet-5-5` etc., null for pi. Descriptions are one paragraph each, some in
+`worker.agent`: `omp/deepseek/deepseek-v4-flash` (omp tasks), `pi/default` (`ALP-7`, `GAM-1`),
+`codex/gpt-5-codex` (`DEL-1`); `SIG-1` has none. `model` is `deepseek-v4-flash` etc., null for pi. Descriptions are one paragraph each, some in
 English, some in Russian. `exitedAt` is set for done and archived tasks only.
 
 ## Sub-agents
 
 | task | program | what is there | expected state |
 |---|---|---|---|
-| `ALP-2` (waiting) | claude | `agent-a1f0c3e9d7b24e10` «Explore Rust backend», last record a tool call, mtime 30 s | running |
-| `ALP-2` | claude | `agent-b2e8d5a4c9f31b07` «Проверить клиентов старой схемы», mtime 15 min, no finish | quiet |
-| `ALP-2` | claude | `agent-c3d9e6b5daf42c18` «Сравнить схемы», finished, end_turn text (result) | done |
-| `ALP-16` (waiting) | claude | `agent-d4aa7f6c0b53d229` «Найти старые ветки» | running |
 | `ALP-6` (working) | omp | `Migration-Scan` (+ `.md`, session_exit) | done |
 | `ALP-6` | omp | `Migration-Index`, no session_exit | running |
+| `ALP-6` | omp | `Migration-Review`, no session_exit, mtime 15 min | quiet |
 | `DEL-1` (waiting) | codex | rollout `…-bd35d760-…` with `parent_thread_id` = the parent | running |
 | `SIG-2` | omp | parent only, no children | empty list |
 | `ALP-7`, `GAM-1` | pi | no sub-agents at all | note «у pi нет субагентов» |
-| Coordinator | claude | `agent-f6cc9b8e2d75f44b` under the transcript folder | **done** (see below) |
-
-The Coordinator is idle, and the server calls a sub-agent of an idle parent `done`. To see it
-running, create `DIR/state/coordinator-busy`: `herdr-projects coordinator` then reports
-`working` and the sub-agent turns `running`.
+| Coordinator | omp | no provider-specific sub-agent reader | note «нет данных» |
 
 ## Coordinator
 
-- Transcript `claude/projects/<dashed chat dir>/fixture.jsonl`: ten turns, the last one unanswered.
-  The last assistant turn carries `message.model` `claude-opus-5-5` and `usage` 150000 tokens, so
+- Transcript `transcripts/<dashed chat dir>/fixture.jsonl`: ten turns, the last one unanswered.
+  The last assistant turn carries `message.model` `deepseek-v4-pro` and `usage` 150000 tokens, so
   `coordinator.context` is 150000 of 200000, 75 %.
 - `herdr-projects coordinator tell -- <text>` logs `coordinator.jsonl` (text, argv), and so does
   `tell -- /compact`. `coordinator new` logs `commands.jsonl` and prints `ok`.
 - `state/coordinator-dialog` makes it blocked (dialog); `state/coordinator-busy` makes it working.
-- Commands for the `/` list: `claude/skills/fixture-skill/SKILL.md` («Навык фикстуры…»),
-  `claude/commands/fixture-cmd.md` («Команда фикстуры») and `board/coordinator/default/chat/.claude/commands/here-cmd.md`
-  («Команда папки Координатора»), and `claude/skills/ui-ux-pro-max` — a **link** to `agents/ui-ux-pro-max`
-  («Навык-ссылка фикстуры»), as most of the real `~/.claude/skills` are, and
-  `claude/skills/superpowers-executing-plans-with-subagent-driven-development-review` («Навык с длинным именем») —
-  a name longer than the list is wide, so the page check sees it wrap instead of running past the edge. Claude Code's
-  built-in commands are the planner's own table (`src/hints.rs`); the `@` files are the repositories'
+- Skills for the `/` list live under `board/coordinator/default/chat/.agents/skills`:
+  `fixture-skill`, the linked `ui-ux-pro-max`, and a long `superpowers-…` name. OMP's built-in
+  commands are the planner's own table (`src/hints.rs`); the `@` files are the repositories'
   (`projects/AI/alpha/README.md` and `projects/AI/beta/README.md` are the shortest).
 
 ## Machines the board knows (`vm-a`, `vm-b`)
@@ -120,16 +108,16 @@ The planner works with its own board only. The stand-ins still answer as a board
 
 - `herdr-projects`: `list [--all] [--json]`, `details`, `after`, `pick`, `approve|review|retry|
   delegate|stop|tell|archive|restore|fix|finish`, `coordinator [tell|new]`, `machines --json`,
-  `models <prog>` (2 s; `claude`, `omp`, `codex`, `pi`; unknown → error), `show --repo NAME --json`
+  `models <prog>` (2 s; `omp`, `codex`, `pi`; unknown → error), `show --repo NAME --json`
   (`{repo:{name,key,folder}, settings:[{name,value}…]}` — an array, which the server reads),
   `show --task`, `set <setting> <value> [--repo NAME]`, `unset <setting> [--repo NAME]` (no `--repo` = the home
   board). Settings live in `state/board-settings.json`: one level per name, `""` = home, a repo its own. `show --json`
   (home or `--repo`) gives the board's shape `{settings:[{name,kind,value,from,place,own,note}]}`: own values
   (`from: you|repo`), inherited ones (`own: false`) and built-in ones (`from: built in`). `set` refuses a `*.agent`
   the program does not take and an `*.effort` the program does not take, with the words of the board; `set` also
-  writes `repo.key`. `doctor` prints one line per program (`✓ claude 2.1.303, signed in (…)`, `✗ codex …, not signed
+  writes `repo.key`. `doctor` prints one line per program (`✓ omp 2.1.303, signed in (…)`, `✗ codex …, not signed
   in`), exits 1 when a line is ✗ (as the real board does). `models <prog>` also prints an `Effort (…): low, medium…`
-  paragraph (claude, codex, omp).
+  paragraph (omp, codex).
   `add TITLE --repo NAME|/abs/path [--worker.agent X
   --model M --app A --desc D]`. `add` with an absolute path registers a git folder (name = folder
   name, key from it) and makes `KEY-1`; the new task's `task.json` is written with `created` now.
@@ -140,9 +128,9 @@ The planner works with its own board only. The stand-ins still answer as a board
   reading it; `state/dialog.txt` with many lines is the long screen the window must keep the end of.
   Keys go to `log/keys.jsonl`. `agent get NAME` gives the pane `w1:p-NAME`, and `pane send-text PANE TEXT`
   logs the words to `log/text.jsonl` (the own answer of a selection menu). A selection menu is a screen written
-  to `state/dialog.txt` as Claude Code / omp draw it (see the section `menu card` of `ui-check.mjs`).
-- `claude`: translation. Reads `<<< … >>>` on stdin, prints `ПЕРЕВОД: ` and the first 60 characters
-  (`…` when cut). Logs argv and whether `--tools` was empty to `log/claude.jsonl`.
+  to `state/dialog.txt` as a supported program draws it (see the section `menu card` of `ui-check.mjs`).
+- `omp`: translation. Reads `<<< … >>>` on stdin, prints `ПЕРЕВОД: ` and the first 60 characters
+  (`…` when cut). Logs argv and whether `--no-tools` was passed to `log/translation.jsonl`.
 - `gh`: `auth status` ok; `repo view acme/mine` → WRITE, `acme/theirs` → READ, others not found;
   `api user` → `fixture-user`.
 - `glab`: `auth status --hostname gitlab.example.com` → not logged in (exit 1, the hint); `api` → 401.

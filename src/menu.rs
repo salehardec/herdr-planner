@@ -1,6 +1,6 @@
 //! Selection menus in an agent's terminal: what the screen asks, what the choices are and which keys give a choice.
 //!
-//! A program that waits for a choice draws a list and a hint line: Claude Code's `AskUserQuestion`
+//! A program that waits for a choice draws a list and a hint line: a multi-step form
 //! (`❯ 1. date-fns` with the description under it, a tab strip for several questions, `[ ]` boxes for a
 //! multiple choice), Codex's approvals (`› 1. Yes, proceed`), omp's `ask` (a box with glyph rows). The page shows
 //! such a screen as a card with buttons; this module reads the plain text of the screen (what `herdr agent read`
@@ -27,7 +27,7 @@ pub struct MenuOption {
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Menu {
-    /// `claude`, `codex`, `omp` or `other`: how the program takes its own answer is the only difference.
+    /// `form`, `codex`, `omp` or `other`: how the program takes its own answer is the only difference.
     pub program: &'static str,
     /// Changes with the question and the choices, never with the cursor, the ticks or the typed text.
     pub sig: String,
@@ -38,7 +38,7 @@ pub struct Menu {
     pub multi: bool,
     /// The row the program's cursor is on now.
     pub cursor: usize,
-    /// The row of the «Submit» line a multiple choice has (Claude Code): `Enter` on it sends the ticks.
+    /// The row of the «Submit» line a multiple-choice form has: `Enter` on it sends the ticks.
     pub submit_at: Option<usize>,
     /// «Other» opens an editor of its own (omp): `Enter` on the row, then the text, then `Enter`.
     pub own_editor: bool,
@@ -158,7 +158,7 @@ fn parse_row(text: &str, framed: bool) -> Option<Row> {
         return None;
     }
     // A cursor glyph and nothing else is a prompt line (`❯ some text`), not a choice; it is one in a frame
-    // (omp's «Submit») and on a Claude Code multiple choice's «Submit» line.
+    // (omp's «Submit») and on a multiple-choice form's «Submit» line.
     let bare = num.is_none() && mark == Mark::None;
     if bare && !(ptr && (framed || label.eq_ignore_ascii_case("submit"))) {
         return None;
@@ -176,7 +176,7 @@ fn classify(line: &str) -> Kind {
         return Kind::Blank;
     }
     let first = t.chars().next().unwrap_or(' ');
-    // Claude Code frames a command with dashed lines (`╌╌╌`): they only part the paragraphs, they end nothing
+    // Dashed lines (`╌╌╌`) only part the paragraphs, they end nothing.
     if t.chars().count() >= 3 && t.chars().all(|c| "╌╍┄┅┈┉".contains(c) || c == ' ') {
         return Kind::Blank;
     }
@@ -363,7 +363,7 @@ pub fn parse(screen: &str) -> Option<Menu> {
         .unwrap_or_default();
 
     let multi = rows.iter().any(|(_, r, _)| matches!(r.mark, Mark::Box(_))) || hint_text.contains("toggle");
-    // A multiple choice of Claude Code has a «Submit» line after the choices: a row for the cursor, not a choice.
+    // A multiple-choice form has a «Submit» line after the choices: a row for the cursor, not a choice.
     // The cursor on it makes it a row of its own; off it the line reads as the description of the row above.
     let mut built: Vec<(Row, String)> = rows.into_iter().map(|(_, r, d)| (r, d)).collect();
     if multi {
@@ -379,7 +379,7 @@ pub fn parse(screen: &str) -> Option<Menu> {
     };
     let cursor = built.iter().position(|(r, _)| r.ptr).unwrap_or(0);
     let own_editor = boxed;
-    // Claude Code's own-words row sits right above its «Chat about this» row (and above «Submit»); once words are
+    // A form's own-words row sits right above its «Chat about this» row (and above «Submit»); once words are
     // typed into it the row no longer says «Type something», but it is still that row.
     let own_by_place = built
         .iter()
@@ -479,7 +479,7 @@ pub fn parse(screen: &str) -> Option<Menu> {
     let program = if boxed {
         "omp"
     } else if !tabs.is_empty() || hint_text.contains("tab/arrow") || hint_text.contains("chat about") {
-        "claude"
+        "form"
     } else if hint_text.contains("press enter") {
         "codex"
     } else {
@@ -487,7 +487,7 @@ pub fn parse(screen: &str) -> Option<Menu> {
     };
     let steps = tabs.len();
     let answered = tabs.iter().filter(|(_, d)| *d).count();
-    let step = if steps > 0 && program == "claude" { (answered + 1).min(steps) } else { 0 };
+    let step = if steps > 0 && program == "form" { (answered + 1).min(steps) } else { 0 };
 
     let mut h = DefaultHasher::new();
     (program, &question, tabs.iter().map(|(l, _)| l.as_str()).collect::<Vec<_>>(), multi, step).hash(&mut h);
@@ -526,7 +526,7 @@ pub fn plan(menu: &Menu, answer: &Answer) -> Result<Vec<Step>, String> {
     let mut cur = menu.cursor;
     let find = |at: usize| menu.options.iter().find(|o| o.at == at);
     let own_row = menu.options.iter().find(|o| o.own);
-    // `confirm`: press Enter after the words. Claude Code's multiple choice ticks the row as the words are typed,
+    // `confirm`: press Enter after the words. A multiple-choice form ticks the row as the words are typed,
     // and Enter would clear the tick again.
     let type_own = |steps: &mut Vec<Step>, cur: &mut usize, text: &str, confirm: bool| -> Result<(), String> {
         let row = own_row.ok_or("в этом меню нет строки для своего ответа")?;
@@ -597,27 +597,27 @@ pub fn plan(menu: &Menu, answer: &Answer) -> Result<Vec<Step>, String> {
 mod tests {
     use super::*;
 
-    const CLAUDE_SINGLE: &str = include_str!("menu_samples/claude-single.txt");
-    const CLAUDE_OTHER: &str = include_str!("menu_samples/claude-other-focused.txt");
-    const CLAUDE_MULTI: &str = include_str!("menu_samples/claude-multi.txt");
-    const CLAUDE_MULTI_SUBMIT: &str = include_str!("menu_samples/claude-multi-submit.txt");
-    const CLAUDE_REVIEW: &str = include_str!("menu_samples/claude-review.txt");
+    const FORM_SINGLE: &str = include_str!("menu_samples/form-single.txt");
+    const FORM_OTHER: &str = include_str!("menu_samples/form-other-focused.txt");
+    const FORM_MULTI: &str = include_str!("menu_samples/form-multi.txt");
+    const FORM_MULTI_SUBMIT: &str = include_str!("menu_samples/form-multi-submit.txt");
+    const FORM_REVIEW: &str = include_str!("menu_samples/form-review.txt");
     const OMP_SINGLE: &str = include_str!("menu_samples/omp-single.txt");
     const OMP_MULTI: &str = include_str!("menu_samples/omp-multi.txt");
     const OMP_REVIEW: &str = include_str!("menu_samples/omp-review.txt");
     const CODEX_LOGIN: &str = include_str!("menu_samples/codex-login.txt");
     const CODEX_APPROVAL: &str = include_str!("menu_samples/codex-approval.txt");
-    const CLAUDE_PERMISSION: &str = include_str!("menu_samples/claude-permission.txt");
-    const CLAUDE_CREATE_FILE: &str = include_str!("menu_samples/claude-create-file.txt");
+    const FORM_PERMISSION: &str = include_str!("menu_samples/form-permission.txt");
+    const FORM_CREATE_FILE: &str = include_str!("menu_samples/form-create-file.txt");
 
     fn labels(m: &Menu) -> Vec<&str> {
         m.options.iter().map(|o| o.label.as_str()).collect()
     }
 
     #[test]
-    fn claude_single_choice_with_descriptions_and_several_questions() {
-        let m = parse(CLAUDE_SINGLE).expect("a menu");
-        assert_eq!(m.program, "claude");
+    fn form_single_choice_with_descriptions_and_several_questions() {
+        let m = parse(FORM_SINGLE).expect("a menu");
+        assert_eq!(m.program, "form");
         assert_eq!(m.question, "Which library?");
         assert_eq!(labels(&m), ["date-fns", "dayjs", "Type something."]);
         assert_eq!(m.options[0].desc, "Modular");
@@ -634,11 +634,11 @@ mod tests {
 
     #[test]
     fn the_cursor_and_the_typed_text_do_not_change_the_menu() {
-        let a = parse(CLAUDE_SINGLE).unwrap();
-        let b = parse(CLAUDE_OTHER).unwrap();
+        let a = parse(FORM_SINGLE).unwrap();
+        let b = parse(FORM_OTHER).unwrap();
         assert_eq!(b.cursor, 2, "the cursor is on «Type something.»");
         assert_eq!(a.sig, b.sig);
-        let typing = CLAUDE_OTHER.replace("Type something.", "my own answer");
+        let typing = FORM_OTHER.replace("Type something.", "my own answer");
         let t = parse(&typing).unwrap();
         assert_eq!(t.sig, a.sig);
         assert!(t.options[2].own, "the typed row is still the own-words row");
@@ -646,8 +646,8 @@ mod tests {
     }
 
     #[test]
-    fn claude_multiple_choice_has_boxes_and_a_submit_row() {
-        let m = parse(CLAUDE_MULTI).expect("a menu");
+    fn form_multiple_choice_has_boxes_and_a_submit_row() {
+        let m = parse(FORM_MULTI).expect("a menu");
         assert!(m.multi);
         assert_eq!(m.question, "Which features?");
         assert_eq!(labels(&m), ["A", "B", "C", "Type something"]);
@@ -655,7 +655,7 @@ mod tests {
         assert!(m.options.iter().all(|o| !o.checked));
         assert_eq!(m.submit_at, Some(4), "the Submit line is the row after the four choices");
         assert_eq!((m.step, m.steps), (2, 2));
-        let ticked = parse(CLAUDE_MULTI_SUBMIT).expect("a menu with the cursor on Submit");
+        let ticked = parse(FORM_MULTI_SUBMIT).expect("a menu with the cursor on Submit");
         assert_eq!(ticked.cursor, 4);
         assert_eq!(ticked.submit_at, Some(4));
         assert_eq!(
@@ -666,8 +666,8 @@ mod tests {
     }
 
     #[test]
-    fn claude_review_page_is_a_choice() {
-        let m = parse(CLAUDE_REVIEW).expect("a menu");
+    fn form_review_page_is_a_choice() {
+        let m = parse(FORM_REVIEW).expect("a menu");
         assert_eq!(m.question, "Ready to submit your answers?");
         assert_eq!(labels(&m), ["Submit answers", "Cancel"]);
         assert!(m.context.contains("Review your answers"), "{}", m.context);
@@ -675,8 +675,8 @@ mod tests {
     }
 
     #[test]
-    fn claude_permission_prompt() {
-        let m = parse(CLAUDE_PERMISSION).expect("a menu");
+    fn form_permission_prompt() {
+        let m = parse(FORM_PERMISSION).expect("a menu");
         assert_eq!(m.question, "Do you want to proceed?");
         assert_eq!(m.options.len(), 4);
         assert_eq!(m.options[3].label, "No");
@@ -686,8 +686,8 @@ mod tests {
     }
 
     #[test]
-    fn claude_file_creation_prompt() {
-        let m = parse(CLAUDE_CREATE_FILE).expect("a menu");
+    fn form_file_creation_prompt() {
+        let m = parse(FORM_CREATE_FILE).expect("a menu");
         assert_eq!(m.question, "Do you want to create closing-note2.md?");
         assert_eq!(
             labels(&m),
@@ -751,11 +751,11 @@ mod tests {
 
     #[test]
     fn single_choice_keys_move_by_arrows_from_the_cursor_and_press_enter() {
-        let m = parse(CLAUDE_SINGLE).unwrap();
+        let m = parse(FORM_SINGLE).unwrap();
         assert_eq!(plan(&m, &Answer::Pick(0)).unwrap(), [Step::Keys(vec!["enter"])]);
         assert_eq!(plan(&m, &Answer::Pick(1)).unwrap(), [Step::Keys(vec!["down"]), Step::Keys(vec!["enter"])]);
         // from the cursor, not from the top
-        let at_other = parse(CLAUDE_OTHER).unwrap();
+        let at_other = parse(FORM_OTHER).unwrap();
         assert_eq!(
             plan(&at_other, &Answer::Pick(0)).unwrap(),
             [Step::Keys(vec!["up", "up"]), Step::Keys(vec!["enter"])]
@@ -767,9 +767,9 @@ mod tests {
 
     #[test]
     fn own_answer_types_into_the_row_or_into_the_editor() {
-        let claude = parse(CLAUDE_SINGLE).unwrap();
+        let form = parse(FORM_SINGLE).unwrap();
         assert_eq!(
-            plan(&claude, &Answer::Own(" мой ответ ".into())).unwrap(),
+            plan(&form, &Answer::Own(" мой ответ ".into())).unwrap(),
             [
                 Step::Keys(vec!["down", "down"]),
                 Step::Text("мой ответ".into()),
@@ -786,13 +786,13 @@ mod tests {
                 Step::Keys(vec!["enter"])
             ]
         );
-        assert!(plan(&claude, &Answer::Own("a\nb".into())).is_err());
-        assert!(plan(&claude, &Answer::Own("  ".into())).is_err());
+        assert!(plan(&form, &Answer::Own("a\nb".into())).is_err());
+        assert!(plan(&form, &Answer::Own("  ".into())).is_err());
     }
 
     #[test]
     fn multiple_choice_toggles_the_difference_then_submits() {
-        let m = parse(CLAUDE_MULTI).unwrap();
+        let m = parse(FORM_MULTI).unwrap();
         let steps = plan(&m, &Answer::Multi { picked: vec![0, 2], own: None }).unwrap();
         assert_eq!(
             steps,
@@ -805,7 +805,7 @@ mod tests {
             ]
         );
         // already ticked boxes are left alone, and unwanted ones are cleared
-        let ticked = parse(CLAUDE_MULTI_SUBMIT).unwrap();
+        let ticked = parse(FORM_MULTI_SUBMIT).unwrap();
         let steps = plan(&ticked, &Answer::Multi { picked: vec![0, 2], own: None }).unwrap();
         assert_eq!(steps, [Step::Keys(vec!["enter"])], "the cursor is already on Submit");
         let steps = plan(&ticked, &Answer::Multi { picked: vec![1], own: None }).unwrap();
@@ -831,10 +831,10 @@ mod tests {
 
     #[test]
     fn multiple_choice_with_own_words() {
-        let m = parse(CLAUDE_MULTI).unwrap();
+        let m = parse(FORM_MULTI).unwrap();
         let steps = plan(&m, &Answer::Multi { picked: vec![1], own: Some("D".into()) }).unwrap();
         assert!(steps.contains(&Step::Text("D".into())));
-        // Claude ticks the own row as the words go in: no Enter after them, straight on to Submit
+        // The form ticks the own row as the words go in: no Enter after them, straight on to Submit.
         let at = steps.iter().position(|s| *s == Step::Text("D".into())).unwrap();
         assert_eq!(steps[at + 1], Step::Keys(vec!["down"]));
         assert_eq!(steps.last(), Some(&Step::Keys(vec!["enter"])));

@@ -51,7 +51,7 @@ export function EventLine(props: { ev: BoardEvent }): JSX.Element {
 }
 
 /** A message of the human (not a notice): the words, the files, the hover actions. */
-/** The images Claude Code kept inside the transcript record, served by the planner from it. */
+/** The images kept inside the transcript record, served by the planner from it. */
 const turnImages = (tn: TurnData): SavedFile[] =>
   (tn.images ?? []).map((mime, i) => ({ id: `turn-${tn.n}-${i}`, name: `${t('chat.image')} ${i + 1}`, mime, url: `/api/chat/image/${tn.n}/${i}` }));
 

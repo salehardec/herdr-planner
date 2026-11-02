@@ -1,8 +1,3 @@
- ▐▛███▛█   Claude Code v2.1.309
-▝▜██████▀  Haiku 5.5 · Claude Max
- ▝▝   ▝▝   /tmp/hp-1000/c31753/PLN-60/cc
-
-
 ❯ Напиши closing-note2.md с итогом. Ничего больше.
 
 

@@ -9,7 +9,7 @@ describe('memory document ids', () => {
     expect(parseDocId('alpha|merge-squash')).toEqual({ repo: 'alpha', foreign: '', id: 'merge-squash', focus: 'merge-squash' });
   });
   it('the memory of the Coordinator\'s program is marked with @ and keeps it in the focus', () => {
-    expect(parseDocId('@claude|user-answers-short')).toEqual({ repo: '', foreign: 'claude', id: 'user-answers-short', focus: '@claude|user-answers-short' });
+    expect(parseDocId('@omp|user-answers-short')).toEqual({ repo: '', foreign: 'omp', id: 'user-answers-short', focus: '@omp|user-answers-short' });
   });
   it('a repo name with dots and dashes is one scope; only the first bar splits', () => {
     expect(parseDocId('my.repo-2|a')).toMatchObject({ repo: 'my.repo-2', id: 'a' });

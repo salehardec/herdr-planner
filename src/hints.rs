@@ -50,7 +50,7 @@ const SKIP: &[&str] = &[
 pub struct Cmd {
     /// The word after the slash, without it (`compact`).
     pub name: String,
-    /// The words about it: a key of the page's dictionary for a built-in (`cmd.claude.compact`), or the
+    /// The words about it: a key of the page's dictionary for a built-in (`cmd.omp.compact`), or the
     /// text from the skill's or the command's own file.
     pub desc: String,
     /// `builtin`, `skill` or `command`.
@@ -60,8 +60,6 @@ pub struct Cmd {
 /// Where the programs keep their files on this machine. Tests point every field at a temporary folder.
 #[derive(Debug, Clone)]
 pub struct Roots {
-    /// Claude Code's home: `CLAUDE_CONFIG_DIR` or `~/.claude`.
-    pub claude: PathBuf,
     /// `CODEX_HOME` or `~/.codex`.
     pub codex: PathBuf,
     /// `~/.omp` (the agent's folder is `agent` inside it).
@@ -85,7 +83,6 @@ impl Roots {
                 .unwrap_or(fallback)
         };
         Roots {
-            claude: from_env("CLAUDE_CONFIG_DIR", home.join(".claude")),
             codex: from_env("CODEX_HOME", home.join(".codex")),
             omp: home.join(".omp"),
             pi: home.join(".pi"),
@@ -94,40 +91,6 @@ impl Roots {
         }
     }
 }
-
-/// Claude Code's own commands, as its TUI documents them. The description is a key of the page's
-/// dictionary: the page speaks the language of its reader.
-const CLAUDE: &[(&str, &str)] = &[
-    ("add-dir", "cmd.claude.addDir"),
-    ("agents", "cmd.claude.agents"),
-    ("bug", "cmd.claude.bug"),
-    ("clear", "cmd.claude.clear"),
-    ("compact", "cmd.claude.compact"),
-    ("config", "cmd.claude.config"),
-    ("context", "cmd.claude.context"),
-    ("cost", "cmd.claude.cost"),
-    ("doctor", "cmd.claude.doctor"),
-    ("exit", "cmd.claude.exit"),
-    ("export", "cmd.claude.export"),
-    ("help", "cmd.claude.help"),
-    ("hooks", "cmd.claude.hooks"),
-    ("ide", "cmd.claude.ide"),
-    ("init", "cmd.claude.init"),
-    ("login", "cmd.claude.login"),
-    ("logout", "cmd.claude.logout"),
-    ("mcp", "cmd.claude.mcp"),
-    ("memory", "cmd.claude.memory"),
-    ("model", "cmd.claude.model"),
-    ("permissions", "cmd.claude.permissions"),
-    ("resume", "cmd.claude.resume"),
-    ("review", "cmd.claude.review"),
-    ("rewind", "cmd.claude.rewind"),
-    ("status", "cmd.claude.status"),
-    ("statusline", "cmd.claude.statusline"),
-    ("terminal-setup", "cmd.claude.terminalSetup"),
-    ("todos", "cmd.claude.todos"),
-    ("vim", "cmd.claude.vim"),
-];
 
 /// Codex's own commands, as its TUI documents them.
 const CODEX: &[(&str, &str)] = &[
@@ -211,7 +174,7 @@ const PI: &[(&str, &str)] = &[
 ];
 
 /// The commands a program knows, read from its files. `dir` is the folder the agent works in (the
-/// Coordinator's, or a task's worktree): its own `.claude` counts too.
+/// Coordinator's, or a task's worktree): its own skills count too.
 pub fn commands_at(roots: &Roots, program: &str, dir: Option<&Path>) -> Vec<Cmd> {
     let mut out: Vec<Cmd> = Vec::new();
     let mut seen: HashSet<String> = HashSet::new();
@@ -225,20 +188,6 @@ pub fn commands_at(roots: &Roots, program: &str, dir: Option<&Path>) -> Vec<Cmd>
         }
     };
     match program {
-        "claude" => {
-            builtin(CLAUDE);
-            skills_in(&roots.claude.join("skills"), None, &mut out, &mut seen);
-            commands_in(&roots.claude.join("commands"), "", 0, &mut out, &mut seen);
-            for (name, plugin) in plugin_roots(&roots.claude) {
-                // Claude Code calls a plugin's skills and commands under the plugin's own name.
-                skills_in(&plugin.join("skills"), Some(&name), &mut out, &mut seen);
-                commands_in(&plugin.join("commands"), &name, 0, &mut out, &mut seen);
-            }
-            if let Some(dir) = dir {
-                skills_in(&dir.join(".claude/skills"), None, &mut out, &mut seen);
-                commands_in(&dir.join(".claude/commands"), "", 0, &mut out, &mut seen);
-            }
-        }
         "codex" => {
             builtin(CODEX);
             commands_in(&roots.codex.join("prompts"), "", 0, &mut out, &mut seen);
@@ -335,78 +284,6 @@ fn commands_in(base: &Path, prefix: &str, depth: usize, out: &mut Vec<Cmd>, seen
         let desc = if fm_desc.is_empty() { first_line(&text) } else { fm_desc };
         push(out, seen, Cmd { name: full, desc: clean_desc(&desc), kind: "command" });
     }
-}
-
-/// The folders of the plugins Claude Code has installed, each with the name it is called by (Claude Code
-/// namespaces a plugin's skills and commands with it: `/superpowers:brainstorm`).
-///
-/// `plugins/installed_plugins.json` has two shapes: newer files map a plugin's id (`name@marketplace`) to
-/// the copies installed for each scope, each with its `installPath`; older ones list a marketplace's
-/// plugins by name. A plugin without an install path is looked for in its marketplace's folder.
-fn plugin_roots(claude: &Path) -> Vec<(String, PathBuf)> {
-    let mut out: Vec<(String, PathBuf)> = Vec::new();
-    let file = claude.join("plugins/installed_plugins.json");
-    let Ok(text) = std::fs::read_to_string(&file) else { return out };
-    let Ok(doc) = serde_json::from_str::<serde_json::Value>(&text) else { return out };
-    let Some(plugins) = doc.get("plugins").and_then(|p| p.as_object()) else { return out };
-    for (key, listed) in plugins {
-        // `name@marketplace` (the current file) or a marketplace's name (the older one).
-        let (key_name, key_market) = match key.split_once('@') {
-            Some((name, market)) => (name.to_string(), market.to_string()),
-            None => (key.clone(), String::new()),
-        };
-        let mut entries: Vec<(String, String, Option<String>)> = Vec::new();
-        match listed {
-            serde_json::Value::Array(items) => {
-                for item in items {
-                    let serde_json::Value::Object(o) = item else { continue };
-                    match o.get("name").and_then(|v| v.as_str()).filter(|n| !n.is_empty()) {
-                        // An older file: the key is the marketplace, the item names its plugin.
-                        Some(name) => entries.push((name.to_string(), key.clone(), install_path(o))),
-                        // The current file: the key is `name@marketplace`, the item is one installed copy.
-                        None => entries.push((key_name.clone(), key_market.clone(), install_path(o))),
-                    }
-                }
-            }
-            serde_json::Value::Object(map) => {
-                for (name, item) in map {
-                    entries.push((name.clone(), key.clone(), item.as_object().and_then(install_path)));
-                }
-            }
-            _ => {}
-        }
-        for (name, market, path) in entries {
-            for candidate in plugin_candidates(claude, &market, &name, path.as_deref()) {
-                if candidate.is_dir() && !out.iter().any(|(_, p)| *p == candidate) {
-                    out.push((name.clone(), candidate));
-                }
-            }
-        }
-    }
-    out
-}
-
-/// An entry's `installPath` (older files used `install_path` or `path`).
-fn install_path(o: &serde_json::Map<String, serde_json::Value>) -> Option<String> {
-    o.get("installPath")
-        .or_else(|| o.get("install_path"))
-        .or_else(|| o.get("path"))
-        .and_then(|v| v.as_str())
-        .filter(|p| !p.trim().is_empty())
-        .map(str::to_string)
-}
-
-fn plugin_candidates(claude: &Path, market: &str, name: &str, path: Option<&str>) -> Vec<PathBuf> {
-    let mut out = Vec::new();
-    if let Some(p) = path.filter(|p| !p.trim().is_empty()) {
-        out.push(config::expand_home(p));
-    }
-    if !market.is_empty() && !name.is_empty() {
-        let base = claude.join("plugins/marketplaces").join(market);
-        out.push(base.join("plugins").join(name));
-        out.push(base.join("external_plugins").join(name));
-    }
-    out
 }
 
 /// The front matter of a Markdown file: `name` and `description` between `---` lines (a `>` or `|`
@@ -657,11 +534,11 @@ fn cached_commands(program: &str, dir: Option<&Path>) -> Vec<Cmd> {
 #[derive(Deserialize)]
 pub struct SlashQuery {
     program: Option<String>,
-    /// The folder the agent works in: its own `.claude` counts. Empty — the Coordinator's folder.
+    /// The folder the agent works in: its own skills count. Empty — the Coordinator's folder.
     dir: Option<String>,
 }
 
-/// `GET /api/hints/slash?program=claude&dir=`: the commands a program knows, for its `/` list.
+/// `GET /api/hints/slash?program=omp&dir=`: the commands a program knows, for its `/` list.
 pub async fn slash_get(State(app): State<Shared>, Query(q): Query<SlashQuery>) -> Response {
     let program = q.program.unwrap_or_default();
     let program = program.trim().to_string();
@@ -781,7 +658,6 @@ mod tests {
 
     fn roots_at(s: &Scratch) -> Roots {
         Roots {
-            claude: s.path().join("claude"),
             codex: s.path().join("codex"),
             omp: s.path().join("omp"),
             pi: s.path().join("pi"),
@@ -799,103 +675,15 @@ mod tests {
     }
 
     #[test]
-    fn claude_has_its_own_commands_then_skills_then_folder_commands() {
-        let s = Scratch::new("claude");
-        s.write(
-            "claude/skills/ui-ux-pro-max/SKILL.md",
-            "---\nname: ui-ux-pro-max\ndescription: \"Designing, building and reviewing interfaces\"\n---\n\n# Skill\n",
-        );
-        s.write("claude/commands/review/security.md", "---\ndescription: Check a diff for leaks\n---\nBody\n");
-        s.write("claude/commands/plain.md", "Do the plain thing.\n");
-        s.write("chat/.claude/commands/here.md", "---\ndescription: A command of this folder\n---\n");
-        let list = commands_at(&roots_at(&s), "claude", Some(&s.path().join("chat")));
-        let got = names(&list);
-        assert!(got.contains(&"compact"), "{got:?}");
-        assert!(got.contains(&"ui-ux-pro-max"), "{got:?}");
-        assert!(got.contains(&"review:security"), "{got:?}");
-        assert!(got.contains(&"plain"), "{got:?}");
-        assert!(got.contains(&"here"), "{got:?}");
-        // The built-ins come first, and the description of a built-in is a key of the page's dictionary.
-        assert_eq!(list[0].name, "add-dir");
-        assert_eq!(list[0].kind, "builtin");
-        assert_eq!(list[0].desc, "cmd.claude.addDir");
-        assert_eq!(desc_of(&list, "ui-ux-pro-max"), "Designing, building and reviewing interfaces");
-        assert_eq!(desc_of(&list, "review:security"), "Check a diff for leaks");
-        assert_eq!(desc_of(&list, "plain"), "Do the plain thing.");
-        assert_eq!(desc_of(&list, "here"), "A command of this folder");
-        // No duplicates, whatever the folders say.
-        let mut sorted = got.clone();
-        sorted.sort();
-        sorted.dedup();
-        assert_eq!(sorted.len(), got.len());
-    }
-
-    #[test]
     #[cfg(unix)]
-    fn a_skill_or_a_command_that_is_a_link_is_read_too() {
+    fn a_skill_that_is_a_link_is_read_too() {
         use std::os::unix::fs::symlink;
         let s = Scratch::new("links");
-        // The skills of this machine live elsewhere and are linked into `~/.claude/skills`.
         s.write("agents/ui-ux-pro-max/SKILL.md", "---\nname: ui-ux-pro-max\ndescription: Interfaces\n---\n");
-        fs::create_dir_all(s.path().join("claude/skills")).unwrap();
-        symlink(s.path().join("agents/ui-ux-pro-max"), s.path().join("claude/skills/ui-ux-pro-max")).unwrap();
-        // So may a command file, and a whole folder of them.
-        s.write("shared/check.md", "---\ndescription: Check it\n---\n");
-        s.write("shared/review/security.md", "---\ndescription: Look for leaks\n---\n");
-        fs::create_dir_all(s.path().join("claude/commands")).unwrap();
-        symlink(s.path().join("shared/check.md"), s.path().join("claude/commands/check.md")).unwrap();
-        symlink(s.path().join("shared/review"), s.path().join("claude/commands/review")).unwrap();
-        let list = commands_at(&roots_at(&s), "claude", None);
-        assert_eq!(desc_of(&list, "ui-ux-pro-max"), "Interfaces");
-        assert_eq!(desc_of(&list, "check"), "Check it");
-        assert_eq!(desc_of(&list, "review:security"), "Look for leaks");
-    }
-
-    #[test]
-    fn plugins_leave_their_skills_and_commands_under_their_own_name() {
-        let s = Scratch::new("plugins");
-        // An older file: a marketplace's plugins by name, one with an install path that is gone.
-        s.write(
-            "claude/plugins/installed_plugins.json",
-            r#"{"version":1,"plugins":{"official":[{"name":"code-review","installPath":"/nope"},{"name":"commit-commands"}]}}"#,
-        );
-        s.write("claude/plugins/marketplaces/official/plugins/code-review/commands/safety.md", "Review it.\n");
-        s.write(
-            "claude/plugins/marketplaces/official/plugins/commit-commands/skills/commit/SKILL.md",
-            "---\nname: commit\ndescription: Commit the work\n---\n",
-        );
-        let list = commands_at(&roots_at(&s), "claude", None);
-        // A plugin's commands and skills are called under the plugin's name, as Claude Code calls them.
-        assert_eq!(desc_of(&list, "code-review:safety"), "Review it.");
-        assert_eq!(desc_of(&list, "commit-commands:commit"), "Commit the work");
-        assert_eq!(list.iter().filter(|c| c.name == "safety" || c.name == "commit").count(), 0);
-    }
-
-    #[test]
-    fn the_current_plugin_file_names_each_plugin_by_its_id() {
-        let s = Scratch::new("pluginsv2");
-        // Claude Code 2.x: the key is `name@marketplace`, the value is one installed copy per scope.
-        s.write(
-            "claude/plugins/installed_plugins.json",
-            r#"{"version":2,"plugins":{"superpowers@claude-plugins-official":[{"scope":"user","installPath":"INSTALL","version":"5.0.0"},{"scope":"project","installPath":"INSTALL"}],"plain@some-market":[{"scope":"user","installPath":"/nope"}]}}"#,
-        );
-        let install = s.path().join("store/superpowers");
-        s.write("store/superpowers/skills/brainstorm/SKILL.md", "---\nname: brainstorm\ndescription: Ideas first\n---\n");
-        s.write("store/superpowers/commands/commit.md", "---\ndescription: Commit the work\n---\n");
-        s.write("store/superpowers/commands/review/security.md", "Check the diff.\n");
-        // The marketplace's folder is the fallback when the install path is not there.
-        s.write("claude/plugins/marketplaces/some-market/plugins/plain/commands/run.md", "Run it.\n");
-        let text = std::fs::read_to_string(s.path().join("claude/plugins/installed_plugins.json"))
-            .unwrap()
-            .replace("INSTALL", &install.display().to_string());
-        s.write("claude/plugins/installed_plugins.json", &text);
-        let list = commands_at(&roots_at(&s), "claude", None);
-        assert_eq!(desc_of(&list, "superpowers:brainstorm"), "Ideas first");
-        assert_eq!(desc_of(&list, "superpowers:commit"), "Commit the work");
-        assert_eq!(desc_of(&list, "superpowers:review:security"), "Check the diff.");
-        assert_eq!(desc_of(&list, "plain:run"), "Run it.");
-        // Both scopes of one copy are one plugin, not two.
-        assert_eq!(list.iter().filter(|c| c.name == "superpowers:commit").count(), 1);
+        fs::create_dir_all(s.path().join("omp/agent/skills")).unwrap();
+        symlink(s.path().join("agents/ui-ux-pro-max"), s.path().join("omp/agent/skills/ui-ux-pro-max")).unwrap();
+        let list = commands_at(&roots_at(&s), "omp", None);
+        assert_eq!(desc_of(&list, "skill:ui-ux-pro-max"), "Interfaces");
     }
 
     #[test]
@@ -965,13 +753,13 @@ mod tests {
     fn descriptions_are_one_line_and_short() {
         let s = Scratch::new("desc");
         s.write(
-            "claude/skills/long/SKILL.md",
+            "omp/agent/skills/long/SKILL.md",
             &format!("---\nname: long\ndescription: >\n  first part\n  second part\n---\n"),
         );
-        s.write("claude/skills/wide/SKILL.md", &format!("---\ndescription: {}\n---\n", "word ".repeat(80)));
-        let list = commands_at(&roots_at(&s), "claude", None);
-        assert_eq!(desc_of(&list, "long"), "first part second part");
-        let wide = desc_of(&list, "wide");
+        s.write("omp/agent/skills/wide/SKILL.md", &format!("---\ndescription: {}\n---\n", "word ".repeat(80)));
+        let list = commands_at(&roots_at(&s), "omp", None);
+        assert_eq!(desc_of(&list, "skill:long"), "first part second part");
+        let wide = desc_of(&list, "skill:wide");
         assert!(wide.chars().count() <= MAX_DESC, "{}", wide.chars().count());
         assert!(wide.ends_with('…'));
     }
@@ -979,10 +767,10 @@ mod tests {
     #[test]
     fn a_skill_without_a_description_still_lists() {
         let s = Scratch::new("nodesc");
-        s.write("claude/skills/bare/SKILL.md", "---\nname: bare\n---\n");
-        let list = commands_at(&roots_at(&s), "claude", None);
-        assert_eq!(desc_of(&list, "bare"), "");
-        assert_eq!(list.iter().filter(|c| c.name == "bare").count(), 1);
+        s.write("omp/agent/skills/bare/SKILL.md", "---\nname: bare\n---\n");
+        let list = commands_at(&roots_at(&s), "omp", None);
+        assert_eq!(desc_of(&list, "skill:bare"), "");
+        assert_eq!(list.iter().filter(|c| c.name == "skill:bare").count(), 1);
     }
 
     #[test]

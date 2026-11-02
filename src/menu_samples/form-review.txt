@@ -1,0 +1,34 @@
+❯ Call the AskUserQuestion tool right now with two questions: (1) header Lib, question Which library?,
+  options date-fns (Modular) and dayjs (Small), single select; (2) header Features, question Which features?,
+  multiSelect true, options A (first), B (second), C (third). Do nothing else.
+
+──────────────────────────────────────────────────────────────────────────────────────────────────────────────
+←  ☒ Lib  ☒ Features  ✔ Submit  →
+
+Review your answers
+
+ ● Which library?
+   → my own answer
+ ● Which features?
+   → A, C
+
+Ready to submit your answers?
+
+❯ 1. Submit answers
+  2. Cancel
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

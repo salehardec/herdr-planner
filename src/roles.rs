@@ -805,9 +805,9 @@ mod tests {
         RoleInput {
             name: "Дизайнер".into(),
             kind: "worker".into(),
-            agent: "claude/claude-sonnet-5-5".into(),
+            agent: "omp/deepseek/deepseek-v4-flash".into(),
             effort: "high".into(),
-            fallback: "codex, claude/claude-haiku-5-5".into(),
+            fallback: "codex, omp/deepseek/deepseek-v3-flash".into(),
             instructions: "Следи за единым видом интерфейса".into(),
             how: String::new(),
         }
@@ -900,12 +900,12 @@ mod tests {
         add_role(&mut s, &designer()).unwrap();
         let cmds = set_commands(&s.roles[0], Way::Worker, &target(), &[]);
         let args: Vec<Vec<String>> = cmds.iter().map(|c| c.args.clone()).collect();
-        assert_eq!(args[0], ["set", "worker.agent", "claude/claude-sonnet-5-5", "--task", "planner/12"]);
+        assert_eq!(args[0], ["set", "worker.agent", "omp/deepseek/deepseek-v4-flash", "--task", "planner/12"]);
         assert_eq!(args[1], ["set", "worker.effort", "high", "--task", "planner/12"]);
-        assert_eq!(args[2], ["set", "worker.fallback", "codex, claude/claude-haiku-5-5", "--task", "planner/12"]);
+        assert_eq!(args[2], ["set", "worker.fallback", "codex, omp/deepseek/deepseek-v3-flash", "--task", "planner/12"]);
         assert_eq!(args[3][1], "worker.instructions");
         assert_eq!(cmds.len(), 4);
-        assert!(cmds[0].text().starts_with("herdr-projects set worker.agent claude/claude-sonnet-5-5 --task planner/12"));
+        assert!(cmds[0].text().starts_with("herdr-projects set worker.agent omp/deepseek/deepseek-v4-flash --task planner/12"));
     }
 
     #[test]
@@ -923,7 +923,7 @@ mod tests {
         let mut s = Store::default();
         add_role(&mut s, &designer()).unwrap();
         let now = [
-            setting("worker.agent", "claude/claude-sonnet-5-5", true),
+            setting("worker.agent", "omp/deepseek/deepseek-v4-flash", true),
             setting("worker.effort", "high", false), // the human's, not the task's: it is still set on the task
             setting("worker.fallback", "none", false),
         ];
@@ -939,7 +939,7 @@ mod tests {
         let mut s = Store::default();
         let r = security(&mut s);
         let mut r = r;
-        r.agent = "claude/claude-opus-5-5".into();
+        r.agent = "codex/gpt-6-luna".into();
         r.effort = "high".into();
         let cmd = research_add(&r, &target());
         assert_eq!(cmd.kind, "add");
@@ -950,7 +950,7 @@ mod tests {
         assert_eq!(a[at("--repo") + 1], "planner");
         assert!(a.contains(&"--research".to_string()) && a.contains(&"--delegate".to_string()));
         assert_eq!(a[at("--after") + 1], "planner/12");
-        assert_eq!(a[at("--worker.agent") + 1], "claude/claude-opus-5-5");
+        assert_eq!(a[at("--worker.agent") + 1], "codex/gpt-6-luna");
         assert_eq!(a[at("--worker.effort") + 1], "high");
         assert!(a[at("--worker.instructions") + 1].contains("инъекции"));
         let desc = &a[at("--desc") + 1];
@@ -964,7 +964,7 @@ mod tests {
         let mut s = Store::default();
         add_role(&mut s, &designer()).unwrap();
         let flags = add_flags(&s.roles[0], Way::Worker);
-        assert_eq!(flags[..2], ["--worker.agent", "claude/claude-sonnet-5-5"]);
+        assert_eq!(flags[..2], ["--worker.agent", "omp/deepseek/deepseek-v4-flash"]);
         assert_eq!(flags.len(), 8);
         let rv = security(&mut s);
         assert_eq!(add_flags(&rv, Way::Instead)[0], "--reviewer.instructions");
@@ -1084,7 +1084,7 @@ mod tests {
         let fields: Vec<(&str, &str, Option<&str>)> = steps.iter().map(|x| (x.field, x.was.as_str(), x.now.as_deref())).collect();
         assert_eq!(
             fields,
-            [("agent", "claude/claude-sonnet-5-5", Some("codex/gpt-5.5")), ("effort", "high", None), ("fallback", "codex, claude/claude-haiku-5-5", Some("none"))]
+            [("agent", "omp/deepseek/deepseek-v4-flash", Some("codex/gpt-5.5")), ("effort", "high", None), ("fallback", "codex, omp/deepseek/deepseek-v3-flash", Some("none"))]
         );
         assert!(steps.iter().all(|x| x.custom == id && x.label == "Дизайнер" && crew::command_of(x, "").is_none()));
         // the role is the planner's own: a repository's level has nothing to change

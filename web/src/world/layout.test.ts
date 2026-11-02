@@ -7,7 +7,7 @@ const proj = (name: string, folder: string, quiet = false): Project => ({
   name, key: name.slice(0, 3).toUpperCase(), active: quiet ? 0 : 1, done: 0, total: 1, statuses: {}, quiet, root: `${folder}/${name}`, folder, origin: '', lag: null, empty: false,
 });
 const task = (repo: string, n: number, status: Status = 'working'): Task => ({
-  id: `${repo}/${n}`, repo, n, tag: `${repo.slice(0, 3).toUpperCase()}-${n}`, title: 't', state: '', kind: '', stage: '', msg: '', app: 'claude', progress: null, eta: null, pr: '',
+  id: `${repo}/${n}`, repo, n, tag: `${repo.slice(0, 3).toUpperCase()}-${n}`, title: 't', state: '', kind: '', stage: '', msg: '', app: 'codex', progress: null, eta: null, pr: '',
   review: null, round: 0, queue: null, status, label: '', board_label: '', review_failed: false, merge_blocked: false, archived: false, actions: [], created: n, description: '',
   worker_agent: '', model: '', session: '', worktree: '', exited_at: 0, key: '', subagents: [], subagents_note: '',
 });

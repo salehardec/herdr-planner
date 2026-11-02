@@ -4,9 +4,9 @@ import type { GalaxyView, Task } from '../types';
 
 const task = (over: Partial<Task>): Task => ({
   id: 'alpha/7', repo: 'alpha', n: 7, tag: 'ALP-7', title: 'Починить кэш отчётов', state: 'working', kind: '', stage: 'working',
-  msg: 'правит', app: 'claude', progress: null, eta: null, pr: '', review: null, round: 0, queue: null, status: 'working', label: 'В работе',
+  msg: 'правит', app: 'codex', progress: null, eta: null, pr: '', review: null, round: 0, queue: null, status: 'working', label: 'В работе',
   board_label: 'в работе', review_failed: false, merge_blocked: false, archived: false, actions: [], created: 1, description: 'кэш падает по ночам',
-  worker_agent: 'claude/sonnet', model: 'sonnet', session: '', worktree: '', exited_at: 0, key: 'ALP', subagents: [], subagents_note: '', ...over,
+  worker_agent: 'codex/gpt-6-luna', model: 'gpt-6-luna', session: '', worktree: '', exited_at: 0, key: 'ALP', subagents: [], subagents_note: '', ...over,
 });
 
 const view = (tasks: Task[]): GalaxyView => ({

@@ -11,7 +11,7 @@ const READ_ATTRS = new Set(['title', 'placeholder', 'aria-label', 'alt', 'aria-d
 /** Words that are the same in every language: key names, program names, units, symbols. */
 const FIXED = new Set([
   'Ctrl', 'Cmd', 'Alt', 'Shift', 'Esc', 'Enter', 'Tab', 'Space', 'Home', 'Escape', 'Delete',
-  'claude', 'codex', 'pi', 'omp', 'herdr', 'herdr-projects', 'herdr-planner', 'Homebrew', 'pacman', 'apt', 'yazi', 'git', 'GitHub', 'GitLab',
+  'codex', 'pi', 'omp', 'herdr', 'herdr-projects', 'herdr-planner', 'Homebrew', 'pacman', 'apt', 'yazi', 'git', 'GitHub', 'GitLab',
   'WASD', 'MB', 'KB', 'B', 'ssh', 'SSH', 'OK',
   // names of git branches and remotes
   'main', 'master', 'origin', 'upstream',
