@@ -1026,7 +1026,7 @@ pub fn default_presets() -> Vec<(String, BTreeMap<String, RoleSet>)> {
                 row("coordinator", "codex/gpt-6.1-terra", "high", pro),
                 row("plan", "codex/gpt-6.1-terra", "", pro),
                 row("reviewer", "kimi/k3.1-pro", "", pro),
-                row("worker", "codex/gpt-6.1-sol", "high", pro),
+                row("worker", "codex/gpt-6-astra", "high", pro),
                 row("light", flash, "", ""),
             ]
             .into_iter()
@@ -1050,7 +1050,7 @@ pub fn default_presets() -> Vec<(String, BTreeMap<String, RoleSet>)> {
                 row("coordinator", pro, "medium", ""),
                 row("plan", pro, "", ""),
                 row("reviewer", pro, "high", ""),
-                row("worker", "codex/gpt-6-luna", "high", flash),
+                row("worker", flash, "high", pro),
                 row("light", flash, "", ""),
             ]
             .into_iter()
@@ -1566,15 +1566,15 @@ mod tests {
         let keys: Vec<&str> = store.presets[0].roles.keys().map(|k| k.as_str()).collect();
         assert_eq!(keys, vec!["coordinator", "light", "plan", "reviewer", "worker"]);
         let m = &store.presets[0].roles;
-        assert_eq!((m["worker"].agent.as_str(), m["worker"].effort.as_str(), m["worker"].fallback.as_str()), ("codex/gpt-6.1-sol", "high", "omp/deepseek/deepseek-v4-pro"));
+        assert_eq!((m["worker"].agent.as_str(), m["worker"].effort.as_str(), m["worker"].fallback.as_str()), ("codex/gpt-6-astra", "high", "omp/deepseek/deepseek-v4-pro"));
         assert_eq!(m["reviewer"].agent, "kimi/k3.1-pro");
         assert_eq!(m["coordinator"].agent, "codex/gpt-6.1-terra");
         // Kimi: the reviewer is Codex (a different family than the worker), as the rule wants
         assert_eq!(store.presets[1].roles["reviewer"].agent, "codex/gpt-6.1-terra");
         assert_eq!(store.presets[1].roles["worker"].agent, "kimi/k3.1-pro");
-        // Экономный: the cheap worker is Codex luna with the flash spare, the reviewer stays DeepSeek
-        assert_eq!(store.presets[2].roles["worker"].agent, "codex/gpt-6-luna");
-        assert_eq!(store.presets[2].roles["worker"].fallback, "omp/deepseek/deepseek-v4-flash");
+        // Экономный: the cheap worker is the DeepSeek flash with the pro spare, the reviewer stays DeepSeek
+        assert_eq!(store.presets[2].roles["worker"].agent, "omp/deepseek/deepseek-v4-flash");
+        assert_eq!(store.presets[2].roles["worker"].fallback, "omp/deepseek/deepseek-v4-pro");
         assert_eq!(store.presets[2].roles["reviewer"].agent, "omp/deepseek/deepseek-v4-pro");
         // the router presets hold their own light model, never the DeepSeek flash
         assert_eq!(store.presets[3].roles["light"].agent, "pi/orcarouter/orcarouter/fusion-flash");
