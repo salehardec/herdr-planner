@@ -228,6 +228,8 @@ async fn main() {
         }
     };
     let app = app::App::new(cfg.clone());
+    // The owner's five crew presets (PLN-107) go to the crew file on the first run, «Максимум» active.
+    crew::seed_default_presets(&cfg);
     // The first read happens before the socket opens: the page never starts empty.
     refresh(&app).await;
     // A cloudflared that a crash of the last run left behind would keep a tunnel to nobody open.
