@@ -114,13 +114,26 @@ const keyText = async (ch) => {
 // the page counts the keydowns it gets (__keyN), and a key that never arrived is sent again. A key that arrived is never repeated.
 const keyCount = () => evalJs('window.__keyN || 0');
 const press = async (code, key = code, mods = 0) => {
-  const vk = { Escape: 27, Enter: 13, ArrowUp: 38, ArrowDown: 40, ArrowLeft: 37, ArrowRight: 39, Slash: 191, Space: 32, Tab: 9 }[code] ?? (key.length === 1 ? key.toUpperCase().charCodeAt(0) : 0);
+  const vk = { Backspace: 8, Escape: 27, Enter: 13, ArrowUp: 38, ArrowDown: 40, ArrowLeft: 37, ArrowRight: 39, Slash: 191, Space: 32, Tab: 9 }[code] ?? (key.length === 1 ? key.toUpperCase().charCodeAt(0) : 0);
   const n0 = await keyCount();
   for (let tries = 0; tries < 4; tries++) {
     await send('Input.dispatchKeyEvent', { type: 'rawKeyDown', key, code, windowsVirtualKeyCode: vk, modifiers: mods, text: key.length === 1 ? key : undefined });
     await send('Input.dispatchKeyEvent', { type: 'keyUp', key, code, windowsVirtualKeyCode: vk, modifiers: mods });
     if (n0 === undefined || await waitFor(`(window.__keyN || 0) > ${n0}`, 1200)) return;
     console.log(`   the key ${code} did not reach the page; sent again`);
+  }
+};
+// Hold Backspace through text deletion and into an empty field: CDP lets the browser
+// perform the edits, unlike dispatchEvent, which only tests our keydown handler.
+const holdBackspace = async () => {
+  const key = { key: 'Backspace', code: 'Backspace', windowsVirtualKeyCode: 8 };
+  try {
+    await send('Input.dispatchKeyEvent', { ...key, type: 'rawKeyDown' });
+    for (let i = 0; i < 3; i++) {
+      await send('Input.dispatchKeyEvent', { ...key, type: 'rawKeyDown', autoRepeat: true });
+    }
+  } finally {
+    await send('Input.dispatchKeyEvent', { ...key, type: 'keyUp' });
   }
 };
 // Shift+Enter in a text area: a real key with its line break, so the browser inserts it.
@@ -1144,12 +1157,13 @@ section('chat', async () => {
   await evalJs(`(() => { const dt = new DataTransfer(); dt.items.add(__shot('again.png')); document.querySelector('#ask-in').dispatchEvent(new ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true })); return true; })()`);
   check('a pasted image comes back after that', await waitFor('document.querySelectorAll("#attach .att").length === 1', 6000));
   await waitFor('document.querySelector("#attach .att")?.dataset.state === "ready"', 10000);
-  await evalJs(`(() => { const ta = document.querySelector('#ask-in'); ta.focus(); ta.value = ''; for (let i = 0; i < 3; i++) ta.dispatchEvent(new KeyboardEvent('keydown', { key: 'Backspace', code: 'Backspace', repeat: true, bubbles: true, cancelable: true })); return true; })()`);
-  check('a held Backspace (autorepeat) in the emptied field leaves the previews alone', await evalJs('document.querySelectorAll("#attach .att").length === 1'));
   await evalJs(`(() => { const dt = new DataTransfer(); dt.items.add(__shot('picker.png')); const input = document.querySelector('#file-in'); input.files = dt.files; input.dispatchEvent(new Event('change', { bubbles: true })); return true; })()`);
   check('the file picker adds another image', await waitFor('document.querySelectorAll("#attach .att").length === 2', 6000));
   check('both images are ready', await waitFor('[...document.querySelectorAll("#attach .att")].every((a) => a.dataset.state === "ready")', 10000));
   await evalJs('document.querySelector("#ask-in").focus()');
+  await send('Input.insertText', { text: 'ab' });
+  await holdBackspace();
+  check('holding Backspace erases chat text but keeps both previews', await waitFor('document.querySelector("#ask-in").value === "" && document.querySelectorAll("#attach .att").length === 2', 3000));
   await send('Input.insertText', { text: 'вот скриншоты' });
   await press('Enter');
   check('the message and its images reach the Coordinator', await waitFor(`fetch('/api/state').then(r => r.json()).then(s => { const m = s.coordinator.history?.at(-1); return m?.text === 'вот скриншоты' && m.attachments?.length === 2; })`, 10000));
@@ -1869,6 +1883,15 @@ section('todo files', async () => {
   check('all four are uploaded', await waitFor('[...document.querySelectorAll("#todo-attach .att")].length === 4 && [...document.querySelectorAll("#todo-attach .att")].every((a) => a.dataset.state === "ready")', 10000));
   await click('#todo-attach .att[data-cls=image] .att-rm');
   check('a file can be taken away before saving', await waitFor('document.querySelectorAll("#todo-attach .att").length === 3'));
+  await evalJs('(() => { const t = document.querySelector("#todo-in"); t.value = ""; t.focus(); t.dispatchEvent(new Event("input", { bubbles: true })); })()');
+  await send('Input.insertText', { text: 'ab' });
+  await holdBackspace();
+  check('holding Backspace erases todo text without taking any files', await waitFor('document.querySelector("#todo-in").value === "" && document.querySelectorAll("#todo-attach .att").length === 3', 3000));
+  await press('Backspace');
+  check('a fresh Backspace in the empty todo field takes only the last file', await waitFor('document.querySelectorAll("#todo-attach .att").length === 2 && !document.querySelector(\'#todo-attach .att img[alt="body.png"]\')', 3000));
+  await evalJs(`(() => { const dt = new DataTransfer(); dt.items.add(__pngFile('body.png')); document.querySelector('#todo-in').dispatchEvent(new ClipboardEvent('paste', { clipboardData: dt, bubbles: true, cancelable: true })); return true; })()`);
+  check('the todo file can be pasted again after Backspace', await waitFor('document.querySelectorAll("#todo-attach .att").length === 3 && [...document.querySelectorAll("#todo-attach .att")].every((a) => a.dataset.state === "ready")', 10000));
+  await send('Input.insertText', { text: 'Заметка со вложениями' });
   // the wrong kind of file is refused with a word
   await clearToasts();
   await evalJs(`(() => { const dt = new DataTransfer(); dt.items.add(__mk('tool.exe', 'application/x-msdownload', 'MZ\\x90\\x00')); const i = document.querySelector('#todo-file'); i.files = dt.files; i.dispatchEvent(new Event('change', { bubbles: true })); return true; })()`);
