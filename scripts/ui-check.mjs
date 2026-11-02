@@ -231,6 +231,28 @@ const pageTurn = () => evalJs(`new Promise((done) => setTimeout(() => setTimeout
 const frames = (n = 2) => evalJs(`new Promise((done) => { let k = ${n}; const f = () => (--k <= 0 ? done(true) : requestAnimationFrame(f)); requestAnimationFrame(f); setTimeout(() => done(false), 20000); })`);
 // The page's own calls to the server (fetch) are counted from the start of every document: `quiet()` is «nothing is on its way».
 const quiet = async () => { await waitFor('!window.__net || window.__net.pending === 0', 20000); await pageTurn(); };
+// Hold just this fixture's screen response until the busy state has been checked: no timing race with a fast local server.
+const rereadScreen = async (selector, label) => {
+  await evalJs(`(() => {
+    const fetch = window.fetch;
+    window.__releaseScreenRead = () => { window.fetch = fetch; };
+    window.fetch = (...args) => {
+      if (!String(args[0]).includes('/screen?target=alpha%2F16')) return fetch(...args);
+      return new Promise((resolve) => { window.__releaseScreenRead = () => { window.fetch = fetch; resolve(fetch(...args)); }; });
+    };
+    const button = document.querySelector(${JSON.stringify(selector)});
+    button.click(); button.click();
+    return true;
+  })()`);
+  try {
+    check(label + ': rereading disables the button and shows loading', await waitFor(`(() => {
+      const b = document.querySelector(${JSON.stringify(selector)});
+      return b?.disabled && b.getAttribute('aria-busy') === 'true' && b.innerText.includes('читаю экран');
+    })()`, 4000));
+  } finally {
+    await evalJs('window.__releaseScreenRead(); delete window.__releaseScreenRead; true');
+  }
+};
 // A fresh page for a section that is run again: the app, its first state in, nothing open, the language back to Russian.
 const resetPage = async () => {
   await send('Emulation.setDeviceMetricsOverride', { width: 1500, height: 950, deviceScaleFactor: 1, mobile: false });
@@ -2481,6 +2503,57 @@ section('requests', async () => {
   check('without a permission dialog on the screen the answer is words in the field', await waitFor('!!document.querySelector(\'#focus [data-act="perm-allow"]\')', 10000));
   await click('#focus [data-act="perm-allow"]');
   check('a permission button prepares an editable answer', await waitFor('document.querySelector("#tell")?.value === "Да, разрешаю."', 4000));
+  // ── PLN-101: the folder question of a new working copy is answered from the Focus, and a dialog nothing here can press says
+  // so instead of offering words that would only queue behind it. A late dialog is resolved at the moment of the press.
+  await quiet();
+  const focusScreenReads = () => evalJs('window.__net.log.filter((u) => u.includes("/screen?target=alpha%2F16")).length');
+  const focusReadsBefore = await focusScreenReads();
+  writeFileSync(join(fixture, 'state', 'dialog.txt'), readFileSync(new URL('../src/menu_samples/form-trust-folder.txt', import.meta.url), 'utf8'));
+  await sleep(4500);
+  check('a waiting Focus card does not poll the agent screen', await focusScreenReads() === focusReadsBefore
+    && await exists('#focus [data-act="perm-allow"]'));
+  await press('KeyB', 'b');
+  const kLateTrust = calls('keys.jsonl').length;
+  await click('#focus [data-act="perm-allow"]');
+  check('the old «Разрешить» button answers a folder dialog that appeared after the first screen read',
+    await waitLog(() => calls('keys.jsonl').slice(kLateTrust).some((c) => c.target === 'sw-alpha-16' && c.keys.join() === 'enter'), 10000),
+    JSON.stringify(calls('keys.jsonl').slice(kLateTrust)));
+  check('the answered permission leaves «Ждёт тебя» at once',
+    await waitFor('!document.querySelector(\'#drawer-wait [data-sel="alpha/16"]\')', 4000));
+  check('if the same dialog stayed on the screen, its request returns to «Ждёт тебя»',
+    await waitFor('!!document.querySelector(\'#drawer-wait [data-sel="alpha/16"]\')', 10000));
+  await press('KeyB', 'b');
+  writeFileSync(join(fixture, 'state', 'dialog.txt'), ' Выберите режим\n\n  ❯ Доверять\n    Выйти\n\n Enter to confirm · Esc to cancel');
+  await click('#focus [data-act="read-screen"]');
+  check('a dialog that cannot be pressed from here says so and offers the agent screen, not words',
+    await waitFor(`!!document.querySelector('#focus [data-reach="screen"]')`, 15000)
+      && await hasText('#focus [data-reach="screen"]', 'ответьте на экране агента')
+      && await exists('#focus [data-reach="screen"] [data-act="screen"][data-target="alpha/16"]')
+      && !(await exists('#focus [data-act="perm-allow"]')) && !(await exists('#focus [data-act="dlg-allow"]')),
+    (await text('#focus')).slice(0, 240));
+  writeFileSync(join(fixture, 'state', 'dialog.txt'), readFileSync(new URL('../src/menu_samples/form-trust-folder.txt', import.meta.url), 'utf8'));
+  const trustCard = '#focus [data-type="permission"]';
+  await quiet();
+  const beforeReread = await focusScreenReads();
+  await rereadScreen('#focus [data-act="read-screen"]', 'Focus');
+  check('the folder question is a permission card with working buttons after explicit rereading',
+    await waitFor(`!!document.querySelector(${JSON.stringify(trustCard + ' [data-act="dlg-allow"]')})`, 15000)
+      && await hasText(trustCard, 'Quick safety check') && await exists(trustCard + ' [data-act="dlg-deny"]')
+      && !(await exists('#focus [data-act="perm-allow"]')),
+    (await text('#focus')).slice(0, 240));
+  await quiet();
+  check('a double press rereads the Focus screen only once', await focusScreenReads() === beforeReread + 1);
+  const kTrust = calls('keys.jsonl').length;
+  await click(trustCard + ' [data-act="dlg-allow"]');
+  check('«Разрешить» on the folder question presses the yes row',
+    await waitLog(() => calls('keys.jsonl').slice(kTrust).some((c) => c.target === 'sw-alpha-16' && c.keys.join() === 'enter'), 10000),
+    JSON.stringify(calls('keys.jsonl').slice(kTrust)));
+  check('the plate is lifted at once: no buttons, the badge says the answer was sent',
+    await waitFor(`!document.querySelector('#focus [data-act="dlg-allow"]') && !!document.querySelector('#focus [data-type="answered"]') && (document.querySelector('#focus .badge')?.innerText || '').includes('Ответ отправлен')`, 4000),
+    (await text('#focus')).slice(0, 240));
+  // the screen (static in this fixture) still shows the dialog: the answer did not land, and the buttons come back
+  check('a dialog that is still on the screen after the answer asks again',
+    await waitFor(`!!document.querySelector(${JSON.stringify(trustCard + ' [data-act="dlg-allow"]')})`, 20000));
   const dash = await post('/api/action', { action: 'tell', id: 'alpha/2', text: '-- hi' });
   check('a message starting with -- is passed as text, not an option', dash[0] === 200 && calls().some((c) => c.argv[0] === 'tell' && c.argv[3] === '-- hi'), JSON.stringify(lastCall()));
   const tellTooLong = await post('/api/action', { action: 'tell', id: 'alpha/2', text: 'z'.repeat(100001) });
@@ -2534,13 +2607,13 @@ section('requests', async () => {
   check('«Разрешить» presses the yes row in the agent\'s panel',
     await waitLog(() => calls('keys.jsonl').slice(kAllow).some((c) => c.target === 'sw-alpha-16' && c.keys.join() === 'enter'), 10000),
     JSON.stringify(calls('keys.jsonl').slice(kAllow)));
-  check('the card is ready again after the answer', await waitFor(`document.querySelector(${JSON.stringify(permCard + ' [data-act="dlg-always"]')})?.getAttribute('aria-disabled') !== 'true'`, 8000));
+  check('the card is ready again after the answer', await waitFor(`(document.querySelector(${JSON.stringify(permCard + ' [data-act="dlg-always"]')})?.getAttribute('aria-disabled') ?? 'x') !== 'true' && !!document.querySelector(${JSON.stringify(permCard + ' [data-act="dlg-always"]')})`, 20000));
   const kAlways = calls('keys.jsonl').length;
   await click(permCard + ' [data-act="dlg-always"]');
   check('«Разрешить и не спрашивать» presses the row after yes',
     await waitLog(() => calls('keys.jsonl').slice(kAlways).filter((c) => c.target === 'sw-alpha-16').flatMap((c) => c.keys).join() === 'down,enter', 10000),
     JSON.stringify(calls('keys.jsonl').slice(kAlways)));
-  check('the card is ready again', await waitFor(`document.querySelector(${JSON.stringify(permCard + ' [data-act="dlg-deny"]')})?.getAttribute('aria-disabled') !== 'true'`, 8000));
+  check('the card is ready again', await waitFor(`(document.querySelector(${JSON.stringify(permCard + ' [data-act="dlg-deny"]')})?.getAttribute('aria-disabled') ?? 'x') !== 'true' && !!document.querySelector(${JSON.stringify(permCard + ' [data-act="dlg-deny"]')})`, 20000));
   const kDeny = calls('keys.jsonl').length;
   await click(permCard + ' [data-act="dlg-deny"]');
   check('«Запретить» presses the no row',
@@ -2585,7 +2658,9 @@ section('requests', async () => {
     await waitLog(() => calls('coordinator.jsonl').some((c) => c.text === '[Действие в планировщике] ALP-21: разрешено действие агента, больше не спрашивать'), 12000),
     JSON.stringify(calls('coordinator.jsonl').slice(-1)));
   // The same dialog answered on the agent's own screen (its menu card) is the human's action too.
-  await click(dialogCard + ' [data-act="screen"][data-target="alpha/21"]');
+  // the plate that says «answer sent» comes and goes with the (static) fixture screen: either way the agent screen is one click away
+  check('the card still leads to the agent screen after the answer', await exists('#focus [data-act="screen"][data-target="alpha/21"]'));
+  await click('#focus [data-act="screen"][data-target="alpha/21"]');
   check('the agent screen shows the dialog as a card', await waitFor('!!document.querySelector("#agent-screen [data-menu-card]")', 12000));
   await click('#agent-screen [data-menu-opt="0"]');
   check('a dialog answered on the agent screen also reaches the Coordinator',
@@ -7733,12 +7808,48 @@ section('light page actions', async () => {
   await click('.nav [data-tab="chat"]');
   await click('#cquick button');
   check('a quick phrase is a message too', await waitLog(() => calls('coordinator.jsonl').some((c) => c.text === 'Что горит?'), 15000), JSON.stringify(lastCall('coordinator.jsonl')));
-  // a permission of an agent is answered with buttons, through the menu's own checks (the same screen the computer's cards read)
-  writeFileSync(join(fixture, 'state', 'dialog.txt'), readFileSync(new URL('../src/menu_samples/form-permission.txt', import.meta.url), 'utf8'));
-  await click('.nav [data-tab="wait"]');
+  // PLN-101: a late dialog is recognised when an answer is sent; a dialog the phone cannot press opens the agent's real screen.
   const perm = phoneCard('permission:alpha/16');
+  writeFileSync(join(fixture, 'state', 'dialog.txt'), '● Работаю над задачей…\n\n❯ \n');
+  await click('.nav [data-tab="wait"]');
+  await quiet();
+  await click(perm + ' [data-act="read-screen"]');
+  await waitFor(`!!document.querySelector(${JSON.stringify(perm + ' textarea')})`, 10000);
+  await typeIn(perm + ' textarea', 'ответ, который не должен встать за диалогом');
+  writeFileSync(join(fixture, 'state', 'dialog.txt'), ' Выберите режим\n\n  ❯ Доверять\n    Выйти\n\n Enter to confirm · Esc to cancel');
+  const lateTell = calls().filter((c) => c.argv[0] === 'tell' && c.argv[1] === 'alpha/16').length;
+  await click(perm + ' [data-act="tell"]');
+  check('a late phone dialog is not given words that would queue behind it',
+    await waitFor(`!!document.querySelector(${JSON.stringify(perm + ' [data-reach="screen"]')})`, 15000)
+      && !(await exists(perm + ' [data-act="tell"]')) && !(await exists(perm + ' [data-act="dlg-allow"]'))
+      && calls().filter((c) => c.argv[0] === 'tell' && c.argv[1] === 'alpha/16').length === lateTell,
+    (await text(perm)).slice(0, 200));
+  check('the unsupported phone dialog has a button to the agent screen', await exists(perm + ' [data-reach="screen"] [data-act="screen"]'));
+  await click(perm + ' [data-act="screen"]');
+  check('the phone opens the agent screen with the dialog and navigation keys',
+    await sheetOpen() && await waitFor('mobile.sheet.value?.kind === "screen" && mobile.sheet.value.id === "alpha/16"', 5000)
+      && await hasText('#m-screen-term', 'Выберите режим') && await exists('#sheet [data-act="keys"][data-keys="enter"]'),
+    await text('#sheet'));
+  const kPhoneScreen = calls('keys.jsonl').length;
+  await click('#sheet [data-act="keys"][data-keys="enter"]');
+  check('a key from the phone screen reaches only this task\'s agent',
+    await waitLog(() => calls('keys.jsonl').slice(kPhoneScreen).some((c) => c.target === 'sw-alpha-16' && c.keys.join() === 'enter'), 10000),
+    JSON.stringify(calls('keys.jsonl').slice(kPhoneScreen)));
+  await click('#sheet [data-s="close"]');
+  await sheetClosed();
+  // a permission of an agent is answered with buttons, through the menu's own checks (the same screen the computer's cards read)
+  await quiet();
+  const phoneScreenReads = () => evalJs('window.__net.log.filter((u) => u.includes("/screen?target=alpha%2F16")).length');
+  const phoneReadsBefore = await phoneScreenReads();
+  writeFileSync(join(fixture, 'state', 'dialog.txt'), readFileSync(new URL('../src/menu_samples/form-permission.txt', import.meta.url), 'utf8'));
+  await sleep(4500);
+  check('a waiting phone card does not poll the agent screen', await phoneScreenReads() === phoneReadsBefore
+    && await exists(perm + ' [data-reach="screen"]'));
+  await rereadScreen(perm + ' [data-act="read-screen"]', 'Phone');
   check('a permission shows what the agent asks, with allow, always and deny', await waitFor(`!!document.querySelector(${JSON.stringify(perm + ' [data-act="dlg-allow"]')})`, 15000)
     && await hasText(perm + ' .perm', 'touch made-by-test.txt') && await exists(perm + ' [data-act="dlg-always"]') && await exists(perm + ' [data-act="dlg-deny"]'), (await text(perm)).slice(0, 200));
+  await quiet();
+  check('a double press rereads the phone screen only once', await phoneScreenReads() === phoneReadsBefore + 1);
   check('and the buttons are 44 px', (await smallTargets()).length === 0, JSON.stringify(await smallTargets()));
   const kAllow = calls('keys.jsonl').length;
   await click(perm + ' [data-act="dlg-allow"]');

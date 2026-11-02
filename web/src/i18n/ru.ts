@@ -105,8 +105,8 @@ export const ru: Record<string, string | string[]> = {
   'reason.plan': 'план', 'reason.ready': 'к одобрению', 'reason.failed': 'упала', 'reason.permission': 'разрешение', 'reason.question': 'вопрос',
   'reason.auth': 'вход', 'reason.pick': 'выбор', 'reason.limit': 'лимит', 'reason.review': 'ревью',
   'reason.yard': 'верфь', 'reason.coordinator': 'координатор', 'reason.memory': 'память',
-  'req.showReviewer': 'Показать экран ревьюера', 'req.screenHint': 'Содержимое диалога доска не отдаёт: его читает herdr.', 'req.reading': 'читаю экран…',
-  'req.refreshScreen': 'Обновить экран',
+  'req.showReviewer': 'Показать экран ревьюера', 'req.screenHint': 'Содержимое диалога доска не отдаёт: его читает herdr.', 'req.answerOnScreen': 'Этот диалог отсюда не ответить: ответьте на экране агента.', 'req.answerSent': 'Ответ отправлен', 'req.answerSentText': 'Ответ в терминале агента, жду, пока доска это увидит.', 'm.note.dialogScreen': 'Этот диалог нельзя ответить кнопкой разрешения: откройте экран агента и выберите ответ клавишами.', 'req.reading': 'читаю экран…',
+  'req.refreshScreen': 'Обновить экран', 'req.rereadScreen': 'Перечитать экран',
   // кто сейчас на задаче
   'seat.reviewer': 'ревью', 'seat.who.reviewer': 'Ревьюер', 'seat.who.worker': 'Исполнитель',
   'seat.nobody': 'не назван', 'seat.tookOver': 'передано запасному', 'seat.open': 'Открыть терминал в herdr',

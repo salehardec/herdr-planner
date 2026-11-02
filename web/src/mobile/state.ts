@@ -7,6 +7,7 @@ export type Tab = 'wait' | 'chat' | 'board';
 export type Sheet =
   | { kind: 'task'; id: string; queue?: string }
   | { kind: 'plan'; id: string; queue?: string }
+  | { kind: 'screen'; id: string }
   | { kind: 'limits' }
   | { kind: 'settings' }
   | null;

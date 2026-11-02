@@ -12,6 +12,7 @@ import { addDialogs } from '../dialogs';
 import { t } from '../i18n';
 import { attentionLabel } from '../requests';
 import { boardPlaceholder, taskPermission } from '../permission';
+import { dialogAnswered } from '../request-queue';
 import { Gl, Badge } from './Gl';
 import { Grip } from './Grip';
 import { RichText } from './RichText';
@@ -81,7 +82,9 @@ function TaskFocus(props: { task: Task }): JSX.Element {
     <div class="fbody" tabIndex={-1} data-focus="task">
       <div class="fhd">
         <span class="lbl">{t('focus.title')} · <span class="tagk">{task.tag}</span></span>
-        <Badge status={task.status} label={attentionLabel(task, !!taskPermission(task, screens.value[task.id]?.menu))} />
+        {dialogAnswered(task)
+          ? <Badge status="working" label={t('req.answerSent')} />
+          : <Badge status={task.status} label={attentionLabel(task, !!taskPermission(task, screens.value[task.id]?.menu))} />}
         <span class="agent">{agentLabel}</span>
       </div>
       <h2>{task.title}</h2>

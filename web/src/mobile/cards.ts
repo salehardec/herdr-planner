@@ -1,7 +1,7 @@
 /* What the phone's «Ждёт тебя» draws for a request, and which answers it offers. Pure: the page reads this, the tests read it too.
    The request itself is the planner's (requests.ts); here it is only decided which parts of the card a phone has.
-   The phone's server takes four actions (approve, retry, tell, pick) and answers in agents' menus; nothing else. A card whose
-   answer is not among them says so and sends the human to the computer. */
+   The phone's server takes four board actions (approve, retry, tell, pick), answers in agents' menus and sends fixed screen keys.
+   A dialog without a menu opens the agent's own screen instead of offering an answer that cannot work. */
 import type { Request, Task } from '../types';
 
 /** What the phone may ask of the board; the same four words as `ACTIONS` in mobile.rs. */

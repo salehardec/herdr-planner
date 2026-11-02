@@ -1,0 +1,16 @@
+╭──────────────────────────────────────────────────────────────────────────────╮
+│ Do you trust the files in this folder?                                       │
+│                                                                              │
+│ /home/salehardec/.herdr/worktrees/xtool-hello/work-1                         │
+│                                                                              │
+│ The agent may read files in this folder. Reading untrusted files may lead    │
+│ the agent to behave in unexpected ways. With your permission the agent may   │
+│ execute files in this folder. Executing untrusted code is unsafe.            │
+│                                                                              │
+│ Security guide                                                               │
+│                                                                              │
+│ ❯ 1. Yes, proceed                                                            │
+│   2. No, exit                                                                │
+│                                                                              │
+│ Enter to confirm · Esc to exit                                               │
+╰──────────────────────────────────────────────────────────────────────────────╯
