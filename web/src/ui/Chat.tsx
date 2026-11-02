@@ -5,7 +5,7 @@ import {
   chat, panels, persist, snap, screens,
 } from '../store';
 import {
-  addFiles, draftRequest, draftTodos, hasOlder, loadLatest, loadOlder, loadOlderWait, notePending, forgetPending, openChatAt, pendingFiles, pendingMessages, removeFile, scrollTo,
+  addFiles, backspaceFile, draftRequest, draftTodos, hasOlder, loadLatest, loadOlder, loadOlderWait, notePending, forgetPending, openChatAt, pendingFiles, pendingMessages, removeFile, scrollTo,
   searchChat, send, sending,
 } from '../chat';
 import { hasFiles, pastedFiles } from '../attach';
@@ -317,6 +317,7 @@ export function Chat(): JSX.Element {
 
   const onKey = (e: KeyboardEvent): void => {
     const ta = e.target as HTMLTextAreaElement;
+    if (backspaceFile(e, ta)) return;
     // A dialog over the chat (the «В память» one) takes Esc: the page's own handler closes it.
     if (e.key === 'Escape' && dialogOpen()) return;
     if (e.key === 'Escape') { ta.value = ''; fitText(ta); clearDraft(); draftTodos.value = []; ta.blur(); chatBack(); e.stopPropagation(); return; }
