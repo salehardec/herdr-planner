@@ -218,6 +218,28 @@ const pageTurn = () => evalJs(`new Promise((done) => setTimeout(() => setTimeout
 const frames = (n = 2) => evalJs(`new Promise((done) => { let k = ${n}; const f = () => (--k <= 0 ? done(true) : requestAnimationFrame(f)); requestAnimationFrame(f); setTimeout(() => done(false), 20000); })`);
 // The page's own calls to the server (fetch) are counted from the start of every document: `quiet()` is «nothing is on its way».
 const quiet = async () => { await waitFor('!window.__net || window.__net.pending === 0', 20000); await pageTurn(); };
+// Hold just this fixture's screen response until the busy state has been checked: no timing race with a fast local server.
+const rereadScreen = async (selector, label) => {
+  await evalJs(`(() => {
+    const fetch = window.fetch;
+    window.__releaseScreenRead = () => { window.fetch = fetch; };
+    window.fetch = (...args) => {
+      if (!String(args[0]).includes('/screen?target=alpha%2F16')) return fetch(...args);
+      return new Promise((resolve) => { window.__releaseScreenRead = () => { window.fetch = fetch; resolve(fetch(...args)); }; });
+    };
+    const button = document.querySelector(${JSON.stringify(selector)});
+    button.click(); button.click();
+    return true;
+  })()`);
+  try {
+    check(label + ': rereading disables the button and shows loading', await waitFor(`(() => {
+      const b = document.querySelector(${JSON.stringify(selector)});
+      return b?.disabled && b.getAttribute('aria-busy') === 'true' && b.innerText.includes('читаю экран');
+    })()`, 4000));
+  } finally {
+    await evalJs('window.__releaseScreenRead(); delete window.__releaseScreenRead; true');
+  }
+};
 // A fresh page for a section that is run again: the app, its first state in, nothing open, the language back to Russian.
 const resetPage = async () => {
   await send('Emulation.setDeviceMetricsOverride', { width: 1500, height: 950, deviceScaleFactor: 1, mobile: false });
@@ -2441,9 +2463,15 @@ section('requests', async () => {
   await click('#focus [data-act="perm-allow"]');
   check('a permission button prepares an editable answer', await waitFor('document.querySelector("#tell")?.value === "Да, разрешаю."', 4000));
   // ── PLN-101: the folder question of a new working copy is answered from the Focus, and a dialog nothing here can press says
-  // so instead of offering words that would only queue behind it. The screen is read again by itself: the dialog may be drawn
-  // after the board has said «waiting».
+  // so instead of offering words that would only queue behind it. A late dialog is read on demand, without card polling.
+  await quiet();
+  const focusScreenReads = () => evalJs('window.__net.log.filter((u) => u.includes("/screen?target=alpha%2F16")).length');
+  const focusReadsBefore = await focusScreenReads();
   writeFileSync(join(fixture, 'state', 'dialog.txt'), ' Выберите режим\n\n  ❯ Доверять\n    Выйти\n\n Enter to confirm · Esc to cancel');
+  await sleep(4500);
+  check('a waiting Focus card does not poll the agent screen', await focusScreenReads() === focusReadsBefore
+    && await exists('#focus [data-act="perm-allow"]'));
+  await click('#focus [data-act="read-screen"]');
   check('a dialog that cannot be pressed from here says so and offers the agent screen, not words',
     await waitFor(`!!document.querySelector('#focus [data-reach="screen"]')`, 15000)
       && await hasText('#focus [data-reach="screen"]', 'ответьте на экране агента')
@@ -2452,11 +2480,16 @@ section('requests', async () => {
     (await text('#focus')).slice(0, 240));
   writeFileSync(join(fixture, 'state', 'dialog.txt'), readFileSync(new URL('../src/menu_samples/claude-trust-folder.txt', import.meta.url), 'utf8'));
   const trustCard = '#focus [data-type="permission"]';
-  check('the folder question is a permission card with working buttons, read from the screen without a new click',
+  await quiet();
+  const beforeReread = await focusScreenReads();
+  await rereadScreen('#focus [data-act="read-screen"]', 'Focus');
+  check('the folder question is a permission card with working buttons after explicit rereading',
     await waitFor(`!!document.querySelector(${JSON.stringify(trustCard + ' [data-act="dlg-allow"]')})`, 15000)
       && await hasText(trustCard, 'Quick safety check') && await exists(trustCard + ' [data-act="dlg-deny"]')
       && !(await exists('#focus [data-act="perm-allow"]')),
     (await text('#focus')).slice(0, 240));
+  await quiet();
+  check('a double press rereads the Focus screen only once', await focusScreenReads() === beforeReread + 1);
   const kTrust = calls('keys.jsonl').length;
   await click(trustCard + ' [data-act="dlg-allow"]');
   check('«Разрешить» on the folder question presses the yes row',
@@ -7762,16 +7795,26 @@ section('light page actions', async () => {
   // PLN-101: a dialog the phone cannot press says so (words would only queue behind it) instead of offering a field that does not work
   writeFileSync(join(fixture, 'state', 'dialog.txt'), ' Выберите режим\n\n  ❯ Доверять\n    Выйти\n\n Enter to confirm · Esc to cancel');
   await click('.nav [data-tab="wait"]');
+  await quiet();
+  await click(phoneCard('permission:alpha/16') + ' [data-act="read-screen"]');
   check('a dialog the phone cannot press says to answer on the agent screen, with no field for words',
     await waitFor(`!!document.querySelector(${JSON.stringify(phoneCard('permission:alpha/16') + ' [data-reach="screen"]')})`, 15000)
       && !(await exists(phoneCard('permission:alpha/16') + ' [data-act="tell"]')) && !(await exists(phoneCard('permission:alpha/16') + ' [data-act="dlg-allow"]')),
     (await text(phoneCard('permission:alpha/16'))).slice(0, 200));
   // a permission of an agent is answered with buttons, through the menu's own checks (the same screen the computer's cards read)
-  writeFileSync(join(fixture, 'state', 'dialog.txt'), readFileSync(new URL('../src/menu_samples/claude-permission.txt', import.meta.url), 'utf8'));
-  await click('.nav [data-tab="wait"]');
   const perm = phoneCard('permission:alpha/16');
+  await quiet();
+  const phoneScreenReads = () => evalJs('window.__net.log.filter((u) => u.includes("/screen?target=alpha%2F16")).length');
+  const phoneReadsBefore = await phoneScreenReads();
+  writeFileSync(join(fixture, 'state', 'dialog.txt'), readFileSync(new URL('../src/menu_samples/claude-permission.txt', import.meta.url), 'utf8'));
+  await sleep(4500);
+  check('a waiting phone card does not poll the agent screen', await phoneScreenReads() === phoneReadsBefore
+    && await exists(perm + ' [data-reach="screen"]'));
+  await rereadScreen(perm + ' [data-act="read-screen"]', 'Phone');
   check('a permission shows what the agent asks, with allow, always and deny', await waitFor(`!!document.querySelector(${JSON.stringify(perm + ' [data-act="dlg-allow"]')})`, 15000)
     && await hasText(perm + ' .perm', 'touch made-by-test.txt') && await exists(perm + ' [data-act="dlg-always"]') && await exists(perm + ' [data-act="dlg-deny"]'), (await text(perm)).slice(0, 200));
+  await quiet();
+  check('a double press rereads the phone screen only once', await phoneScreenReads() === phoneReadsBefore + 1);
   check('and the buttons are 44 px', (await smallTargets()).length === 0, JSON.stringify(await smallTargets()));
   const kAllow = calls('keys.jsonl').length;
   await click(perm + ' [data-act="dlg-allow"]');

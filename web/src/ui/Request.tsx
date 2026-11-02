@@ -12,6 +12,7 @@ import { toast } from '../toast';
 import { Gl } from './Gl';
 import { Translatable } from './Translatable';
 import { MenuSlot } from './MenuCard';
+import { ReadScreenButton } from './ReadScreenButton';
 import { safeUrl } from '../mobile/cards';
 
 export function MergeHandoff(props: { task: Task }): JSX.Element {
@@ -45,10 +46,13 @@ function ArmBtn(props: { id: string; cmd: string; label: string; armLabel: strin
 
 function ScreenBtn(props: { task: Task }): JSX.Element {
   return (
-    <button
-      class="btn" type="button" data-act="screen" data-target={props.task.id}
-      onClick={() => { addDialogs.screen.value = { task: props.task.id }; }}
-    ><Gl n="screen" />{t('focus.agentScreen')}</button>
+    <>
+      <button
+        class="btn" type="button" data-act="screen" data-target={props.task.id}
+        onClick={() => { addDialogs.screen.value = { task: props.task.id }; }}
+      ><Gl n="screen" />{t('focus.agentScreen')}</button>
+      {readsScreen(props.task) && <ReadScreenButton target={props.task.id} />}
+    </>
   );
 }
 
@@ -96,19 +100,12 @@ function DialogButtons(props: { task: Task; prompt: PermissionPrompt; menu: Menu
   );
 }
 
-/** How often the screen of a waiting agent is read again while its request is on show: a dialog may be drawn after the board
-    has said «waiting» (the folder question of a new working copy), and a dialog answered at the terminal goes away. It is the
-    local herdr that is asked, once per tick, never a system of a customer. */
-const SCREEN_EVERY_MS = 4000;
-
-/** The screen of the task's agent, read while the request is shown: at once, again when the board's words change, and now and then. */
+/** Read on opening the request and when the board's words change. Late dialogs are reread explicitly, without a timer. */
 function useAgentScreen(task: Task, on: boolean): void {
   const wants = on && readsScreen(task);
   useEffect(() => {
     if (!wants) return;
     void fetchScreen(task.id);
-    const id = window.setInterval(() => { if (!document.hidden) void fetchScreen(task.id); }, SCREEN_EVERY_MS);
-    return () => window.clearInterval(id);
   }, [task.id, task.status, task.msg, task.stage, task.kind, wants]);
 }
 
@@ -227,6 +224,7 @@ export function RequestActions(props: { task: Task; input?: string; /** The call
       )}
       {type === 'plan' && (
         <div class="row">
+          {readsScreen(task) && <ReadScreenButton target={task.id} />}
           <ArmBtn id={task.id} cmd="approve" label={t('req.approvePlan')} armLabel={t('req.confirmApprovePlan')} cls="go" task={task} />
           <button class="btn" type="button" data-act="plan-return" data-id={task.id} aria-disabled={dis} onClick={() => void returnNotes()}>{t('req.returnWithNotes')}</button>
         </div>

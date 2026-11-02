@@ -5,7 +5,7 @@ import { armed, details, requests, screens } from '../store';
 import { answerMenu, boardOk, fetchScreen, pickAttempt, runTaskAction, tellTask } from '../actions';
 import { fetchDetails, onQueueAnswer, prepareAnswer } from '../nav';
 import { send } from '../chat';
-import { boardPlaceholder, dialogReach, questionText, taskPermission, type PermissionNote, type PermissionPrompt } from '../permission';
+import { boardPlaceholder, dialogReach, questionText, readsScreen, taskPermission, type PermissionNote, type PermissionPrompt } from '../permission';
 import { nextRequest } from '../request-queue';
 import { requestType } from '../requests';
 import { t } from '../i18n';
@@ -13,13 +13,12 @@ import { toast } from '../toast';
 import type { MenuData, Request, Task } from '../types';
 import { Gl } from '../ui/Gl';
 import { MenuSlot } from '../ui/MenuCard';
+import { ReadScreenButton } from '../ui/ReadScreenButton';
 import { planOf, listed, type CardPlan } from './cards';
 import { drafts, dropDraft, setDraft, sheet, tab, listTab } from './state';
 
 /** A text longer than this folds, with «Ещё». */
 const FOLD = 260;
-/** How often a card that waits on an agent's dialog reads the agent's screen again. */
-const SCREEN_EVERY_MS = 4000;
 
 function Fold(props: { text: string; cls?: string }): JSX.Element | null {
   const [open, setOpen] = useState(false);
@@ -143,26 +142,23 @@ function Asking(props: { task: Task; plan: CardPlan; text: string }): JSX.Elemen
   const { task, plan } = props;
   const shown = screens.value[task.id];
   const menu: MenuData | null = shown && !shown.error && shown.menu ? shown.menu : null;
+  const wants = plan.screen && readsScreen(task);
   useEffect(() => {
-    // as on the computer: a dialog may come as a question, or with no kind at all; the screen is the witness
-    const wants = task.status === 'plan' || task.kind === 'permission' || task.kind === 'question' || task.kind === 'auth'
-      || (task.status === 'waiting' && !task.kind);
-    if (!(plan.screen && wants && task.exited_at === 0)) return;
-    void fetchScreen(task.id);
-    // the dialog may come after the card, and an answer given at the terminal takes it away: read the screen again now and then,
-    // while this page is the one that is looked at
-    const id = window.setInterval(() => { if (!document.hidden && tab.value !== 'board') void fetchScreen(task.id); }, SCREEN_EVERY_MS);
-    return () => window.clearInterval(id);
-  }, [task.id, task.status, task.msg, task.stage, task.kind]);
+    if (wants) void fetchScreen(task.id);
+  }, [task.id, task.status, task.msg, task.stage, task.kind, wants]);
   const prompt = taskPermission(task, menu);
-  if (prompt && menu && (plan.block === 'permission' || plan.block === 'question' || plan.block === 'plan')) {
-    return <Permission task={task} prompt={prompt} menu={menu} />;
-  }
   return (
     <>
-      <Fold text={props.text} />
-      {menu && plan.block !== 'plan' && (
-        <MenuSlot target={task.id} menu={menu} place="chat" onAnswered={() => { setTimeout(() => { void fetchScreen(task.id); }, 700); }} />
+      {wants && <div class="row"><ReadScreenButton target={task.id} /></div>}
+      {prompt && menu && (plan.block === 'permission' || plan.block === 'question' || plan.block === 'plan') ? (
+        <Permission task={task} prompt={prompt} menu={menu} />
+      ) : (
+        <>
+          <Fold text={props.text} />
+          {menu && plan.block !== 'plan' && (
+            <MenuSlot target={task.id} menu={menu} place="chat" onAnswered={() => { setTimeout(() => { void fetchScreen(task.id); }, 700); }} />
+          )}
+        </>
       )}
     </>
   );
