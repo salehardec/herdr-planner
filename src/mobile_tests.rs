@@ -405,6 +405,21 @@ async fn the_action_route_has_four_actions_and_nothing_else() {
 }
 
 #[tokio::test]
+async fn the_phone_screen_sends_only_one_fixed_key_to_an_active_task() {
+    let g = Gate::open(false).await;
+    for body in [
+        r#"{"action":"screen-key","id":"coordinator","key":"enter"}"#,
+        r#"{"action":"screen-key","id":"alpha/9","key":"enter"}"#,
+        r#"{"action":"screen-key","id":"alpha/1","key":"Ctrl-C"}"#,
+        r#"{"action":"screen-key","id":"alpha/1","keys":["enter"]}"#,
+    ] {
+        let (status, _, answer) = g.ask("POST", "/m/api/action", Some(body)).await;
+        assert_eq!(status, 400, "{body}: {answer}");
+    }
+    assert!(said(&g.log).is_empty(), "no other action reached the board: {:?}", said(&g.log));
+}
+
+#[tokio::test]
 async fn an_approval_from_the_phone_names_the_phone() {
     let g = Gate::open(false).await;
     // the board's own rule stays: no confirmation, no approval

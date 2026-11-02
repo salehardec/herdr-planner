@@ -256,7 +256,13 @@ function Actions(props: { r: Request; plan: CardPlan }): JSX.Element | null {
           {plan.pr && <a class="btn" href={plan.pr} target="_blank" rel="noopener noreferrer" data-act="pr">{t(task?.merge_via_mr ? 'm.openMr' : 'm.openPr')}<Gl n="ext" /></a>}
         </div>
       )}
-      {onScreen && <div class="hintline" role="status" data-reach="screen">{t('m.note.dialogScreen')}</div>}
+      {onScreen && (
+        <div class="acts" data-reach="screen">
+          <button class="btn" type="button" data-act="screen" data-target={task.id}
+            onClick={() => { sheet.value = { kind: 'screen', id: task.id }; }}><Gl n="screen" />{t('focus.agentScreen')}</button>
+          <div class="hintline" role="status">{t('m.note.dialogScreen')}</div>
+        </div>
+      )}
       {plan.tell && !onScreen && (
         <Tell
           task={task} id={r.key}

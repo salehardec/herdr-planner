@@ -13,6 +13,7 @@ import { Gl } from './Gl';
 import { Translatable } from './Translatable';
 import { MenuSlot } from './MenuCard';
 import { ReadScreenButton } from './ReadScreenButton';
+import { PermissionWords } from './PermissionWords';
 import { safeUrl } from '../mobile/cards';
 
 export function MergeHandoff(props: { task: Task }): JSX.Element {
@@ -136,8 +137,7 @@ function PermissionAnswers(props: { task: Task; draft: (text: string) => void; d
   }
   return (
     <div class="row">
-      <button class="btn go" type="button" data-act="perm-allow" data-id={task.id} aria-disabled={props.dis} onClick={() => props.draft(PERMISSION_ALLOW())}>{t('req.allow')}</button>
-      <button class="btn danger" type="button" data-act="perm-deny" data-id={task.id} aria-disabled={props.dis} onClick={() => props.draft(PERMISSION_DENY())}>{t('req.deny')}</button>
+      <PermissionWords task={task} draft={props.draft} />
       <ScreenBtn task={task} />
       <span class="hint">{t('req.textBelow')}</span>
     </div>

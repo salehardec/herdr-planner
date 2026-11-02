@@ -2463,14 +2463,26 @@ section('requests', async () => {
   await click('#focus [data-act="perm-allow"]');
   check('a permission button prepares an editable answer', await waitFor('document.querySelector("#tell")?.value === "Да, разрешаю."', 4000));
   // ── PLN-101: the folder question of a new working copy is answered from the Focus, and a dialog nothing here can press says
-  // so instead of offering words that would only queue behind it. A late dialog is read on demand, without card polling.
+  // so instead of offering words that would only queue behind it. A late dialog is resolved at the moment of the press.
   await quiet();
   const focusScreenReads = () => evalJs('window.__net.log.filter((u) => u.includes("/screen?target=alpha%2F16")).length');
   const focusReadsBefore = await focusScreenReads();
-  writeFileSync(join(fixture, 'state', 'dialog.txt'), ' Выберите режим\n\n  ❯ Доверять\n    Выйти\n\n Enter to confirm · Esc to cancel');
+  writeFileSync(join(fixture, 'state', 'dialog.txt'), readFileSync(new URL('../src/menu_samples/claude-trust-folder.txt', import.meta.url), 'utf8'));
   await sleep(4500);
   check('a waiting Focus card does not poll the agent screen', await focusScreenReads() === focusReadsBefore
     && await exists('#focus [data-act="perm-allow"]'));
+  await press('KeyB', 'b');
+  const kLateTrust = calls('keys.jsonl').length;
+  await click('#focus [data-act="perm-allow"]');
+  check('the old «Разрешить» button answers a folder dialog that appeared after the first screen read',
+    await waitLog(() => calls('keys.jsonl').slice(kLateTrust).some((c) => c.target === 'sw-alpha-16' && c.keys.join() === 'enter'), 10000),
+    JSON.stringify(calls('keys.jsonl').slice(kLateTrust)));
+  check('the answered permission leaves «Ждёт тебя» at once',
+    await waitFor('!document.querySelector(\'#drawer-wait [data-sel="alpha/16"]\')', 4000));
+  check('if the same dialog stayed on the screen, its request returns to «Ждёт тебя»',
+    await waitFor('!!document.querySelector(\'#drawer-wait [data-sel="alpha/16"]\')', 10000));
+  await press('KeyB', 'b');
+  writeFileSync(join(fixture, 'state', 'dialog.txt'), ' Выберите режим\n\n  ❯ Доверять\n    Выйти\n\n Enter to confirm · Esc to cancel');
   await click('#focus [data-act="read-screen"]');
   check('a dialog that cannot be pressed from here says so and offers the agent screen, not words',
     await waitFor(`!!document.querySelector('#focus [data-reach="screen"]')`, 15000)
@@ -7792,17 +7804,36 @@ section('light page actions', async () => {
   await click('.nav [data-tab="chat"]');
   await click('#cquick button');
   check('a quick phrase is a message too', await waitLog(() => calls('coordinator.jsonl').some((c) => c.text === 'Что горит?'), 15000), JSON.stringify(lastCall('coordinator.jsonl')));
-  // PLN-101: a dialog the phone cannot press says so (words would only queue behind it) instead of offering a field that does not work
-  writeFileSync(join(fixture, 'state', 'dialog.txt'), ' Выберите режим\n\n  ❯ Доверять\n    Выйти\n\n Enter to confirm · Esc to cancel');
+  // PLN-101: a late dialog is recognised when an answer is sent; a dialog the phone cannot press opens the agent's real screen.
+  const perm = phoneCard('permission:alpha/16');
+  writeFileSync(join(fixture, 'state', 'dialog.txt'), '● Работаю над задачей…\n\n❯ \n');
   await click('.nav [data-tab="wait"]');
   await quiet();
-  await click(phoneCard('permission:alpha/16') + ' [data-act="read-screen"]');
-  check('a dialog the phone cannot press says to answer on the agent screen, with no field for words',
-    await waitFor(`!!document.querySelector(${JSON.stringify(phoneCard('permission:alpha/16') + ' [data-reach="screen"]')})`, 15000)
-      && !(await exists(phoneCard('permission:alpha/16') + ' [data-act="tell"]')) && !(await exists(phoneCard('permission:alpha/16') + ' [data-act="dlg-allow"]')),
-    (await text(phoneCard('permission:alpha/16'))).slice(0, 200));
+  await click(perm + ' [data-act="read-screen"]');
+  await waitFor(`!!document.querySelector(${JSON.stringify(perm + ' textarea')})`, 10000);
+  await typeIn(perm + ' textarea', 'ответ, который не должен встать за диалогом');
+  writeFileSync(join(fixture, 'state', 'dialog.txt'), ' Выберите режим\n\n  ❯ Доверять\n    Выйти\n\n Enter to confirm · Esc to cancel');
+  const lateTell = calls().filter((c) => c.argv[0] === 'tell' && c.argv[1] === 'alpha/16').length;
+  await click(perm + ' [data-act="tell"]');
+  check('a late phone dialog is not given words that would queue behind it',
+    await waitFor(`!!document.querySelector(${JSON.stringify(perm + ' [data-reach="screen"]')})`, 15000)
+      && !(await exists(perm + ' [data-act="tell"]')) && !(await exists(perm + ' [data-act="dlg-allow"]'))
+      && calls().filter((c) => c.argv[0] === 'tell' && c.argv[1] === 'alpha/16').length === lateTell,
+    (await text(perm)).slice(0, 200));
+  check('the unsupported phone dialog has a button to the agent screen', await exists(perm + ' [data-reach="screen"] [data-act="screen"]'));
+  await click(perm + ' [data-act="screen"]');
+  check('the phone opens the agent screen with the dialog and navigation keys',
+    await sheetOpen() && await waitFor('mobile.sheet.value?.kind === "screen" && mobile.sheet.value.id === "alpha/16"', 5000)
+      && await hasText('#m-screen-term', 'Выберите режим') && await exists('#sheet [data-act="keys"][data-keys="enter"]'),
+    await text('#sheet'));
+  const kPhoneScreen = calls('keys.jsonl').length;
+  await click('#sheet [data-act="keys"][data-keys="enter"]');
+  check('a key from the phone screen reaches only this task\'s agent',
+    await waitLog(() => calls('keys.jsonl').slice(kPhoneScreen).some((c) => c.target === 'sw-alpha-16' && c.keys.join() === 'enter'), 10000),
+    JSON.stringify(calls('keys.jsonl').slice(kPhoneScreen)));
+  await click('#sheet [data-s="close"]');
+  await sheetClosed();
   // a permission of an agent is answered with buttons, through the menu's own checks (the same screen the computer's cards read)
-  const perm = phoneCard('permission:alpha/16');
   await quiet();
   const phoneScreenReads = () => evalJs('window.__net.log.filter((u) => u.includes("/screen?target=alpha%2F16")).length');
   const phoneReadsBefore = await phoneScreenReads();

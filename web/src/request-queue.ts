@@ -1,6 +1,7 @@
 /* Keep an answered row out of the queue while the board catches up. A new question at the same task is a new row. */
 import { signal } from '@preact/signals';
 import type { Request, Task } from './types';
+import { requestType } from './requests';
 
 export const resolvedRequests = signal<ReadonlyMap<string, string>>(new Map());
 const signature = (r: Request): string => JSON.stringify([r.key, r.msg, r.task?.stage, r.task?.state, r.task?.round, r.task?.session]);
@@ -39,18 +40,21 @@ const ANSWERED_MS = 30000;
 /** The same menu still on the screen this long after the answer means it did not land. */
 export const RELOOK_MS = 3000;
 
-interface Answered { sig: string; menu: string; at: number }
+interface Answered { sig: string; menu: string; at: number; key: string }
 export const answeredDialogs = signal<ReadonlyMap<string, Answered>>(new Map());
 const taskSignature = (t: Task): string => JSON.stringify([t.status, t.state, t.kind, t.stage, t.msg, t.round, t.session]);
 
 export function markDialogAnswered(task: Task, menuSig: string): void {
   const at = Date.now();
-  answeredDialogs.value = new Map(answeredDialogs.value).set(task.id, { sig: taskSignature(task), menu: menuSig, at });
+  answeredDialogs.value = new Map(answeredDialogs.value).set(task.id, { sig: taskSignature(task), menu: menuSig, at, key: `${requestType(task)}:${task.id}` });
   setTimeout(() => { if (answeredDialogs.peek().get(task.id)?.at === at) clearDialogAnswered(task.id); }, ANSWERED_MS + 50);
 }
 
 export function clearDialogAnswered(id: string): void {
-  if (!answeredDialogs.peek().has(id)) return;
+  const answered = answeredDialogs.peek().get(id);
+  if (!answered) return;
+  // Removing the optimistic badge must also put the unresolved row back into «Ждёт тебя».
+  restoreRequest(answered.key);
   const next = new Map(answeredDialogs.peek());
   next.delete(id);
   answeredDialogs.value = next;

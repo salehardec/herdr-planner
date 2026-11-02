@@ -1,8 +1,8 @@
 import { beforeEach, expect, it, vi } from 'vitest';
 import type { Request } from './types';
-import { forgetChangedRequests, pendingRequests, resolveRequest, resolvedRequests, restoreRequest } from './request-queue';
+import { answeredDialogs, forgetChangedRequests, pendingRequests, resolveRequest, resolvedRequests, restoreRequest } from './request-queue';
 const row = (msg = 'First question') => ({ key: 'question:a/1', id: 'a/1', msg } as Request);
-beforeEach(() => { resolvedRequests.value = new Map(); });
+beforeEach(() => { resolvedRequests.value = new Map(); answeredDialogs.value = new Map(); });
 it('keeps a stale projection hidden until the board catches up', () => {
   resolveRequest(row());
   forgetChangedRequests([row()]);
@@ -24,8 +24,7 @@ it('restores a reversible answer without hiding another part of the task', () =>
 });
 
 it('hides an answered dialog until the board moves or the screen shows the dialog again (PLN-101)', async () => {
-  const { answeredDialogs, dialogAnswered, markDialogAnswered, screenReread } = await import('./request-queue');
-  answeredDialogs.value = new Map();
+  const { dialogAnswered, markDialogAnswered, screenReread } = await import('./request-queue');
   const task = { id: 'a/1', status: 'waiting', state: 'blocked', kind: 'permission', stage: '', msg: 'Needs you', round: 0, session: 's' } as never;
   expect(dialogAnswered(task)).toBe(false);
   markDialogAnswered(task, 'sig1');
@@ -45,4 +44,18 @@ it('hides an answered dialog until the board moves or the screen shows the dialo
   screenReread('a/1', 'sig1');
   spy.mockRestore();
   expect(dialogAnswered(task)).toBe(false);
+});
+
+it('returns an unanswered dialog to the waiting queue when its optimistic answer expires (PLN-101)', async () => {
+  const { markDialogAnswered, screenReread } = await import('./request-queue');
+  const task = { id: 'a/1', status: 'waiting', state: 'blocked', kind: 'permission', stage: '', msg: 'Needs you', round: 0, session: 's' } as never;
+  const request = { ...row('Needs you'), key: 'permission:a/1', type: 'permission', task };
+  resolveRequest(request);
+  markDialogAnswered(task, 'sig1');
+  expect(pendingRequests([request])).toEqual([]);
+  const now = Date.now();
+  const spy = vi.spyOn(Date, 'now').mockReturnValue(now + 4000);
+  screenReread('a/1', 'sig1');
+  spy.mockRestore();
+  expect(pendingRequests([request])).toEqual([request]);
 });

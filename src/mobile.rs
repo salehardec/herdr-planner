@@ -6,8 +6,8 @@
 //! only when somebody puts it here. Event streams do not pass a quick tunnel, so the page waits on `poll` instead: one
 //! request in flight, answered when the projection changes or after 25 seconds with nothing.
 //!
-//! What a phone may do is `ACTIONS`, and the action route builds the board's request itself from four fields: the
-//! phone cannot name a scope, a repository, keys, files or an `anyway`. Everything else goes through the same
+//! What a phone may do is `ACTIONS`, plus one fixed navigation key on an agent's screen. The action route builds the
+//! board's request itself: the phone cannot name a scope, a repository, arbitrary keys, files or an `anyway`. Everything else goes through the same
 //! handlers as the planner's page, so the checks stay in one place (a menu changed since it was shown is refused
 //! there, a text has the same limits).
 //!
@@ -15,7 +15,7 @@
 //! second look, for a request that did not come through the tunnel and so is judged by the planner's own login.
 
 use crate::app::{self, AuthInfo, BoardStatus, CoordinatorState, HerdrInfo, ServerInfo, Shared, Snapshot};
-use crate::board::{Project, Task};
+use crate::board::{self, Project, Task};
 use crate::config::now_ms;
 use crate::gate::Class;
 use crate::server::{self, error, same_origin, ActionBody, ChatBody, HistoryQuery, ScreenQuery};
@@ -295,12 +295,29 @@ pub struct ActionIn {
     text: Option<String>,
     letter: Option<String>,
     confirm: Option<bool>,
+    key: Option<String>,
 }
 
-/// `POST /m/api/action {action, id, text?, letter?, confirm?}`: one of `ACTIONS`, nothing else.
+/// `POST /m/api/action {action, id, text?, letter?, confirm?, key?}`: `ACTIONS` or one fixed `screen-key`.
 pub async fn action(State(app): State<Shared>, headers: HeaderMap, Json(body): Json<ActionIn>) -> Response {
     if !same_origin(&headers) {
         return error(StatusCode::FORBIDDEN, "cross-origin request refused");
+    }
+    // The screen sheet exposes only individual navigation keys, never arbitrary terminal input,
+    // another role, a Coordinator target, or a task not present on this board.
+    if body.action == "screen-key" {
+        let id = body.id.as_deref().unwrap_or("");
+        let key = body.key.as_deref().unwrap_or("");
+        if !["up", "down", "left", "right", "enter", "esc", "1", "2", "3", "y", "n"].contains(&key) {
+            return error(StatusCode::BAD_REQUEST, "screen key not allowed");
+        }
+        if !board::valid_id(id) || !id.contains('/') || !app.snapshot.read().await.tasks.iter().any(|t| t.id == id && t.exited_at == 0) {
+            return error(StatusCode::BAD_REQUEST, "not an active task on this board");
+        }
+        return server::perform_action(&app, ActionBody {
+            action: "keys".to_string(), target: Some(id.to_string()), keys: Some(vec![key.to_string()]),
+            via: Some(VIA.to_string()), ..Default::default()
+        }, false).await;
     }
     if !ACTIONS.contains(&body.action.as_str()) {
         return (StatusCode::FORBIDDEN, Json(json!({"error": "this action is not for the phone", "action": body.action}))).into_response();
