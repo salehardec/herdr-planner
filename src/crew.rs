@@ -540,6 +540,10 @@ pub struct Store {
     /// The preset last applied, by level: `""` for «для меня», or a repository's name.
     #[serde(default)]
     pub active: BTreeMap<String, String>,
+    /// The five owner presets (PLN-107) have already been merged in. Once set, the file is the owner's: their
+    /// renames, edits and deletions are never undone, and the defaults are not re-added on the next start.
+    #[serde(default)]
+    pub seeded: bool,
 }
 
 pub const MAX_PRESETS: usize = 40;
@@ -903,19 +907,25 @@ pub fn read_store(cfg: &AppConfig) -> Store {
     read_store_at(&presets_file(cfg))
 }
 
+/// Writes the store to the presets file: the parent folder, then a temporary file and a rename.
+fn write_store_at(path: &Path, store: &Store) -> Result<(), String> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    let text = serde_json::to_string_pretty(store).map_err(|e| e.to_string())?;
+    let tmp = path.with_extension("json.new");
+    std::fs::write(&tmp, text).map_err(|e| format!("не записать {}: {e}", path.display()))?;
+    std::fs::rename(&tmp, &path).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 /// Reads the file, lets `f` change it, writes it back (a temporary file, then a rename) — all under one lock.
 pub fn edit_store<T>(cfg: &AppConfig, f: impl FnOnce(&mut Store) -> Result<T, String>) -> Result<T, String> {
     let _g = FILE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let path = presets_file(cfg);
     let mut store = read_store_at(&path);
     let out = f(&mut store)?;
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
-    }
-    let text = serde_json::to_string_pretty(&store).map_err(|e| e.to_string())?;
-    let tmp = path.with_extension("json.new");
-    std::fs::write(&tmp, text).map_err(|e| format!("не записать {}: {e}", path.display()))?;
-    std::fs::rename(&tmp, &path).map_err(|e| e.to_string())?;
+    write_store_at(&path, &store)?;
     Ok(out)
 }
 
@@ -995,6 +1005,115 @@ pub fn delete_preset(store: &mut Store, id: &str) -> Result<(), String> {
     }
     store.active.retain(|_, v| v != id);
     Ok(())
+}
+
+/* ───────── the defaults: the five presets under the owner's subscriptions ───────── */
+
+/// The five crew presets the planner offers for the owner's subscriptions (PLN-107). They hold the five roles a preset
+/// sets (coordinator, plan, reviewer, worker, light); the watcher is the board's own role and stays out of them. The
+/// `max`/`economy` templates are built separately from what the machine has, so the names here avoid «Максимум» and
+/// «Экономный». The first entry is the active one by default.
+pub fn default_presets() -> Vec<(String, BTreeMap<String, RoleSet>)> {
+    let row = |role: &'static str, agent: &'static str, effort: &'static str, fallback: &'static str| {
+        (role.to_string(), RoleSet { agent: agent.to_string(), effort: effort.to_string(), fallback: fallback.to_string() })
+    };
+    let pro = "omp/deepseek/deepseek-v4-pro";
+    let flash = "omp/deepseek/deepseek-v4-flash";
+    vec![
+        (
+            "Максимум (Codex)".to_string(),
+            [
+                row("coordinator", "codex/gpt-6.1-terra", "high", pro),
+                row("plan", "codex/gpt-6.1-terra", "", pro),
+                row("reviewer", "kimi/k3.1-pro", "", pro),
+                row("worker", "codex/gpt-6-astra", "high", pro),
+                row("light", flash, "", ""),
+            ]
+            .into_iter()
+            .collect(),
+        ),
+        (
+            "Kimi".to_string(),
+            [
+                row("coordinator", "kimi/k3.1-pro", "", pro),
+                row("plan", "kimi/k3.1-pro", "", pro),
+                row("reviewer", "codex/gpt-6.1-terra", "high", pro),
+                row("worker", "kimi/k3.1-pro", "", pro),
+                row("light", flash, "", ""),
+            ]
+            .into_iter()
+            .collect(),
+        ),
+        (
+            "Экономный (DeepSeek)".to_string(),
+            [
+                row("coordinator", pro, "medium", ""),
+                row("plan", pro, "", ""),
+                row("reviewer", pro, "high", ""),
+                row("worker", flash, "high", pro),
+                row("light", flash, "", ""),
+            ]
+            .into_iter()
+            .collect(),
+        ),
+        (
+            "Router — Codex".to_string(),
+            [
+                row("coordinator", "pi/orcarouter/openai/gpt-5.3-codex", "", "pi/orcarouter/qwen/qwen3.8-max"),
+                row("plan", "pi/orcarouter/openai/gpt-5.3-codex", "", "pi/orcarouter/qwen/qwen3.8-max"),
+                row("reviewer", "pi/orcarouter/qwen/qwen3.8-max", "", "pi/orcarouter/z-ai/glm-5.3"),
+                row("worker", "pi/orcarouter/openai/gpt-5.3-codex", "", "pi/orcarouter/qwen/qwen3.8-max"),
+                row("light", "pi/orcarouter/orcarouter/fusion-flash", "", ""),
+            ]
+            .into_iter()
+            .collect(),
+        ),
+        (
+            "Router — Qwen/GLM".to_string(),
+            [
+                row("coordinator", "pi/orcarouter/qwen/qwen3.8-max", "", "pi/orcarouter/z-ai/glm-5.3"),
+                row("plan", "pi/orcarouter/qwen/qwen3.8-max", "", "pi/orcarouter/z-ai/glm-5.3"),
+                row("reviewer", "pi/orcarouter/z-ai/glm-5.3", "", "pi/orcarouter/qwen/qwen3.8-max"),
+                row("worker", "pi/orcarouter/qwen/qwen3.8-max", "", "pi/orcarouter/z-ai/glm-5.3"),
+                row("light", "pi/orcarouter/orcarouter/fusion-flash", "", ""),
+            ]
+            .into_iter()
+            .collect(),
+        ),
+    ]
+}
+
+/// Merges the five default presets into the planner's own crew file once — on the first run, and on an upgrade to a
+/// build that adds them (PLN-107) — with «Максимум (Codex)» as the active one. A preset the owner already has under
+/// one of those names is kept, not duplicated. After the merge the `seeded` flag is set, so later starts leave the
+/// file alone: the presets are the owner's, and their edits, renames and deletions are never undone.
+pub fn seed_default_presets(cfg: &AppConfig) {
+    let _g = FILE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let path = presets_file(cfg);
+    let mut store = read_store_at(&path);
+    if store.seeded {
+        return;
+    }
+    let mut first = String::new();
+    for (name, roles) in default_presets() {
+        let id = if let Some(p) = store.presets.iter().find(|p| p.name.to_lowercase() == name.to_lowercase()) {
+            p.id.clone()
+        } else if let Ok(id) = add_preset(&mut store, &name, &roles) {
+            id
+        } else {
+            continue;
+        };
+        if first.is_empty() {
+            first = id;
+        }
+    }
+    if !first.is_empty() {
+        // «Максимум (Codex)» is the first default: it becomes the active preset, replacing a leftover active that
+        // pointed at removed (claude) models.
+        store.active.insert(String::new(), first);
+    }
+    store.seeded = true;
+    let _ = write_store_at(&path, &store);
 }
 
 #[cfg(test)]
@@ -1432,6 +1551,61 @@ mod tests {
         assert_eq!(read_store(&cfg).presets.len(), 1);
         assert!(dir.path().join("state/crew-presets.json").exists());
         assert!(!dir.path().join("state/crew-presets.json.new").exists());
+    }
+
+    #[test]
+    fn the_default_presets_seed_the_crew_file_once_with_the_first_active() {
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = crate::testutil::test_cfg(dir.path());
+        seed_default_presets(&cfg);
+        let store = read_store(&cfg);
+        let names: Vec<&str> = store.presets.iter().map(|p| p.name.as_str()).collect();
+        assert_eq!(names, vec!["Максимум (Codex)", "Kimi", "Экономный (DeepSeek)", "Router — Codex", "Router — Qwen/GLM"]);
+        assert_eq!(store.active[""], store.presets[0].id, "the first preset is active by default");
+        // the preset holds exactly the five preset roles, never the watcher
+        let keys: Vec<&str> = store.presets[0].roles.keys().map(|k| k.as_str()).collect();
+        assert_eq!(keys, vec!["coordinator", "light", "plan", "reviewer", "worker"]);
+        let m = &store.presets[0].roles;
+        assert_eq!((m["worker"].agent.as_str(), m["worker"].effort.as_str(), m["worker"].fallback.as_str()), ("codex/gpt-6-astra", "high", "omp/deepseek/deepseek-v4-pro"));
+        assert_eq!(m["reviewer"].agent, "kimi/k3.1-pro");
+        assert_eq!(m["coordinator"].agent, "codex/gpt-6.1-terra");
+        // Kimi: the reviewer is Codex (a different family than the worker), as the rule wants
+        assert_eq!(store.presets[1].roles["reviewer"].agent, "codex/gpt-6.1-terra");
+        assert_eq!(store.presets[1].roles["worker"].agent, "kimi/k3.1-pro");
+        // Экономный: the cheap worker is the DeepSeek flash with the pro spare, the reviewer stays DeepSeek
+        assert_eq!(store.presets[2].roles["worker"].agent, "omp/deepseek/deepseek-v4-flash");
+        assert_eq!(store.presets[2].roles["worker"].fallback, "omp/deepseek/deepseek-v4-pro");
+        assert_eq!(store.presets[2].roles["reviewer"].agent, "omp/deepseek/deepseek-v4-pro");
+        // the router presets hold their own light model, never the DeepSeek flash
+        assert_eq!(store.presets[3].roles["light"].agent, "pi/orcarouter/orcarouter/fusion-flash");
+        assert_eq!(store.presets[4].roles["worker"].agent, "pi/orcarouter/qwen/qwen3.8-max");
+        // seeding again leaves the owner's file alone
+        seed_default_presets(&cfg);
+        assert_eq!(read_store(&cfg).presets.len(), 5);
+    }
+
+    #[test]
+    fn seeding_merges_into_an_existing_file_and_sets_the_default_active() {
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = crate::testutil::test_cfg(dir.path());
+        // An older planner already wrote a crew file: the owner's own preset, active, with agents that are gone now.
+        let path = dir.path().join("state/crew-presets.json");
+        let mut store = Store::default();
+        let own = add_preset(&mut store, "Основной (Смешанный)", &BTreeMap::new()).unwrap();
+        store.active.insert(String::new(), own);
+        write_store_at(&path, &store).unwrap();
+
+        seed_default_presets(&cfg);
+
+        let store = read_store(&cfg);
+        let names: Vec<&str> = store.presets.iter().map(|p| p.name.as_str()).collect();
+        assert_eq!(names, vec!["Основной (Смешанный)", "Максимум (Codex)", "Kimi", "Экономный (DeepSeek)", "Router — Codex", "Router — Qwen/GLM"]);
+        // the owner's preset is kept, and «Максимум (Codex)» becomes the active default in its place
+        let maximus = store.presets.iter().find(|p| p.name == "Максимум (Codex)").unwrap();
+        assert_eq!(store.active[""], maximus.id);
+        // a second run leaves the merged file alone
+        seed_default_presets(&cfg);
+        assert_eq!(read_store(&cfg).presets.len(), 6);
     }
 
     fn cat(program: &str, names: &[&str], effort: &[&str]) -> Cat {
