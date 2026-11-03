@@ -4,7 +4,7 @@ name: CI
 #   web      vitest + tsc of the page
 #   bin      the page + the debug binary (built once, handed on as an artifact)
 #   rust     cargo test
-#   scripts  the installer and the launcher checks
+#   scripts  the installer and the launcher checks, the fixture's stand-in
 #   pages    the page in headless Chromium, one runner per part (a matrix), instead of six browsers on one runner
 # `checks` waits for all of them. A push to main (after a squash merge) runs only the quick parts: the same code has just
 # passed on its pull request. Caches: npm (setup-node), cargo registry/git/target (rust-cache, written by main only).
@@ -135,6 +135,11 @@ jobs:
           name: herdr-planner-debug
           path: handover
 
+      - name: Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
       - name: Installer and launcher checks
         run: |
           chmod +x handover/herdr-planner
@@ -142,6 +147,11 @@ jobs:
           cp -r handover/dist "$HOME/.cache/herdr-planner/web/dist"
           sh scripts/check-install.sh "$PWD/handover/herdr-planner"
           sh scripts/check-open.sh
+
+      # The fixture's stand-in writes the files the page checks read: a reader must never see one half-written, and two
+      # board commands must not lose each other's setting (PLN-108: a lost `merge.pr false` failed pages (ui3) here).
+      - name: The fixture's stand-in (node only, about 3 s)
+        run: node scripts/check-fixture.mjs
 
       - name: The shipyard wrapper (stand-ins for docker, no yard is contacted)
         run: sh scripts/check-yard.sh

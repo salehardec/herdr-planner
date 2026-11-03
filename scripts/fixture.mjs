@@ -81,10 +81,20 @@ function common(DATA, mods) {
   const D = DATA.dir;
   const log = (file, o) => fs.appendFileSync(path.join(D, 'log', file), JSON.stringify(o) + '\n');
   const readJson = (p, fallback) => { try { return JSON.parse(fs.readFileSync(p, 'utf8')); } catch (e) { return fallback; } };
+  // The planner reads these files on every refresh while a command is writing them: a read that lands between the
+  // truncate and the write of writeFileSync gets no JSON at all, and the planner takes the missing value for real
+  // (no tasks, a repository with no merge route). Write a neighbour and rename: a reader sees the old file or the new
+  // one, never a torn one. The name does not match anything the planner watches (`task.json`, `board.json`, …).
+  const atomicWrite = (p, text) => {
+    fs.mkdirSync(path.dirname(p), { recursive: true });
+    const tmp = p + '.tmp-' + crypto.randomUUID();
+    fs.writeFileSync(tmp, text);
+    fs.renameSync(tmp, p);
+  };
   const world = () => readJson(path.join(D, 'state', 'board.json'), null);
-  const save = (w) => fs.writeFileSync(path.join(D, 'state', 'board.json'), JSON.stringify(w, null, 1));
+  const save = (w) => atomicWrite(path.join(D, 'state', 'board.json'), JSON.stringify(w, null, 1));
   const coord = () => readJson(path.join(D, 'state', 'coordinator.json'), { status: 'idle', reply: '' });
-  const saveCoord = (c) => fs.writeFileSync(path.join(D, 'state', 'coordinator.json'), JSON.stringify(c));
+  const saveCoord = (c) => atomicWrite(path.join(D, 'state', 'coordinator.json'), JSON.stringify(c));
   const tag = (w, id) => { const i = id.lastIndexOf('/'); const repo = id.slice(0, i), n = id.slice(i + 1); return (w.keys[repo] || '#') + '-' + n; };
   // A task by id (`alpha/10`) or by its tag (`ALP-10`, as the board's own commands take it).
   const find = (w, ref) => w.rows.find((r) => r.id === ref) || w.rows.find((r) => tag(w, r.id) === ref);
@@ -106,21 +116,20 @@ function common(DATA, mods) {
   const nextN = (w, repo) => Math.max(0, ...w.rows.filter((r) => r.id.startsWith(repo + '/')).map((r) => Number(r.id.split('/')[1]) || 0)) + 1;
   // The board's repos.json (name -> folder) and repo-keys.json (`had`: key -> name).
   const publishRepos = (w) => {
-    fs.writeFileSync(path.join(D, 'board', 'repos.json'), JSON.stringify(w.folders, null, 1));
+    atomicWrite(path.join(D, 'board', 'repos.json'), JSON.stringify(w.folders, null, 1));
     const had = {};
     for (const [name, key] of Object.entries(w.keys)) had[key] = name;
     // An older key of alpha, kept in `had`: containers labelled AL9-4 belong to alpha/4 too.
     had.AL9 = 'alpha';
-    fs.writeFileSync(path.join(D, 'board', 'repo-keys.json'), JSON.stringify({ upgraded: true, had }, null, 1));
+    atomicWrite(path.join(D, 'board', 'repo-keys.json'), JSON.stringify({ upgraded: true, had }, null, 1));
   };
   // The task's own record: board/tasks/<repo>/<n>/task.json, as the board keeps it.
   const publishTask = (w, row) => {
     const [repo, n] = row.id.split('/');
     const m = (w.meta || {})[row.id] || {};
     const dirT = path.join(D, 'board', 'tasks', repo, n);
-    fs.mkdirSync(dirT, { recursive: true });
     const after = ((w.after || {})[row.id] || []).map((r) => resolve(w, r) || r);
-    fs.writeFileSync(path.join(dirT, 'task.json'), JSON.stringify({
+    atomicWrite(path.join(dirT, 'task.json'), JSON.stringify({
       id: row.id, repo, n: Number(n), root: (w.folders || {})[repo] || '', title: row.title,
       description: m.description || '', owner: 'me', app: row.app, stage: row.stage, state: row.state,
       created: m.created || 0, at: m.at || m.created || 0, settings: m.settings || {}, model: m.model ?? null,
@@ -166,14 +175,26 @@ function common(DATA, mods) {
     // The board's real level files, which the planner reads for a scope's own instructions (its `show` joins levels):
     // settings/config.json for you and the repositories, board/tasks/<repo>/<n>/task.json for a task.
     const settingsFile = path.join(D, 'settings', 'config.json');
-    // The planner re-reads settings/config.json on every refresh while a `set` is writing it: a read that lands
-    // between the truncate and the write sees an empty file and takes the merge route as unset (no MR handoff).
-    // Write through a temp file and rename, so a concurrent reader sees the old or the new file, never a torn one.
-    const atomicWrite = (p, text) => {
-      fs.mkdirSync(path.dirname(p), { recursive: true });
-      const tmp = p + '.tmp-' + crypto.randomUUID();
-      fs.writeFileSync(tmp, text);
-      fs.renameSync(tmp, p);
+    // A `set` reads the whole store, changes one name and writes it back. Two board commands may overlap (the page
+    // asks for one while another runs, and a check issues its own), and without a lock the later write is built from a
+    // store read before the earlier one: the earlier change is gone for good. A lost `merge.pr false` turned a GitLab
+    // checkout refusal back into the board's «Одобрить», and pages (ui3) failed on CI for a whole run (PLN-108). The
+    // lock covers the read, the write and the mirror; a command killed in the middle leaves a file older than any `set`.
+    const lockFile = file + '.lock';
+    const withStoreLock = (fn) => {
+      let fd;
+      for (let tries = 0; ; tries++) {
+        try { fd = fs.openSync(lockFile, 'wx'); break; } catch (e) {
+          if (e.code !== 'EEXIST') throw e;
+          try { if (Date.now() - fs.statSync(lockFile).mtimeMs > 5000) fs.unlinkSync(lockFile); } catch { /* taken or gone */ }
+          if (tries > 2000) throw new Error('herdr-projects: the settings are locked by ' + lockFile);
+          sleepMs(5);
+        }
+      }
+      try { return fn(); } finally {
+        try { fs.closeSync(fd); } catch { /* closed */ }
+        try { fs.unlinkSync(lockFile); } catch { /* gone */ }
+      }
     };
     const mirror = () => {
       const store = load();
@@ -267,7 +288,7 @@ function common(DATA, mods) {
       }
       return null;
     };
-    const set = (name, value, repo, task) => {
+    const set = (name, value, repo, task) => withStoreLock(() => {
       const store = load();
       const problem = refuse(store, name, value, repo);
       if (problem) return { error: problem };
@@ -277,15 +298,15 @@ function common(DATA, mods) {
       atomicWrite(file, JSON.stringify(store, null, 1));
       mirror();
       return { ok: true };
-    };
-    const unset = (name, repo, task) => {
+    });
+    const unset = (name, repo, task) => withStoreLock(() => {
       const store = load();
       const level = levelOf(repo, task);
       if (store[level]) delete store[level][name];
       atomicWrite(file, JSON.stringify(store, null, 1));
       mirror();
       return { ok: true };
-    };
+    });
     return { show, set, unset };
   };
   return { boardSettings, D, fs, path, log, readJson, world, save, coord, saveCoord, tag, find, say, resolve, plain, said, sleepMs, uuid, nextN, publishRepos, publishTask, suggestKey, registerFolder };

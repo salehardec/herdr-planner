@@ -7529,6 +7529,12 @@ const smallTargets = () => evalJs(`(() => [...document.querySelectorAll('.mob bu
   .map(([e, r]) => (e.dataset.act || e.id || e.className || e.tagName) + ':' + Math.round(r.height)))()`);
 
 section('light page', async () => {
+  // delta is the fixture's GitLab repository (`merge.pr false`, see scripts/fixture-notes.md): the board's settings file
+  // keeps that route, and the projection takes it on a refresh. A lost or half-read file is a bug of the checks, not of
+  // the page (PLN-108: the stand-in wrote the file in place, and pages (ui3) failed on CI for a whole run while the yard
+  // was green). `scripts/check-fixture.mjs` holds the stand-in to that; this line names the file when it does not.
+  const gitlabRoute = () => { try { return JSON.parse(readFileSync(join(fixture, 'settings', 'config.json'), 'utf8'))?.repos?.delta?.merge?.pr; } catch (e) { return e.message; } };
+  check('the fixture keeps the GitLab route of delta: merge.pr false in the board\'s settings file', gitlabRoute() === false, String(gitlabRoute()));
   for (const mode of ['dark', 'light']) {
     await openPhone(PHONE, mode);
     const at = `phone ${PHONE.join('×')} ${mode}`;
@@ -7545,7 +7551,7 @@ section('light page', async () => {
     check(`${at}: a failed task offers «Повторить» and a word to the agent`, await evalJs(`(() => { const c = document.querySelector('${phoneCard('failed:alpha/8')}'); return !!c.querySelector('[data-act="retry"]') && !!c.querySelector('[data-act="tell"]'); })()`));
     check(`${at}: nothing the phone may not do is offered: no «всё равно», stop, finish, fix`, !(await exists('[data-act="anyway"], [data-act="stop"], [data-act="finish"], [data-act="fix"], [data-act="keys"]')));
     check(`${at}: a merge past a failed review is the computer's: no approve on it, and it says so`, await evalJs(`(() => { const c = document.querySelector('${phoneCard('permission:alpha/5')}'); return !!c && !c.querySelector('[data-act="approve"]') && c.querySelector('.hintline')?.innerText.includes('на компьютере'); })()`));
-    check(`${at}: a GitLab checkout refusal offers the Coordinator and the MR instead of approve`, await evalJs(`(() => { const c = document.querySelector('${phoneCard('approval:delta/1')}'); const note = c?.querySelector('.hintline')?.innerText || ''; return !!c && !c.querySelector('[data-act="approve"]') && note.includes('Сливается через MR в GitLab') && note.includes('Координатору') && c.querySelector('[data-act="pr"]')?.href === 'https://gitlab.example.org/team/delta/-/merge_requests/4'; })()`), await text(phoneCard('approval:delta/1')));
+    check(`${at}: a GitLab checkout refusal offers the Coordinator and the MR instead of approve`, await waitFor(`(() => { const c = document.querySelector('${phoneCard('approval:delta/1')}'); const note = c?.querySelector('.hintline')?.innerText || ''; return !!c && !c.querySelector('[data-act="approve"]') && note.includes('Сливается через MR в GitLab') && note.includes('Координатору') && c.querySelector('[data-act="pr"]')?.href === 'https://gitlab.example.org/team/delta/-/merge_requests/4'; })()`, 12000), await text(phoneCard('approval:delta/1')));
     check(`${at}: a finger can hit every button (44 px)`, (await smallTargets()).length === 0, JSON.stringify(await smallTargets()));
     check(`${at}: the cards do not stick out of the screen`, await evalJs(`[...document.querySelectorAll('.card')].every((c) => { const r = c.getBoundingClientRect(); return r.left >= 0 && r.right <= innerWidth + 1; })`));
     await shot(`m-wait-${mode}.png`);
@@ -7774,6 +7780,9 @@ section('light page actions', async () => {
   await twoPresses(`${checkoutCard} [data-act="approve"]`);
   check('the repeated merge approval after a checkout fix reaches the board', await waitLog(() => calls().some((c) => c.argv[0] === 'approve' && c.argv[1] === 'delta/1'), 15000), JSON.stringify(lastCall()));
   check('and the retried card leaves the list', await waitFor(`!document.querySelector('${checkoutCard}')`, 15000));
+  // Back to the fixture's own route: what comes after reads the board as the fixture made it (a second go of a section,
+  // «Ждёт тебя» on the computer). The task itself stays approved, as the other tasks of this section do.
+  execFileSync(join(fixture, 'bin', 'herdr-projects'), ['set', 'merge.pr', 'false', '--repo', 'delta']);
   // a plan is approved with two presses, like on the computer
   const planNext = await evalJs(`(() => { const all = [...document.querySelectorAll('#p-wait [data-card]')]; const at = all.findIndex((e) => e.dataset.card === 'plan:alpha/3'); return all[(at + 1) % all.length].dataset.card; })()`);
   await click(`${phoneCard('plan:alpha/3')} [data-act="plan-open"]`);

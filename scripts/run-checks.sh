@@ -30,6 +30,9 @@ if [ -z "${PAGE_ONLY:-}" ]; then
   sh scripts/check-install.sh "$TARGET/debug/herdr-planner"
   sh scripts/check-open.sh
 fi
+# The fixture's stand-in must write the files the planner reads the way the page checks need them (PLN-108): a reader
+# never sees one half-written, and two board commands at once do not lose each other's setting. Node only, about 3 s.
+node scripts/check-fixture.mjs
 # The page checks run side by side, each against its own fixture board, its own server and its own
 # headless browser: the Galaxy in nine shards (the sections do not depend on each other), a big world
 # (50 universes / 500 planets), and the login. Their output is kept apart and printed in order.
