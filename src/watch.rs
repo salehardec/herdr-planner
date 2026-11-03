@@ -24,10 +24,11 @@ pub enum Kind {
     Memory,
 }
 
-/// What a changed path means, or nothing (noise such as logs and locks).
-pub fn classify(path: &Path, chat_dir: &Path, theme_dir: &Path) -> Option<Kind> {
+/// What a changed path means, or nothing (noise such as logs and locks). `chat_dirs` are the folders
+/// with the Coordinator's transcripts: they are not always inside one root (see `history::transcript_dirs`).
+pub fn classify(path: &Path, chat_dirs: &[PathBuf], theme_dir: &Path) -> Option<Kind> {
     let name = path.file_name()?.to_str()?;
-    if path.starts_with(chat_dir) {
+    if chat_dirs.iter().any(|d| path.starts_with(d)) {
         return (name.ends_with(".jsonl")).then_some(Kind::Chat);
     }
     if path.starts_with(theme_dir) {
@@ -59,11 +60,11 @@ fn is_memory_file(path: &Path) -> bool {
 /// Starts the watcher; the returned guard must be kept alive. Folders that do not exist (yet) are skipped.
 pub fn start(app: Shared) -> Option<Guard> {
     let cfg = app.cfg.clone();
-    let chat_dir = history::transcript_dir(&cfg);
+    let chat_dirs = history::transcript_dirs(&cfg);
     let theme_dir = theme::theme_dir();
     let handle = tokio::runtime::Handle::current();
     let app2 = app.clone();
-    let (chat2, theme2) = (chat_dir.clone(), theme_dir.clone());
+    let (chat2, theme2) = (chat_dirs.clone(), theme_dir.clone());
     let mut debouncer = new_debouncer(Duration::from_millis(300), move |res: DebounceEventResult| {
         let Ok(events) = res else { return };
         let mut board = false;
@@ -109,7 +110,9 @@ pub fn start(app: Shared) -> Option<Guard> {
     watch(cfg.data_dir.join("tasks"), RecursiveMode::Recursive);
     watch(cfg.data_dir.join("coordinator/default"), RecursiveMode::NonRecursive);
     watch(cfg.data_dir.clone(), RecursiveMode::NonRecursive);
-    watch(chat_dir, RecursiveMode::NonRecursive);
+    for dir in chat_dirs {
+        watch(dir, RecursiveMode::NonRecursive);
+    }
     watch(crate::memory::galaxy_dir(&cfg), RecursiveMode::NonRecursive);
     for r in crate::memory::universes(&cfg) {
         watch(std::path::Path::new(&r.root).join(crate::memory::UNIVERSE_DIR), RecursiveMode::NonRecursive);
@@ -132,22 +135,24 @@ mod tests {
 
     #[test]
     fn only_meaningful_files_count() {
-        let chat = Path::new("/c/chat");
+        let chat = vec![PathBuf::from("/c/chat")];
         let theme = Path::new("/t");
-        assert_eq!(classify(Path::new("/d/tasks/a/1/task.json"), chat, theme), Some(Kind::Board));
-        assert_eq!(classify(Path::new("/d/tasks/a/1/closing.md"), chat, theme), Some(Kind::Board));
-        assert_eq!(classify(Path::new("/d/tasks/a/1/runner.log"), chat, theme), None);
-        assert_eq!(classify(Path::new("/d/keeper.log"), chat, theme), None);
-        assert_eq!(classify(Path::new("/d/repos.json"), chat, theme), Some(Kind::Board));
-        assert_eq!(classify(Path::new("/c/chat/s.jsonl"), chat, theme), Some(Kind::Chat));
-        assert_eq!(classify(Path::new("/c/chat/notes.txt"), chat, theme), None);
-        assert_eq!(classify(Path::new("/t/colors.toml"), chat, theme), Some(Kind::Theme));
-        assert_eq!(classify(Path::new("/h/.cache/omarchy/agent-usage/codex-limits.json"), chat, theme), Some(Kind::Limits));
-        assert_eq!(classify(Path::new("/h/.herdr-projects/memory/galaxy/gitlab.md"), chat, theme), Some(Kind::Memory));
-        assert_eq!(classify(Path::new("/p/repo/docs/memory/decision.md"), chat, theme), Some(Kind::Memory));
-        assert_eq!(classify(Path::new("/p/repo/docs/other/decision.md"), chat, theme), None);
-        assert_eq!(classify(Path::new("/p/repo/docs/memory/x.txt"), chat, theme), None);
-        assert_eq!(classify(Path::new("/p/repo/AGENTS.md"), chat, theme), None);
-        assert_eq!(classify(Path::new("/d/coordinator/default/chat/AGENTS.md"), chat, theme), None, "the board's own files are not ours to watch");
+        assert_eq!(classify(Path::new("/d/tasks/a/1/task.json"), &chat, theme), Some(Kind::Board));
+        assert_eq!(classify(Path::new("/d/tasks/a/1/closing.md"), &chat, theme), Some(Kind::Board));
+        assert_eq!(classify(Path::new("/d/tasks/a/1/runner.log"), &chat, theme), None);
+        assert_eq!(classify(Path::new("/d/keeper.log"), &chat, theme), None);
+        assert_eq!(classify(Path::new("/d/repos.json"), &chat, theme), Some(Kind::Board));
+        assert_eq!(classify(Path::new("/c/chat/s.jsonl"), &chat, theme), Some(Kind::Chat));
+        assert_eq!(classify(Path::new("/c/chat/notes.txt"), &chat, theme), None);
+        assert_eq!(classify(Path::new("/t/colors.toml"), &chat, theme), Some(Kind::Theme));
+        assert_eq!(classify(Path::new("/h/.cache/omarchy/agent-usage/codex-limits.json"), &chat, theme), Some(Kind::Limits));
+        assert_eq!(classify(Path::new("/h/.herdr-projects/memory/galaxy/gitlab.md"), &chat, theme), Some(Kind::Memory));
+        assert_eq!(classify(Path::new("/p/repo/docs/memory/decision.md"), &chat, theme), Some(Kind::Memory));
+        assert_eq!(classify(Path::new("/p/repo/docs/other/decision.md"), &chat, theme), None);
+        assert_eq!(classify(Path::new("/p/repo/docs/memory/x.txt"), &chat, theme), None);
+        assert_eq!(classify(Path::new("/p/repo/AGENTS.md"), &chat, theme), None);
+        assert_eq!(classify(Path::new("/d/coordinator/default/chat/AGENTS.md"), &chat, theme), None, "the board's own files are not ours to watch");
+        let two = vec![PathBuf::from("/one"), PathBuf::from("/two")];
+        assert_eq!(classify(Path::new("/two/s.jsonl"), &two, theme), Some(Kind::Chat), "every folder of the program counts");
     }
 }
