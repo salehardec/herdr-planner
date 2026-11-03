@@ -637,6 +637,10 @@ struct Homes {
     claude: PathBuf,
     /// `QWEN_HOME` or `~/.qwen`: `<home>/projects/<folder>/chats`.
     qwen: PathBuf,
+    /// `QWEN_RUNTIME_DIR`: qwen puts `projects/` here instead, and this folder wins over
+    /// `QWEN_HOME` (Storage.getRuntimeBaseDir of qwen 0.26.6). A relative path is resolved
+    /// against the folder qwen was started in, as qwen itself does.
+    qwen_runtime: Option<PathBuf>,
 }
 
 impl Homes {
@@ -654,8 +658,30 @@ impl Homes {
             codex: env_path("CODEX_HOME", home.join(".codex")),
             claude: env_path("CLAUDE_CONFIG_DIR", home.join(".claude")),
             qwen: env_path("QWEN_HOME", home.join(".qwen")),
+            // The runtime folder is the one qwen 0.26.6 writes to when it is set; the home folder
+            // is kept for the sessions of the days before it was.
+            qwen_runtime: std::env::var_os("QWEN_RUNTIME_DIR")
+                .filter(|v| !v.is_empty())
+                .map(PathBuf::from),
             home,
         }
+    }
+
+    /// The folders qwen keeps `projects/` in: the runtime one first (it wins when set), then the
+    /// home one. A relative `QWEN_RUNTIME_DIR` is a path from qwen's own working folder.
+    fn qwen_roots(&self, cwd: &Path) -> Vec<PathBuf> {
+        let mut roots = Vec::new();
+        if let Some(rt) = &self.qwen_runtime {
+            let root = match rt.strip_prefix("~") {
+                Ok(rest) => self.home.join(rest),
+                Err(_) if rt.is_absolute() => rt.clone(),
+                Err(_) => cwd.join(rt),
+            };
+            roots.push(root);
+        }
+        roots.push(self.qwen.clone());
+        roots.dedup();
+        roots
     }
 
     /// omp's blob store: an image block names a file here by its hash.
@@ -706,7 +732,13 @@ fn session_dirs(r: &Homes, cwd: &Path, kind: &str) -> Vec<PathBuf> {
         dirs.push(r.claude.join("projects").join(project_folder(cwd)));
     }
     if all || kind == "qwen" {
-        dirs.push(r.qwen.join("projects").join(project_folder(cwd)).join("chats"));
+        // qwen 0.26.6 writes to `QWEN_RUNTIME_DIR` when it is set and keeps `QWEN_HOME` for the
+        // sessions of the days before: both folders of the chat are read, the runtime one first.
+        dirs.extend(
+            r.qwen_roots(cwd)
+                .into_iter()
+                .map(|root| root.join("projects").join(project_folder(cwd)).join("chats")),
+        );
     }
     dirs
 }
@@ -1479,6 +1511,7 @@ mod tests {
             codex: home.join(".codex"),
             claude: home.join(".claude"),
             qwen: home.join(".qwen"),
+            qwen_runtime: None,
         };
         (r, cwd)
     }
@@ -1561,6 +1594,55 @@ mod tests {
             "qwen's file is in the chat folder, found without the id"
         );
         assert!(found.dirs.contains(&qwen_file.parent().unwrap().to_path_buf()), "and the folder is watched");
+    }
+
+    #[test]
+    fn qwen_runtime_dir_is_the_folder_its_sessions_are_in() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut r, cwd) = homes(dir.path());
+        // qwen 0.26.6 with QWEN_RUNTIME_DIR set keeps its conversations in the runtime folder,
+        // not in QWEN_HOME.
+        r.qwen_runtime = Some(dir.path().join("run"));
+        let runtime_file = write_session(
+            &dir.path()
+                .join("run")
+                .join("projects")
+                .join(project_folder(&cwd))
+                .join("chats")
+                .join("runtime.jsonl"),
+        );
+        let state = serde_json::json!({ "run": { "kind": "qwen" }, "session": "runtime" });
+        let found = places(&r, &cwd, &state);
+        assert!(
+            found.dirs.contains(&runtime_file.parent().unwrap().to_path_buf()),
+            "the runtime folder is watched"
+        );
+        assert_eq!(
+            transcript_files(&found),
+            vec![runtime_file.clone()],
+            "the conversation is read from the runtime folder"
+        );
+
+        // A session from the days without it stays readable in the home folder.
+        let home_file = write_session(&r.qwen.join("projects").join(project_folder(&cwd)).join("chats").join("old.jsonl"));
+        let found = places(&r, &cwd, &state);
+        let files = transcript_files(&found);
+        assert!(files.contains(&home_file), "the older conversation is not lost");
+        assert!(files.contains(&runtime_file));
+    }
+
+    #[test]
+    fn a_relative_qwen_runtime_dir_starts_from_the_chat_folder() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut r, cwd) = homes(dir.path());
+        r.qwen_runtime = Some(PathBuf::from(".qwen-run"));
+        assert_eq!(
+            r.qwen_roots(&cwd),
+            vec![cwd.join(".qwen-run"), r.qwen.clone()],
+            "qwen resolves the path from the folder it was started in, and the home folder is still read"
+        );
+        r.qwen_runtime = Some(PathBuf::from("~/elsewhere"));
+        assert_eq!(r.qwen_roots(&cwd)[0], r.home.join("elsewhere"), "a home-relative path is the agent's home");
     }
 
     #[test]
