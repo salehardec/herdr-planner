@@ -115,7 +115,13 @@ The planner works with its own board only. The stand-ins still answer as a board
   (home or `--repo`) gives the board's shape `{settings:[{name,kind,value,from,place,own,note}]}`: own values
   (`from: you|repo`), inherited ones (`own: false`) and built-in ones (`from: built in`). `set` refuses a `*.agent`
   the program does not take and an `*.effort` the program does not take, with the words of the board; `set` also
-  writes `repo.key`. `doctor` prints one line per program (`✓ omp 2.1.303, signed in (…)`, `✗ codex …, not signed
+  writes `repo.key`. One `set` takes a lock file next to the store (`board-settings.json.lock`, stale after 5 s) around
+  its read-modify-write, so two board commands at once cannot lose each other's level: a lost `merge.pr false` turned a
+  GitLab checkout refusal back into the board's «Одобрить» and failed `pages (ui3)` on CI (PLN-108). Every file the
+  planner reads — the store, `settings/config.json`, `board.json`, `repos.json`, `repo-keys.json`, `task.json`,
+  `coordinator.json` — is written to a neighbour and renamed, never truncated in place: the planner re-reads them on a
+  refresh, and a read that landed inside the write saw no JSON at all. `scripts/check-fixture.mjs` hammers both
+  properties (a reader never sees a torn file, no level is lost) on every check run. `doctor` prints one line per program (`✓ omp 2.1.303, signed in (…)`, `✗ codex …, not signed
   in`), exits 1 when a line is ✗ (as the real board does). `models <prog>` also prints an `Effort (…): low, medium…`
   paragraph (omp, codex).
   `add TITLE --repo NAME|/abs/path [--worker.agent X
