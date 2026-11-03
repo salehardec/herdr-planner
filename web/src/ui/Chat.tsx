@@ -14,6 +14,7 @@ import { post, refreshNow, onChatEvent } from '../api';
 import { fetchScreen, todoToDraft } from '../actions';
 import { t, tn } from '../i18n';
 import { sigOf } from '../chat-read';
+import { keepFollowing } from '../chat-follow';
 import { markRead, markReadToEnd, SEE_MS, unreadTurns, windowActive } from '../chat-unread';
 import { dayKey, dayTimeOf, isToday, timeOf } from '../util/dates';
 import { Gl } from './Gl';
@@ -185,6 +186,8 @@ export function Chat(): JSX.Element {
   const jumped = useRef(false);
   const opened = useRef(false);
   const navUntil = useRef(0);
+  /** Where the log stood the last time the page kept it at the end: a reader who moved it since is not pulled back. */
+  const pinned = useRef<number | null>(null);
   /** The jump to the first unread ends at the bottom (the unread are the last answers): the log keeps following meanwhile. */
   const navToEnd = useRef(false);
   /** The reader takes the log into their own hands: the jump is over, and the log stays where they leave it. */
@@ -203,7 +206,15 @@ export function Chat(): JSX.Element {
     const el = logRef.current;
     if (!el) return;
     if (anchor.current) { el.scrollTop = anchor.current.top + (el.scrollHeight - anchor.current.h); anchor.current = null; }
-    else if (stuck.value) el.scrollTop = el.scrollHeight;
+    else if (stuck.value) {
+      // A log the reader moved since the last look is not pinned to the end by a history that lands right then: the
+      // scroll event of that move may be dispatched a frame later than the turns (a wheel, «К последним», a jump).
+      // A jump that ends at the bottom keeps following on its own until it is there (`navToEnd`).
+      const nav = Date.now() < navUntil.current && navToEnd.current;
+      if (nav || keepFollowing(stuck.value, pinned.current, el.scrollTop)) el.scrollTop = el.scrollHeight;
+      else stuck.value = false;
+    }
+    if (stuck.value) pinned.current = el.scrollTop;
     if (open && active && readsEnd(el)) markReadToEnd();
   }, [c.turns, pending.map((p) => p.id).join(','), reply, open, busy, c.loading, active]);
 
@@ -285,6 +296,8 @@ export function Chat(): JSX.Element {
     // (the first frames of a scroll away from the end still look like the end: they must not pin the log to it again)
     if (Date.now() > navUntil.current) stuck.value = atEnd;
     else if (!navToEnd.current) stuck.value = false;
+    // (the place of a log that is followed is where the next turn will grow it from)
+    if (stuck.value && atEnd) pinned.current = el.scrollTop;
     // Reaching the end acknowledges every answer, rather than waiting for an observer timer to fire.
     if (open && active && readsEnd(el)) markReadToEnd();
     // (not on the way to the first unread: loading older turns there would pull the log back to where it started)
@@ -296,6 +309,7 @@ export function Chat(): JSX.Element {
     if (!ta) return;
     comp.close();
     stuck.value = true;
+    pinned.current = null;   // a follow of the page's own: the next turns are pinned, wherever the reader stood before
     const text = ta.value;
     const ok = await send(text);
     if (ok) { ta.value = ''; fitText(ta); clearDraft(); }
@@ -471,6 +485,7 @@ export function Chat(): JSX.Element {
       {!stuck.value && showTurns && (
         <button class={`btn sm tolast ${unread.length ? 'news' : ''}`} id="tolast" type="button" aria-live="polite" onClick={() => {
           stuck.value = true;
+          pinned.current = null;   // «down to the last» is the reader asking to follow again
           const el = logRef.current;
           if (el) el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' });
           void loadLatest();

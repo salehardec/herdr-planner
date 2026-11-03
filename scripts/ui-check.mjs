@@ -7430,6 +7430,20 @@ section('chat unread', async () => {
   await waitFor(`!!document.querySelector('#clog .turn[data-n="${heldAnswer}"]')`, CHAT_WAIT);
   await quiet();
   check('and the log is not pulled down to it', (await evalJs(dist)) >= held && (await evalJs(dist)) > 200, `${held} -> ${await evalJs(dist)}`);
+  // (PLN-109: pages (ui2) on CI failed right here) A history that lands in the same frame as the reader's move must not pull
+  // them back: the browser dispatches the scroll event of that move a frame later, so the move is known by the place of the log.
+  await click('#tolast');
+  await waitFor(`${dist} < 24`, CHAT_WAIT);
+  const moved = await evalJs(`(() => {
+    const l = document.querySelector('#clog');
+    l.dispatchEvent(new WheelEvent('wheel', { bubbles: true }));
+    l.scrollTop = l.scrollHeight - l.clientHeight - 700;
+    window.planner.replayChat();
+    return l.scrollHeight - l.scrollTop - l.clientHeight;
+  })()`);
+  check('a history that lands with a move away does not pull the reader back', await waitFor(`${dist} >= 650 && !!document.querySelector('#tolast')`, 8000), String(moved));
+  await click('#tolast');
+  await waitFor(`${dist} < 24`, CHAT_WAIT);
   // The same when the reader takes over almost at once and the answer comes right after.
   await click('#tolast');
   await waitFor(`${dist} < 24`, CHAT_WAIT);

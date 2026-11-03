@@ -1,9 +1,17 @@
 //! The Coordinator's conversation, read from its own transcript.
 //!
-//! The board has no "chat history" command, but a Coordinator's JSONL transcript can be read from the
-//! planner's transcript folder. The planner cuts it into turns: what the human wrote and the words the
-//! Coordinator answered with. Tool calls and thinking are left out. `HERDR_PLANNER_TRANSCRIPTS` points
-//! the fixture at its transcript root. Without transcript files the page keeps showing the window's tail.
+//! The board has no "chat history" command, but the Coordinator's program saves its conversation in its
+//! own folder, and `state.json` says which program it is and which conversation is its own. The planner
+//! finds that file (see [`places`]) and cuts it into turns: what the human wrote and the words the
+//! Coordinator answered with. Tool calls and thinking are left out.
+//!
+//! Two record shapes are read: the one where a record's type is its role (`{"type":"user", …}`), and
+//! the one omp and pi write, where every record is a message and the role is inside it
+//! (`{"type":"message","message":{"role":"user", …}}`). Images are either blocks with the bytes in
+//! them or blocks naming a file of the program's blob store (`blob:sha256:…`).
+//!
+//! `HERDR_PLANNER_TRANSCRIPTS` points the fixture at its transcript root. Without transcript files the
+//! page keeps showing the window's tail.
 
 use crate::config::{home, AppConfig};
 use crate::db::{chat_row_hash, ChatHit, ChatTurnRow, Db};
@@ -72,10 +80,9 @@ pub fn parse(text: &str) -> Vec<Turn> {
     let mut running = false;
     let mut seen = HashSet::new();
     for (line_no, line) in text.lines().enumerate() {
-        // Skip the big records (requests, snapshots) without parsing them.
-        let wanted = line.contains("\"type\":\"user\"")
-            || line.contains("\"type\":\"assistant\"")
-            || line.contains("\"queued_command\"");
+        // A line without a type is not a record of a conversation (a torn tail, a line of a log):
+        // the big snapshots and requests are parsed and then passed over by the match below.
+        let wanted = line.contains("\"type\"") || line.contains("\"queued_command\"");
         if !wanted {
             continue;
         }
@@ -86,25 +93,41 @@ pub fn parse(text: &str) -> Vec<Turn> {
         if v.get("isSidechain").and_then(Value::as_bool) == Some(true) {
             continue;
         }
-        if let Some(uuid) = v.get("uuid").and_then(Value::as_str).filter(|s| !s.is_empty()) {
-            if !seen.insert(uuid.to_string()) {
+        if let Some(id) = record_id(&v) {
+            if !seen.insert(id.to_string()) {
                 continue;
             }
         }
-        let at = v
-            .get("timestamp")
-            .and_then(Value::as_str)
-            .map(parse_time)
-            .unwrap_or(0);
+        let at = record_time(&v);
         match v.get("type").and_then(Value::as_str) {
             Some("user") => {
-                if v.get("isMeta").and_then(Value::as_bool) == Some(true) {
+                if v.get("isMeta").and_then(Value::as_bool) == Some(true) || not_a_turn(&v) {
                     continue;
                 }
-                if let Some((q, images)) = human_text(v.pointer("/message/content")) {
-                    open_turn(&mut turns, q, images, line_no, at, false, &mut running);
-                }
+                // The older shape keeps the message in `content`, qwen's in `parts`; qwen also says in
+                // `systemPayload.displayText` what the human typed when a hook added context to it.
+                let body = v.pointer("/message/content").or_else(|| v.pointer("/message/parts"));
+                let shown = v
+                    .pointer("/systemPayload/displayText")
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty());
+                let found = human_text(body);
+                let (q, images) = match (shown, found) {
+                    (Some(s), Some((_, images))) => (s.to_string(), images),
+                    (Some(s), None) => (s.to_string(), Vec::new()),
+                    (None, Some(found)) => found,
+                    (None, None) => continue,
+                };
+                // qwen marks in `subtype` the words typed while the Coordinator works; the older shape
+                // writes every message as a record of its own, and the page numbers the turns by them.
+                let queued = v.get("subtype").and_then(Value::as_str) == Some("mid_turn_user_message");
+                open_turn(&mut turns, q, images, line_no, at, queued, &mut running);
             }
+            Some("tool_result") => {}
+            // Codex: one record per item of the run, the words inside `payload`.
+            Some("response_item") => codex_item(&v, at, line_no, &mut turns, &mut running),
+            Some("event_msg") => codex_event(&v, at, line_no, &mut turns, &mut running),
             // A message sent while the Coordinator was busy waits in a queue and
             // reaches the session as this attachment, with no `user` record.
             Some("attachment") => {
@@ -115,38 +138,191 @@ pub fn parse(text: &str) -> Vec<Turn> {
                     }
                 }
             }
-            Some("assistant") => {
-                let Some(turn) = turns.last_mut() else {
-                    continue;
-                };
-                let stop = v.pointer("/message/stop_reason").and_then(Value::as_str);
-                if let Some(Value::Array(blocks)) = v.pointer("/message/content") {
-                    let calls = blocks
-                        .iter()
-                        .any(|b| b.get("type").and_then(Value::as_str) == Some("tool_use"));
-                    if stop == Some("end_turn") || (stop.is_none() && !calls) {
-                        running = false;
-                        turn.doing.clear();
-                    }
-                    for b in blocks {
-                        match b.get("type").and_then(Value::as_str) {
-                            Some("text") => {
-                                let t = b.get("text").and_then(Value::as_str).unwrap_or("").trim();
-                                if !t.is_empty() {
-                                    turn.a = clip(t, MAX_ANSWER);
-                                    turn.at_a = at;
-                                }
-                            }
-                            Some("tool_use") => turn.doing = doing_of(b),
-                            _ => {}
-                        }
+            Some("assistant") => answer(&v, at, &mut turns, &mut running),
+            // omp, pi and qwen put the role inside the record; a tool result is no turn of its own.
+            Some("message") => match v.pointer("/message/role").and_then(Value::as_str) {
+                Some("user") => {
+                    if let Some((q, images)) = human_text(v.pointer("/message/content")) {
+                        // The record does not say whether it was typed during a run: a notice that
+                        // arrives while the Coordinator works belongs to that run, a human's words
+                        // keep their own place.
+                        open_turn(&mut turns, q, images, line_no, at, running, &mut running);
                     }
                 }
-            }
+                Some("assistant") => answer(&v, at, &mut turns, &mut running),
+                _ => {}
+            },
             _ => {}
         }
     }
     turns
+}
+
+/// A record's own id: `uuid` in the older shape, `id` in omp's and pi's.
+fn record_id(v: &Value) -> Option<&str> {
+    ["uuid", "id"]
+        .iter()
+        .filter_map(|k| v.get(*k).and_then(Value::as_str))
+        .find(|s| !s.is_empty())
+}
+
+/// A record's time: the ISO stamp at its top, else the milliseconds omp puts beside the message.
+fn record_time(v: &Value) -> u64 {
+    if let Some(s) = v.get("timestamp").and_then(Value::as_str) {
+        return parse_time(s);
+    }
+    v.pointer("/message/timestamp").and_then(Value::as_u64).unwrap_or(0)
+}
+
+/// A record that is a note of the program rather than a message of the conversation: qwen's goal
+/// runtime writes human-shaped records the Coordinator did not receive.
+fn not_a_turn(v: &Value) -> bool {
+    matches!(
+        v.get("provenance").and_then(Value::as_str),
+        Some("goal_runtime" | "system" | "hook")
+    )
+}
+
+/// The words of an assistant record, and what it is doing: every shape of the record is read here
+/// (`tool_use` with `input` and `end_turn`, `toolCall` with `arguments` and `stop`/`toolUse`, and the
+/// `text`/`functionCall` parts of a message qwen writes).
+fn answer(v: &Value, at: u64, turns: &mut [Turn], running: &mut bool) {
+    let stop = v
+        .pointer("/message/stop_reason")
+        .or_else(|| v.pointer("/message/stopReason"))
+        .and_then(Value::as_str);
+    let end = match stop {
+        Some("end_turn" | "stop" | "error") => Some(true),
+        Some("tool_use" | "toolUse") => Some(false),
+        _ => None,
+    };
+    let blocks = v.pointer("/message/content").or_else(|| v.pointer("/message/parts"));
+    answer_blocks(blocks, end, at, turns, running);
+}
+
+/// One assistant message: its words become the answer, its tool calls what the Coordinator is doing.
+/// `end` says whether the message ends the run; without it the run ends when no tool is called.
+fn answer_blocks(blocks: Option<&Value>, end: Option<bool>, at: u64, turns: &mut [Turn], running: &mut bool) {
+    let Some(turn) = turns.last_mut() else {
+        return;
+    };
+    let Some(Value::Array(blocks)) = blocks else {
+        return;
+    };
+    let calls = blocks.iter().any(is_a_call);
+    if end.unwrap_or(!calls) {
+        *running = false;
+        turn.doing.clear();
+    }
+    for b in blocks {
+        if let Some(t) = block_text(b) {
+            let t = t.trim();
+            if !t.is_empty() {
+                turn.a = clip(t, MAX_ANSWER);
+                turn.at_a = at;
+            }
+        }
+        if is_a_call(b) {
+            turn.doing = doing_of(call_of(b));
+        }
+    }
+}
+
+/// A tool call in any of the shapes: claude's and omp's `type`, qwen's bare `functionCall` part.
+fn is_a_call(b: &Value) -> bool {
+    matches!(b.get("type").and_then(Value::as_str), Some("tool_use" | "toolCall"))
+        || b.get("functionCall").is_some()
+}
+
+fn call_of(b: &Value) -> &Value {
+    b.get("functionCall").unwrap_or(b)
+}
+
+/// The words of a content block: claude's and omp's `text`, codex's `input_text`/`output_text`, qwen's
+/// bare part. A thought is not shown.
+fn block_text(b: &Value) -> Option<&str> {
+    if b.get("thought").and_then(Value::as_bool) == Some(true) {
+        return None;
+    }
+    match b.get("type").and_then(Value::as_str) {
+        Some("text" | "input_text" | "output_text") | None => b.get("text").and_then(Value::as_str),
+        _ => None,
+    }
+}
+
+/// Codex writes one record per item: the human's and the model's messages, the tool calls and their
+/// outputs. The model's message says in `phase` whether it is the answer (`final_answer`) or words
+/// said on the way (`commentary`); the run itself ends with `task_complete` in the event records.
+fn codex_item(v: &Value, at: u64, line: usize, turns: &mut Vec<Turn>, running: &mut bool) {
+    let Some(p) = v.get("payload") else {
+        return;
+    };
+    match p.get("type").and_then(Value::as_str) {
+        Some("message") => match p.get("role").and_then(Value::as_str) {
+            Some("user") => {
+                if let Some((q, images)) = human_text(p.get("content")) {
+                    open_turn(turns, q, images, line, at, *running, running);
+                }
+            }
+            // The developer records are the harness's own instructions, not the Coordinator's words.
+            Some("assistant") => {
+                let ends = p.get("phase").and_then(Value::as_str) == Some("final_answer");
+                answer_blocks(p.get("content"), Some(ends), at, turns, running);
+            }
+            _ => {}
+        },
+        Some("function_call" | "custom_tool_call") => {
+            if let Some(turn) = turns.last_mut() {
+                turn.doing = doing_of(p);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// The events of a codex run: `task_complete` ends the turn and repeats its last words. An older codex
+/// writes the human's words and the agent's answer as events too.
+fn codex_event(v: &Value, at: u64, line: usize, turns: &mut Vec<Turn>, running: &mut bool) {
+    match v.pointer("/payload/type").and_then(Value::as_str) {
+        Some("user_message") => {
+            let words = v.pointer("/payload/message").cloned().unwrap_or(Value::Null);
+            if let Some((q, images)) = human_text(Some(&words)) {
+                open_turn(turns, q, images, line, at, *running, running);
+            }
+        }
+        Some("agent_message") => {
+            let words = v
+                .pointer("/payload/message")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|s| !s.is_empty());
+            if let (Some(t), Some(turn)) = (words, turns.last_mut()) {
+                turn.a = clip(t, MAX_ANSWER);
+                turn.at_a = at;
+            }
+        }
+        Some("task_complete") => {
+            let words = v
+                .pointer("/payload/last_agent_message")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|s| !s.is_empty());
+            if let (Some(t), Some(turn)) = (words, turns.last_mut()) {
+                turn.a = clip(t, MAX_ANSWER);
+                turn.at_a = at;
+            }
+            end_run(turns, running);
+        }
+        Some("turn_aborted" | "error") => end_run(turns, running),
+        _ => {}
+    }
+}
+
+fn end_run(turns: &mut [Turn], running: &mut bool) {
+    *running = false;
+    if let Some(turn) = turns.last_mut() {
+        turn.doing.clear();
+    }
 }
 
 /// Keep each human record at its own transcript position, including mid-turn input.
@@ -184,7 +360,20 @@ fn open_turn(turns: &mut Vec<Turn>, q: String, images: Vec<String>, line: usize,
 fn doing_of(block: &Value) -> String {
     const MAX_DOING: usize = 80;
     let name = block.get("name").and_then(Value::as_str).unwrap_or("");
-    let input = block.get("input");
+    // The older shape keeps the arguments in `input`, omp's in `arguments`, qwen's in `args`; codex
+    // writes them as JSON text, and a custom tool as a line of its own language.
+    let raw = block
+        .get("input")
+        .or_else(|| block.get("arguments"))
+        .or_else(|| block.get("args"));
+    let parsed;
+    let input = match raw {
+        Some(Value::String(s)) => {
+            parsed = serde_json::from_str::<Value>(s).unwrap_or_else(|_| Value::String(s.clone()));
+            Some(&parsed)
+        }
+        other => other,
+    };
     let field = |k: &str| {
         input
             .and_then(|i| i.get(k))
@@ -193,22 +382,64 @@ fn doing_of(block: &Value) -> String {
             .filter(|s| !s.is_empty())
             .map(|s| s.lines().next().unwrap_or("").to_string())
     };
-    let text = if name == "Bash" {
-        field("description").or_else(|| field("command")).unwrap_or_default()
+    // omp says in a few words what a call is for (`intent`, or `i` inside the arguments).
+    let intent = block
+        .get("intent")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(|s| s.lines().next().unwrap_or("").to_string())
+        .or_else(|| field("intent"))
+        .or_else(|| field("i"));
+    // A custom tool's input is a line of code: the command inside it, else its first line.
+    let from_code = input
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(|s| command_in(s).unwrap_or_else(|| s.lines().next().unwrap_or("").to_string()));
+    let text = if name.eq_ignore_ascii_case("bash") {
+        intent
+            .or_else(|| field("description"))
+            .or_else(|| field("command"))
+            .or_else(|| field("cmd"))
+            .or(from_code)
+            .unwrap_or_default()
     } else {
-        let what = field("file_path")
+        let what = intent
+            .or_else(|| field("file_path"))
             .or_else(|| field("pattern"))
             .or_else(|| field("prompt"))
             .or_else(|| field("description"))
             .or_else(|| field("command"))
+            .or_else(|| field("cmd"))
             .or_else(|| field("query"))
-            .or_else(|| field("url"));
+            .or_else(|| field("url"))
+            .or(from_code);
         match what {
             Some(w) => format!("{name} {w}"),
             None => name.to_string(),
         }
     };
     clip(text.trim(), MAX_DOING)
+}
+
+/// The command inside a line of a tool's own code (`cmd:"ls -la"`, `command: '…'`).
+fn command_in(code: &str) -> Option<String> {
+    for key in ["cmd:", "command:"] {
+        let Some(at) = code.find(key) else { continue };
+        let rest = code[at + key.len()..].trim_start();
+        let Some(quote) = rest.chars().next().filter(|c| matches!(c, '"' | '\'')) else {
+            continue;
+        };
+        let body = &rest[1..];
+        if let Some(end) = body.find(quote) {
+            let cmd = body[..end].trim();
+            if !cmd.is_empty() {
+                return Some(cmd.lines().next().unwrap_or("").to_string());
+            }
+        }
+    }
+    None
 }
 
 /// The words of a human message (a plain string, or the text parts of a list) and the media types of
@@ -218,25 +449,46 @@ fn human_text(content: Option<&Value>) -> Option<(String, Vec<String>)> {
     let text = match content? {
         Value::String(s) => s.clone(),
         Value::Array(blocks) => {
-            if blocks
-                .iter()
-                .any(|b| b.get("type").and_then(Value::as_str) == Some("tool_result"))
-            {
+            // qwen writes a tool's answer as a user record with `functionResponse` parts.
+            if blocks.iter().any(|b| {
+                b.get("type").and_then(Value::as_str) == Some("tool_result") || b.get("functionResponse").is_some()
+            }) {
                 return None;
             }
             for b in blocks {
-                if b.get("type").and_then(Value::as_str) == Some("image") {
-                    let mime = b
-                        .pointer("/source/media_type")
-                        .and_then(Value::as_str)
-                        .unwrap_or("image/png");
+                match b.get("type").and_then(Value::as_str) {
+                    // The older shape names the type inside `source`, omp beside the block.
+                    Some("image") => images.push(
+                        b.pointer("/source/media_type")
+                            .and_then(Value::as_str)
+                            .or_else(|| b.get("mimeType").and_then(Value::as_str))
+                            .unwrap_or("image/png")
+                            .to_string(),
+                    ),
+                    // codex keeps an image as a data URL.
+                    Some("input_image") => {
+                        if let Some(mime) = b
+                            .get("image_url")
+                            .and_then(Value::as_str)
+                            .and_then(data_url_mime)
+                        {
+                            images.push(mime);
+                        }
+                    }
+                    // qwen keeps an image inline.
+                    Some(_) | None => {}
+                }
+                if let Some(mime) = b.pointer("/inlineData/mimeType").and_then(Value::as_str) {
                     images.push(mime.to_string());
                 }
             }
             blocks
                 .iter()
-                .filter(|b| b.get("type").and_then(Value::as_str) == Some("text"))
-                .filter_map(|b| b.get("text").and_then(Value::as_str))
+                .filter_map(|b| match b.get("type").and_then(Value::as_str) {
+                    Some("text" | "input_text" | "output_text") | None => b.get("text").and_then(Value::as_str),
+                    _ => None,
+                })
+                .filter(|t| !t.trim_start().starts_with("<qwen:user-prompt-submit-context>"))
                 .collect::<Vec<_>>()
                 .join("\n")
         }
@@ -249,27 +501,62 @@ fn human_text(content: Option<&Value>) -> Option<(String, Vec<String>)> {
     Some((text.to_string(), images))
 }
 
-/// The `i`-th image block of a transcript record (a `user` record's content or a queued command's prompt):
-/// its media type and bytes.
-fn image_block(record: &str, i: usize) -> Option<(String, Vec<u8>)> {
+/// The media type of a `data:` URL (`data:image/png;base64,…`).
+fn data_url_mime(url: &str) -> Option<String> {
+    let rest = url.strip_prefix("data:")?;
+    let mime = rest.split([';', ',']).next()?.trim();
+    mime.starts_with("image/").then(|| mime.to_string())
+}
+
+/// The `i`-th image block of a transcript record (a message's content or a queued command's prompt):
+/// its media type and bytes. The bytes are inside the block (claude's and omp's base64, codex's data
+/// URL, qwen's inline data), or in the program's blob store under the hash the block names
+/// (`blob:sha256:…`).
+fn image_block(record: &str, i: usize, blobs: &Path) -> Option<(String, Vec<u8>)> {
     use base64::Engine;
     let v: Value = serde_json::from_str(record).ok()?;
     let blocks = v
         .pointer("/message/content")
+        .or_else(|| v.pointer("/message/parts"))
+        // codex keeps the message and the queued command in `payload`.
+        .or_else(|| v.pointer("/payload/content"))
         .or_else(|| v.pointer("/attachment/prompt"))?
         .as_array()?;
     let block = blocks
         .iter()
-        .filter(|b| b.get("type").and_then(Value::as_str) == Some("image"))
+        .filter(|b| {
+            matches!(b.get("type").and_then(Value::as_str), Some("image" | "input_image"))
+                || b.get("inlineData").is_some()
+        })
         .nth(i)?;
+    let url = block.get("image_url").and_then(Value::as_str);
+    let url_mime = url.and_then(data_url_mime);
     let mime = block
         .pointer("/source/media_type")
         .and_then(Value::as_str)
+        .or_else(|| block.get("mimeType").and_then(Value::as_str))
+        .or_else(|| block.pointer("/inlineData/mimeType").and_then(Value::as_str))
+        .or(url_mime.as_deref())
         .unwrap_or("image/png")
         .to_string();
-    let data = block.pointer("/source/data").and_then(Value::as_str)?;
-    let bytes = base64::engine::general_purpose::STANDARD
-        .decode(data.trim())
+    let inline = block
+        .pointer("/source/data")
+        .and_then(Value::as_str)
+        .or_else(|| url.and_then(|u| u.split_once(',').map(|x| x.1)))
+        .or_else(|| block.pointer("/inlineData/data").and_then(Value::as_str));
+    if let Some(data) = inline {
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(data.trim())
+            .ok()?;
+        return Some((mime, bytes));
+    }
+    let hash = block.get("data").and_then(Value::as_str)?.strip_prefix("blob:sha256:")?;
+    // The hash names a file of the store, never a path of its own.
+    if hash.is_empty() || !hash.chars().all(|c| c.is_ascii_hexdigit()) {
+        return None;
+    }
+    let bytes = std::fs::read(blobs.join(hash))
+        .or_else(|_| std::fs::read(blobs.join(format!("{hash}.png"))))
         .ok()?;
     Some((mime, bytes))
 }
@@ -285,7 +572,7 @@ pub fn image(cfg: &AppConfig, n: usize, i: usize) -> Option<(String, Vec<u8>)> {
     }
     let f = std::fs::File::open(&turn.file).ok()?;
     let record = std::io::BufReader::new(f).lines().nth(turn.line)?.ok()?;
-    image_block(&record, i)
+    image_block(&record, i, &Homes::live().blobs())
 }
 
 fn clip(s: &str, max: usize) -> String {
@@ -334,28 +621,328 @@ pub(crate) fn project_folder(cwd: &Path) -> String {
         .collect()
 }
 
-pub(crate) fn transcript_home() -> PathBuf {
+/// Where the agent programs keep their saved conversations. Tests point these at a temporary folder.
+#[derive(Debug, Clone)]
+struct Homes {
+    /// `HOME`: omp names a session folder after the path as it sees it, relative to this.
+    home: PathBuf,
+    /// `PI_CODING_AGENT_DIR` or `~/.pi/agent`: pi's conversations are `<agent>/sessions/--<cwd>--`.
+    pi: PathBuf,
+    /// `PI_CODING_AGENT_DIR` or `~/.omp/agent`: omp's conversations are `<agent>/sessions/<folder>`,
+    /// its images `<agent>/blobs/<hash>`.
+    omp: PathBuf,
+    /// `CODEX_HOME` or `~/.codex`: codex's conversations are below `<home>/sessions/yyyy/mm/dd`.
+    codex: PathBuf,
+    /// `CLAUDE_CONFIG_DIR` or `~/.claude`: `<home>/projects/<folder>/<session>.jsonl`.
+    claude: PathBuf,
+    /// `QWEN_HOME` or `~/.qwen`: `<home>/projects/<folder>/chats`.
+    qwen: PathBuf,
+    /// `QWEN_RUNTIME_DIR`: qwen puts `projects/` here instead, and this folder wins over
+    /// `QWEN_HOME` (Storage.getRuntimeBaseDir of qwen 0.26.6). A relative path is resolved
+    /// against the folder qwen was started in, as qwen itself does.
+    qwen_runtime: Option<PathBuf>,
+}
+
+impl Homes {
+    fn live() -> Homes {
+        let home = home();
+        let env_path = |var: &str, fallback: PathBuf| {
+            std::env::var_os(var)
+                .filter(|v| !v.is_empty())
+                .map(PathBuf::from)
+                .unwrap_or(fallback)
+        };
+        Homes {
+            pi: env_path("PI_CODING_AGENT_DIR", home.join(".pi/agent")),
+            omp: env_path("PI_CODING_AGENT_DIR", home.join(".omp/agent")),
+            codex: env_path("CODEX_HOME", home.join(".codex")),
+            claude: env_path("CLAUDE_CONFIG_DIR", home.join(".claude")),
+            qwen: env_path("QWEN_HOME", home.join(".qwen")),
+            // The runtime folder is the one qwen 0.26.6 writes to when it is set; the home folder
+            // is kept for the sessions of the days before it was.
+            qwen_runtime: std::env::var_os("QWEN_RUNTIME_DIR")
+                .filter(|v| !v.is_empty())
+                .map(PathBuf::from),
+            home,
+        }
+    }
+
+    /// The folders qwen keeps `projects/` in: the runtime one first (it wins when set), then the
+    /// home one. A relative `QWEN_RUNTIME_DIR` is a path from qwen's own working folder.
+    fn qwen_roots(&self, cwd: &Path) -> Vec<PathBuf> {
+        let mut roots = Vec::new();
+        if let Some(rt) = &self.qwen_runtime {
+            let root = match rt.strip_prefix("~") {
+                Ok(rest) => self.home.join(rest),
+                Err(_) if rt.is_absolute() => rt.clone(),
+                Err(_) => cwd.join(rt),
+            };
+            roots.push(root);
+        }
+        roots.push(self.qwen.clone());
+        roots.dedup();
+        roots
+    }
+
+    /// omp's blob store: an image block names a file here by its hash.
+    fn blobs(&self) -> PathBuf {
+        self.omp.join("blobs")
+    }
+}
+
+/// A path as omp names a session folder: the leading separator becomes the leading dash, the others too.
+fn path_dashes(p: &Path) -> String {
+    format!("-{}", p.to_string_lossy().trim_start_matches(['/', '\\']).replace(['/', '\\'], "-"))
+}
+
+/// The folder omp keeps the conversations of `cwd` in. It dashes the separators of the path as it sees
+/// it — under `HOME` relative to it. Both spellings are looked for, wrapped in `--…--` too.
+fn omp_folders(cwd: &Path, home: &Path) -> Vec<String> {
+    let mut names = vec![path_dashes(cwd)];
+    if let Ok(rel) = cwd.strip_prefix(home) {
+        names.push(path_dashes(rel));
+    }
+    let wrapped: Vec<String> = names.iter().map(|n| format!("--{}--", n.trim_start_matches('-'))).collect();
+    names.extend(wrapped);
+    names
+}
+
+/// pi keeps each working folder's conversations in `--<path with / and : dashed>--`.
+fn pi_folder(agent: &Path, cwd: &Path) -> PathBuf {
+    let p = cwd.to_string_lossy();
+    let p = p.strip_prefix(['/', '\\']).unwrap_or(&p);
+    agent.join("sessions").join(format!("--{}--", p.replace(['/', '\\', ':'], "-")))
+}
+
+/// The folders a program keeps the conversations of this working folder in. An unknown or absent
+/// program tries them all: whatever is there is the Coordinator's, since only it runs in its chat.
+/// The folders of the other programs are not read when this one is known: each does not keep the
+/// conversation of the other, and a program changed mid-day would otherwise show two of them at once.
+fn session_dirs(r: &Homes, cwd: &Path, kind: &str) -> Vec<PathBuf> {
+    let all = kind.is_empty();
+    let mut dirs = Vec::new();
+    if all || kind == "omp" {
+        let root = r.omp.join("sessions");
+        dirs.extend(omp_folders(cwd, &r.home).into_iter().map(|n| root.join(n)));
+    }
+    if all || kind == "pi" {
+        dirs.push(pi_folder(&r.pi, cwd));
+    }
+    if all || kind == "claude" {
+        dirs.push(r.claude.join("projects").join(project_folder(cwd)));
+    }
+    if all || kind == "qwen" {
+        // qwen 0.26.6 writes to `QWEN_RUNTIME_DIR` when it is set and keeps `QWEN_HOME` for the
+        // sessions of the days before: both folders of the chat are read, the runtime one first.
+        dirs.extend(
+            r.qwen_roots(cwd)
+                .into_iter()
+                .map(|root| root.join("projects").join(project_folder(cwd)).join("chats")),
+        );
+    }
+    dirs
+}
+
+/// The folders with the Coordinator's conversations (what the watcher watches), the folders whose files
+/// are read whole and the files it was told about (pi's hook writes the path, omp's `session` is the
+/// file itself).
+#[derive(Debug, Default, Clone, PartialEq)]
+struct Places {
+    dirs: Vec<PathBuf>,
+    read: Vec<PathBuf>,
+    files: Vec<PathBuf>,
+}
+
+impl Places {
+    fn push_file(&mut self, f: &Path) {
+        if let Some(d) = f.parent() {
+            self.dirs.push(d.to_path_buf());
+        }
+        self.files.push(f.to_path_buf());
+    }
+}
+
+fn jsonl_files(dir: &Path) -> Vec<PathBuf> {
+    std::fs::read_dir(dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.extension().is_some_and(|x| x == "jsonl"))
+        // qwen keeps a ledger of the prompts beside the conversation: the conversation says
+        // the same and more.
+        .filter(|p| {
+            !p.file_name()
+                .map(|n| n.to_string_lossy().ends_with(".ledger.jsonl"))
+                .unwrap_or(false)
+        })
+        .collect()
+}
+
+/// Where the Coordinator's conversation files are. `state.json` decides: `transcript` is the exact file
+/// the board remembered (pi's turn-end hook writes it), `session` is that file's path for omp and an id
+/// for pi, codex and claude, and `run.kind` is the program. A folder of the program's own is read whole,
+/// so the turns of the sessions before this one are there too; a codex folder is not: the program keeps
+/// every conversation of the day in one tree, and only the file the id names is the Coordinator's.
+fn places(r: &Homes, cwd: &Path, state: &Value) -> Places {
+    let kind = state.pointer("/run/kind").and_then(Value::as_str).unwrap_or("");
+    let session = state.get("session").and_then(Value::as_str).unwrap_or("").trim();
+    let mut out = Places::default();
+    if let Some(f) = state.get("transcript").and_then(Value::as_str).filter(|s| !s.is_empty()).map(PathBuf::from) {
+        if f.is_file() {
+            out.push_file(&f);
+        }
+    }
+    let direct = PathBuf::from(session);
+    if direct.is_absolute() && direct.is_file() {
+        out.push_file(&direct);
+    }
+    let own = session_dirs(r, cwd, kind);
+    out.dirs.extend(own.iter().cloned());
+    out.read.extend(own);
+    // Codex saves every conversation in one date tree; the id names the file.
+    if kind == "codex" && !session.is_empty() {
+        if let Some(f) = codex_file(&r.codex.join("sessions"), session) {
+            out.push_file(&f);
+        }
+    }
+    out.dirs.sort();
+    out.dirs.dedup();
+    out.read.sort();
+    out.read.dedup();
+    out
+}
+
+/// The file of a codex conversation by its id, at most four folders deep (`sessions/yyyy/mm/dd`).
+fn codex_file(root: &Path, session: &str) -> Option<PathBuf> {
+    fn walk(dir: &Path, want: &str, depth: usize) -> Option<PathBuf> {
+        let mut deeper = Vec::new();
+        for e in std::fs::read_dir(dir).ok()?.flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                if depth > 0 {
+                    deeper.push(p);
+                }
+                continue;
+            }
+            if p.file_name().map(|n| n.to_string_lossy().ends_with(want)).unwrap_or(false) {
+                return Some(p);
+            }
+        }
+        deeper.into_iter().find_map(|d| walk(&d, want, depth - 1))
+    }
+    walk(root, &format!("{session}.jsonl"), 3)
+}
+
+/// The fixture's transcript root: the front of the folder the planner keeps for the chat.
+fn transcript_home() -> Option<PathBuf> {
     std::env::var_os("HERDR_PLANNER_TRANSCRIPTS")
         .filter(|v| !v.is_empty())
         .map(PathBuf::from)
-        .unwrap_or_else(|| home().join(".local/state/herdr-planner/transcripts"))
+}
+
+/// The Coordinator's chat folder: its program was started there and names its session after it.
+fn chat_cwd(cfg: &AppConfig) -> PathBuf {
+    let cwd = cfg.data_dir.join("coordinator").join("default").join("chat");
+    std::fs::canonicalize(&cwd).unwrap_or(cwd)
+}
+
+/// What the board's record of the Coordinator says about its run and its conversation.
+fn coordinator_state(cfg: &AppConfig) -> Value {
+    std::fs::read_to_string(cfg.data_dir.join("coordinator/default/state.json"))
+        .ok()
+        .and_then(|s| serde_json::from_str::<Value>(&s).ok())
+        .unwrap_or(Value::Null)
+}
+
+fn places_of(cfg: &AppConfig) -> Places {
+    let cwd = chat_cwd(cfg);
+    if let Some(root) = transcript_home() {
+        return Places { dirs: vec![root.join(project_folder(&cwd))], read: vec![root.join(project_folder(&cwd))], files: Vec::new() };
+    }
+    places(&Homes::live(), &cwd, &coordinator_state(cfg))
+}
+
+/// A folder the watcher should watch: `deep` for a whole tree (codex's date folders), `chat` when the
+/// Coordinator's own conversation files live in it — a change there is a new turn.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Watch {
+    pub path: PathBuf,
+    pub deep: bool,
+    pub chat: bool,
+}
+
+/// The closest folder above `path` that is there: a watcher cannot watch a folder that is not made yet.
+fn nearest_existing(path: &Path) -> Option<PathBuf> {
+    let mut at = path.parent();
+    while let Some(dir) = at {
+        if dir.is_dir() {
+            return (dir != Path::new("/")).then(|| dir.to_path_buf());
+        }
+        at = dir.parent();
+    }
+    None
+}
+
+/// Where the watcher should look. The folders of every program are named, not only those of the one in
+/// use: the Coordinator can be started for the first time or switched to another program while the
+/// planner runs, and its folder then appears out of nothing. For a folder that is not made yet, the
+/// closest folder above it is watched instead, so its making is seen; the watcher builds the plan
+/// again after each event and adds the folders that have appeared.
+pub fn watch_plan(cfg: &AppConfig) -> Vec<Watch> {
+    watch_plan_at(&Homes::live(), &chat_cwd(cfg), &coordinator_state(cfg), transcript_home().as_deref())
+}
+
+fn watch_plan_at(r: &Homes, cwd: &Path, state: &Value, fixture: Option<&Path>) -> Vec<Watch> {
+    let mut plan: Vec<Watch> = Vec::new();
+    let candidates = match fixture {
+        Some(root) => vec![root.join(project_folder(cwd))],
+        None => {
+            let mut dirs = places(r, cwd, state).dirs;
+            dirs.extend(session_dirs(r, cwd, ""));
+            dirs.sort();
+            dirs.dedup();
+            dirs
+        }
+    };
+    for dir in candidates {
+        let chat = dir.is_dir();
+        let path = if chat { Some(dir) } else { nearest_existing(&dir) };
+        let Some(path) = path else { continue };
+        match plan.iter_mut().find(|w| w.path == path) {
+            Some(w) => w.chat |= chat,
+            None => plan.push(Watch { path, deep: false, chat }),
+        }
+    }
+    // Codex names its conversations by date, so the folder of the one in use cannot be named before
+    // it starts: until the file is found, its whole tree is watched.
+    let kind = state.pointer("/run/kind").and_then(Value::as_str).unwrap_or("");
+    if fixture.is_none() && kind == "codex" {
+        let root = r.codex.join("sessions");
+        let path = if root.is_dir() { Some(root) } else { nearest_existing(&root) };
+        if let Some(path) = path {
+            match plan.iter_mut().find(|w| w.path == path) {
+                Some(w) => w.deep = true,
+                None => plan.push(Watch { path, deep: true, chat: false }),
+            }
+        }
+    }
+    plan
 }
 
 /// The Coordinator's transcripts, oldest first (a new session starts a new file); empty when there are none.
 fn transcripts(cfg: &AppConfig) -> Vec<PathBuf> {
-    let coordinator = cfg.data_dir.join("coordinator").join("default");
-    let cwd = coordinator.join("chat");
-    let cwd = std::fs::canonicalize(&cwd).unwrap_or(cwd);
-    let dir = transcript_home().join(project_folder(&cwd));
-    let mut files: Vec<(SystemTime, PathBuf)> = std::fs::read_dir(dir)
-        .into_iter()
-        .flatten()
-        .flatten()
-        .filter(|e| e.path().extension().is_some_and(|x| x == "jsonl"))
-        .filter_map(|e| Some((e.metadata().ok()?.modified().ok()?, e.path())))
-        .collect();
+    let places = places_of(cfg);
+    let mut files: Vec<PathBuf> = places.read.iter().flat_map(|d| jsonl_files(d)).collect();
+    files.extend(places.files);
     files.sort();
-    files.into_iter().map(|(_, p)| p).collect()
+    files.dedup();
+    let mut with_time: Vec<(SystemTime, PathBuf)> = files
+        .into_iter()
+        .map(|p| (std::fs::metadata(&p).and_then(|m| m.modified()).unwrap_or(SystemTime::UNIX_EPOCH), p))
+        .collect();
+    with_time.sort();
+    with_time.into_iter().map(|(_, p)| p).collect()
 }
 
 type Cached = (SystemTime, u64, Vec<Turn>);
@@ -397,18 +984,7 @@ pub struct ContextUse {
 
 /// The Coordinator's program (`codex`, `omp`, …) from its state; `""` when unknown.
 pub fn coordinator_program(cfg: &AppConfig) -> String {
-    std::fs::read_to_string(cfg.data_dir.join("coordinator/default/state.json"))
-        .ok()
-        .and_then(|s| serde_json::from_str::<Value>(&s).ok())
-        .and_then(|v| v.pointer("/run/kind").and_then(Value::as_str).map(String::from))
-        .unwrap_or_default()
-}
-
-/// The folder with the Coordinator's transcripts (for the file watcher).
-pub fn transcript_dir(cfg: &AppConfig) -> PathBuf {
-    let cwd = cfg.data_dir.join("coordinator/default/chat");
-    let cwd = std::fs::canonicalize(&cwd).unwrap_or(cwd);
-    transcript_home().join(project_folder(&cwd))
+    coordinator_state(cfg).pointer("/run/kind").and_then(Value::as_str).map(String::from).unwrap_or_default()
 }
 
 /// The last assistant turn's token count and model, read from the tail of the
@@ -430,13 +1006,23 @@ pub fn coordinator_context(cfg: &AppConfig) -> Option<ContextUse> {
         let Ok(v) = serde_json::from_str::<Value>(line) else {
             continue;
         };
-        if v.get("type").and_then(Value::as_str) != Some("assistant") {
+        // The older shape names the role as the record's type; omp and pi put it inside.
+        let assistant = v.get("type").and_then(Value::as_str) == Some("assistant")
+            || (v.get("type").and_then(Value::as_str) == Some("message")
+                && v.pointer("/message/role").and_then(Value::as_str) == Some("assistant"));
+        if !assistant {
             continue;
         }
         let Some(msg) = v.get("message") else { continue };
         let Some(u) = msg.get("usage") else { continue };
         let n = |k: &str| u.get(k).and_then(Value::as_u64).unwrap_or(0);
-        let used = n("input_tokens") + n("cache_read_input_tokens") + n("cache_creation_input_tokens");
+        // Old records count in `*_tokens`, omp's in `input`/`cacheRead`/`cacheWrite`.
+        let used = n("input_tokens")
+            + n("cache_read_input_tokens")
+            + n("cache_creation_input_tokens")
+            + n("input")
+            + n("cacheRead")
+            + n("cacheWrite");
         if used == 0 {
             continue;
         }
@@ -668,10 +1254,10 @@ mod tests {
         assert_eq!(t[1].images, vec!["image/png".to_string()]);
         assert_eq!(t[1].line, 1, "the record's line, for the image to be read back");
         assert!(t[0].images.is_empty());
-        let (mime, bytes) = image_block(&rec, 0).expect("the image block");
+        let (mime, bytes) = image_block(&rec, 0, Path::new("/nonexistent-blobs")).expect("the image block");
         assert_eq!(mime, "image/png");
         assert_eq!(&bytes[..8], &[0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
-        assert!(image_block(&rec, 1).is_none());
+        assert!(image_block(&rec, 1, Path::new("/nonexistent-blobs")).is_none());
         let json = serde_json::to_value(&t[1]).unwrap();
         assert_eq!(json["images"], serde_json::json!(["image/png"]));
         assert!(json.get("file").is_none() && json.get("line").is_none(), "where the record is stays inside");
@@ -704,9 +1290,9 @@ mod tests {
         assert_eq!(turns[3].q, "Запускай");
         assert!(turns[3].a.is_empty());
         for i in 0..2 {
-            assert_eq!(image_block(text.lines().nth(turns[1].line).unwrap(), i), Some(("image/png".into(), vec![1, 2, 3])));
+            assert_eq!(image_block(text.lines().nth(turns[1].line).unwrap(), i, Path::new("/nonexistent-blobs")), Some(("image/png".into(), vec![1, 2, 3])));
         }
-        assert!(image_block(&queued, 2).is_none());
+        assert!(image_block(&queued, 2, Path::new("/nonexistent-blobs")).is_none());
     }
 
     #[test]
@@ -753,6 +1339,401 @@ mod tests {
             )),
             "-home-me--herdr-projects-data-coordinator-default-chat"
         );
+    }
+
+    /// The shape omp 18.16 writes (and pi too): every record is a message and the role is inside it.
+    const OMP: &str = include_str!("../tests/fixtures/transcripts/omp-chat.jsonl");
+
+    #[test]
+    fn the_new_omp_format_is_cut_into_the_same_turns() {
+        let t = parse(OMP);
+        assert_eq!(t.len(), 2, "a notice inside the run is not a turn, nor is a tool result or a repeat");
+        assert_eq!(t[0].from, "human");
+        assert_eq!(t[0].q, "PLN-103 доделай: первая строка\nвторая строка", "a multi-line message keeps its lines");
+        assert_eq!(t[0].a, "Готово: PLN-103 доделана.\nPLN-104 тоже посмотрел.");
+        assert_eq!(t[0].at, 1_793_623_835_692);
+        assert_eq!(t[0].doing, "", "the finished run says nothing more");
+        assert_eq!(t[1].q, "[Image #1, 1009x285] почему авто-компакт запускается");
+        assert_eq!(t[1].images, vec!["image/png".to_string()], "an image block is kept, the bytes live in the blob store");
+        assert_eq!(t[1].a, "Авто-компакт включается на 300k токенах.");
+        assert_eq!(t[1].at_a, 1_793_682_902_000, "the time inside the message, when the record has no stamp");
+    }
+
+    #[test]
+    fn a_running_omp_turn_says_what_it_does() {
+        let prefix = OMP.lines().take(6).collect::<Vec<_>>().join("\n");
+        let t = parse(&prefix);
+        assert_eq!(t.len(), 1);
+        assert_eq!(t[0].doing, "Смотрю доску", "the tool's own intent, as omp writes it");
+        assert!(t[0].a.is_empty(), "nothing answered yet");
+    }
+
+    #[test]
+    fn an_omp_image_is_read_from_the_blob_store() {
+        let dir = tempfile::tempdir().unwrap();
+        let blobs = dir.path().join("blobs");
+        std::fs::create_dir_all(&blobs).unwrap();
+        let hash = "bba27d3d6a67b883bc0bc6449874283d3b8614c2a4e38fc58312d1ca0fccc587";
+        std::fs::write(blobs.join(hash), [1u8, 2, 3]).unwrap();
+        let rec = OMP.lines().find(|l| l.contains("\"mimeType\"")).unwrap();
+        assert_eq!(image_block(rec, 0, &blobs), Some(("image/png".to_string(), vec![1, 2, 3])));
+        assert!(image_block(rec, 1, &blobs).is_none(), "there is only one image in the message");
+        assert_eq!(image_block(rec, 0, dir.path()), None, "an empty store has no image");
+        let traversal = rec.replace(hash, "../etc/passwd");
+        assert!(image_block(&traversal, 0, &blobs).is_none(), "a hash is hex and nothing else");
+    }
+
+    /// The shape codex writes: one record per item, the words inside `payload`.
+    const CODEX: &str = include_str!("../tests/fixtures/transcripts/codex-chat.jsonl");
+
+    #[test]
+    fn the_codex_format_is_cut_into_turns() {
+        let t = parse(CODEX);
+        assert_eq!(t.len(), 2, "the harness's context and a tool output are not turns");
+        assert_eq!(t[0].q, "PLN-109: чат пустой\nвторая строка");
+        assert_eq!(t[0].images, vec!["image/png".to_string()], "codex keeps an image as a data URL");
+        assert_eq!(t[0].at, 1_793_255_448_610);
+        assert_eq!(t[0].a, "Починил: чат снова читается.\nPLN-109.", "the last words of the run");
+        assert_eq!(t[0].doing, "", "the finished run says nothing more");
+        assert!(t[1].q.contains("codex transcript is not read"));
+        assert_eq!(t[1].a, "Поправил замечание.");
+    }
+
+    #[test]
+    fn a_running_codex_turn_says_what_it_does() {
+        let prefix = CODEX.lines().take(8).collect::<Vec<_>>().join("\n");
+        let t = parse(&prefix);
+        assert_eq!(t.len(), 1);
+        assert_eq!(t[0].doing, "exec cat src/history.rs", "the command inside the tool's own code");
+        assert!(t[0].a.is_empty(), "nothing answered yet");
+    }
+
+    #[test]
+    fn an_older_codex_writes_the_words_as_events() {
+        let text = [
+            r#"{"timestamp":"2026-10-20T09:00:10.000Z","type":"event_msg","payload":{"type":"task_started"}}"#,
+            r#"{"timestamp":"2026-10-20T09:00:21.000Z","type":"event_msg","payload":{"type":"user_message","message":"Разбери риски миграции"}}"#,
+            r#"{"timestamp":"2026-10-20T09:20:00.000Z","type":"event_msg","payload":{"type":"agent_message","message":"Разбор готов: 4 риска."}}"#,
+            r#"{"timestamp":"2026-10-20T09:20:01.000Z","type":"event_msg","payload":{"type":"task_complete"}}"#,
+            r#"{"timestamp":"2026-10-20T09:21:00.000Z","type":"event_msg","payload":{"type":"user_message","message":"<environment_context>\n  <cwd>/x</cwd>\n</environment_context>"}}"#,
+        ]
+        .join("\n");
+        let t = parse(&text);
+        assert_eq!(t.len(), 1, "the harness's context is not a turn");
+        assert_eq!(t[0].q, "Разбери риски миграции");
+        assert_eq!(t[0].a, "Разбор готов: 4 риска.");
+        assert_eq!(t[0].doing, "", "the run is over");
+    }
+
+    #[test]
+    fn a_codex_image_is_read_from_its_data_url() {
+        let rec = CODEX.lines().find(|l| l.contains("\"input_image\"")).unwrap();
+        assert_eq!(
+            image_block(rec, 0, Path::new("/nonexistent")),
+            Some(("image/png".to_string(), vec![0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a]))
+        );
+        assert!(image_block(rec, 1, Path::new("/nonexistent")).is_none());
+    }
+
+    /// The shape qwen writes: the type at the top, the words in `message.parts`.
+    const QWEN: &str = include_str!("../tests/fixtures/transcripts/qwen-chat.jsonl");
+
+    #[test]
+    fn the_qwen_format_is_cut_into_turns() {
+        let t = parse(QWEN);
+        assert_eq!(t.len(), 2, "a tool result, a goal runtime note and telemetry are not turns");
+        assert_eq!(
+            t[0].q, "PLN-109: чат пустой\nвторая строка",
+            "the hook's context is not the human's words"
+        );
+        assert_eq!(t[0].a, "Чат читается заново.");
+        assert_eq!(t[0].doing, "", "the finished run says nothing more");
+        assert_eq!(t[1].q, "PLN-109: добавь тесты", "what the human typed during the run");
+        assert_eq!(t[1].a, "Добавил тесты.");
+        assert_eq!(t[1].doing, "");
+    }
+
+    #[test]
+    fn a_running_qwen_turn_says_what_it_does() {
+        let prefix = QWEN.lines().take(3).collect::<Vec<_>>().join("\n");
+        let t = parse(&prefix);
+        assert_eq!(t.len(), 1);
+        assert_eq!(t[0].doing, "read_file /home/me/src/history.rs");
+        assert!(t[0].a.is_empty(), "a thought is not an answer");
+    }
+
+    #[test]
+    fn a_qwen_notice_typed_during_a_run_stays_in_that_run() {
+        let mid = r#"{"type":"user","subtype":"mid_turn_user_message","timestamp":"2026-11-02T20:30:00.000Z","message":{"role":"user","parts":[{"text":"[Действие в планировщике] ALP-3: план одобрен"}]}}"#;
+        let text = format!("{}\n{mid}", QWEN.lines().take(3).collect::<Vec<_>>().join("\n"));
+        let t = parse(&text);
+        assert_eq!(t.len(), 1, "the board's notice belongs to the run that is going on");
+    }
+
+    #[test]
+    fn an_old_notice_is_a_turn_of_its_own_even_while_a_run_goes_on() {
+        // The page appends such a line to a transcript whose last turn is still working (ui-check does):
+        // the older shape numbers the turns by its records, so the notice must be one of them.
+        let text = [
+            SAMPLE.lines().take(2).collect::<Vec<_>>().join("\n"),
+            r#"{"type":"assistant","timestamp":"2026-10-19T05:56:20.000Z","message":{"content":[{"type":"tool_use","name":"Bash","input":{}}]}}"#.to_string(),
+            r#"{"type":"user","timestamp":"2026-10-19T05:56:21.000Z","message":{"role":"user","content":"[Действие в планировщике] ALP-3: план одобрен"}}"#.to_string(),
+            r#"{"type":"assistant","timestamp":"2026-10-19T05:56:22.000Z","message":{"stop_reason":"end_turn","content":[{"type":"text","text":"Принято."}]}}"#.to_string(),
+        ]
+        .join("\n");
+        let t = parse(&text);
+        assert_eq!(t.len(), 2);
+        assert_eq!(t[1].q, "[Действие в планировщике] ALP-3: план одобрен");
+        assert_eq!(t[1].from, "board");
+        assert_eq!(t[1].a, "Принято.");
+    }
+
+    #[test]
+    fn the_prompt_ledger_of_qwen_is_not_a_conversation() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.jsonl"), "").unwrap();
+        std::fs::write(dir.path().join("a.ledger.jsonl"), "").unwrap();
+        std::fs::write(dir.path().join("a.runtime.json"), "{}").unwrap();
+        assert_eq!(jsonl_files(dir.path()), vec![dir.path().join("a.jsonl")]);
+    }
+
+    /// A home with one working folder: every program names its own folder inside it.
+    fn homes(dir: &Path) -> (Homes, PathBuf) {
+        let home = dir.join("home");
+        let cwd = home.join(".herdr-projects/data/coordinator/default/chat");
+        std::fs::create_dir_all(&cwd).unwrap();
+        let home = std::fs::canonicalize(&home).unwrap_or(home);
+        let cwd = std::fs::canonicalize(&cwd).unwrap_or(cwd);
+        let r = Homes {
+            home: home.clone(),
+            pi: home.join(".pi/agent"),
+            omp: home.join(".omp/agent"),
+            codex: home.join(".codex"),
+            claude: home.join(".claude"),
+            qwen: home.join(".qwen"),
+            qwen_runtime: None,
+        };
+        (r, cwd)
+    }
+
+    fn write_session(path: &Path) -> PathBuf {
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, OMP).unwrap();
+        path.to_path_buf()
+    }
+
+    #[test]
+    fn the_programs_name_the_folder_of_a_conversation_their_own_way() {
+        let cwd = Path::new("/home/me/.herdr-projects/data/coordinator/default/chat");
+        let home = Path::new("/home/me");
+        assert_eq!(
+            omp_folders(cwd, home),
+            vec![
+                "-home-me-.herdr-projects-data-coordinator-default-chat",
+                "-.herdr-projects-data-coordinator-default-chat",
+                "--home-me-.herdr-projects-data-coordinator-default-chat--",
+                "--.herdr-projects-data-coordinator-default-chat--",
+            ]
+        );
+        assert_eq!(
+            pi_folder(Path::new("/home/me/.pi/agent"), cwd),
+            Path::new("/home/me/.pi/agent/sessions/--home-me-.herdr-projects-data-coordinator-default-chat--")
+        );
+        // Without a known program (and for the watcher) every folder of the chat is taken.
+        let dir = tempfile::tempdir().unwrap();
+        let (r, cwd) = homes(dir.path());
+        let all = session_dirs(&r, &cwd, "");
+        assert!(all.contains(&pi_folder(&r.pi, &cwd)));
+        assert!(all.contains(&r.claude.join("projects").join(project_folder(&cwd))));
+        assert!(all.contains(&r.qwen.join("projects").join(project_folder(&cwd)).join("chats")));
+        assert_eq!(all.len(), 7, "four spellings of an omp folder and one folder for each other program");
+        assert_eq!(session_dirs(&r, &cwd, "omp").len(), 4, "a known program keeps its own folder only");
+    }
+
+    #[test]
+    fn an_omp_session_is_found_by_its_path_and_its_folder() {
+        let dir = tempfile::tempdir().unwrap();
+        let (r, cwd) = homes(dir.path());
+        // The live spelling of omp 18.15/18.16: the path under HOME with its separators dashed.
+        let folder = omp_folders(&cwd, &r.home)[1].clone();
+        let file = write_session(&r.omp.join("sessions").join(&folder).join("2026-11-02.jsonl"));
+        let state = serde_json::json!({ "run": { "kind": "omp" }, "session": file.display().to_string() });
+        let found = places(&r, &cwd, &state);
+        assert!(found.dirs.contains(&file.parent().unwrap().to_path_buf()));
+        assert_eq!(found.files, vec![file.clone()], "omp says the conversation's path itself");
+        assert_eq!(transcript_files(&found), vec![file], "and the folder holds the older sessions too");
+    }
+
+    #[test]
+    fn pi_and_codex_are_found_by_the_session_the_board_remembered() {
+        let dir = tempfile::tempdir().unwrap();
+        let (r, cwd) = homes(dir.path());
+        // pi: a folder named --<path with its separators dashed>--, a file that ends with _<id>.jsonl
+        let id = "sw-01a19c4d-7ad4";
+        let pi_file = write_session(&pi_folder(&r.pi, &cwd).join(format!("2026-11-02T12-48-05-844Z_{id}.jsonl")));
+        let state = serde_json::json!({ "run": { "kind": "pi" }, "session": id });
+        let found = places(&r, &cwd, &state);
+        assert!(found.dirs.contains(&pi_file.parent().unwrap().to_path_buf()));
+        assert_eq!(transcript_files(&found), vec![pi_file], "the history comes from the folder, not from the id");
+
+        // codex: one date tree for every conversation, the id names the file.
+        let codex_file = write_session(&r.codex.join(format!("sessions/2026/11/03/rollout-2026-11-03T05-00-00-{id}.jsonl")));
+        let state = serde_json::json!({ "run": { "kind": "codex" }, "session": id });
+        let found = places(&r, &cwd, &state);
+        assert!(found.files.contains(&codex_file));
+        assert!(found.dirs.contains(&codex_file.parent().unwrap().to_path_buf()), "the file's folder is watched");
+        assert!(found.read.is_empty(), "the day folder holds other sessions too: only the file is read");
+
+        // qwen: a folder named after the working directory, the conversation in its `chats`.
+        let qwen_file = write_session(&r.qwen.join("projects").join(project_folder(&cwd)).join("chats").join(format!("{id}.jsonl")));
+        let state = serde_json::json!({ "run": { "kind": "qwen" }, "session": id });
+        let found = places(&r, &cwd, &state);
+        assert_eq!(
+            transcript_files(&found),
+            vec![qwen_file.clone()],
+            "qwen's file is in the chat folder, found without the id"
+        );
+        assert!(found.dirs.contains(&qwen_file.parent().unwrap().to_path_buf()), "and the folder is watched");
+    }
+
+    #[test]
+    fn qwen_runtime_dir_is_the_folder_its_sessions_are_in() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut r, cwd) = homes(dir.path());
+        // qwen 0.26.6 with QWEN_RUNTIME_DIR set keeps its conversations in the runtime folder,
+        // not in QWEN_HOME.
+        r.qwen_runtime = Some(dir.path().join("run"));
+        let runtime_file = write_session(
+            &dir.path()
+                .join("run")
+                .join("projects")
+                .join(project_folder(&cwd))
+                .join("chats")
+                .join("runtime.jsonl"),
+        );
+        let state = serde_json::json!({ "run": { "kind": "qwen" }, "session": "runtime" });
+        let found = places(&r, &cwd, &state);
+        assert!(
+            found.dirs.contains(&runtime_file.parent().unwrap().to_path_buf()),
+            "the runtime folder is watched"
+        );
+        assert_eq!(
+            transcript_files(&found),
+            vec![runtime_file.clone()],
+            "the conversation is read from the runtime folder"
+        );
+
+        // A session from the days without it stays readable in the home folder.
+        let home_file = write_session(&r.qwen.join("projects").join(project_folder(&cwd)).join("chats").join("old.jsonl"));
+        let found = places(&r, &cwd, &state);
+        let files = transcript_files(&found);
+        assert!(files.contains(&home_file), "the older conversation is not lost");
+        assert!(files.contains(&runtime_file));
+    }
+
+    #[test]
+    fn a_relative_qwen_runtime_dir_starts_from_the_chat_folder() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut r, cwd) = homes(dir.path());
+        r.qwen_runtime = Some(PathBuf::from(".qwen-run"));
+        assert_eq!(
+            r.qwen_roots(&cwd),
+            vec![cwd.join(".qwen-run"), r.qwen.clone()],
+            "qwen resolves the path from the folder it was started in, and the home folder is still read"
+        );
+        r.qwen_runtime = Some(PathBuf::from("~/elsewhere"));
+        assert_eq!(r.qwen_roots(&cwd)[0], r.home.join("elsewhere"), "a home-relative path is the agent's home");
+    }
+
+    #[test]
+    fn the_file_the_board_remembered_is_used_as_it_is() {
+        let dir = tempfile::tempdir().unwrap();
+        let (r, cwd) = homes(dir.path());
+        // pi's turn-end hook writes the exact file: it is read even when the folder name is not the expected one.
+        let file = write_session(&dir.path().join("elsewhere/session.jsonl"));
+        let state = serde_json::json!({ "run": { "kind": "pi" }, "transcript": file.display().to_string() });
+        let found = places(&r, &cwd, &state);
+        assert!(found.files.contains(&file));
+        assert!(found.dirs.contains(&file.parent().unwrap().to_path_buf()));
+    }
+
+    #[test]
+    fn a_missing_program_leaves_the_folders_it_can_find() {
+        let dir = tempfile::tempdir().unwrap();
+        let (r, cwd) = homes(dir.path());
+        let file = write_session(&pi_folder(&r.pi, &cwd).join("a.jsonl"));
+        let found = places(&r, &cwd, &serde_json::json!({}));
+        assert_eq!(transcript_files(&found), vec![file], "without a program, every folder of the chat is tried");
+    }
+
+    #[test]
+    fn the_watch_covers_the_folders_that_are_not_made_yet() {
+        let dir = tempfile::tempdir().unwrap();
+        let (r, cwd) = homes(dir.path());
+        let state = serde_json::json!({ "run": { "kind": "omp" }, "session": "/x/none.jsonl" });
+        // Nothing of the programs exists: the closest folder above each candidate is watched instead.
+        let plan = watch_plan_at(&r, &cwd, &state, None);
+        assert!(plan.iter().all(|w| !w.chat), "there is no conversation folder to watch yet");
+        assert!(plan.iter().any(|w| w.path == r.home), "the home folder tells when a program's own appears");
+
+        // The program's sessions folder appears: it is watched, so the chat's own folder cannot slip by.
+        let sessions = r.omp.join("sessions");
+        std::fs::create_dir_all(&sessions).unwrap();
+        let plan = watch_plan_at(&r, &cwd, &state, None);
+        assert!(plan.iter().any(|w| w.path == sessions && !w.chat), "the root is watched until the folder exists");
+
+        // The chat's folder appears after the planner started: it is watched as a conversation folder.
+        let folder = sessions.join(omp_folders(&cwd, &r.home)[1].clone());
+        write_session(&folder.join("s.jsonl"));
+        let plan = watch_plan_at(&r, &cwd, &state, None);
+        assert!(plan.iter().any(|w| w.path == folder && w.chat), "a folder made after start counts");
+
+        // A folder of another program is in the plan too, even while omp is the program in use.
+        let pi = write_session(&pi_folder(&r.pi, &cwd).join("a.jsonl"));
+        let plan = watch_plan_at(&r, &cwd, &state, None);
+        assert!(plan.iter().any(|w| w.path == pi.parent().unwrap() && w.chat), "a program change is seen without a restart");
+    }
+
+    #[test]
+    fn codex_watches_its_whole_tree_until_its_conversation_is_found() {
+        let dir = tempfile::tempdir().unwrap();
+        let (r, cwd) = homes(dir.path());
+        let root = r.codex.join("sessions");
+        std::fs::create_dir_all(&root).unwrap();
+        let state = serde_json::json!({ "run": { "kind": "codex" }, "session": "abc" });
+        let plan = watch_plan_at(&r, &cwd, &state, None);
+        assert!(plan.iter().any(|w| w.path == root && w.deep && !w.chat), "the date folders are not known before a session");
+        // Once it is found, its own folder is a conversation folder (and it sits under the deep watch).
+        let file = write_session(&root.join("2026/11/03/rollout-2026-11-03T05-00-00-abc.jsonl"));
+        let plan = watch_plan_at(&r, &cwd, &state, None);
+        assert!(plan.iter().any(|w| w.path == file.parent().unwrap() && w.chat));
+    }
+
+    #[test]
+    fn the_fixture_watches_its_folder_and_the_folder_above_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let (r, cwd) = homes(dir.path());
+        let root = dir.path().join("transcripts");
+        let plan = watch_plan_at(&r, &cwd, &serde_json::json!({}), Some(&root));
+        assert_eq!(plan, vec![Watch { path: dir.path().to_path_buf(), deep: false, chat: false }], "only the fixture root matters");
+        let folder = root.join(project_folder(&cwd));
+        std::fs::create_dir_all(&folder).unwrap();
+        let plan = watch_plan_at(&r, &cwd, &serde_json::json!({}), Some(&root));
+        assert_eq!(plan, vec![Watch { path: folder, deep: false, chat: true }]);
+    }
+
+    /// Files of a [`Places`] that are really there, oldest first (the read side of [`transcripts`]).
+    fn transcript_files(p: &Places) -> Vec<PathBuf> {
+        let mut files: Vec<PathBuf> = p.read.iter().flat_map(|d| jsonl_files(d)).collect();
+        files.extend(p.files.clone());
+        files.sort();
+        files.dedup();
+        let mut with_time: Vec<(SystemTime, PathBuf)> = files
+            .into_iter()
+            .map(|f| (std::fs::metadata(&f).and_then(|m| m.modified()).unwrap_or(SystemTime::UNIX_EPOCH), f))
+            .collect();
+        with_time.sort();
+        with_time.into_iter().map(|(_, f)| f).collect()
     }
 
     fn line(kind: &str, at: &str, body: &str) -> String {
@@ -813,6 +1794,14 @@ mod tests {
         assert_eq!(search(&db, "старый", 10)[0].n, 0, "the older session comes first");
         assert_eq!(search(&db, "пиццу", 10)[0].n, 1, "numbers follow the page()");
         assert_eq!(page(&cfg, None, 50).total, 3);
+
+        // A session in the shape omp 18.16 writes: its turns are indexed like the others.
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        std::fs::write(folder.join("s2.jsonl"), OMP).unwrap();
+        assert_eq!(sync_index(&db, &cfg), 5, "two more turns from the omp transcript");
+        assert_eq!(search(&db, "компакт", 10)[0].n, 4, "the question of the newer session");
+        assert_eq!(search(&db, "PLN-104", 10)[0].n, 3, "the answer about PLN-104");
+        assert_eq!(page(&cfg, None, 50).total, 5);
 
         // The transcripts go away: the index is emptied too.
         std::fs::remove_dir_all(&folder).unwrap();
