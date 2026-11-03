@@ -1091,7 +1091,7 @@ herdr и [herdr-projects](https://github.com/eliasstravik/herdr-projects) раб
 | Что | Где |
 |---|---|
 | Доска (задачи, итоги, Координатор) | `~/.herdr-projects/data`, принадлежит herdr-projects; планировщик читает |
-| Разговор Координатора (история чата) | сессии самой программы Координатора: `state.json` в папке доски называет программу и разговор, а planner находит файл (omp — `~/.omp/agent/sessions/<папка>/*.jsonl`, pi — `~/.pi/agent/sessions/*_<id>.jsonl`, codex — `~/.codex/sessions/…`, claude — `~/.claude/projects/…`); картинки omp — `~/.omp/agent/blobs/` |
+| Разговор Координатора (история чата) | сессии самой программы Координатора: `state.json` в папке доски называет программу и разговор, а planner находит файл (omp — `~/.omp/agent/sessions/<папка>/*.jsonl`, pi — `~/.pi/agent/sessions/*_<id>.jsonl`, codex — `~/.codex/sessions/…/<id>.jsonl` по id из `state.json` (папка дня общая для всех сессий, читается только нужный файл), qwen — `~/.qwen/projects/<папка>/chats/<id>.jsonl`, claude — `~/.claude/projects/…`); картинки omp — `~/.omp/agent/blobs/` |
 | Настройки планировщика | `~/.config/herdr-planner/config.toml` (`600`) |
 | Дела, журнал, история статусов, индекс чата и поиска, кэши | `~/.local/state/herdr-planner/` (SQLite, `600`) |
 | Память Галактики (Markdown; `HERDR_PLANNER_MEMORY_DIR` — другое место) | `~/.herdr-projects/memory/galaxy/`; память вселенной — `docs/memory/` в репозитории |

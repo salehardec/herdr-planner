@@ -101,13 +101,33 @@ pub fn parse(text: &str) -> Vec<Turn> {
         let at = record_time(&v);
         match v.get("type").and_then(Value::as_str) {
             Some("user") => {
-                if v.get("isMeta").and_then(Value::as_bool) == Some(true) {
+                if v.get("isMeta").and_then(Value::as_bool) == Some(true) || not_a_turn(&v) {
                     continue;
                 }
-                if let Some((q, images)) = human_text(v.pointer("/message/content")) {
-                    open_turn(&mut turns, q, images, line_no, at, false, &mut running);
-                }
+                // The older shape keeps the message in `content`, qwen's in `parts`; qwen also says in
+                // `systemPayload.displayText` what the human typed when a hook added context to it.
+                let body = v.pointer("/message/content").or_else(|| v.pointer("/message/parts"));
+                let shown = v
+                    .pointer("/systemPayload/displayText")
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty());
+                let found = human_text(body);
+                let (q, images) = match (shown, found) {
+                    (Some(s), Some((_, images))) => (s.to_string(), images),
+                    (Some(s), None) => (s.to_string(), Vec::new()),
+                    (None, Some(found)) => found,
+                    (None, None) => continue,
+                };
+                // qwen marks in `subtype` the words typed while the Coordinator works; the older shape
+                // writes every message as a record of its own, and the page numbers the turns by them.
+                let queued = v.get("subtype").and_then(Value::as_str) == Some("mid_turn_user_message");
+                open_turn(&mut turns, q, images, line_no, at, queued, &mut running);
             }
+            Some("tool_result") => {}
+            // Codex: one record per item of the run, the words inside `payload`.
+            Some("response_item") => codex_item(&v, at, line_no, &mut turns, &mut running),
+            Some("event_msg") => codex_event(&v, at, line_no, &mut turns, &mut running),
             // A message sent while the Coordinator was busy waits in a queue and
             // reaches the session as this attachment, with no `user` record.
             Some("attachment") => {
@@ -119,7 +139,7 @@ pub fn parse(text: &str) -> Vec<Turn> {
                 }
             }
             Some("assistant") => answer(&v, at, &mut turns, &mut running),
-            // omp and pi put the role inside the record; a tool result is no turn of its own.
+            // omp, pi and qwen put the role inside the record; a tool result is no turn of its own.
             Some("message") => match v.pointer("/message/role").and_then(Value::as_str) {
                 Some("user") => {
                     if let Some((q, images)) = human_text(v.pointer("/message/content")) {
@@ -154,38 +174,154 @@ fn record_time(v: &Value) -> u64 {
     v.pointer("/message/timestamp").and_then(Value::as_u64).unwrap_or(0)
 }
 
-/// The words of an assistant record, and what it is doing: both shapes of the record are read here
-/// (`tool_use` with `input` and `end_turn`, `toolCall` with `arguments` and `stop`/`toolUse`).
+/// A record that is a note of the program rather than a message of the conversation: qwen's goal
+/// runtime writes human-shaped records the Coordinator did not receive.
+fn not_a_turn(v: &Value) -> bool {
+    matches!(
+        v.get("provenance").and_then(Value::as_str),
+        Some("goal_runtime" | "system" | "hook")
+    )
+}
+
+/// The words of an assistant record, and what it is doing: every shape of the record is read here
+/// (`tool_use` with `input` and `end_turn`, `toolCall` with `arguments` and `stop`/`toolUse`, and the
+/// `text`/`functionCall` parts of a message qwen writes).
 fn answer(v: &Value, at: u64, turns: &mut [Turn], running: &mut bool) {
+    let stop = v
+        .pointer("/message/stop_reason")
+        .or_else(|| v.pointer("/message/stopReason"))
+        .and_then(Value::as_str);
+    let end = match stop {
+        Some("end_turn" | "stop" | "error") => Some(true),
+        Some("tool_use" | "toolUse") => Some(false),
+        _ => None,
+    };
+    let blocks = v.pointer("/message/content").or_else(|| v.pointer("/message/parts"));
+    answer_blocks(blocks, end, at, turns, running);
+}
+
+/// One assistant message: its words become the answer, its tool calls what the Coordinator is doing.
+/// `end` says whether the message ends the run; without it the run ends when no tool is called.
+fn answer_blocks(blocks: Option<&Value>, end: Option<bool>, at: u64, turns: &mut [Turn], running: &mut bool) {
     let Some(turn) = turns.last_mut() else {
         return;
     };
-    let stop = v.pointer("/message/stop_reason").or_else(|| v.pointer("/message/stopReason")).and_then(Value::as_str);
-    let Some(Value::Array(blocks)) = v.pointer("/message/content") else {
+    let Some(Value::Array(blocks)) = blocks else {
         return;
     };
-    let calls = blocks.iter().any(|b| matches!(b.get("type").and_then(Value::as_str), Some("tool_use" | "toolCall")));
-    let ended = match stop {
-        Some("end_turn" | "stop" | "error") => true,
-        Some("tool_use" | "toolUse") => false,
-        _ => !calls,
-    };
-    if ended {
+    let calls = blocks.iter().any(is_a_call);
+    if end.unwrap_or(!calls) {
         *running = false;
         turn.doing.clear();
     }
     for b in blocks {
-        match b.get("type").and_then(Value::as_str) {
-            Some("text") => {
-                let t = b.get("text").and_then(Value::as_str).unwrap_or("").trim();
-                if !t.is_empty() {
-                    turn.a = clip(t, MAX_ANSWER);
-                    turn.at_a = at;
+        if let Some(t) = block_text(b) {
+            let t = t.trim();
+            if !t.is_empty() {
+                turn.a = clip(t, MAX_ANSWER);
+                turn.at_a = at;
+            }
+        }
+        if is_a_call(b) {
+            turn.doing = doing_of(call_of(b));
+        }
+    }
+}
+
+/// A tool call in any of the shapes: claude's and omp's `type`, qwen's bare `functionCall` part.
+fn is_a_call(b: &Value) -> bool {
+    matches!(b.get("type").and_then(Value::as_str), Some("tool_use" | "toolCall"))
+        || b.get("functionCall").is_some()
+}
+
+fn call_of(b: &Value) -> &Value {
+    b.get("functionCall").unwrap_or(b)
+}
+
+/// The words of a content block: claude's and omp's `text`, codex's `input_text`/`output_text`, qwen's
+/// bare part. A thought is not shown.
+fn block_text(b: &Value) -> Option<&str> {
+    if b.get("thought").and_then(Value::as_bool) == Some(true) {
+        return None;
+    }
+    match b.get("type").and_then(Value::as_str) {
+        Some("text" | "input_text" | "output_text") | None => b.get("text").and_then(Value::as_str),
+        _ => None,
+    }
+}
+
+/// Codex writes one record per item: the human's and the model's messages, the tool calls and their
+/// outputs. The model's message says in `phase` whether it is the answer (`final_answer`) or words
+/// said on the way (`commentary`); the run itself ends with `task_complete` in the event records.
+fn codex_item(v: &Value, at: u64, line: usize, turns: &mut Vec<Turn>, running: &mut bool) {
+    let Some(p) = v.get("payload") else {
+        return;
+    };
+    match p.get("type").and_then(Value::as_str) {
+        Some("message") => match p.get("role").and_then(Value::as_str) {
+            Some("user") => {
+                if let Some((q, images)) = human_text(p.get("content")) {
+                    open_turn(turns, q, images, line, at, *running, running);
                 }
             }
-            Some("tool_use" | "toolCall") => turn.doing = doing_of(b),
+            // The developer records are the harness's own instructions, not the Coordinator's words.
+            Some("assistant") => {
+                let ends = p.get("phase").and_then(Value::as_str) == Some("final_answer");
+                answer_blocks(p.get("content"), Some(ends), at, turns, running);
+            }
             _ => {}
+        },
+        Some("function_call" | "custom_tool_call") => {
+            if let Some(turn) = turns.last_mut() {
+                turn.doing = doing_of(p);
+            }
         }
+        _ => {}
+    }
+}
+
+/// The events of a codex run: `task_complete` ends the turn and repeats its last words. An older codex
+/// writes the human's words and the agent's answer as events too.
+fn codex_event(v: &Value, at: u64, line: usize, turns: &mut Vec<Turn>, running: &mut bool) {
+    match v.pointer("/payload/type").and_then(Value::as_str) {
+        Some("user_message") => {
+            let words = v.pointer("/payload/message").cloned().unwrap_or(Value::Null);
+            if let Some((q, images)) = human_text(Some(&words)) {
+                open_turn(turns, q, images, line, at, *running, running);
+            }
+        }
+        Some("agent_message") => {
+            let words = v
+                .pointer("/payload/message")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|s| !s.is_empty());
+            if let (Some(t), Some(turn)) = (words, turns.last_mut()) {
+                turn.a = clip(t, MAX_ANSWER);
+                turn.at_a = at;
+            }
+        }
+        Some("task_complete") => {
+            let words = v
+                .pointer("/payload/last_agent_message")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|s| !s.is_empty());
+            if let (Some(t), Some(turn)) = (words, turns.last_mut()) {
+                turn.a = clip(t, MAX_ANSWER);
+                turn.at_a = at;
+            }
+            end_run(turns, running);
+        }
+        Some("turn_aborted" | "error") => end_run(turns, running),
+        _ => {}
+    }
+}
+
+fn end_run(turns: &mut [Turn], running: &mut bool) {
+    *running = false;
+    if let Some(turn) = turns.last_mut() {
+        turn.doing.clear();
     }
 }
 
@@ -224,8 +360,20 @@ fn open_turn(turns: &mut Vec<Turn>, q: String, images: Vec<String>, line: usize,
 fn doing_of(block: &Value) -> String {
     const MAX_DOING: usize = 80;
     let name = block.get("name").and_then(Value::as_str).unwrap_or("");
-    // The older shape keeps the arguments in `input`, omp's in `arguments`.
-    let input = block.get("input").or_else(|| block.get("arguments"));
+    // The older shape keeps the arguments in `input`, omp's in `arguments`, qwen's in `args`; codex
+    // writes them as JSON text, and a custom tool as a line of its own language.
+    let raw = block
+        .get("input")
+        .or_else(|| block.get("arguments"))
+        .or_else(|| block.get("args"));
+    let parsed;
+    let input = match raw {
+        Some(Value::String(s)) => {
+            parsed = serde_json::from_str::<Value>(s).unwrap_or_else(|_| Value::String(s.clone()));
+            Some(&parsed)
+        }
+        other => other,
+    };
     let field = |k: &str| {
         input
             .and_then(|i| i.get(k))
@@ -243,8 +391,19 @@ fn doing_of(block: &Value) -> String {
         .map(|s| s.lines().next().unwrap_or("").to_string())
         .or_else(|| field("intent"))
         .or_else(|| field("i"));
+    // A custom tool's input is a line of code: the command inside it, else its first line.
+    let from_code = input
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(|s| command_in(s).unwrap_or_else(|| s.lines().next().unwrap_or("").to_string()));
     let text = if name.eq_ignore_ascii_case("bash") {
-        intent.or_else(|| field("description")).or_else(|| field("command")).unwrap_or_default()
+        intent
+            .or_else(|| field("description"))
+            .or_else(|| field("command"))
+            .or_else(|| field("cmd"))
+            .or(from_code)
+            .unwrap_or_default()
     } else {
         let what = intent
             .or_else(|| field("file_path"))
@@ -252,14 +411,35 @@ fn doing_of(block: &Value) -> String {
             .or_else(|| field("prompt"))
             .or_else(|| field("description"))
             .or_else(|| field("command"))
+            .or_else(|| field("cmd"))
             .or_else(|| field("query"))
-            .or_else(|| field("url"));
+            .or_else(|| field("url"))
+            .or(from_code);
         match what {
             Some(w) => format!("{name} {w}"),
             None => name.to_string(),
         }
     };
     clip(text.trim(), MAX_DOING)
+}
+
+/// The command inside a line of a tool's own code (`cmd:"ls -la"`, `command: '…'`).
+fn command_in(code: &str) -> Option<String> {
+    for key in ["cmd:", "command:"] {
+        let Some(at) = code.find(key) else { continue };
+        let rest = code[at + key.len()..].trim_start();
+        let Some(quote) = rest.chars().next().filter(|c| matches!(c, '"' | '\'')) else {
+            continue;
+        };
+        let body = &rest[1..];
+        if let Some(end) = body.find(quote) {
+            let cmd = body[..end].trim();
+            if !cmd.is_empty() {
+                return Some(cmd.lines().next().unwrap_or("").to_string());
+            }
+        }
+    }
+    None
 }
 
 /// The words of a human message (a plain string, or the text parts of a list) and the media types of
@@ -269,27 +449,46 @@ fn human_text(content: Option<&Value>) -> Option<(String, Vec<String>)> {
     let text = match content? {
         Value::String(s) => s.clone(),
         Value::Array(blocks) => {
-            if blocks
-                .iter()
-                .any(|b| b.get("type").and_then(Value::as_str) == Some("tool_result"))
-            {
+            // qwen writes a tool's answer as a user record with `functionResponse` parts.
+            if blocks.iter().any(|b| {
+                b.get("type").and_then(Value::as_str) == Some("tool_result") || b.get("functionResponse").is_some()
+            }) {
                 return None;
             }
             for b in blocks {
-                if b.get("type").and_then(Value::as_str) == Some("image") {
+                match b.get("type").and_then(Value::as_str) {
                     // The older shape names the type inside `source`, omp beside the block.
-                    let mime = b
-                        .pointer("/source/media_type")
-                        .and_then(Value::as_str)
-                        .or_else(|| b.get("mimeType").and_then(Value::as_str))
-                        .unwrap_or("image/png");
+                    Some("image") => images.push(
+                        b.pointer("/source/media_type")
+                            .and_then(Value::as_str)
+                            .or_else(|| b.get("mimeType").and_then(Value::as_str))
+                            .unwrap_or("image/png")
+                            .to_string(),
+                    ),
+                    // codex keeps an image as a data URL.
+                    Some("input_image") => {
+                        if let Some(mime) = b
+                            .get("image_url")
+                            .and_then(Value::as_str)
+                            .and_then(data_url_mime)
+                        {
+                            images.push(mime);
+                        }
+                    }
+                    // qwen keeps an image inline.
+                    Some(_) | None => {}
+                }
+                if let Some(mime) = b.pointer("/inlineData/mimeType").and_then(Value::as_str) {
                     images.push(mime.to_string());
                 }
             }
             blocks
                 .iter()
-                .filter(|b| b.get("type").and_then(Value::as_str) == Some("text"))
-                .filter_map(|b| b.get("text").and_then(Value::as_str))
+                .filter_map(|b| match b.get("type").and_then(Value::as_str) {
+                    Some("text" | "input_text" | "output_text") | None => b.get("text").and_then(Value::as_str),
+                    _ => None,
+                })
+                .filter(|t| !t.trim_start().starts_with("<qwen:user-prompt-submit-context>"))
                 .collect::<Vec<_>>()
                 .join("\n")
         }
@@ -302,27 +501,50 @@ fn human_text(content: Option<&Value>) -> Option<(String, Vec<String>)> {
     Some((text.to_string(), images))
 }
 
+/// The media type of a `data:` URL (`data:image/png;base64,…`).
+fn data_url_mime(url: &str) -> Option<String> {
+    let rest = url.strip_prefix("data:")?;
+    let mime = rest.split([';', ',']).next()?.trim();
+    mime.starts_with("image/").then(|| mime.to_string())
+}
+
 /// The `i`-th image block of a transcript record (a message's content or a queued command's prompt):
-/// its media type and bytes. The bytes are inside the block, or in the program's blob store under the
-/// hash the block names (`blob:sha256:…`).
+/// its media type and bytes. The bytes are inside the block (claude's and omp's base64, codex's data
+/// URL, qwen's inline data), or in the program's blob store under the hash the block names
+/// (`blob:sha256:…`).
 fn image_block(record: &str, i: usize, blobs: &Path) -> Option<(String, Vec<u8>)> {
     use base64::Engine;
     let v: Value = serde_json::from_str(record).ok()?;
     let blocks = v
         .pointer("/message/content")
+        .or_else(|| v.pointer("/message/parts"))
+        // codex keeps the message and the queued command in `payload`.
+        .or_else(|| v.pointer("/payload/content"))
         .or_else(|| v.pointer("/attachment/prompt"))?
         .as_array()?;
     let block = blocks
         .iter()
-        .filter(|b| b.get("type").and_then(Value::as_str) == Some("image"))
+        .filter(|b| {
+            matches!(b.get("type").and_then(Value::as_str), Some("image" | "input_image"))
+                || b.get("inlineData").is_some()
+        })
         .nth(i)?;
+    let url = block.get("image_url").and_then(Value::as_str);
+    let url_mime = url.and_then(data_url_mime);
     let mime = block
         .pointer("/source/media_type")
         .and_then(Value::as_str)
         .or_else(|| block.get("mimeType").and_then(Value::as_str))
+        .or_else(|| block.pointer("/inlineData/mimeType").and_then(Value::as_str))
+        .or(url_mime.as_deref())
         .unwrap_or("image/png")
         .to_string();
-    if let Some(data) = block.pointer("/source/data").and_then(Value::as_str) {
+    let inline = block
+        .pointer("/source/data")
+        .and_then(Value::as_str)
+        .or_else(|| url.and_then(|u| u.split_once(',').map(|x| x.1)))
+        .or_else(|| block.pointer("/inlineData/data").and_then(Value::as_str));
+    if let Some(data) = inline {
         let bytes = base64::engine::general_purpose::STANDARD
             .decode(data.trim())
             .ok()?;
@@ -489,11 +711,13 @@ fn session_dirs(r: &Homes, cwd: &Path, kind: &str) -> Vec<PathBuf> {
     dirs
 }
 
-/// The folders with the Coordinator's conversations (what the watcher watches) and the files it was
-/// told about (pi's hook writes the path, omp's `session` is the file itself).
+/// The folders with the Coordinator's conversations (what the watcher watches), the folders whose files
+/// are read whole and the files it was told about (pi's hook writes the path, omp's `session` is the
+/// file itself).
 #[derive(Debug, Default, Clone, PartialEq)]
 struct Places {
     dirs: Vec<PathBuf>,
+    read: Vec<PathBuf>,
     files: Vec<PathBuf>,
 }
 
@@ -513,13 +737,21 @@ fn jsonl_files(dir: &Path) -> Vec<PathBuf> {
         .flatten()
         .map(|e| e.path())
         .filter(|p| p.extension().is_some_and(|x| x == "jsonl"))
+        // qwen keeps a ledger of the prompts beside the conversation: the conversation says
+        // the same and more.
+        .filter(|p| {
+            !p.file_name()
+                .map(|n| n.to_string_lossy().ends_with(".ledger.jsonl"))
+                .unwrap_or(false)
+        })
         .collect()
 }
 
 /// Where the Coordinator's conversation files are. `state.json` decides: `transcript` is the exact file
 /// the board remembered (pi's turn-end hook writes it), `session` is that file's path for omp and an id
 /// for pi, codex and claude, and `run.kind` is the program. A folder of the program's own is read whole,
-/// so the turns of the sessions before this one are there too.
+/// so the turns of the sessions before this one are there too; a codex folder is not: the program keeps
+/// every conversation of the day in one tree, and only the file the id names is the Coordinator's.
 fn places(r: &Homes, cwd: &Path, state: &Value) -> Places {
     let kind = state.pointer("/run/kind").and_then(Value::as_str).unwrap_or("");
     let session = state.get("session").and_then(Value::as_str).unwrap_or("").trim();
@@ -533,7 +765,9 @@ fn places(r: &Homes, cwd: &Path, state: &Value) -> Places {
     if direct.is_absolute() && direct.is_file() {
         out.push_file(&direct);
     }
-    out.dirs.extend(session_dirs(r, cwd, kind));
+    let own = session_dirs(r, cwd, kind);
+    out.dirs.extend(own.iter().cloned());
+    out.read.extend(own);
     // Codex saves every conversation in one date tree; the id names the file.
     if kind == "codex" && !session.is_empty() {
         if let Some(f) = codex_file(&r.codex.join("sessions"), session) {
@@ -542,6 +776,8 @@ fn places(r: &Homes, cwd: &Path, state: &Value) -> Places {
     }
     out.dirs.sort();
     out.dirs.dedup();
+    out.read.sort();
+    out.read.dedup();
     out
 }
 
@@ -590,7 +826,7 @@ fn coordinator_state(cfg: &AppConfig) -> Value {
 fn places_of(cfg: &AppConfig) -> Places {
     let cwd = chat_cwd(cfg);
     if let Some(root) = transcript_home() {
-        return Places { dirs: vec![root.join(project_folder(&cwd))], files: Vec::new() };
+        return Places { dirs: vec![root.join(project_folder(&cwd))], read: vec![root.join(project_folder(&cwd))], files: Vec::new() };
     }
     places(&Homes::live(), &cwd, &coordinator_state(cfg))
 }
@@ -665,7 +901,7 @@ fn watch_plan_at(r: &Homes, cwd: &Path, state: &Value, fixture: Option<&Path>) -
 /// The Coordinator's transcripts, oldest first (a new session starts a new file); empty when there are none.
 fn transcripts(cfg: &AppConfig) -> Vec<PathBuf> {
     let places = places_of(cfg);
-    let mut files: Vec<PathBuf> = places.dirs.iter().flat_map(|d| jsonl_files(d)).collect();
+    let mut files: Vec<PathBuf> = places.read.iter().flat_map(|d| jsonl_files(d)).collect();
     files.extend(places.files);
     files.sort();
     files.dedup();
@@ -1115,6 +1351,120 @@ mod tests {
         assert!(image_block(&traversal, 0, &blobs).is_none(), "a hash is hex and nothing else");
     }
 
+    /// The shape codex writes: one record per item, the words inside `payload`.
+    const CODEX: &str = include_str!("../tests/fixtures/transcripts/codex-chat.jsonl");
+
+    #[test]
+    fn the_codex_format_is_cut_into_turns() {
+        let t = parse(CODEX);
+        assert_eq!(t.len(), 2, "the harness's context and a tool output are not turns");
+        assert_eq!(t[0].q, "PLN-109: чат пустой\nвторая строка");
+        assert_eq!(t[0].images, vec!["image/png".to_string()], "codex keeps an image as a data URL");
+        assert_eq!(t[0].at, 1_793_255_448_610);
+        assert_eq!(t[0].a, "Починил: чат снова читается.\nPLN-109.", "the last words of the run");
+        assert_eq!(t[0].doing, "", "the finished run says nothing more");
+        assert!(t[1].q.contains("codex transcript is not read"));
+        assert_eq!(t[1].a, "Поправил замечание.");
+    }
+
+    #[test]
+    fn a_running_codex_turn_says_what_it_does() {
+        let prefix = CODEX.lines().take(8).collect::<Vec<_>>().join("\n");
+        let t = parse(&prefix);
+        assert_eq!(t.len(), 1);
+        assert_eq!(t[0].doing, "exec cat src/history.rs", "the command inside the tool's own code");
+        assert!(t[0].a.is_empty(), "nothing answered yet");
+    }
+
+    #[test]
+    fn an_older_codex_writes_the_words_as_events() {
+        let text = [
+            r#"{"timestamp":"2026-10-20T09:00:10.000Z","type":"event_msg","payload":{"type":"task_started"}}"#,
+            r#"{"timestamp":"2026-10-20T09:00:21.000Z","type":"event_msg","payload":{"type":"user_message","message":"Разбери риски миграции"}}"#,
+            r#"{"timestamp":"2026-10-20T09:20:00.000Z","type":"event_msg","payload":{"type":"agent_message","message":"Разбор готов: 4 риска."}}"#,
+            r#"{"timestamp":"2026-10-20T09:20:01.000Z","type":"event_msg","payload":{"type":"task_complete"}}"#,
+            r#"{"timestamp":"2026-10-20T09:21:00.000Z","type":"event_msg","payload":{"type":"user_message","message":"<environment_context>\n  <cwd>/x</cwd>\n</environment_context>"}}"#,
+        ]
+        .join("\n");
+        let t = parse(&text);
+        assert_eq!(t.len(), 1, "the harness's context is not a turn");
+        assert_eq!(t[0].q, "Разбери риски миграции");
+        assert_eq!(t[0].a, "Разбор готов: 4 риска.");
+        assert_eq!(t[0].doing, "", "the run is over");
+    }
+
+    #[test]
+    fn a_codex_image_is_read_from_its_data_url() {
+        let rec = CODEX.lines().find(|l| l.contains("\"input_image\"")).unwrap();
+        assert_eq!(
+            image_block(rec, 0, Path::new("/nonexistent")),
+            Some(("image/png".to_string(), vec![0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a]))
+        );
+        assert!(image_block(rec, 1, Path::new("/nonexistent")).is_none());
+    }
+
+    /// The shape qwen writes: the type at the top, the words in `message.parts`.
+    const QWEN: &str = include_str!("../tests/fixtures/transcripts/qwen-chat.jsonl");
+
+    #[test]
+    fn the_qwen_format_is_cut_into_turns() {
+        let t = parse(QWEN);
+        assert_eq!(t.len(), 2, "a tool result, a goal runtime note and telemetry are not turns");
+        assert_eq!(
+            t[0].q, "PLN-109: чат пустой\nвторая строка",
+            "the hook's context is not the human's words"
+        );
+        assert_eq!(t[0].a, "Чат читается заново.");
+        assert_eq!(t[0].doing, "", "the finished run says nothing more");
+        assert_eq!(t[1].q, "PLN-109: добавь тесты", "what the human typed during the run");
+        assert_eq!(t[1].a, "Добавил тесты.");
+        assert_eq!(t[1].doing, "");
+    }
+
+    #[test]
+    fn a_running_qwen_turn_says_what_it_does() {
+        let prefix = QWEN.lines().take(3).collect::<Vec<_>>().join("\n");
+        let t = parse(&prefix);
+        assert_eq!(t.len(), 1);
+        assert_eq!(t[0].doing, "read_file /home/me/src/history.rs");
+        assert!(t[0].a.is_empty(), "a thought is not an answer");
+    }
+
+    #[test]
+    fn a_qwen_notice_typed_during_a_run_stays_in_that_run() {
+        let mid = r#"{"type":"user","subtype":"mid_turn_user_message","timestamp":"2026-11-02T20:30:00.000Z","message":{"role":"user","parts":[{"text":"[Действие в планировщике] ALP-3: план одобрен"}]}}"#;
+        let text = format!("{}\n{mid}", QWEN.lines().take(3).collect::<Vec<_>>().join("\n"));
+        let t = parse(&text);
+        assert_eq!(t.len(), 1, "the board's notice belongs to the run that is going on");
+    }
+
+    #[test]
+    fn an_old_notice_is_a_turn_of_its_own_even_while_a_run_goes_on() {
+        // The page appends such a line to a transcript whose last turn is still working (ui-check does):
+        // the older shape numbers the turns by its records, so the notice must be one of them.
+        let text = [
+            SAMPLE.lines().take(2).collect::<Vec<_>>().join("\n"),
+            r#"{"type":"assistant","timestamp":"2026-10-19T05:56:20.000Z","message":{"content":[{"type":"tool_use","name":"Bash","input":{}}]}}"#.to_string(),
+            r#"{"type":"user","timestamp":"2026-10-19T05:56:21.000Z","message":{"role":"user","content":"[Действие в планировщике] ALP-3: план одобрен"}}"#.to_string(),
+            r#"{"type":"assistant","timestamp":"2026-10-19T05:56:22.000Z","message":{"stop_reason":"end_turn","content":[{"type":"text","text":"Принято."}]}}"#.to_string(),
+        ]
+        .join("\n");
+        let t = parse(&text);
+        assert_eq!(t.len(), 2);
+        assert_eq!(t[1].q, "[Действие в планировщике] ALP-3: план одобрен");
+        assert_eq!(t[1].from, "board");
+        assert_eq!(t[1].a, "Принято.");
+    }
+
+    #[test]
+    fn the_prompt_ledger_of_qwen_is_not_a_conversation() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("a.jsonl"), "").unwrap();
+        std::fs::write(dir.path().join("a.ledger.jsonl"), "").unwrap();
+        std::fs::write(dir.path().join("a.runtime.json"), "{}").unwrap();
+        assert_eq!(jsonl_files(dir.path()), vec![dir.path().join("a.jsonl")]);
+    }
+
     /// A home with one working folder: every program names its own folder inside it.
     fn homes(dir: &Path) -> (Homes, PathBuf) {
         let home = dir.join("home");
@@ -1199,6 +1549,18 @@ mod tests {
         let found = places(&r, &cwd, &state);
         assert!(found.files.contains(&codex_file));
         assert!(found.dirs.contains(&codex_file.parent().unwrap().to_path_buf()), "the file's folder is watched");
+        assert!(found.read.is_empty(), "the day folder holds other sessions too: only the file is read");
+
+        // qwen: a folder named after the working directory, the conversation in its `chats`.
+        let qwen_file = write_session(&r.qwen.join("projects").join(project_folder(&cwd)).join("chats").join(format!("{id}.jsonl")));
+        let state = serde_json::json!({ "run": { "kind": "qwen" }, "session": id });
+        let found = places(&r, &cwd, &state);
+        assert_eq!(
+            transcript_files(&found),
+            vec![qwen_file.clone()],
+            "qwen's file is in the chat folder, found without the id"
+        );
+        assert!(found.dirs.contains(&qwen_file.parent().unwrap().to_path_buf()), "and the folder is watched");
     }
 
     #[test]
@@ -1280,7 +1642,7 @@ mod tests {
 
     /// Files of a [`Places`] that are really there, oldest first (the read side of [`transcripts`]).
     fn transcript_files(p: &Places) -> Vec<PathBuf> {
-        let mut files: Vec<PathBuf> = p.dirs.iter().flat_map(|d| jsonl_files(d)).collect();
+        let mut files: Vec<PathBuf> = p.read.iter().flat_map(|d| jsonl_files(d)).collect();
         files.extend(p.files.clone());
         files.sort();
         files.dedup();
