@@ -8,7 +8,7 @@ import { App } from './ui/App';
 import {
   aim, answered, armed, attention, currentView, edge, filter, flight, fresh, hover, invertY, level, locked, mode, narrow, notifyOn,
   panels, QUERY, requests, selected, sensitivity, showQuiet, simple, snap, speed, universe, webgl, SIMPLE_KEY, persist,
-  linkSel, gate,
+  linkSel, gate, chat,
 } from './store';
 import { connect, dropDetails, onState } from './api';
 import { setLang, lang, t } from './i18n';
@@ -245,5 +245,7 @@ w.restroomState = () => ({ open: roomOpen.value, wall: wallId.value, origin: ori
 w.plannerGate = gate;
 w.plannerSnap = () => snap.value;
 /* the page's own commands, for the checks */
-w.planner = { navigateTo, goHome, goOverview, openRequest, escape, back, setMode, connectTasks: (a: string, b: string) => connectTasks(a, b) };
+w.planner = { navigateTo, goHome, goOverview, openRequest, escape, back, setMode, connectTasks: (a: string, b: string) => connectTasks(a, b),
+  // the same turns handed over again, as a history response does: the page keeps the end only for a reader who did not move it
+  replayChat: () => { chat.value = { ...chat.value, turns: [...chat.value.turns] }; } };
 void getWorld; void clearStack;
