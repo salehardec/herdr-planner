@@ -595,16 +595,71 @@ fn places_of(cfg: &AppConfig) -> Places {
     places(&Homes::live(), &cwd, &coordinator_state(cfg))
 }
 
-/// The folders with the Coordinator's transcripts (for the file watcher): those of the program in
-/// use and those of the other programs, so a switch to another program is followed without a restart.
-pub fn transcript_dirs(cfg: &AppConfig) -> Vec<PathBuf> {
-    let mut dirs = places_of(cfg).dirs;
-    if transcript_home().is_none() {
-        dirs.extend(session_dirs(&Homes::live(), &chat_cwd(cfg), ""));
-        dirs.sort();
-        dirs.dedup();
+/// A folder the watcher should watch: `deep` for a whole tree (codex's date folders), `chat` when the
+/// Coordinator's own conversation files live in it — a change there is a new turn.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Watch {
+    pub path: PathBuf,
+    pub deep: bool,
+    pub chat: bool,
+}
+
+/// The closest folder above `path` that is there: a watcher cannot watch a folder that is not made yet.
+fn nearest_existing(path: &Path) -> Option<PathBuf> {
+    let mut at = path.parent();
+    while let Some(dir) = at {
+        if dir.is_dir() {
+            return (dir != Path::new("/")).then(|| dir.to_path_buf());
+        }
+        at = dir.parent();
     }
-    dirs.into_iter().filter(|d| d.is_dir()).collect()
+    None
+}
+
+/// Where the watcher should look. The folders of every program are named, not only those of the one in
+/// use: the Coordinator can be started for the first time or switched to another program while the
+/// planner runs, and its folder then appears out of nothing. For a folder that is not made yet, the
+/// closest folder above it is watched instead, so its making is seen; the watcher builds the plan
+/// again after each event and adds the folders that have appeared.
+pub fn watch_plan(cfg: &AppConfig) -> Vec<Watch> {
+    watch_plan_at(&Homes::live(), &chat_cwd(cfg), &coordinator_state(cfg), transcript_home().as_deref())
+}
+
+fn watch_plan_at(r: &Homes, cwd: &Path, state: &Value, fixture: Option<&Path>) -> Vec<Watch> {
+    let mut plan: Vec<Watch> = Vec::new();
+    let candidates = match fixture {
+        Some(root) => vec![root.join(project_folder(cwd))],
+        None => {
+            let mut dirs = places(r, cwd, state).dirs;
+            dirs.extend(session_dirs(r, cwd, ""));
+            dirs.sort();
+            dirs.dedup();
+            dirs
+        }
+    };
+    for dir in candidates {
+        let chat = dir.is_dir();
+        let path = if chat { Some(dir) } else { nearest_existing(&dir) };
+        let Some(path) = path else { continue };
+        match plan.iter_mut().find(|w| w.path == path) {
+            Some(w) => w.chat |= chat,
+            None => plan.push(Watch { path, deep: false, chat }),
+        }
+    }
+    // Codex names its conversations by date, so the folder of the one in use cannot be named before
+    // it starts: until the file is found, its whole tree is watched.
+    let kind = state.pointer("/run/kind").and_then(Value::as_str).unwrap_or("");
+    if fixture.is_none() && kind == "codex" {
+        let root = r.codex.join("sessions");
+        let path = if root.is_dir() { Some(root) } else { nearest_existing(&root) };
+        if let Some(path) = path {
+            match plan.iter_mut().find(|w| w.path == path) {
+                Some(w) => w.deep = true,
+                None => plan.push(Watch { path, deep: true, chat: false }),
+            }
+        }
+    }
+    plan
 }
 
 /// The Coordinator's transcripts, oldest first (a new session starts a new file); empty when there are none.
@@ -1165,6 +1220,62 @@ mod tests {
         let file = write_session(&pi_folder(&r.pi, &cwd).join("a.jsonl"));
         let found = places(&r, &cwd, &serde_json::json!({}));
         assert_eq!(transcript_files(&found), vec![file], "without a program, every folder of the chat is tried");
+    }
+
+    #[test]
+    fn the_watch_covers_the_folders_that_are_not_made_yet() {
+        let dir = tempfile::tempdir().unwrap();
+        let (r, cwd) = homes(dir.path());
+        let state = serde_json::json!({ "run": { "kind": "omp" }, "session": "/x/none.jsonl" });
+        // Nothing of the programs exists: the closest folder above each candidate is watched instead.
+        let plan = watch_plan_at(&r, &cwd, &state, None);
+        assert!(plan.iter().all(|w| !w.chat), "there is no conversation folder to watch yet");
+        assert!(plan.iter().any(|w| w.path == r.home), "the home folder tells when a program's own appears");
+
+        // The program's sessions folder appears: it is watched, so the chat's own folder cannot slip by.
+        let sessions = r.omp.join("sessions");
+        std::fs::create_dir_all(&sessions).unwrap();
+        let plan = watch_plan_at(&r, &cwd, &state, None);
+        assert!(plan.iter().any(|w| w.path == sessions && !w.chat), "the root is watched until the folder exists");
+
+        // The chat's folder appears after the planner started: it is watched as a conversation folder.
+        let folder = sessions.join(omp_folders(&cwd, &r.home)[1].clone());
+        write_session(&folder.join("s.jsonl"));
+        let plan = watch_plan_at(&r, &cwd, &state, None);
+        assert!(plan.iter().any(|w| w.path == folder && w.chat), "a folder made after start counts");
+
+        // A folder of another program is in the plan too, even while omp is the program in use.
+        let pi = write_session(&pi_folder(&r.pi, &cwd).join("a.jsonl"));
+        let plan = watch_plan_at(&r, &cwd, &state, None);
+        assert!(plan.iter().any(|w| w.path == pi.parent().unwrap() && w.chat), "a program change is seen without a restart");
+    }
+
+    #[test]
+    fn codex_watches_its_whole_tree_until_its_conversation_is_found() {
+        let dir = tempfile::tempdir().unwrap();
+        let (r, cwd) = homes(dir.path());
+        let root = r.codex.join("sessions");
+        std::fs::create_dir_all(&root).unwrap();
+        let state = serde_json::json!({ "run": { "kind": "codex" }, "session": "abc" });
+        let plan = watch_plan_at(&r, &cwd, &state, None);
+        assert!(plan.iter().any(|w| w.path == root && w.deep && !w.chat), "the date folders are not known before a session");
+        // Once it is found, its own folder is a conversation folder (and it sits under the deep watch).
+        let file = write_session(&root.join("2026/11/03/rollout-2026-11-03T05-00-00-abc.jsonl"));
+        let plan = watch_plan_at(&r, &cwd, &state, None);
+        assert!(plan.iter().any(|w| w.path == file.parent().unwrap() && w.chat));
+    }
+
+    #[test]
+    fn the_fixture_watches_its_folder_and_the_folder_above_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let (r, cwd) = homes(dir.path());
+        let root = dir.path().join("transcripts");
+        let plan = watch_plan_at(&r, &cwd, &serde_json::json!({}), Some(&root));
+        assert_eq!(plan, vec![Watch { path: dir.path().to_path_buf(), deep: false, chat: false }], "only the fixture root matters");
+        let folder = root.join(project_folder(&cwd));
+        std::fs::create_dir_all(&folder).unwrap();
+        let plan = watch_plan_at(&r, &cwd, &serde_json::json!({}), Some(&root));
+        assert_eq!(plan, vec![Watch { path: folder, deep: false, chat: true }]);
     }
 
     /// Files of a [`Places`] that are really there, oldest first (the read side of [`transcripts`]).
