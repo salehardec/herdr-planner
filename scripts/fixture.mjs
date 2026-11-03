@@ -166,6 +166,15 @@ function common(DATA, mods) {
     // The board's real level files, which the planner reads for a scope's own instructions (its `show` joins levels):
     // settings/config.json for you and the repositories, board/tasks/<repo>/<n>/task.json for a task.
     const settingsFile = path.join(D, 'settings', 'config.json');
+    // The planner re-reads settings/config.json on every refresh while a `set` is writing it: a read that lands
+    // between the truncate and the write sees an empty file and takes the merge route as unset (no MR handoff).
+    // Write through a temp file and rename, so a concurrent reader sees the old or the new file, never a torn one.
+    const atomicWrite = (p, text) => {
+      fs.mkdirSync(path.dirname(p), { recursive: true });
+      const tmp = p + '.tmp-' + crypto.randomUUID();
+      fs.writeFileSync(tmp, text);
+      fs.renameSync(tmp, p);
+    };
     const mirror = () => {
       const store = load();
       const out = {};
@@ -179,8 +188,7 @@ function common(DATA, mods) {
           node[parts.at(-1)] = value;
         }
       }
-      fs.mkdirSync(path.dirname(settingsFile), { recursive: true });
-      fs.writeFileSync(settingsFile, JSON.stringify(out, null, 1));
+      atomicWrite(settingsFile, JSON.stringify(out, null, 1));
       for (const [level, vals] of Object.entries(store)) {
         if (!level.startsWith('@task:')) continue;
         const [repo, n] = level.slice(6).split('/');
@@ -191,7 +199,7 @@ function common(DATA, mods) {
         delete rec.settings['worker.instructions'];
         delete rec.settings['reviewer.instructions'];
         for (const [name, value] of Object.entries(vals)) rec.settings[name] = value;
-        fs.writeFileSync(tf, JSON.stringify(rec, null, 1));
+        atomicWrite(tf, JSON.stringify(rec, null, 1));
       }
     };
     const show = (repo, task) => {
@@ -266,7 +274,7 @@ function common(DATA, mods) {
       const level = levelOf(repo, task);
       store[level] = store[level] || {};
       store[level][name] = value;
-      fs.writeFileSync(file, JSON.stringify(store, null, 1));
+      atomicWrite(file, JSON.stringify(store, null, 1));
       mirror();
       return { ok: true };
     };
@@ -274,7 +282,7 @@ function common(DATA, mods) {
       const store = load();
       const level = levelOf(repo, task);
       if (store[level]) delete store[level][name];
-      fs.writeFileSync(file, JSON.stringify(store, null, 1));
+      atomicWrite(file, JSON.stringify(store, null, 1));
       mirror();
       return { ok: true };
     };
