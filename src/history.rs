@@ -1359,6 +1359,23 @@ mod tests {
         assert_eq!(t[1].at_a, 1_793_682_902_000, "the time inside the message, when the record has no stamp");
     }
 
+    /// A slice of the Coordinator's own conversation as omp 18.16/18.17 writes it (PLN-111): the first block of an
+    /// assistant record is a thought, the words come in the text blocks after it, and a tool result and a mentioned
+    /// file are records with roles of their own.
+    const OMP_COORDINATOR: &str = include_str!("../tests/fixtures/transcripts/omp-coordinator-chat.jsonl");
+
+    #[test]
+    fn the_coordinators_own_omp_records_give_both_the_questions_and_the_answers() {
+        let t = parse(OMP_COORDINATOR);
+        assert_eq!(t.len(), 3, "a tool result, a mentioned file and a thought alone are no turns");
+        assert_eq!((t[0].from, t[0].q.as_str(), t[0].a.as_str()), ("human", "что по задачам?", "Две задачи в работе."));
+        assert_eq!(t[0].at_a, 1_793_949_069_000, "the answer's time comes from its own record");
+        assert_eq!(t[1].q, "покажи файл");
+        assert_eq!(t[1].a, "Вот файл: снимок экрана.", "the words after the thought are the answer");
+        assert_eq!((t[2].q.as_str(), t[2].a.as_str()), ("ещё вопрос", ""), "the last question is not answered yet");
+        assert!(t.iter().all(|x| x.from == "human"), "the human asked, the board sent nothing here");
+    }
+
     #[test]
     fn a_running_omp_turn_says_what_it_does() {
         let prefix = OMP.lines().take(6).collect::<Vec<_>>().join("\n");
@@ -1802,6 +1819,21 @@ mod tests {
         assert_eq!(search(&db, "компакт", 10)[0].n, 4, "the question of the newer session");
         assert_eq!(search(&db, "PLN-104", 10)[0].n, 3, "the answer about PLN-104");
         assert_eq!(page(&cfg, None, 50).total, 5);
+
+        // The Coordinator's own records (PLN-111): the answer follows its thought, a tool result and a
+        // mentioned file are no turns of their own, and both the questions and the answers reach chat_turns.
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        std::fs::write(folder.join("s3.jsonl"), OMP_COORDINATOR).unwrap();
+        assert_eq!(sync_index(&db, &cfg), 8, "three more turns from the Coordinator's own records");
+        assert_eq!(page(&cfg, None, 50).total, 8);
+        assert_eq!(search(&db, "снимок экрана", 10)[0].n, 6, "the answer after the thought is indexed");
+        let rows = db.chat_turns();
+        assert_eq!(rows.len(), 8, "one row per turn, and nothing for the tool results or the mentioned file");
+        assert!(rows.iter().all(|r| r.from == "human" || r.from == "board"), "a role of its own is never a turn: {:?}", rows.iter().map(|r| r.from.as_str()).collect::<Vec<_>>());
+        assert!(rows.iter().all(|r| !r.q.is_empty()), "every row is a question or a notice");
+        assert_eq!(rows[5].a, "Две задачи в работе.");
+        assert_eq!(rows[6].a, "Вот файл: снимок экрана.");
+        assert_eq!(rows[7].a, "", "the last question has no answer yet");
 
         // The transcripts go away: the index is emptied too.
         std::fs::remove_dir_all(&folder).unwrap();

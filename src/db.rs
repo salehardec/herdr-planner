@@ -957,6 +957,24 @@ impl Db {
         })
     }
 
+    /// Every indexed turn, oldest first: what the sync wrote, role and words as they are stored.
+    #[cfg(test)]
+    pub fn chat_turns(&self) -> Vec<ChatTurnRow> {
+        self.with("chat_turns", |c| {
+            let mut st = c.prepare("SELECT n, at, from_, q, a FROM chat_turns ORDER BY n")?;
+            let rows = st.query_map([], |r| {
+                Ok(ChatTurnRow {
+                    n: r.get::<_, i64>(0)? as usize,
+                    at: r.get::<_, i64>(1)? as u64,
+                    from: r.get(2)?,
+                    q: r.get(3)?,
+                    a: r.get(4)?,
+                })
+            })?;
+            rows.collect()
+        })
+    }
+
     pub fn chat_turns_max_n(&self) -> Option<usize> {
         self.with("chat_turns_max_n", |c| {
             let n: Option<i64> = c.query_row("SELECT MAX(n) FROM chat_turns", [], |r| r.get(0))?;
